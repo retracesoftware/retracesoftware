@@ -1,0 +1,175 @@
+{
+  "states": [
+    "disabled", {"comment": "Default state when retrace is disabled for a thread"},
+    "internal", {"comment": "Default state when retrace is disabled for a thread"},
+    "external", {"comment": "When target thread is running outside the python system to be recorded"},
+    "retrace", {"comment": "When target thread is running outside the retrace system"},
+    "importing", {"comment": "When target thread is running outside the retrace system"},
+    "gc", {"comment": "When the target thread is running inside the pyton garbage collector"}
+  ],
+
+  "trace_calls": false,
+
+  "recording_path": "recordings/%Y%m%d_%H%M%S_%f",
+
+  "tracing_levels": {
+    "none": [],
+    "all": [
+      "tracecalls.call",
+      "proxy.ext.disabled.call",
+      "proxy.int.disabled.call",
+      "proxy.wrapping.new",
+      "proxy.wrapping.new.method",
+      "proxy.int.handler",
+      "proxy.ext.handler",
+      "proxy.int.newref",
+      "proxy.ext.call",
+      "proxy.ext.result",
+      "proxy.ext.error",
+      "proxy.int.call",
+      "proxy.int.result",
+      "proxy.int.error",
+      "proxy.ext.new.extended",
+      "proxy.ext.new.extended.method",
+      "proxy.ext.new.extended.member",
+      "proxy.int.new.extended",
+      "proxy.int.new.extended.method",
+      "install.module",
+      "install.module.phase",
+      "install.module.phase.results"
+    ],
+    "debug": [
+      "tracecalls.call",
+      "proxy.wrapping.new",
+      "proxy.wrapping.new.method",
+      "proxy.int_to_ext.stack",
+      "proxy.ext_to_int.wrap",
+      "proxy.int.handler",
+      "proxy.int.newref",
+      "proxy.ext.call",
+      "proxy.ext.result",
+      "proxy.ext.error",
+      "proxy.int.result",
+      "proxy.int.error",
+      "proxy.ext.new.extended",
+      "proxy.ext.new.extended.method",
+      "proxy.ext.new.extended.member",
+      "proxy.int.new.extended",
+      "proxy.int.new.extended.method",
+      "install.module",
+      "install.module.phase",
+      "install.module.phase.results"
+    ],
+    "release": []
+  },
+
+  "default_tracing_level": "debug",
+
+  "exclude_paths": [
+    "^.*\\.py$",
+    "^.*\\.pyc$",
+    "^/tmp$",
+    "^/tmp/.*$"
+  ],
+
+  "preload": [
+    "logging",
+    "http.client",
+    "queue",
+    "mimetypes",
+    "encodings.idna",
+    "hmac",
+    "ipaddress",
+    "tempfile",
+    "zipfile",
+    "importlib.resources",
+    "atexit",
+    "weakref"
+  ],
+
+  "predicates": {
+    "path": {
+      "and": [
+        {
+          "not": "^.*\\.py$"
+        },
+        {
+          "not": "^.*\\.pyc$"
+        },
+        {
+          "not": "^recordings/.*$"
+        }
+      ]
+    }
+  },
+
+  "type_attribute_filter": {
+    "and": [
+      ".*",
+      {
+        "not": [
+          "__hash__",
+          "__getattribute__",
+          "__init_subclass__",
+          "__subclasshook__",
+          "__class__",
+          "__sizeof__",
+          "__new__",
+          "__del__",
+          "__dict__"
+        ]
+      }
+    ]
+  },
+
+  "filters": {
+    "functions": [
+      {
+        "or": [
+          {
+            "type": "types.BuiltinFunctionType"
+          },
+          {
+            "type": "types.FunctionType"
+          }
+        ]
+      }
+    ],
+    "all": {
+      "and": [
+        {
+          "or": [
+            {
+              "type": "type"
+            },
+            {
+              "type": "types.BuiltinFunctionType"
+            },
+            {
+              "type": "types.FunctionType"
+            }
+          ]
+        },
+        {
+          "noneof": [
+            {
+              "subtype": "BaseException"
+            },
+            {
+              "value": "$immutable"
+            },
+            {
+              "name": "__spec__"
+            },
+            {
+              "name": "__package__"
+            },
+            {
+              "name": "__loader__"
+            }
+          ]
+        }
+      ]
+    }
+  }
+}

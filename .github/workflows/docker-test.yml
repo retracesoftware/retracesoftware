@@ -1,0 +1,94 @@
+name: Record & Replay Tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  record-and-replay:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Build Docker image
+        run: |
+          docker build -t retracesoftware-test -f - . <<'DOCKERFILE'
+          FROM python:3.11-slim
+
+          WORKDIR /app
+
+          # Install dependencies
+          RUN pip install --no-cache-dir \
+              retracesoftware_proxy \
+              retracesoftware_utils \
+              retracesoftware_functional \
+              retracesoftware_stream \
+              pytest
+
+          DOCKERFILE
+
+      - name: Create recordings directory
+        run: |
+          mkdir -p ${{ github.workspace }}/recordings
+          chmod 777 ${{ github.workspace }}/recordings
+
+      # ===========================================
+      # RECORD PHASE - Full access, writable storage
+      # ===========================================
+      - name: Record - Run tests with full access
+        run: |
+          docker run --rm \
+            --network host \
+            -v "${{ github.workspace }}/src:/app/src:ro" \
+            -v "${{ github.workspace }}/recordings:/app/recordings:rw" \
+            -v "${{ github.workspace }}/dockertests:/app/dockertests:ro" \
+            -e PYTHONPATH="/app/src" \
+            -e RETRACE_MODE="record" \
+            -e RETRACE_RECORDING_DIR="/app/recordings" \
+            retracesoftware-test \
+            python -m pytest dockertests/ -v --tb=short
+
+      - name: Verify recordings were created
+        run: |
+          echo "=== Recordings directory contents ==="
+          ls -la ${{ github.workspace }}/recordings
+          if [ -z "$(ls -A ${{ github.workspace }}/recordings)" ]; then
+            echo "Warning: No recordings were created"
+          else
+            echo "Recordings created successfully"
+          fi
+
+      # ===========================================
+      # REPLAY PHASE - Network isolated, read-only recordings
+      # ===========================================
+      - name: Replay - Run tests in isolated environment
+        run: |
+          docker run --rm \
+            --network none \
+            --cap-drop ALL \
+            --security-opt no-new-privileges \
+            -v "${{ github.workspace }}/src:/app/src:ro" \
+            -v "${{ github.workspace }}/recordings:/app/recordings:ro" \
+            -v "${{ github.workspace }}/dockertests:/app/dockertests:ro" \
+            -e PYTHONPATH="/app/src" \
+            -e RETRACE_MODE="replay" \
+            -e RETRACE_RECORDING_DIR="/app/recordings" \
+            retracesoftware-test \
+            python -m pytest dockertests/ -v --tb=short
+
+      - name: Upload recordings as artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: recordings
+          path: ${{ github.workspace }}/recordings/
+          retention-days: 7

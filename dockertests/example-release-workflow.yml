@@ -1,0 +1,195 @@
+name: Shared Meson Wheel Builder
+
+on:
+  workflow_call:
+    inputs:
+      package_name:
+        description: 'The name of the package for artifact naming'
+        required: true
+        type: string
+      release_tag:
+        description: 'The Git tag to build and release (e.g. v1.2.3)'
+        required: true
+        type: string
+      build_debug:
+        description: 'Also build debug wheels with symbols'
+        required: false
+        type: boolean
+        default: true
+
+permissions:
+  id-token: write      # For potential PyPI trusted publishing (if you add it later)
+  contents: write      # Needed for creating GitHub Releases
+
+jobs:
+  # --- QUICK TEST ON LINUX ---
+  fast_test:
+    name: Quick Test (Linux)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.release_tag }}
+          submodules: recursive
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: 'pip'
+
+      - name: Install Build & Test Dependencies
+        run: pip install meson-python meson ninja pytest setuptools_scm
+
+      - name: Build & Install Extension
+        run: pip install . --no-build-isolation
+
+      - name: Run Tests
+        run: python -m pytest tests -vv -rs
+
+  # --- BUILD RELEASE WHEELS ACROSS PLATFORMS ---
+  build_wheels:
+    name: Build on ${{ matrix.os }} (Python ${{ matrix.python-version }})
+    needs: fast_test
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, ubuntu-24.04-arm, macos-latest]
+        python-version: ["3.11", "3.12"]
+        include:
+          - python-version: "3.11"
+            py-tag: "cp311-*"
+          - python-version: "3.12"
+            py-tag: "cp312-*"
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.release_tag }}
+          submodules: recursive
+          fetch-depth: 0
+
+      - name: Update submodules
+        run: |
+          git submodule sync --recursive
+          git submodule update --init --recursive
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Install build tools
+        run: pip install cibuildwheel==2.21.3 meson-python meson ninja setuptools_scm
+
+      - name: Print version
+        run: python -m setuptools_scm
+
+      - name: Build wheels
+        run: python -m cibuildwheel --output-dir wheelhouse
+        env:
+          CIBW_BUILD: ${{ matrix.py-tag }}
+          CIBW_ENVIRONMENT: MESONPY_EDITABLE_VERBOSE=1
+          CIBW_BEFORE_BUILD: pip install meson-python meson ninja
+          CIBW_TEST_REQUIRES: pytest
+          CIBW_TEST_COMMAND: pytest {project}/tests
+
+      - name: Upload wheels
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ inputs.package_name }}-${{ matrix.os }}-${{ matrix.python-version }}-wheels
+          path: wheelhouse/*.whl
+
+  # --- BUILD DEBUG WHEELS (Linux only, with symbols) ---
+  build_debug_wheels:
+    name: Build Debug on ${{ matrix.os }} (Python ${{ matrix.python-version }})
+    needs: fast_test
+    if: ${{ inputs.build_debug }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, ubuntu-24.04-arm]
+        python-version: ["3.11", "3.12"]
+        include:
+          - python-version: "3.11"
+            py-tag: "cp311-*"
+          - python-version: "3.12"
+            py-tag: "cp312-*"
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.release_tag }}
+          submodules: recursive
+          fetch-depth: 0
+
+      - name: Update submodules
+        run: |
+          git submodule sync --recursive
+          git submodule update --init --recursive
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Install build tools
+        run: pip install cibuildwheel==2.21.3 meson-python meson ninja setuptools_scm
+
+      - name: Print version
+        run: python -m setuptools_scm
+
+      - name: Build debug wheels
+        run: python -m cibuildwheel --output-dir wheelhouse
+        env:
+          CIBW_BUILD: ${{ matrix.py-tag }}
+          # Debug flags: symbols (-g), no optimization (-O0)
+          CIBW_ENVIRONMENT: >
+            MESONPY_EDITABLE_VERBOSE=1
+            CFLAGS="-g -O0"
+            CXXFLAGS="-g -O0"
+          CIBW_BEFORE_BUILD: pip install meson-python meson ninja
+          # Skip tests for debug builds (slower)
+          CIBW_TEST_SKIP: "*"
+
+      - name: Rename wheels to debug
+        run: |
+          cd wheelhouse
+          for f in *.whl; do
+            # Insert -debug before the platform tag
+            # e.g., package-1.0-cp311-cp311-linux_x86_64.whl -> package-1.0-debug-cp311-cp311-linux_x86_64.whl
+            newname=$(echo "$f" | sed 's/\(-cp[0-9]*-cp[0-9]*-\)/-debug\1/')
+            mv "$f" "$newname"
+          done
+
+      - name: Upload debug wheels
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ inputs.package_name }}-${{ matrix.os }}-${{ matrix.python-version }}-debug-wheels
+          path: wheelhouse/*.whl
+
+  # --- PUBLISH GITHUB RELEASE ---
+  publish_release:
+    name: Create GitHub Release
+    needs: [build_wheels, build_debug_wheels]
+    if: always() && needs.build_wheels.result == 'success'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download all wheels
+        uses: actions/download-artifact@v4
+        with:
+          path: dist
+          pattern: "*-wheels"
+          merge-multiple: true
+
+      - name: List wheels
+        run: ls -la dist/
+
+      - name: Upload wheels to GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ inputs.release_tag }}
+          name: Release ${{ inputs.release_tag }}
+          files: dist/*.whl
+          make_latest: "true"
+          generate_release_notes: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

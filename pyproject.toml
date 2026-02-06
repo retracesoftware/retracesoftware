@@ -1,0 +1,26 @@
+[project]
+name = "retracesoftware"
+dynamic = ["version"]
+license = {text = "Apache-2.0"}
+requires-python = ">=3.11"
+dependencies = [
+    "retracesoftware_proxy",
+    "retracesoftware_utils",
+    "retracesoftware_functional",
+    "retracesoftware_stream",
+]
+
+[build-system]
+requires = ["setuptools>=61", "wheel", "setuptools-scm>=8"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+include-package-data = true
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-dir]
+"" = "src"
+
+[tool.setuptools_scm]

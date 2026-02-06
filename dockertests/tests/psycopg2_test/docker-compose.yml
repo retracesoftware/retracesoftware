@@ -1,0 +1,40 @@
+# psycopg2 test - adds postgres service and DB_* env vars
+# Run from dockertests/:
+#   TEST_DIR=./tests/psycopg2_test docker compose -f docker-compose.base.yml -f tests/psycopg2_test/docker-compose.yml up
+#
+# But normally run via:
+#   ./runtest.sh psycopg2_test
+
+services:
+  postgres:
+    image: postgres:15
+    environment:
+      POSTGRES_PASSWORD: test
+      POSTGRES_USER: test_user
+      POSTGRES_DB: test_db
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "test_user", "-d", "test_db"]
+      interval: 2s
+      retries: 10
+
+  dryrun:
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      DB_NAME: test_db
+      DB_USER: test_user
+      DB_PASSWORD: test
+      DB_HOST: postgres
+      DB_PORT: "5432"
+
+  record:
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      DB_NAME: test_db
+      DB_USER: test_user
+      DB_PASSWORD: test
+      DB_HOST: postgres
+      DB_PORT: "5432"

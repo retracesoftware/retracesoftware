@@ -1,0 +1,32 @@
+{
+  "folders": [
+    {
+      "path": "."
+    }
+  ],
+  "settings": {
+    "python.defaultInterpreterPath": "/Users/nathanmatthews/Documents/venv/3.12.10/bin/python"
+  },
+  "launch": {
+    "version": "0.2.0",
+    "configurations": [
+      {
+        "name": "replay",
+        "type": "debugpy",
+        "request": "launch",
+        "python": "/Users/nathanmatthews/Documents/venv/3.12.10/bin/python",
+        "module": "retracesoftware",
+        "args": [
+          "--recording",
+          "..",
+          "--skip_weakref_callbacks",
+          "--read_timeout",
+          "1000"
+        ],
+        "cwd": "${workspaceFolder}/run",
+        "console": "integratedTerminal",
+        "justMyCode": false
+      }
+    ]
+  }
+}

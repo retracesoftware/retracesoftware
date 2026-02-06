@@ -1,0 +1,23 @@
+name: Bump Version and Tag
+
+on:
+  workflow_dispatch:
+    inputs:
+      level:
+        description: 'Version bump level'
+        required: true
+        default: patch
+        type: choice
+        options:
+          - major
+          - minor
+          - patch
+
+jobs:
+  call-bump-version:
+    uses: retracesoftware/.github/.github/workflows/bump-version.yml@main
+    with:
+      level: ${{ inputs.level }}
+    secrets:
+      app-id: ${{ secrets.RETRACE_APP_ID }}
+      private-key: ${{ secrets.RETRACE_PRIVATE_KEY }}

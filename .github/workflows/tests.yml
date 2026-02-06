@@ -1,0 +1,69 @@
+name: Tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      tags:
+        description: 'Test tags to include (comma-separated, empty for all)'
+        required: false
+        default: ''
+      exclude_tags:
+        description: 'Test tags to exclude (comma-separated)'
+        required: false
+        default: 'docker'
+
+permissions:
+  contents: read
+
+jobs:
+  # Fast tests - no Docker, no external APIs
+  fast-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: |
+          pip install retracesoftware_proxy retracesoftware_utils retracesoftware_functional retracesoftware_stream
+          pip install -e .
+
+      - name: Run fast tests
+        run: |
+          python -m pytest tests/ -v --tb=short
+
+  # Docker tests - requires Docker service
+  docker-tests:
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: |
+          pip install retracesoftware_proxy retracesoftware_utils retracesoftware_functional retracesoftware_stream
+          pip install -e .
+
+      - name: Run Docker tests
+        working-directory: dockertests
+        run: |
+          python run_all.py -t docker --verbose

@@ -1,0 +1,25 @@
+# Flask server with SQLite test - extends server-base
+# Run from dockertests/: ./runtest.sh flask_server_test
+
+services:
+  # Server needs DB_FILE environment
+  server-dryrun:
+    environment:
+      DB_FILE: /tmp/app.db
+
+  server-record:
+    environment:
+      DB_FILE: /tmp/app.db
+
+  replay:
+    environment:
+      DB_FILE: /tmp/app.db
+
+  # Override client environment to use FLASK_URL
+  dryrun:
+    environment:
+      FLASK_URL: http://server-dryrun:5000
+
+  record:
+    environment:
+      FLASK_URL: http://server-record:5000

@@ -1,0 +1,6 @@
+Database connection successful!
+Database connection successful!
+Table created successfully!
+Data inserted successfully!
+Query Result: [(1, 'John Doe', 30), (2, 'Jane Smith', 25)]
+psycopg2 tests passed!

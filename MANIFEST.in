@@ -1,0 +1,4 @@
+include src/retracesoftware/retrace.pth
+include src/retracesoftware/config.json
+include src/retracesoftware/modules.toml
+include src/retracesoftware/preload.txt

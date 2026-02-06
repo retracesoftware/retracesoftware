@@ -1,0 +1,52 @@
+# HTTP perf slow test - longer per-request latency to show impact.
+services:
+  server-dryrun:
+    environment:
+      SERVER_PORT: 5000
+      SERVER_HEALTH_PATH: /health
+      PING_PATH: /ping
+      RESPONSE_DELAY_MS: 10
+
+  dryrun:
+    volumes:
+      - ${TEST_DIR}:/app/test:rw
+    environment:
+      CLIENT_MODE: dryrun
+      REQUESTS_COUNT: 5000
+      WARMUP_COUNT: 10
+      PING_PATH: /ping
+      RESULT_PATH: /app/test/results-dryrun.json
+    command: bash -c "pip install -q requests && python /app/client.py | tee /app/test/results-dryrun.log"
+
+  server-record:
+    environment:
+      SERVER_PORT: 5000
+      SERVER_HEALTH_PATH: /health
+      PING_PATH: /ping
+      RESPONSE_DELAY_MS: 10
+      RETRACE_RECORDING_PATH: disable
+
+  record:
+    volumes:
+      - ${TEST_DIR}:/app/test:rw
+    environment:
+      CLIENT_MODE: record
+      REQUESTS_COUNT: 5000
+      WARMUP_COUNT: 10
+      PING_PATH: /ping
+      RESULT_PATH: /app/test/results-record.json
+    command: bash -c "pip install -q requests && python /app/client.py | tee /app/test/results-record.log"
+
+  # Replay isn't meaningful for perf measurement; make it a no-op so cleanup runs.
+  replay:
+    command: sh -c "echo 'replay skipped for perf test'"
+
+  cleanup:
+    image: ${TEST_IMAGE:-python:3.11-slim}
+    depends_on:
+      replay:
+        condition: service_completed_successfully
+    volumes:
+      - ${TEST_DIR}:/app/test:rw
+      - ${TEST_DIR}/recording:/recording:rw
+    command: bash -c "python /app/test/compare.py && if [ -z \"$(ls -A /recording 2>/dev/null)\" ]; then echo '✓ No recording created (RETRACE_RECORDING_PATH=disable working)'; else echo '❌ ERROR: recording directory should be empty' && ls -la /recording && exit 1; fi"

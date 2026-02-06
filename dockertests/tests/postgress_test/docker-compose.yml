@@ -1,0 +1,26 @@
+# Postgres test - adds postgres service and DATABASE_URL
+# Run from dockertests/: TEST_DIR=./tests/postgress_test docker compose -f docker-compose.base.yml -f tests/postgress_test/docker-compose.yml up
+
+services:
+  postgres:
+    image: postgres:15
+    environment:
+      POSTGRES_PASSWORD: test
+    healthcheck:
+      test: ["CMD", "pg_isready"]
+      interval: 2s
+      retries: 10
+
+  dryrun:
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgres://postgres:test@postgres:5432/postgres
+
+  record:
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgres://postgres:test@postgres:5432/postgres

@@ -1,0 +1,6 @@
+# Debug versions of retrace dependencies (built with -g -O0)
+# Used with: ./runtest.sh <test> --debug
+
+retracesoftware_utils_debug
+retracesoftware_functional_debug
+retracesoftware_stream_debug

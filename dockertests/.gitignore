@@ -1,0 +1,10 @@
+# Test result files (generated during runs)
+results-*.json
+results-*.log
+summary.txt
+
+# Cache directories
+.web_cache/
+
+# Recording directories (generated during runs)
+**/recording/

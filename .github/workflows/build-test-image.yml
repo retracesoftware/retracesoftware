@@ -1,0 +1,81 @@
+name: Build Test Image
+
+on:
+  push:
+    branches: [main, master]
+    paths:
+      - 'dockertests/base-requirements.txt'
+      - 'dockertests/tests/**/requirements.txt'
+  pull_request:
+    paths:
+      - 'dockertests/base-requirements.txt'
+      - 'dockertests/tests/**/requirements.txt'
+  workflow_dispatch:  # Manual trigger
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository }}/retrace-test-base
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Generate Dockerfile
+        run: |
+          cat > dockertests/Dockerfile.generated << 'DEOF'
+          FROM python:3.11-slim
+
+          WORKDIR /app
+
+          # Install common dependencies (retrace + shared test deps)
+          COPY dockertests/base-requirements.txt /tmp/base-requirements.txt
+          RUN pip install --no-cache-dir -r /tmp/base-requirements.txt
+
+          # Setup autoenable
+          COPY src/retracesoftware /tmp/retracesoftware
+          ENV PYTHONPATH=/tmp
+          RUN python -m retracesoftware.autoenable
+          ENV PYTHONPATH=
+          RUN rm -rf /tmp/retracesoftware
+
+          # Test-specific requirements installed at runtime by install.sh
+          DEOF
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extract metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          tags: |
+            type=raw,value=latest
+
+      - name: Build and push
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: dockertests/Dockerfile.generated
+          push: ${{ github.event_name != 'pull_request' }}
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+
+      - name: Output image info
+        run: |
+          echo "Image built and pushed: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest"

@@ -1,0 +1,15 @@
+✅ Created first span
+🟢 Generated span 0
+🟢 Generated span 1
+🟢 Generated span 2
+✅ Test complete. All spans processed through fake exporter.
+[EXPORT] Number of spans: 4
+[EXPORT] Span name: test-span
+[EXPORT] Span attributes: {'custom.attribute': 'test-value'}
+[EXPORT] Span name: batch-span-0
+[EXPORT] Span attributes: {'iteration': 0}
+[EXPORT] Span name: batch-span-1
+[EXPORT] Span attributes: {'iteration': 1}
+[EXPORT] Span name: batch-span-2
+[EXPORT] Span attributes: {'iteration': 2}
+[EXPORT] Shutdown exporter

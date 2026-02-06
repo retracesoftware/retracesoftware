@@ -1,0 +1,62 @@
+{
+  "_retracesoftware_utils_release": "03fb623c76fac200a8894fc46f363bb2",
+  "_retracesoftware_functional_release": "380851805fb73152ca207613951d904d",
+  "_retracesoftware_stream_release": "aeaa93c7bff2b1a526200fecbdde0485",
+  "retracesoftware": {
+    "run.py": "299108969d11689310181bbba0a0c759",
+    "autoenable.py": "59405473e3c2263a9b918866b8af64e3",
+    "install": {
+      "modulepatcher.py": "8c7e49f1f1bbf3d5e23096c508a6d5d9",
+      "config.py": "c7a650516b025d276a23f123a271a7a1",
+      "references.py": "ff47127ad852b3637852501c67c21a0d",
+      "edgecases.py": "5c1677acffe04022604b6a989012934e",
+      "globals.py": "b19628f67d644b96f192cb9cb26edd1d",
+      "__init__.py": "d41d8cd98f00b204e9800998ecf8427e",
+      "phases.py": "d21b17f362f22bd10012b694635e8ee2",
+      "typeutils.py": "57b30e68bd082020415271aa6262d779",
+      "replay.py": "14d74d4be83c2413e34ce6a40c451a68",
+      "predicate.py": "21213b5a43e6632b4a57ff44655ae5da",
+      "patcher.py": "7a463f1dcda4f532895a4c9197b13c9a",
+      "record.py": "5c94cb7fb321839fdcd03dc5d585cd0b",
+      "install.py": "8d0b554fdd00c960c3128ff37d98bb0e",
+      "patchfindspec.py": "4aa151f57c04015a203e146198474202",
+      "tracer.py": "8dbcfd37d3175e4e31100167dd80c0c1",
+      "replace.py": "039fdf500d7ece4ac79e9bd4e01307ab"
+    },
+    "proxy": {
+      "proxytype.py": "94959aa2237bc6a712a60f18dde367a0",
+      "gateway.py": "6fb99cc827aed8fbfc983c6d00565df0",
+      "thread.py": "4b1b28907f6d8cfdbe0c9b318585052f",
+      "__init__.py": "fb79e48fbde4229ad89fd3e89985f2ed",
+      "messagestream.py": "f7f657a91bdf85843eff53bc1108bc6a",
+      "startthread.py": "a44aaf20b0313987c6ba794deeda0763",
+      "replay.py": "c810fff58d6d461299d86b55bcb3bd18",
+      "record.py": "6995b513cbe6a123f4205dcf7284b7cb",
+      "serializer.py": "1159cf95f4cb21685c8c23ba6d0d8a97",
+      "proxysystem.py": "2aa1000cff3ce95b74ce76dade856c3a",
+      "globalref.py": "ac9febfdfa63a40e70e7284d0504aad4",
+      "proxyfactory.py": "97691ba11be620bba031feaf04447558",
+      "stubfactory.py": "91542789a9f6e6056c677a9b9d38c592"
+    },
+    "config.json": "2959a34a2ab3e6fbe93e3d4ac293cc4a",
+    "modules.toml": "4a7e153c45cc6714f8497143d2a4a2ca",
+    "stream": {
+      "__init__.py": "685814659dd0e360cadb9092cca85c4e"
+    },
+    "config.yaml": "d41d8cd98f00b204e9800998ecf8427e",
+    "__init__.py": "a45ceeca1b5b9995a2d61ef6d9e36823",
+    "utils": {
+      "__init__.py": "8037d64c78300326e1c381d757297417"
+    },
+    "stackdifference.py": "21095bcb8f6151a5e8fc173a981aa26f",
+    "replay.py": "ef7aed5d1000959696bf43711fabd1fb",
+    "exceptions.py": "820bb619b79eebea2ffb2bc392bb49bf",
+    "retrace.pth": "a26cb09721f940f916ce3d0e235087aa",
+    "preload.txt": "097d604a7f4ac34cc63792c7c84ce62e",
+    "__main__.py": "b936340f08bafa81de9a8a2a37ada8b5",
+    "functional": {
+      "__init__.py": "30ebddd51d6746cd9bc7604a8ea05903",
+      "_pure.py": "b8394c3ad5bf6dbe29e0f94ec3db99c0"
+    }
+  }
+}

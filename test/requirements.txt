@@ -1,0 +1,6 @@
+retracesoftware.utils
+retracesoftware.functional
+retracesoftware.stream
+opentelemetry-api
+opentelemetry-sdk
+psycopg2-binary

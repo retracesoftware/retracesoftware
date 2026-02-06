@@ -1,0 +1,18 @@
+{
+  "argv": [
+    "/Users/nathanmatthews/Documents/GitHub/proxy/test/tests/otel.py"
+  ],
+  "executable": "/Users/nathanmatthews/Documents/venv/3.12.10/bin/python",
+  "magic_markers": false,
+  "trace_inputs": false,
+  "trace_shutdown": false,
+  "python_version": "3.12.10 (v3.12.10:0cc81280367, Apr  8 2025, 08:46:59) [Clang 13.0.0 (clang-1300.0.29.30)]",
+  "cwd": "/Users/nathanmatthews/Documents/GitHub/proxy/test",
+  "sys_path": [
+    "/Users/nathanmatthews/Documents/GitHub/proxy/test",
+    "/Library/Frameworks/Python.framework/Versions/3.12/lib/python312.zip",
+    "/Library/Frameworks/Python.framework/Versions/3.12/lib/python3.12",
+    "/Library/Frameworks/Python.framework/Versions/3.12/lib/python3.12/lib-dynload",
+    "/Users/nathanmatthews/Documents/venv/3.12.10/lib/python3.12/site-packages"
+  ]
+}

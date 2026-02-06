@@ -1,0 +1,12 @@
+# Flask server test - extends server-base
+# Run from dockertests/: ./runtest.sh flask_test
+
+services:
+  # Override client environment to use FLASK_URL
+  dryrun:
+    environment:
+      FLASK_URL: http://server-dryrun:5000
+
+  record:
+    environment:
+      FLASK_URL: http://server-record:5000
