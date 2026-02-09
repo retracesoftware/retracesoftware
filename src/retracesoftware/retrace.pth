@@ -1,1 +1,1 @@
-import retracesoftware.autoenable;
+import retracesoftware; retracesoftware.__path__[:] = __import__('pkgutil').extend_path(retracesoftware.__path__, 'retracesoftware'); import retracesoftware.autoenable
