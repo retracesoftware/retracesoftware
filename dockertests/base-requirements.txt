@@ -1,7 +1,5 @@
 # Common requirements for all docker tests
 # Test-specific requirements go in tests/<test>/requirements.txt
 
-# Retrace dependencies (from test/requirements.txt)
-retracesoftware_utils
-retracesoftware_functional
-retracesoftware_stream
+# Retrace package (includes proxy/utils/functional/stream)
+retracesoftware

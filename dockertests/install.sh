@@ -11,16 +11,26 @@ set -e
 
 TARGET="/app/packages"
 
+mkdir -p "$TARGET"
+
+# Ensure we don't carry stale wheels/modules across installs.
+if [ "${RETRACE_CLEAN_PACKAGES:-1}" = "1" ]; then
+    echo "[install.sh] Cleaning target directory: $TARGET"
+    shopt -s dotglob nullglob
+    rm -rf "$TARGET"/*
+    shopt -u dotglob nullglob
+fi
+
 # Install base requirements (common deps for retrace)
 if [ -f "/app/dockertests/base-requirements.txt" ]; then
     echo "[install.sh] Installing base requirements to $TARGET..."
-    pip install --target "$TARGET" -r /app/dockertests/base-requirements.txt
+    pip install --upgrade --target "$TARGET" -r /app/dockertests/base-requirements.txt
 fi
 
 # Install test-specific requirements if present
 if [ -f "/app/test/requirements.txt" ]; then
     echo "[install.sh] Installing test-specific requirements to $TARGET..."
-    pip install --target "$TARGET" -r /app/test/requirements.txt
+    pip install --upgrade --target "$TARGET" -r /app/test/requirements.txt
 fi
 
 echo "[install.sh] Dependencies installed to $TARGET"

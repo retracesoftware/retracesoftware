@@ -150,10 +150,10 @@ record:            # Test client (plain Python)
 
 ```bash
 # Via test runner
-python -m dockertests.runtest tests/flask_server_test -v
+./runtest.sh flask_server_test
 
 # Or main runner
-python -m dockertests flask_server_test
+python run.py flask_server_test
 
 # Manual docker-compose (record phase)
 cd dockertests/tests/flask_server_test

@@ -6,51 +6,33 @@ Record/replay tests using Docker containers for consistent environments and netw
 
 ```bash
 # Run all tests
-python -m dockertests
+python run.py
 
 # Run specific test
-python -m dockertests postgres_test -v
+python run.py postgres_test
 
 # List available tests
-python -m dockertests --list
+python run.py --list
 
 # Run single test manually (for debugging)
-python -m dockertests.runtest tests/postgres_test -v
+./runtest.sh postgres_test
 ```
-
-**How it works:**
-1. Pulls pre-built image from GHCR (`ghcr.io/.../retrace-test-base:latest`)
-2. If pull fails, auto-falls back to `python:3.11-slim`
-3. Containers auto-install missing dependencies via `install.sh`
-4. Dependencies cached in volumes for fast subsequent runs
+The harness runs each test through `install -> dryrun -> record -> replay -> cleanup`.
+On failure, `runtest.sh` reports the failed phase and prints service logs.
 
 ## How It Works
 
-### Intelligent Image Selection
+### Dependency install and caching
 
-```bash
-python -m dockertests postgres_test
-```
-
-**Automatic flow:**
-
-1. **Try to pull** `ghcr.io/user/repo/retrace-test-base:latest`
-   - Contains: Python 3.11 + `retrace` + common deps
-   - Public image, no auth needed
-   - ✅ Success → use it
-   - ❌ Fail → fallback to `python:3.11-slim`
-
-2. **Container starts** and runs `install.sh`:
+Each run uses the selected image (default `python:3.11-slim`) and executes `install.sh`:
    ```bash
-   # Checks if deps already installed, installs if missing
    pip install -r /app/dockertests/base-requirements.txt  # Common
    pip install -r /app/test/requirements.txt              # Test-specific
-   python -m retracesoftware.autoenable                   # Setup retrace.pth
    ```
 
-3. **Volumes cache** installed packages:
-   - `pip-cache:/root/.cache/pip` → pip cache
-   - `site-packages:/usr/local/lib/python3.11/site-packages` → installed packages
+Package installs are isolated per test and image under:
+- `./.cache/packages/<test_name>/<image_tag>/`
+- `./.cache/packages-debug/<test_name>/<image_tag>/` (debug mode)
 
 ### Performance
 
@@ -70,28 +52,28 @@ Each test directory is mounted as `/app/test/` with:
 
 ```
 dockertests/
-├── base-requirements.txt          # Common deps (baked into GHCR image)
-├── docker-compose.default.yml     # Default compose for simple tests
-├── docker-compose.example.yml     # Example compose for complex tests
-├── install.sh                     # Auto-install script (mounted into containers)
-├── run.py                         # Test suite orchestrator
-├── runtest.py                     # Single test runner (can run standalone)
-├── images.py                      # Image pull/fallback logic
+├── base-requirements.txt
+├── docker-compose.base.yml
+├── docker-compose.server-base.yml
+├── install.sh
+├── run.py
+├── runtest.sh
 └── tests/
     └── my_test/
-        ├── test.py                # Test code (required)
-        ├── docker-compose.yml     # Optional (uses default if missing)
-        └── requirements.txt       # Test-specific deps (optional)
+        ├── test.py
+        ├── docker-compose.yml      # Optional override
+        ├── requirements.txt        # Optional
+        └── tags                    # Optional
 ```
 
 **Architecture:**
-- `run.py` - Discovers tests, pulls image once, runs each test via `runtest.py`
-- `runtest.py` - Runs individual test (record + replay), can be used standalone
-- `images.py` - Handles image pull with auto-fallback to `python:3.11-slim`
+- `run.py` - Discovers/tests filters and invokes `runtest.sh` per test
+- `runtest.sh` - Runs one test pipeline and reports failed phase/logs
+- `docker-compose.base.yml` / `docker-compose.server-base.yml` - Base workflows
 
 **Note:** `docker-compose.yml` is optional!
-- If present: Uses custom configuration (for tests needing postgres, redis, etc.)
-- If missing: Uses `docker-compose.default.yml` (simple record/replay)
+- If present: merged as an override (for postgres, flask, perf, etc.)
+- If missing: base compose handles install/dryrun/record/replay/cleanup
 
 ## Creating a Test
 
@@ -119,7 +101,7 @@ Most tests don't need external services. Just create `test.py`:
 
 3. **Run:**
    ```bash
-   python -m dockertests my_test -v
+   python run.py my_test
    ```
 
 **That's it!** The runner automatically uses a default `docker-compose.yml`.
@@ -206,19 +188,8 @@ For tests needing postgres, redis, etc., create a custom `docker-compose.yml`:
 
 5. **Run:**
    ```bash
-   python -m dockertests postgres_test -v
+   python run.py postgres_test
    ```
-
-## Image Management
-
-Base images are built by **CI** (GitHub Actions) and pushed to GHCR.
-
-`run.py` automatically pulls the image on first run. No manual building needed!
-
-**If image pull fails:**
-- Automatically falls back to `python:3.11-slim`
-- Containers auto-install deps (slightly slower first run)
-- Everything still works!
 
 ## CI/CD Integration
 
@@ -232,47 +203,28 @@ GitHub Actions automatically builds and pushes base images to GHCR when `base-re
 **Running tests in CI:**
 ```yaml
 - name: Run tests
-  run: python -m dockertests
-```
-
-Tests automatically pull the pre-built image. No credentials needed (public image).
-
-## Cleanup
-
-```bash
-# Remove dangling images
-python -m dockertests --cleanup
+  run: python run.py
 ```
 
 ## Manual Test Execution
 
-For debugging or running individual tests, use the standalone test runner:
+For debugging or running individual tests, use `runtest.sh`:
 
 ```bash
 # Run full test (record + replay)
-python -m dockertests.runtest tests/postgres_test
+./runtest.sh postgres_test
 
-# Run only record phase
-python -m dockertests.runtest tests/postgres_test --record-only
+# Override image
+./runtest.sh postgres_test --image python:3.11-slim
 
-# Run only replay phase (assumes recording exists)
-python -m dockertests.runtest tests/postgres_test --replay-only
-
-# Show the compose file being used
-python -m dockertests.runtest tests/simple_test --show-compose
-
-# Cleanup test resources
-python -m dockertests.runtest tests/postgres_test --down
-
-# Verbose output
-python -m dockertests.runtest tests/postgres_test -v
+# Debug mode (record under gdb)
+./runtest.sh postgres_test --debug
 ```
 
 **Features:**
-- ✅ Automatically pulls/checks base image (same as main runner)
-- ✅ Auto-fallback to `python:3.11-slim` if pull fails
-- ✅ Supports custom and default docker-compose files
-- ✅ Proper cleanup of generated files and Docker resources
+- ✅ Uses the same pipeline as `run.py`
+- ✅ Reports failed phase (`dryrun`, `record`, `replay`, etc.) on error
+- ✅ Supports custom compose overrides and image selection
 
 **Use cases:**
 - Debugging individual tests
@@ -297,9 +249,9 @@ When you add/change requirements:
 - Make sure Docker Desktop is running
 
 **"Could not pull image"**
-- No problem! Automatic fallback to `python:3.11-slim`
-- Containers will install all deps (slightly slower first time)
-- Check GHCR: https://github.com/user/repo/pkgs/container/retrace-test-base
+- Use `--image` to pick a known-good image:
+  - `python run.py --image python:3.11-slim`
+  - `./runtest.sh <test_name> --image python:3.11-slim`
 
 **Slow first run**
 - Image pull: ~1-2 minutes (one-time, cached locally)
@@ -312,6 +264,6 @@ When you add/change requirements:
 - Run with `-v` for verbose output
 
 **Force refresh**
-- Clear image cache: `python -m dockertests --cleanup`
-- Or manually: `docker rmi retrace-test-base:latest`
-- Next run pulls fresh from GHCR
+- Remove cached package installs:
+  - `rm -rf .cache/packages .cache/packages-debug`
+- Re-run the test to reinstall dependencies
