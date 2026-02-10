@@ -266,7 +266,7 @@ def replay(args):
 
     thread_state = utils.ThreadState(*thread_states)
 
-    with stream.reader1(path = path / 'trace.bin',
+    with stream.reader(path = path / 'trace.bin',
                         read_timeout = args.read_timeout,
                         verbose = args.verbose,
                         magic_markers = settings['magic_markers']) as reader:
