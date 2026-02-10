@@ -246,6 +246,8 @@ Each test can have a 'tags' file with one tag per line:
 import subprocess
 import sys
 import time
+import shutil
+import json
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -305,14 +307,13 @@ def run_test(test_name: str, image: str | None = None) -> TestResult:
 
     cmd = [str(script), test_name]
     if image:
-        cmd.append(image)
+        cmd.extend(["--image", image])
 
     start = time.time()
     try:
         result = subprocess.run(
             cmd,
             cwd=script.parent,
-            capture_output=True,
             text=True
         )
         duration = time.time() - start
@@ -320,9 +321,7 @@ def run_test(test_name: str, image: str | None = None) -> TestResult:
         if result.returncode == 0:
             return TestResult(name=test_name, success=True, duration=duration)
         else:
-            output = (result.stdout + result.stderr).strip()
-            error_lines = output.split('\n')[-5:]
-            error = '\n'.join(error_lines)
+            error = f"runtest.sh exited with code {result.returncode}"
             return TestResult(name=test_name, success=False, duration=duration, error=error)
 
     except Exception as e:
@@ -357,6 +356,88 @@ def parse_excludes(exclude_args: list[str]) -> set[str]:
     return excluded
 
 
+def clean_harness_state(dockertests_dir: Path) -> None:
+    """Remove cached package state and cleanup stale harness docker artifacts."""
+    print("🧹 Cleaning harness state...")
+
+    cache_dirs = [
+        dockertests_dir / ".cache" / "packages",
+        dockertests_dir / ".cache" / "packages-debug",
+        dockertests_dir / ".cache" / "pip",
+    ]
+    for path in cache_dirs:
+        if path.exists():
+            shutil.rmtree(path)
+            print(f"   Removed: {path}")
+
+    # Best-effort docker cleanup for stale harness containers/networks.
+    # Keep this non-fatal so users can still run tests without docker available.
+    try:
+        container_ids_cmd = [
+            "docker", "ps", "-aq", "--filter", "label=com.docker.compose.project"
+        ]
+        container_ids = subprocess.run(
+            container_ids_cmd, capture_output=True, text=True, check=False
+        ).stdout.split()
+
+        stale_containers: list[str] = []
+        if container_ids:
+            inspected = subprocess.run(
+                ["docker", "inspect", *container_ids],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            if inspected.returncode == 0 and inspected.stdout.strip():
+                for item in json.loads(inspected.stdout):
+                    project = (
+                        (item.get("Config") or {}).get("Labels") or {}
+                    ).get("com.docker.compose.project", "")
+                    cid = item.get("Id", "")
+                    if project.startswith("retracetest_") and cid:
+                        stale_containers.append(cid)
+        if stale_containers:
+            subprocess.run(
+                ["docker", "rm", "-f", *stale_containers],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            print(f"   Removed stale containers: {len(stale_containers)}")
+
+        network_ids_cmd = [
+            "docker", "network", "ls", "-q", "--filter", "label=com.docker.compose.project"
+        ]
+        network_ids = subprocess.run(
+            network_ids_cmd, capture_output=True, text=True, check=False
+        ).stdout.split()
+
+        stale_networks: list[str] = []
+        if network_ids:
+            inspected = subprocess.run(
+                ["docker", "network", "inspect", *network_ids],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            if inspected.returncode == 0 and inspected.stdout.strip():
+                for item in json.loads(inspected.stdout):
+                    project = ((item.get("Labels") or {}).get("com.docker.compose.project", ""))
+                    nid = item.get("Id", "")
+                    if project.startswith("retracetest_") and nid:
+                        stale_networks.append(nid)
+        if stale_networks:
+            subprocess.run(
+                ["docker", "network", "rm", *stale_networks],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            print(f"   Removed stale networks: {len(stale_networks)}")
+    except Exception as exc:
+        print(f"   ⚠️ Docker cleanup skipped: {exc}")
+
+
 def main():
     import argparse
 
@@ -376,8 +457,17 @@ def main():
         action='store_true',
         help='Include perf-tagged tests (excluded by default because they take a long time)'
     )
+    parser.add_argument(
+        '--clean',
+        action='store_true',
+        help='Clean harness caches/orphan compose artifacts before running tests'
+    )
 
     args = parser.parse_args()
+
+    dockertests_dir = Path(__file__).parent
+    if args.clean:
+        clean_harness_state(dockertests_dir)
 
     # Discover tests
     all_tests = discover_tests()
@@ -422,7 +512,7 @@ def main():
 
     # Exclude perf tests by default (they take forever)
     # Include them only if: --include-perf, --tags perf, or explicitly named
-    requested_tags = set(t.strip() for t in (args.tags or '').split(',') if t.strip())
+    requested_tags = {t.strip() for t in (args.tags or '').split(',') if t.strip()}
     requested_by_name = set(args.tests) if args.tests else set()
     if not args.include_perf and 'perf' not in requested_tags:
         perf_excluded = [t.name for t in tests_to_run if 'perf' in t.tags and t.name not in requested_by_name]

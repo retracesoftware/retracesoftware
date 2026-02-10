@@ -23,7 +23,7 @@ services:
       - ./base-requirements.txt:/app/dockertests/base-requirements.txt:ro
       - ${TEST_DIR}:/app/test:ro
       - ./.cache/pip:/root/.cache/pip
-      - ./.cache/packages:/app/packages
+      - ${TEST_PACKAGES_DIR:-./.cache/packages}:/app/packages
     command: bash /app/install.sh
 
   # Dryrun - server runs native, client generates load
@@ -34,7 +34,7 @@ services:
         condition: service_completed_successfully
     volumes:
       - ${TEST_DIR}:/app/test:ro
-      - ./.cache/packages:/app/packages:ro
+      - ${TEST_PACKAGES_DIR:-./.cache/packages}:/app/packages:ro
     environment:
       PYTHONPATH: /app/packages
     healthcheck:
@@ -45,7 +45,7 @@ services:
     command: python /app/test/test.py
 
   dryrun:
-    image: python:3.11-slim
+    image: ${TEST_IMAGE:-python:3.11-slim}
     depends_on:
       server-dryrun:
         condition: service_healthy
@@ -62,21 +62,22 @@ services:
       dryrun:
         condition: service_completed_successfully
     volumes:
-      - ../src:/app/src:ro
       - ${TEST_DIR}:/app/test:ro
       - ${TEST_DIR}/recording:/recording:rw
-      - ./.cache/packages:/app/packages:ro
+      - ${TEST_PACKAGES_DIR:-./.cache/packages}:/app/packages:ro
     environment:
-      PYTHONPATH: /app/src:/app/packages
+      PYTHONPATH: /app/packages
+      RETRACE: "1"
+      RETRACE_RECORDING_PATH: /recording
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:${SERVER_PORT:-5000}${SERVER_HEALTH_PATH:-/health}')"]
       interval: 2s
       retries: 10
       start_period: 5s
-    command: python -m retracesoftware --recording /recording -- /app/test/test.py
+    command: bash -c "python -m retracesoftware install && python /app/test/test.py"
 
   record:
-    image: python:3.11-slim
+    image: ${TEST_IMAGE:-python:3.11-slim}
     depends_on:
       server-record:
         condition: service_healthy
@@ -94,12 +95,11 @@ services:
         condition: service_completed_successfully
     network_mode: none
     volumes:
-      - ../src:/app/src:ro
       - ${TEST_DIR}:/app/test:ro
       - ${TEST_DIR}/recording:/recording:ro
-      - ./.cache/packages:/app/packages:ro
+      - ${TEST_PACKAGES_DIR:-./.cache/packages}:/app/packages:ro
     environment:
-      PYTHONPATH: /app/src:/app/packages
+      PYTHONPATH: /app/packages
     command: python -m retracesoftware --recording /recording
 
   # Cleanup

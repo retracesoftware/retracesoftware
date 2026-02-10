@@ -52,10 +52,10 @@ This test demonstrates record/replay of HTTP requests to a Flask web server.
 
 ```bash
 # Run via test runner
-python -m dockertests.runtest tests/flask_test -v
+./runtest.sh flask_test
 
 # Or via main runner
-python -m dockertests flask_test
+python run.py flask_test
 
 # Manual docker-compose
 cd dockertests/tests/flask_test
