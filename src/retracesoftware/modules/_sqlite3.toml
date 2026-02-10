@@ -1,0 +1,4 @@
+# SQLite3 C extension — database I/O via embedded SQLite engine.
+
+proxy = ["Blob", "Connection", "Cursor", "adapt", "connect"]
+default = "try_proxy"

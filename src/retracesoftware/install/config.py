@@ -2,7 +2,6 @@ import pkgutil
 import json
 import os
 import datetime
-import tomllib
 
 from pathlib import Path
 
@@ -36,11 +35,6 @@ def recording_path(config):
         recording_path = get_recording_path(config.get('record_path', 'recordings'))
         os.environ['RETRACE_RECORDING_PATH'] = str(recording_path)
         return recording_path
-
-def load_module_config(filename):
-    data = pkgutil.get_data("retracesoftware", filename)
-    assert data is not None
-    return tomllib.loads(data.decode("utf-8"))
 
 def load_config(filename):
         

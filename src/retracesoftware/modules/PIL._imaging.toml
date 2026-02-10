@@ -1,0 +1,6 @@
+# Pillow C extension — image file I/O via libjpeg, libpng, libtiff, etc.
+# Direct file read/write syscalls in C for image loading and saving.
+
+package = "Pillow"
+
+# TODO

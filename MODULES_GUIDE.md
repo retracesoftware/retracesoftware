@@ -1,19 +1,89 @@
-# Adding Modules to modules.toml
+# Module Configuration Guide
 
-A guide for determining whether a Python module needs an entry in `modules.toml`, and how to write one.
+A guide for determining whether a Python module needs a patching configuration, and how to write one.
 
 ---
 
 ## Table of Contents
 
+- [File Structure](#file-structure)
 - [Core Concept](#core-concept)
 - [Decision Framework](#decision-framework)
 - [Inspection Technique](#inspection-technique)
 - [Available Directives](#available-directives)
 - [Step-by-Step Process](#step-by-step-process)
 - [Patterns](#patterns)
+- [Buffer Protocol and Memoryview Types](#buffer-protocol-and-memoryview-types)
 - [Edge Cases](#edge-cases)
 - [Checklist](#checklist)
+
+---
+
+## File Structure
+
+Module configs live in `src/retracesoftware/modules/*.toml` and are loaded by `ModuleConfigResolver` (defined in `modules/__init__.py`).
+
+### Directory layout
+
+```
+src/retracesoftware/modules/
+  __init__.py                       # ModuleConfigResolver class
+  stdlib.toml                       # Grouped: posix, _socket, _ssl, time, builtins, ...
+  debuggers.toml                    # Grouped: bdb, pydevd, _pydevd_bundle
+  _sqlite3.toml                     # Single-module
+  psycopg2._psycopg.toml            # Single-module
+  grpc._cython.cygrpc.toml          # Single-module with versioning
+```
+
+### Two file formats
+
+**Grouped files** — section headers are Python module names. Used for grouping related modules (e.g., all stdlib modules in one file):
+
+```toml
+# stdlib.toml
+[posix]
+proxy = ["read", "write", "open", ...]
+
+[_socket]
+proxy = ["socket", "getaddrinfo", ...]
+immutable = ["error", "herror", "gaierror", "timeout"]
+```
+
+**Single-module files** — filename is the module name. Root table holds the base config. Optional `package` key enables version-aware loading. Optional version sections add config for specific library versions:
+
+```toml
+# grpc._cython.cygrpc.toml
+package = "grpcio"
+
+proxy = ["Channel", "Server", "CompletionQueue"]
+immutable = ["BaseError", "AbortError"]
+
+["1.60"]
+proxy = ["AioChannel", "AioServer"]
+bind = ["AsyncIOEngine"]
+```
+
+- Root-level directives (`proxy`, `immutable`, etc.) — base config, always applied
+- `package` — optional PyPI package name for version lookup via `importlib.metadata`. If set and the package is not installed, the file is silently skipped
+- `["1.60"]` — version section, applied additively when the installed version is >= 1.60. **Must be quoted** — TOML treats unquoted `[1.60]` as a dotted key path, not a literal key
+- Version sections are evaluated in ascending order; their lists are **appended** to the base
+
+### Loading order (`RETRACE_MODULES_PATH`)
+
+The resolver searches two locations. First match wins per module name:
+
+1. **User directory** — `RETRACE_MODULES_PATH` env var, defaults to `.retrace/modules/`
+2. **Built-in directory** — `retracesoftware/modules/*.toml` (shipped with the package)
+
+To override a built-in config, create a `.toml` file with the same module name in your user directory. The user file completely replaces the built-in config for that module.
+
+If the user directory doesn't exist, it is silently skipped.
+
+### Format auto-detection
+
+The resolver distinguishes the two formats automatically:
+- If any root-level value is not a dict (e.g., a list or string) → **single-module file** (filename = module name)
+- If all root-level values are dicts → **grouped file** (section headers = module names)
 
 ---
 
@@ -21,7 +91,7 @@ A guide for determining whether a Python module needs an entry in `modules.toml`
 
 For record/replay to work, **every function call that could return a different value on re-execution must be intercepted**. During recording, the proxy captures inputs and outputs. During replay, the proxy returns the recorded output without executing the real function.
 
-A module needs an entry in `modules.toml` when it contains **non-deterministic behavior at the C level** — meaning it makes syscalls, uses its own RNG, reads system state, or performs I/O directly in C, bypassing already-proxied Python modules.
+A module needs a config entry when it contains **non-deterministic behavior at the C level** — meaning it makes syscalls, uses its own RNG, reads system state, or performs I/O directly in C, bypassing already-proxied Python modules.
 
 A module does **not** need an entry if:
 - It is pure Python and delegates all non-determinism to modules we already proxy (`posix`, `_socket`, `_ssl`, `time`, `_random`, etc.)
@@ -128,7 +198,7 @@ If you see syscalls coming from the C extension's `.so` (not from `_socket.cpyth
 
 ## Available Directives
 
-Each directive in `modules.toml` serves a specific purpose. A module entry can use multiple directives.
+Each directive serves a specific purpose. A module entry can use multiple directives.
 
 ### `proxy`
 
@@ -165,7 +235,21 @@ Bdb.disable = ["trace_dispatch"]
 
 **When to use:** For types whose instances are value-like and should be treated as immutable data (not proxied objects). The proxy system needs to know these types so it can serialize/deserialize their instances directly rather than tracking them as mutable proxy objects.
 
-**What it does:** Adds the type to `system.immutable_types`.
+**Always prefer `immutable` over `proxy` where possible.** Proxying a type has overhead — every method call on every instance is intercepted, recorded, and replayed. If a type is just carrying data and has no I/O-bearing methods, marking it `immutable` is cheaper and more correct. Reserve `proxy` for types that have methods which actually perform non-deterministic operations (I/O, system calls, etc.).
+
+**What it does:** Adds the type to `system.immutable_types`. Instances are serialized as values in the recording stream. For primitive types (`int`, `str`, `bytes`, etc.) the serializer uses built-in encoding. For all other types, **serialization delegates to Python `pickle`**. This means any type that supports `pickle` (has `__reduce__`, `__getstate__`, or is otherwise picklable) can be marked `immutable`.
+
+**Good candidates for `immutable`:**
+- Primitive/value types (`int`, `str`, `bytes`, `datetime`, etc.)
+- Named tuple / struct result types (`stat_result`, `struct_time`)
+- Exception types (subclasses of `BaseException`)
+- Enum and constant namespace types
+- Data-only types with no I/O methods — even from C extensions, as long as they pickle
+- Types that are passed between proxied calls but never called upon to do I/O themselves (e.g., credential objects, event/result containers)
+
+**When NOT to use `immutable`:**
+- Types with methods that perform I/O, syscalls, or other non-deterministic operations (use `proxy` instead)
+- Types that cannot be pickled (opaque C wrappers with no `__reduce__`, wrapping raw pointers that can't be reconstructed)
 
 ```toml
 [builtins]
@@ -173,6 +257,10 @@ immutable = ["int", "float", "str", "bytes", "bool"]
 
 [_datetime]
 immutable = ["datetime", "tzinfo", "timezone"]
+
+# Exception types from C extensions — picklable, no I/O
+[_socket]
+immutable = ["error", "herror", "gaierror", "timeout"]
 ```
 
 ### `patch_hash`
@@ -193,14 +281,30 @@ patch_hash = ["FunctionType"]
 
 ### `bind`
 
-**When to use:** For enum types or singleton objects that should be registered with the proxy system by identity, so the same object is used during replay.
+**When to use:** For enum types, singleton objects, and constant namespaces that should be registered with the proxy system by identity. Use `bind` instead of `immutable` whenever objects are compared by identity (`is`) rather than equality (`==`), or when there should only be one instance of each value.
 
-**What it does:** Calls `system.bind(obj)`. For `enum.Enum` subclasses, binds each member individually.
+**Always prefer `bind` over `immutable` for singletons and enums.** With `immutable`, pickle creates a *new* object during replay — equal but not identical (`==` works, `is` fails). With `bind`, the proxy records a reference to the singleton and returns the exact same object during replay (`is` works).
+
+**What it does:** Calls `system.bind(obj)`. For `enum.Enum` subclasses, binds each member individually. For non-enum types, binds the class itself (so its identity is preserved and its class-level constant attributes resolve correctly).
+
+**Good candidates for `bind`:**
+- Python `enum.Enum` subclasses
+- Cython/C extension enum-like classes with class-level singleton constants (e.g., `StatusCode.ok`, `ConnectivityState.idle`)
+- Sentinel objects, flag types, constant namespaces
+- Any object that user code might compare with `is`
 
 ```toml
 [ssl]
 bind = ["Options"]
+
+["grpc._cython.cygrpc"]
+bind = ["AsyncIOEngine", "StatusCode", "ConnectivityState", "CompletionType", ...]
 ```
+
+**The decision hierarchy for types:**
+1. Has I/O-bearing methods? → `proxy`
+2. Is a singleton / enum / constant? → `bind`
+3. Is a data carrier / value type? → `immutable`
 
 ### `wrap`
 
@@ -278,14 +382,15 @@ default = "try_proxy"
 1. **Enumerate exports** using the inspection technique above.
 2. **Classify each export** as:
    - Non-deterministic function → `proxy`
-   - Non-deterministic type (I/O-bearing) → `proxy`
-   - Value/data type → `immutable`
+   - Type with I/O-bearing methods → `proxy`
+   - Enum / singleton / constant type → `bind` (preserve identity)
+   - Type without I/O methods (data carrier, result, event) → `immutable` (prefer over proxy)
    - Exception type → `immutable`
    - Constant → skip (deterministic)
    - Deterministic function → skip
 3. **Check for buffer APIs** — methods like `recv_into`, `readinto` that write into caller-provided buffers need `patch_class` with a custom wrapper in `edgecases.py`.
 4. **Check for subprocess interaction** — if the module spawns child processes, you may need `wrap` to inject retrace environment variables.
-5. **Write the TOML entry** and add it to `modules.toml`.
+5. **Write the TOML entry** — either add a section to an existing grouped file (e.g., `stdlib.toml`) or create a new single-module file in `modules/`.
 
 ### Adding a third-party library
 
@@ -296,7 +401,7 @@ default = "try_proxy"
    - Result/cursor types (e.g., `Cursor`, `Result`)
    - Factory functions (e.g., `connect()`)
 4. **Include all types in the call chain** — if a proxied type's method returns another type that also has I/O methods, proxy that type too. Example: `psycopg2._psycopg` proxies both `connection` and `cursor` because `connection.cursor()` returns a `cursor` with its own I/O methods.
-5. **Write the TOML entry** with the fully qualified module path.
+5. **Write the TOML entry** — create a new `.toml` file in `modules/` named after the C extension module (e.g., `grpc._cython.cygrpc.toml`). Add `package = "..."` if the library needs version-aware loading.
 
 ---
 
@@ -381,23 +486,247 @@ fork_exec = "retracesoftware.install.edgecases.fork_exec"
 
 ---
 
+## Buffer Protocol and Memoryview Types
+
+Many C extension methods use Python's buffer protocol — they accept or write into `memoryview`, `bytearray`, or any object that exposes a C-level buffer. These methods create specific challenges for record/replay that require special handling.
+
+### The Problem
+
+The proxy system works by intercepting function calls and recording their **return values**. But buffer-writing methods don't return the data — they mutate a caller-provided buffer in place. During replay, the proxy has no recorded data to write back into the buffer, and the real C function can't run (there's no live connection/file/socket).
+
+Consider `socket.recv_into(buffer)`:
+1. The caller allocates a `bytearray` or `memoryview`
+2. The C method writes received data directly into that buffer's memory
+3. The return value is just the byte count, not the actual data
+
+If we proxy this naively, during recording we capture the byte count but lose the actual data. During replay, we return the byte count but the buffer stays empty.
+
+A secondary problem: methods that accept buffer-like inputs (`memoryview`, `bytearray`) for writing. A `memoryview` is a reference to someone else's memory — it can't be serialized/deserialized by the proxy as a standalone value. The proxy needs the raw bytes, not the memory reference.
+
+### The Solution: Redirect to Data-Returning Variants
+
+The pattern is to replace buffer-writing methods with wrappers that:
+1. Call the **data-returning variant** of the same operation (e.g., `recv` instead of `recv_into`)
+2. Copy the returned data into the caller's buffer
+3. Return the byte count as the original method would
+
+This way the proxy captures the actual data (via the `recv` call), and the buffer gets filled correctly during both recording and replay.
+
+### How to Identify Methods That Need This
+
+Look for these patterns when auditing a module:
+
+| Indicator | Examples |
+|---|---|
+| Methods with `_into` suffix | `recv_into`, `recvfrom_into`, `recvmsg_into`, `readinto`, `readinto1` |
+| Methods with a `buffer` / `buf` parameter | `_ssl._SSLSocket.read(len, buffer)` |
+| C signature uses `Py_buffer*` | Check CPython source or docs for "buffer" parameter types |
+| Docs say "read into a pre-allocated buffer" | io, socket, ssl, mmap modules |
+
+### Existing Wrappers in `edgecases.py`
+
+#### `recv_into` / `recvfrom_into` — `_socket.socket`
+
+Redirects to `recv`/`recvfrom`, copies data into the buffer:
+
+```python
+def recv_into(target):
+    @functools.wraps(target)
+    def wrapper(self, buffer, nbytes=0, flags=0):
+        data = self.recv(len(buffer) if nbytes == 0 else nbytes, flags)
+        buffer[0:len(data)] = data
+        return len(data)
+    return wrapper
+
+def recvfrom_into(target):
+    @functools.wraps(target)
+    def wrapper(self, buffer, nbytes=0, flags=0):
+        data, address = self.recvfrom(len(buffer) if nbytes == 0 else nbytes, flags)
+        buffer[0:len(data)] = data
+        return len(data), address
+    return wrapper
+```
+
+Config:
+
+```toml
+[_socket.patch_class.socket]
+recvfrom_into = "retracesoftware.install.edgecases.recvfrom_into"
+recv_into = "retracesoftware.install.edgecases.recv_into"
+recvmsg_into = "retracesoftware.install.edgecases.recvmsg_into"
+```
+
+#### `readinto` — `io.FileIO`, `io.BufferedReader`, `io.BufferedRandom`
+
+Redirects to `read`, copies data into the buffer. Uses `buffer.nbytes` to determine the read size:
+
+```python
+def readinto(target):
+    @functools.wraps(target)
+    def wrapper(self, buffer):
+        bytes = self.read(buffer.nbytes)
+        buffer[:len(bytes)] = bytes
+        return len(bytes)
+    return wrapper
+```
+
+#### `read` — `_ssl._SSLSocket`
+
+SSL's `read` has a dual interface: `read(len)` returns bytes, but `read(len, buffer)` writes into a buffer and returns the byte count. The wrapper handles both modes:
+
+```python
+def read(target):
+    @functools.wraps(target)
+    def wrapper(self, *args):
+        if len(args) == 0:
+            return target(self)
+        else:
+            buflen = args[0]
+            data = target(self, buflen)
+
+            if len(args) == 1:
+                return data              # read(len) → return bytes
+            else:
+                buffer = args[1]
+                buffer[0:len(data)] = data
+                return len(data)          # read(len, buf) → return count
+    return wrapper
+```
+
+#### `write` — outbound buffer conversion
+
+For methods that accept `memoryview` or buffer-like objects for sending/writing, the wrapper converts to `bytes` before proxying so the data can be serialized:
+
+```python
+def write(target):
+    @functools.wraps(target)
+    def wrapper(self, byteslike):
+        return target(byteslike.tobytes())
+    return wrapper
+```
+
+### Writing a New Buffer Wrapper
+
+When you encounter a new `*_into` or buffer-writing method, follow this template:
+
+1. **Find the data-returning equivalent.** Most buffer-writing methods have a counterpart:
+
+   | Buffer method | Data-returning equivalent |
+   |---|---|
+   | `socket.recv_into(buf)` | `socket.recv(bufsize)` |
+   | `socket.recvfrom_into(buf)` | `socket.recvfrom(bufsize)` |
+   | `io.FileIO.readinto(buf)` | `io.FileIO.read(size)` |
+   | `io.BufferedReader.readinto(buf)` | `io.BufferedReader.read(size)` |
+   | `io.BufferedReader.readinto1(buf)` | `io.BufferedReader.read1(size)` |
+   | `ssl.SSLSocket.read(n, buf)` | `ssl.SSLSocket.read(n)` |
+   | `mmap.mmap.readinto(buf)` | `mmap.mmap.read(n)` |
+
+2. **Write the wrapper** in `edgecases.py`:
+
+   ```python
+   def my_readinto(target):
+       @functools.wraps(target)
+       def wrapper(self, buffer):
+           data = self.read(len(buffer))  # call the data-returning variant
+           buffer[:len(data)] = data      # copy into caller's buffer
+           return len(data)               # return byte count
+       return wrapper
+   ```
+
+3. **Register it** in the `typewrappers` dict in `edgecases.py`:
+
+   ```python
+   typewrappers = {
+       'my_module': {
+           'MyType': {
+               'readinto': my_readinto
+           }
+       },
+       ...
+   }
+   ```
+
+4. **Add the `patch_class` entry** in the appropriate `.toml` file:
+
+   ```toml
+   # In a grouped file:
+   [my_module.patch_class.MyType]
+   readinto = "retracesoftware.install.edgecases.my_readinto"
+
+   # Or in a single-module file (my_module.toml):
+   [patch_class.MyType]
+   readinto = "retracesoftware.install.edgecases.my_readinto"
+   ```
+
+### Common Buffer Methods by Module
+
+A reference of buffer-protocol methods across modules that need or may need wrappers:
+
+| Module | Type | Method | Status |
+|---|---|---|---|
+| `_socket` | `socket` | `recv_into` | Wrapped |
+| `_socket` | `socket` | `recvfrom_into` | Wrapped |
+| `_socket` | `socket` | `recvmsg_into` | Wrapped (raises NotImplementedError) |
+| `_ssl` | `_SSLSocket` | `read(n, buffer)` | Wrapped |
+| `_io` | `FileIO` | `readinto` | Wrapper exists in edgecases.py |
+| `_io` | `BufferedReader` | `readinto` | Wrapper exists in edgecases.py |
+| `_io` | `BufferedReader` | `readinto1` | **Needs wrapper** |
+| `_io` | `BufferedRandom` | `readinto` | Wrapper exists in edgecases.py |
+| `_io` | `BufferedRandom` | `readinto1` | **Needs wrapper** |
+| `_io` | `BufferedRWPair` | `readinto` | **Needs wrapper** (if `_io` is proxied) |
+| `_io` | `BufferedRWPair` | `readinto1` | **Needs wrapper** (if `_io` is proxied) |
+| `mmap` | `mmap` | `readinto` | **Needs wrapper** (if `mmap` is proxied) |
+| `hashlib` | `hash` | `update(buf)` | Not needed — deterministic, accepts buffer but doesn't write |
+| `struct` | — | `pack_into(buf)` | Not needed — deterministic |
+| `array` | `array` | `frombytes(buf)` | Not needed — deterministic |
+
+### Why `memoryview` Is Marked Immutable
+
+In `stdlib.toml`, `memoryview` is listed under `[builtins] immutable`. This tells the proxy system to treat `memoryview` instances as serializable values rather than mutable proxy objects. This is necessary because:
+
+- A `memoryview` is a reference to another object's buffer — it can't be independently reconstructed during replay
+- The proxy system needs to serialize the underlying bytes when recording a memoryview argument, not the memory reference
+- Marking it immutable ensures the proxy copies the bytes out for serialization rather than trying to track it as a live proxy object
+
+### Outbound Buffers (Write Direction)
+
+The problem also applies in reverse: methods that accept buffer-like objects for **sending** data. If user code passes a `memoryview` to `socket.send(mv)` or `ssl.write(mv)`, the proxy needs to serialize the actual bytes, not the memoryview reference.
+
+This is generally handled automatically by the proxy's serialization layer — when it encounters a `memoryview` argument, it should call `.tobytes()` to get a serializable `bytes` object. If a specific method has issues, add a wrapper that converts explicitly:
+
+```python
+def write(target):
+    @functools.wraps(target)
+    def wrapper(self, byteslike):
+        return target(byteslike.tobytes())
+    return wrapper
+```
+
+---
+
 ## Edge Cases
 
 ### Module names with dots
 
-For modules with dots in their names (like third-party packages), quote the TOML key:
+For modules with dots in their names (like third-party packages), create a **single-module file** named after the module:
+
+```
+modules/psycopg2._psycopg.toml
+modules/grpc._cython.cygrpc.toml
+```
+
+The filename (minus `.toml`) becomes the module name. No quoting needed — the resolver uses the filename stem directly.
+
+Alternatively, in a grouped file, quote the TOML section key:
 
 ```toml
 ["psycopg2._psycopg"]
 proxy = ["connect", "cursor", "connection"]
-
-["grpc._cython.cygrpc"]
-proxy = ["Channel", "Server", ...]
 ```
 
 ### Sub-key sections with dots
 
-For `type_attributes`, `patch_class`, and `wrap` on dotted module names, the dot-separated path must be correctly structured:
+For `type_attributes`, `patch_class`, and `wrap` on dotted module names in grouped files, the dot-separated path must be correctly structured:
 
 ```toml
 ["_pydevd_bundle.pydevd_cython".type_attributes]
@@ -410,23 +739,25 @@ Some modules only exist on certain platforms. The patcher only patches names tha
 
 ### Optional dependencies
 
-Third-party library entries are safe to include even if the library isn't installed. The patcher only runs when the module is actually imported (`patch_imported_module`). If the module is never imported, the entry is ignored.
+Third-party library entries are safe to include even if the library isn't installed. For single-module files with `package = "..."`, the resolver checks if the package is installed and silently skips the file if not. For grouped files, entries are only applied when the module is actually imported.
 
 ### Existing entries that don't match the module
 
-If a TOML section key doesn't match any importable module name (e.g., the `[fnctl]` typo — should be `[fcntl]`), the entry will never trigger. The patcher matches by `__name__` in the module's namespace.
+If a TOML section key (or filename) doesn't match any importable module name, the entry will never trigger. The patcher matches by `__name__` in the module's namespace.
 
 ---
 
 ## Checklist
 
-Before submitting a new `modules.toml` entry, verify:
+Before submitting a new module config entry, verify:
 
-- [ ] **Module name is spelled correctly** (the TOML section key must match `module.__name__`)
-- [ ] **All proxied names exist in the module** (run `dir(module)` to confirm)
+- [ ] **Module name is spelled correctly** (filename or TOML section key must match `module.__name__`)
+- [ ] **All listed names exist in the module** (run `dir(module)` to confirm)
+- [ ] **`immutable` is preferred over `proxy`** — only use `proxy` for types that have methods which actually perform I/O or non-deterministic operations. Data-only types, result containers, events, exceptions, and enums should be `immutable`.
 - [ ] **I/O-bearing types are proxied**, not just factory functions
-- [ ] **Return types of proxied methods are also proxied** if they have their own I/O methods
+- [ ] **Return types of proxied methods are also covered** — either `proxy` (if they have I/O methods) or `immutable` (if they're data carriers)
 - [ ] **Buffer-writing methods** have `patch_class` wrappers if needed
-- [ ] **Value/data types** are marked `immutable` if appropriate
 - [ ] **Exception types** are marked `immutable` if they exist in the module
+- [ ] **Enum / singleton / constant types** use `bind` (not `immutable`) to preserve identity
+- [ ] **Immutable types are picklable** — since the serializer delegates to `pickle` for non-primitive types, verify with `pickle.dumps(instance)` that instances can be serialized
 - [ ] **Comments explain the rationale** — why this module needs proxying, what C library it wraps, what I/O it does

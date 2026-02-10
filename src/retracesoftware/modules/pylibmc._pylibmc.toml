@@ -1,0 +1,6 @@
+# pylibmc C extension — memcached I/O via libmemcached.
+# Direct socket I/O in C for all memcached protocol operations.
+
+package = "pylibmc"
+
+# TODO

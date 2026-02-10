@@ -1,0 +1,17 @@
+# Debugger hooks — disable tracing functions that interfere with record/replay.
+
+[_frozen_importlib_external]
+# Possible future config:
+# disabled = ["_path_stat"]
+
+[bdb.type_attributes]
+Bdb.disable = ["trace_dispatch"]
+
+[pydevd.type_attributes]
+PyDB.disable = ["enable_tracing", "set_suspend", "do_wait_suspend"]
+
+["_pydevd_bundle.pydevd_trace_dispatch_regular".type_attributes]
+ThreadTracer.disable = ["__call__"]
+
+["_pydevd_bundle.pydevd_cython".type_attributes]
+ThreadTracer.disable = ["__call__"]

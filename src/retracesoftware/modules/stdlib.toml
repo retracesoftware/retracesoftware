@@ -1,51 +1,7 @@
-[_frozen_importlib_external]
-    # "_frozen_importlib_external": {
-    #   "comment": {
-    #     "with_state": {
-    #       "disabled": ["_path_stat"]
-    #     }
-    #   }
-    # },
-
-    # "_imp": {
-    #   "patch_extension_exec": ["exec_dynamic", "exec_builtin"],
-    #   "comment": {
-    #     "with_state": {
-    #       "internal": ["create_dynamic"]
-    #     }
-    #   }
-    # },
-
-[bdb.type_attributes]
-Bdb.disable = ["trace_dispatch"]
-
-[pydevd.type_attributes]
-PyDB.disable = ["enable_tracing", "set_suspend", "do_wait_suspend"]
-
-["_pydevd_bundle.pydevd_trace_dispatch_regular".type_attributes]
-ThreadTracer.disable = ["__call__"]
-
-["_pydevd_bundle.pydevd_cython".type_attributes]
-ThreadTracer.disable = ["__call__"]
-
+# Standard library modules — non-deterministic C extensions and builtins.
 
 [sys]
 disable = ["excepthook"]
-    
-# [importlib] 
-# disable = "import_module"
-
-    # "importlib._bootstrap": {
-    #   "comment": {
-    #     "with_state": {
-    #       "internal": [
-    #         "_load_unlocked",
-    #         "_find_spec",
-    #         "_lock_unlock_module",
-    #         "_get_module_lock"]
-    #     }
-    #   }
-    # },
 
 [encodings]
 disable = ["search_function"]
@@ -56,12 +12,6 @@ immutable = ["Enum"]
 [os]
 immutable = ["stat_result", "terminal_size", "statvfs_result"]
 
-    # "mmap": {
-    #   "proxy": [
-    #     "mmapXXX"
-    #   ]
-    # },
-
 [types]
 patch_hash = ["FunctionType"]
 immutable = ["TracebackType", "ModuleType"]
@@ -69,7 +19,7 @@ immutable = ["TracebackType", "ModuleType"]
 [builtins]
 patch_hash = ["object"]
 disable = ["print"]
-immutable = ["BaseException", "memoryview", "int", "float", "complex", "str", "bytes", "bool", "bytearray", 
+immutable = ["BaseException", "memoryview", "int", "float", "complex", "str", "bytes", "bool", "bytearray",
             "type", "slice"]
 
 [_thread]
@@ -85,34 +35,11 @@ datetime.proxy = ["now", "utcnow", "today"]
 immutable = ["struct_time"]
 proxy = ["perf_counter", "time", "gmtime", "localtime", "monotonic", "monotonic_ns", "time_ns"]
 
-    # "io": {
-    #   "comment": {
-    #     "proxy": ["open_code", "open"]
-    #   },
-    #   "path_predicates": {
-    #     "open_code": "path",
-    #     "open": "file"
-    #   },
-    #   "patchtype": {
-    #     "FileIO": {
-    #       "readinfo": "retracesoftware.install.edgecases.readinto"
-    #     },
-    #     "BufferedReader": {
-    #       "readinfo": "retracesoftware.install.edgecases.readinto"
-    #     },
-    #     "BufferedRandom": {
-    #       "readinfo": "retracesoftware.install.edgecases.readinto"
-    #     }
-    #   }
-    # },
-
 [pathlib]
 immutable = ["PosixPath"]
 
 [posix]
 immutable = ["times_result", "statvfs_result", "uname_result", "stat_result", "terminal_size"]
-# ignore = ["fork", "register_at_fork", "basename", "readlink", "strerror", "listdir", "_path_normpath", "DirEntry"]
-# default = "try_proxy"
 
 proxy = [
     "_exit", # Function. Exits the process immediately, bypassing cleanup.
@@ -198,9 +125,9 @@ proxy = [
     "read", # Function. Reads from a file descriptor (os.read).
     "readlink", # Function. Reads the target of a symbolic link (os.readlink).
     "readv", # Function. Reads into multiple buffers from a file descriptor.
-    
+
     #"register_at_fork", # Function. Registers functions to run before/after fork.
-    
+
     "remove", # Function. Removes a file (os.remove).
     "rename", # Function. Renames a file or directory (os.rename).
     "replace", # Function. Renames a file, replacing the destination if it exists.
@@ -283,9 +210,8 @@ proxy = [
     "setitimer", "siginterrupt", "signal", "sigpending", "sigwait"]
 
 [_socket]
-# ignore = "CAPI"
 immutable = ["error", "herror", "gaierror", "timeout"]
-proxy = ["socket", 
+proxy = ["socket",
          "close",
          "dup",
          "getaddrinfo",
@@ -305,7 +231,6 @@ proxy = ["socket",
          "setdefaulttimeout",
          "sethostname",
          "socketpair"]
-# default = "try_proxy"
 
 [_socket.patch_class.socket]
 recvfrom_into = "retracesoftware.install.edgecases.recvfrom_into"
@@ -314,10 +239,6 @@ recvmsg_into = "retracesoftware.install.edgecases.recvmsg_into"
 
 [select]
 proxy = ["kevent", "kqueue", "poll", "epoll", "select"]
-
-[_sqlite3]
-proxy = ["Blob", "Connection", "Cursor", "adapt", "connect"]
-default = "try_proxy"
 
 [_ssl]
 proxy = ["_SSLSocket", "MemoryBIO", "_SSLContext"]
@@ -328,169 +249,8 @@ read = "retracesoftware.install.edgecases.read"
 [ssl]
 bind = ["Options"]
 
-#     "_ssl": {
-#       "proxy_all_except": [],
-
-#       "proxy_functions": ".*",
-#       "comment": {
-#         "proxy_types": [
-#           "MemoryBIO",
-#           "_SSLSocket",
-#           "_SSLContext"
-#           ],
-#           "wrap": {
-#             "_SSLSocket.write": "write"
-#           }
-#         },
-#       "patchtype": {
-#         "_SSLSocket": {
-#           "read": "retracesoftware.install.edgecases.read"
-#         }
-#       }
-#     },
-
 [_random]
 proxy = ["Random"]
 
-#     "_random": {
-#       "proxy_all_except": [],
-#       "proxy_types": [
-#         "Random"
-#       ],
-#       "proxy_functions": ".*"
-#     },
-
-#     "_multiprocessing": {
-#       "proxy": ["sem_unlink", "SemLock"]
-#     },
-
-# ["multiprocessing.context"]
-# proxy = "BaseContext"
-
 [_multiprocessing]
 proxy = ["SemLock", "sem_unlink"]
-
-
-#     "multiprocessing.context": { 
-#       "comment": {    
-#         "proxy": ["_default_context"]
-#       }
-#     },
-
-#     "PIL._imaging": {
-#       "map_buffer": "ignore",
-#       "*": "proxy_if_function"
-#     },
-["psycopg2._psycopg"]
-proxy = ["connect", "cursor", "connection"]
-
-# =============================================================================
-# grpcio
-# =============================================================================
-# The gRPC C core is statically linked into grpc._cython.cygrpc.
-# It performs ALL network I/O in C: socket creation, connect, send/recv,
-# TLS (BoringSSL), DNS (c-ares), and event polling (epoll/kqueue).
-# None of this flows through Python's _socket, _ssl, or select.
-#
-# Strategy: proxy at the cygrpc C extension boundary. All I/O flows
-# through Channel/Server types and their associated call/event objects.
-
-["grpc._cython.cygrpc"]
-proxy = [
-    # --- Core I/O types (sync) ---
-    "Channel",              # Client channel: integrated_call, segregated_call, next_call_event,
-                            #   check_connectivity_state, watch_connectivity_state, close
-    "Server",               # Server: add_http2_port, start, request_call,
-                            #   request_registered_call, shutdown, cancel_all_calls, destroy
-    "CompletionQueue",      # Event polling: poll, shutdown, clear
-
-    # --- In-flight RPC call types ---
-    "IntegratedCall",       # RPC call (integrated CQ path): operate, cancel
-    "SegregatedCall",       # RPC call (segregated CQ path): operate, next_event, cancel
-    "Call",                 # Base call: start_client_batch, start_server_batch, cancel, peer
-
-    # --- Core I/O types (async / grpc.aio) ---
-    "AioChannel",           # Async client: call, check_connectivity_state, close,
-                            #   watch_connectivity_state
-    "AioServer",            # Async server: add_insecure_port, add_secure_port, start,
-                            #   shutdown, wait_for_termination
-    "PollerCompletionQueue", # Async event polling: bind_loop
-
-    # --- Credential types (may read cert files or contact auth servers) ---
-    "ChannelCredentials",
-    "SSLChannelCredentials",
-    "CompositeChannelCredentials",
-    "ServerCredentials",
-    "ServerCertificateConfig",
-    "CallCredentials",
-    "CompositeCallCredentials",
-    "MetadataPluginCallCredentials",
-    "SSLSessionCacheLRU",
-    "ALTSChannelCredentials",
-    "ComputeEngineChannelCredentials",
-    "InsecureChannelCredentials",
-    "LocalChannelCredentials",
-    "XDSChannelCredentials",
-
-    # --- Event types (completion notifications carrying response data) ---
-    "BatchOperationEvent",  # batch_operations, success, tag
-    "ConnectivityEvent",    # success, tag
-    "RequestCallEvent",     # call, call_details, invocation_metadata, success
-    "ServerShutdownEvent",  # success, tag
-
-    # --- Receive operations (carry response data from C core) ---
-    "ReceiveMessageOperation",          # message
-    "ReceiveInitialMetadataOperation",  # initial_metadata
-    "ReceiveStatusOnClientOperation",   # code, details, error_string, trailing_metadata
-    "ReceiveCloseOnServerOperation",    # cancelled
-
-    # --- Send operations (carry request data into C core) ---
-    "SendInitialMetadataOperation",
-    "SendMessageOperation",
-    "SendCloseFromClientOperation",
-    "SendStatusFromServerOperation",
-
-    # --- Supporting types ---
-    "RPCState",
-    "CallDetails",
-    "GrpcCallWrapper",
-    "CallHandle",
-    "RegisteredMethod",
-
-    # --- Functions ---
-    "execute_batch",                        # Executes a batch of RPC operations
-    "fork_handlers_and_grpc_init",          # Initializes gRPC C core
-    "init_grpc_aio",                        # Initializes async gRPC
-    "shutdown_grpc_aio",                    # Shuts down async gRPC
-    "server_credentials_ssl",               # Creates SSL server credentials
-    "server_credentials_ssl_dynamic_cert_config",
-    "server_certificate_config_ssl",
-    "server_credentials_alts",
-    "server_credentials_local",
-    "channel_credentials_alts",
-    "channel_credentials_compute_engine",
-    "channel_credentials_insecure",
-    "channel_credentials_local",
-    "insecure_server_credentials",
-    "xds_server_credentials",
-    "auth_context",                         # Gets auth context from a call
-    "peer_identities",                      # Gets peer identity
-    "peer_identity_key",                    # Gets peer identity key
-]
-
-#     "_weakrefset": {
-#       "WeakSet": "sync_type",
-#       "_IterationGuard": "sync_type"
-#     },
-#     "_collections": {
-#       "sync_types": [
-#         "deque"
-#       ]
-#     },
-#     "_queue": {
-#       "sync_types": [
-#         "SimpleQueue"
-#       ]
-#     }
-#   }
-# }

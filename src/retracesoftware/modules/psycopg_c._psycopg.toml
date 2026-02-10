@@ -1,0 +1,6 @@
+# psycopg3 C-accelerated extension — PostgreSQL I/O via libpq.
+# Direct socket I/O in C, similar pattern to psycopg2._psycopg.
+
+package = "psycopg_c"
+
+# TODO

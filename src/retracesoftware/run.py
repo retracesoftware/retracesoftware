@@ -4,7 +4,6 @@ import runpy
 from pathlib import Path
 # from retracesoftware.install.phases import *
 import pkgutil
-import tomllib
 import retracesoftware.functional as functional
 import builtins
 import importlib
@@ -44,10 +43,7 @@ class ImmutableTypes(set):
 
         return False            
 
-def load_module_config(filename):
-    data = pkgutil.get_data("retracesoftware", filename)
-    assert data is not None
-    return tomllib.loads(data.decode("utf-8"))
+from retracesoftware.modules import ModuleConfigResolver
 
 def wait_for_non_daemon_threads(timeout=None):
     """
@@ -319,7 +315,7 @@ def install(system):
 
     system.checkpoint('About to install retrace system')
 
-    module_config = load_module_config('modules.toml')
+    module_config = ModuleConfigResolver()
 
     patch_loaded = functional.partial(patch_module, create_patcher(system), module_config)
     patch_imported = functional.partial(patch_imported_module, create_patcher(system), system.checkpoint, module_config)

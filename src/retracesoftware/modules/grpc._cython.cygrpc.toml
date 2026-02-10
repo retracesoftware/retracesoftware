@@ -1,0 +1,117 @@
+# The gRPC C core is statically linked into grpc._cython.cygrpc.
+# It performs ALL network I/O in C: socket creation, connect, send/recv,
+# TLS (BoringSSL), DNS (c-ares), and event polling (epoll/kqueue).
+# None of this flows through Python's _socket, _ssl, or select.
+#
+# Strategy: proxy at the cygrpc C extension boundary. All I/O flows
+# through Channel/Server types and their associated call/event objects.
+
+package = "grpcio"
+
+proxy = [
+    # --- Core I/O types (sync) ---
+    "Channel",              # Client channel: integrated_call, segregated_call, next_call_event,
+                            #   check_connectivity_state, watch_connectivity_state, close
+    "Server",               # Server: add_http2_port, start, request_call,
+                            #   request_registered_call, shutdown, cancel_all_calls, destroy
+    "CompletionQueue",      # Event polling: poll, shutdown, clear
+
+    # --- In-flight RPC call types ---
+    "IntegratedCall",       # RPC call (integrated CQ path): operate, cancel
+    "SegregatedCall",       # RPC call (segregated CQ path): operate, next_event, cancel
+    "Call",                 # Base call: start_client_batch, start_server_batch, cancel, peer
+
+    # --- Core I/O types (async / grpc.aio) ---
+    "AioChannel",           # Async client: call, check_connectivity_state, close,
+                            #   watch_connectivity_state
+    "AioServer",            # Async server: add_insecure_port, add_secure_port, start,
+                            #   shutdown, wait_for_termination
+    "PollerCompletionQueue", # Async event polling: bind_loop
+
+    # --- Functions ---
+    "execute_batch",                        # Executes a batch of RPC operations
+    "fork_handlers_and_grpc_init",          # Initializes gRPC C core
+    "init_grpc_aio",                        # Initializes async gRPC
+    "shutdown_grpc_aio",                    # Shuts down async gRPC
+    "server_credentials_ssl",               # Creates SSL server credentials
+    "server_credentials_ssl_dynamic_cert_config",
+    "server_certificate_config_ssl",
+    "server_credentials_alts",
+    "server_credentials_local",
+    "channel_credentials_alts",
+    "channel_credentials_compute_engine",
+    "channel_credentials_insecure",
+    "channel_credentials_local",
+    "insecure_server_credentials",
+    "xds_server_credentials",
+    "auth_context",                         # Gets auth context from a call
+    "peer_identities",                      # Gets peer identity
+    "peer_identity_key",                    # Gets peer identity key
+]
+
+immutable = [
+    # --- Exception types ---
+    "BaseError",
+    "AbortError",
+    "InternalError",
+    "UsageError",
+    "ExecuteBatchError",
+    "AioRpcStatus",
+
+    # --- Credential types (opaque data, no methods, passed between proxied calls) ---
+    "ChannelCredentials",
+    "SSLChannelCredentials",
+    "CompositeChannelCredentials",
+    "ServerCredentials",
+    "ServerCertificateConfig",
+    "CallCredentials",
+    "CompositeCallCredentials",
+    "MetadataPluginCallCredentials",
+    "SSLSessionCacheLRU",
+    "ALTSChannelCredentials",
+    "ComputeEngineChannelCredentials",
+    "InsecureChannelCredentials",
+    "LocalChannelCredentials",
+    "XDSChannelCredentials",
+
+    # --- Event types (data-only, read-only properties) ---
+    "BaseEvent",
+    "BatchOperationEvent",      # batch_operations, success, tag
+    "ConnectivityEvent",        # completion_type, success, tag
+    "RequestCallEvent",         # call, call_details, invocation_metadata, success
+    "ServerShutdownEvent",      # completion_type, success, tag
+
+    # --- Operation types (data carriers with accessor methods) ---
+    "Operation",
+    "ReceiveMessageOperation",          # message
+    "ReceiveInitialMetadataOperation",  # initial_metadata
+    "ReceiveStatusOnClientOperation",   # code, details, error_string, trailing_metadata
+    "ReceiveCloseOnServerOperation",    # cancelled
+    "SendInitialMetadataOperation",
+    "SendMessageOperation",
+    "SendCloseFromClientOperation",
+    "SendStatusFromServerOperation",
+
+    # --- Supporting data types ---
+    "CallDetails",          # deadline, host, method
+    "CallHandle",           # call_handle
+    "RPCState",
+    "RegisteredMethod",
+]
+
+bind = [
+    # --- Enum / constant singleton types (preserve identity for `is` comparisons) ---
+    "AsyncIOEngine",        # Python enum
+    "StatusCode",
+    "ConnectivityState",
+    "CompletionType",
+    "OperationType",
+    "CompressionAlgorithm",
+    "CompressionLevel",
+    "CallError",
+    "ChannelArgKey",
+    "InitialMetadataFlags",
+    "LocalConnectionType",
+    "PropagationConstants",
+    "WriteFlag",
+]

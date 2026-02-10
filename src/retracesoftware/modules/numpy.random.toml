@@ -1,0 +1,6 @@
+# NumPy random C extensions — own RNG via C (PCG64, MT19937, etc.).
+# Seeds from OS entropy directly in C, bypassing _random and posix.urandom.
+
+package = "numpy"
+
+# TODO

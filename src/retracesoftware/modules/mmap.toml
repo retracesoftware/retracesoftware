@@ -1,0 +1,6 @@
+# Memory-mapped file I/O — wraps mmap(2) syscall directly.
+# Used internally by many libraries.
+#
+# Needs patch_class wrapper for mmap.readinto (see Buffer Protocol section in MODULES_GUIDE.md).
+
+# TODO

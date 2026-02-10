@@ -1,0 +1,6 @@
+# pymssql C extension — MS SQL Server I/O via FreeTDS (libsybdb).
+# Direct socket I/O in C for all TDS protocol operations.
+
+package = "pymssql"
+
+# TODO
