@@ -1,13 +1,13 @@
-import os
-import threading
-import queue
-import time
 import hashlib
+import os
+import queue
+import threading
 from pathlib import Path
 
 WORK_ITEMS = 2000
 WORKERS = int(os.getenv("THREAD_WORKERS", "24"))
-OUT_DIR = Path(__file__).parent / "out"
+# The test directory is mounted read-only in the harness, so write logs under /tmp.
+OUT_DIR = Path(os.getenv("THREAD_OUT_DIR", "/tmp/retrace_threading_stress"))
 OUT_FILE = OUT_DIR / "thread_log.txt"
 
 
