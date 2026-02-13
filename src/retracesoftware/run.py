@@ -370,3 +370,67 @@ def run_with_retrace(system, argv, trace_shutdown = False):
                 atexit._run_exitfuncs()
         except Exception as e:
             print(f"Error in atexit hook: {e}", file=sys.stderr)
+
+
+def run_with_context(system, context, argv, trace_shutdown=False):
+    """Run a Python command inside a System context (record or replay).
+
+    Parameters
+    ----------
+    system : System
+        The proxy system (new gate-based System from proxy/system.py).
+    context : context manager
+        A ``system.record_context(writer)`` or
+        ``system.replay_context(reader)`` — any context manager that
+        activates the system's gates for the duration.
+    argv : list[str]
+        Command-line arguments: ``['-m', 'module', ...]`` or
+        ``['script.py', ...]``.
+    trace_shutdown : bool
+        If True, atexit hooks run inside the context so their I/O
+        is recorded/replayed.  If False, atexit hooks run after
+        the context exits.
+    """
+    from retracesoftware.modules import ModuleConfigResolver
+    from retracesoftware.install.patcher import patch, install_hash_patching
+    from retracesoftware.install.importhook import install_import_hooks, patch_already_loaded
+
+    # ── one-time system setup ─────────────────────────────────
+    install_hash_patching(system)
+
+    # ── preload commonly-used modules before patching ─────────
+    preload = pkgutil.get_data("retracesoftware", "preload.txt")
+    for name in preload.decode("utf-8").splitlines():
+        try:
+            importlib.import_module(name.strip())
+        except ModuleNotFoundError:
+            pass
+
+    # ── build the module patcher ──────────────────────────────
+    module_config = ModuleConfigResolver()
+
+    def module_patcher(namespace, update_refs):
+        name = namespace.get('__name__')
+        if name and name in module_config:
+            patch(namespace, module_config[name], system, update_refs)
+
+    # ── patch already-loaded modules, install hooks, run ──────
+    patch_already_loaded(module_patcher, module_config)
+    install_import_hooks(system.disable_for, module_patcher)
+
+    with context:
+        try:
+            run_python_command(argv)
+        finally:
+            wait_for_non_daemon_threads()
+            if trace_shutdown:
+                try:
+                    atexit._run_exitfuncs()
+                except Exception as e:
+                    print(f"Error in atexit hook: {e}", file=sys.stderr)
+
+    if not trace_shutdown:
+        try:
+            atexit._run_exitfuncs()
+        except Exception as e:
+            print(f"Error in atexit hook: {e}", file=sys.stderr)
