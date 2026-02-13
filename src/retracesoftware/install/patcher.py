@@ -1,4 +1,5 @@
 import enum
+import types
 from retracesoftware.proxy.typeutils import modify
 from retracesoftware.install.replace import update
 import threading
@@ -6,6 +7,176 @@ import sys
 import retracesoftware.utils as utils
 import retracesoftware.functional as functional
 import importlib
+
+
+# ── Hash patching ──────────────────────────────────────────────────
+
+def install_hash_patching(system):
+    """Patch ``__hash__`` on ``object`` and ``FunctionType`` for deterministic ordering.
+
+    Uses ``system.create_gate`` to build a hash function that
+    dispatches based on the system's primary gate state:
+
+    - **Disabled** (no context active): returns ``None`` → identity hash.
+    - **External / internal** (record/replay active): returns the next
+      value from a deterministic ``utils.counter()`` → sequential hash.
+
+    The gate piggybacks on the system's existing ``_external`` and
+    ``_internal`` gates, so no manual ``set``/``disable`` is needed —
+    it activates automatically when ``record_context`` or
+    ``replay_context`` is entered.
+
+    Call once during bootstrap, before any modules are loaded.
+    """
+    hashfunc = system.create_gate(
+        disabled = functional.constantly(None),
+        external = utils.counter(),
+        internal = utils.counter())
+    utils.patch_hashes(hashfunc, object, types.FunctionType)
+
+
+# ── Lightweight patcher for System ─────────────────────────────────
+#
+# patch(module, spec, system) applies a TOML-derived patch spec to a
+# module using the new System class (proxy/system.py).  Each TOML
+# directive maps to a System method — no closures, no thread_state.
+#
+# Supported directives:
+#
+#   proxy          types → system.patch_type
+#                  functions → route through the external gate
+#   patch_types    system.patch_type (types only)
+#   immutable      system.immutable_types.add
+#   bind           pre-register objects (enums expanded to members)
+#   disable        system.disable_for, replace in namespace
+#   wrap           resolve dotted path, replace in namespace
+#   patch_class    apply {attr: dotted_path} transforms to a class
+#   type_attributes  recurse — apply directives to a type's attributes
+#   patch_hash     handled by install_hash_patching (above)
+
+def _is_function(obj):
+    """True for built-in functions, Python functions, and method descriptors."""
+    return (isinstance(obj, (types.BuiltinFunctionType,
+                             types.FunctionType,
+                             types.BuiltinMethodType,
+                             types.WrapperDescriptorType,
+                             types.MethodWrapperType,
+                             types.MethodDescriptorType,
+                             types.ClassMethodDescriptorType))
+            or callable(obj) and not isinstance(obj, type))
+
+
+def patch(module, spec, system, update_refs = False):
+    """Apply a TOML-derived patch spec to *module* using *system*.
+
+    Parameters
+    ----------
+    module : module or dict
+        The module to patch.  If a module object, its ``__dict__`` is
+        used as the namespace.  A raw dict (e.g. ``module.__dict__``)
+        is also accepted.
+    spec : dict
+        Resolved TOML config for this module.  Keys are directive names
+        (``proxy``, ``immutable``, ``disable``, etc.), values are lists
+        of names or nested dicts.
+    system : System
+        The proxy system that owns the gates and patching machinery.
+    update_refs : bool
+        If True, globally replace old references with new values via
+        ``gc.get_referrers`` (needed for already-imported modules).
+    """
+    namespace = module.__dict__ if hasattr(module, '__dict__') and not isinstance(module, dict) else module
+
+    def _apply(name, old, new):
+        """Replace *name* in the namespace and optionally update refs."""
+        if old is not new:
+            namespace[name] = new
+            if update_refs:
+                update(old, new)
+
+    for directive, config in spec.items():
+
+        if directive == 'proxy':
+            for name in config:
+                if name not in namespace:
+                    continue
+                value = namespace[name]
+                patched = system.patch(value)
+                _apply(name, value, patched)
+
+        elif directive == 'patch_types':
+            for name in config:
+                if name not in namespace:
+                    continue
+                value = namespace[name]
+                if isinstance(value, type):
+                    system.patch_type(value)
+
+        elif directive == 'immutable':
+            for name in config:
+                if name not in namespace:
+                    continue
+                value = namespace[name]
+                if isinstance(value, type):
+                    system.immutable_types.add(value)
+
+        elif directive == 'bind':
+            for name in config:
+                if name not in namespace:
+                    continue
+                value = namespace[name]
+                if isinstance(value, type) and issubclass(value, enum.Enum):
+                    for member in value:
+                        system._bind(member)
+                else:
+                    system._bind(value)
+
+        elif directive == 'disable':
+            for name in config:
+                if name not in namespace:
+                    continue
+                value = namespace[name]
+                new = system.disable_for(value)
+                _apply(name, value, new)
+
+        elif directive == 'wrap':
+            for name, dotted_path in config.items():
+                if name not in namespace:
+                    continue
+                value = namespace[name]
+                new = resolve(dotted_path)
+                _apply(name, value, new)
+
+        elif directive == 'patch_class':
+            for name, transforms in config.items():
+                if name not in namespace:
+                    continue
+                cls = namespace[name]
+                patch_class(transforms, cls)
+
+        elif directive == 'type_attributes':
+            for name, sub_spec in config.items():
+                if name not in namespace:
+                    continue
+                cls = namespace[name]
+                with modify(cls):
+                    for sub_directive, sub_names in sub_spec.items():
+                        # Recurse: sub_spec is e.g. {"proxy": ["now", "utcnow"]}
+                        # but targets are attributes on the class, not the module
+                        cls_ns = {attr: getattr(cls, attr)
+                                  for attr in (sub_names if isinstance(sub_names, list) else sub_names.keys())
+                                  if hasattr(cls, attr)}
+                        patch(cls_ns, {sub_directive: sub_names}, system)
+                        for attr, new_val in cls_ns.items():
+                            old_val = getattr(cls, attr, None)
+                            if old_val is not new_val:
+                                utils.update(cls, attr, new_val)
+
+        elif directive == 'patch_hash':
+            pass  # Deferred — requires deterministic hash counter
+
+        elif directive in ('default', 'ignore'):
+            pass  # Informational directives, no action needed
 
 def resolve(path):
     module, sep, name = path.rpartition('.')
