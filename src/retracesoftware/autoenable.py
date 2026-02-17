@@ -55,6 +55,10 @@ else:
                 new_argv.append('--create_tracedir_cmd')
                 new_argv.append(os.environ['RETRACE_CREATE_TRACEDIR_CMD'])
 
+            if 'RETRACE_WRITE_TIMEOUT' in os.environ:
+                new_argv.append('--write_timeout')
+                new_argv.append(os.environ['RETRACE_WRITE_TIMEOUT'])
+
             new_argv.append('--')
             new_argv.extend(sys.orig_argv[1:])
             

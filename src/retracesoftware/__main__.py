@@ -8,10 +8,10 @@ import retracesoftware.utils as utils
 import retracesoftware.functional as functional
 from retracesoftware.install.stackdifference import on_stack_difference
 from pathlib import Path
-from retracesoftware.proxy.record import RecordProxySystem
-from retracesoftware.proxy.replay import ReplayProxySystem
+from retracesoftware.proxy.old.record import RecordProxySystem
+from retracesoftware.proxy.old.replay import ReplayProxySystem
 import retracesoftware.stream as stream
-from retracesoftware.proxy.startthread import thread_id
+from retracesoftware.install.startthread import thread_id
 import datetime
 import json
 from shutil import copy2
@@ -20,7 +20,8 @@ import time
 import gc
 import hashlib
 
-from retracesoftware.run import install, run_with_retrace, ImmutableTypes, thread_states
+from retracesoftware.run import run_with_retrace
+from retracesoftware.install import install_system, ImmutableTypes, thread_states
 from retracesoftware.exceptions import RecordingNotFoundError, VersionMismatchError, ConfigurationError
 
 def expand_recording_path(path):
@@ -194,10 +195,13 @@ def record(options, args):
     # path=None disables all trace writes (performance testing mode)
     trace_path = None if recording_disabled else path / 'trace.bin'
 
+    write_timeout = getattr(options, 'write_timeout', None)
+
     with stream.writer(path = trace_path,
                        thread = thread_id, 
                        verbose = options.verbose, 
-                       magic_markers = options.magic_markers) as writer:
+                       magic_markers = options.magic_markers,
+                       backpressure_timeout = write_timeout) as writer:
 
         if options.stacktraces:
             stackfactory = utils.StackFactory()
@@ -228,7 +232,7 @@ def record(options, args):
             system.exclude_from_stacktrace(patch_find_spec.__call__)
 
         # force a full collection
-        install(system)
+        install_system(system)
 
         gc.collect()
         gc.callbacks.append(system.on_gc_event)
@@ -282,7 +286,7 @@ def replay(args):
             verbose = args.verbose,
             skip_weakref_callbacks = args.skip_weakref_callbacks)
 
-        install(system)
+        install_system(system)
 
         gc.collect()
         gc.disable()
@@ -381,6 +385,14 @@ def main():
             type=str,
             default=None,
             help='Command to create trace directory (receives directory path as argument)'
+        )
+
+        parser.add_argument(
+            '--write_timeout',
+            type=float,
+            default=None,
+            help='Backpressure timeout in seconds. 0=drop immediately if persister is slow (production), '
+                 '>0=wait up to N seconds then drop, None=wait forever (default)'
         )
 
         parser.add_argument('rest', nargs = argparse.REMAINDER, help='target application and arguments')

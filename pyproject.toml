@@ -23,4 +23,7 @@ where = ["src"]
 [tool.setuptools.package-dir]
 "" = "src"
 
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
 [tool.setuptools_scm]
