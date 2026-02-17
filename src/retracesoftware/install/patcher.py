@@ -14,7 +14,7 @@ import importlib
 def install_hash_patching(system):
     """Patch ``__hash__`` on ``object`` and ``FunctionType`` for deterministic ordering.
 
-    Uses ``system.create_gate`` to build a hash function that
+    Uses ``system.create_dispatch`` to build a hash function that
     dispatches based on the system's primary gate state:
 
     - **Disabled** (no context active): returns ``None`` → identity hash.
@@ -27,12 +27,28 @@ def install_hash_patching(system):
     ``replay_context`` is entered.
 
     Call once during bootstrap, before any modules are loaded.
+
+    Returns
+    -------
+    callable
+        An uninstall function.  Since there is no C-level
+        ``unpatch_hash``, this re-patches with ``constantly(None)``
+        so all hashes fall back to identity.  The gate-based hashfunc
+        already does this when no context is active, so the uninstall
+        is mainly for symmetry and to release the counter references.
     """
-    hashfunc = system.create_gate(
+    hashfunc = system.create_dispatch(
         disabled = functional.constantly(None),
         external = utils.counter(),
         internal = utils.counter())
     utils.patch_hashes(hashfunc, object, types.FunctionType)
+
+    def uninstall():
+        # Re-patch with a function that always returns None (identity hash).
+        identity = functional.constantly(None)
+        utils.patch_hashes(identity, object, types.FunctionType)
+
+    return uninstall
 
 
 # ── Lightweight patcher for System ─────────────────────────────────
@@ -84,13 +100,25 @@ def patch(module, spec, system, update_refs = False):
     update_refs : bool
         If True, globally replace old references with new values via
         ``gc.get_referrers`` (needed for already-imported modules).
+
+    Returns
+    -------
+    callable
+        An undo function that restores the namespace to its pre-patch
+        state.  Types that were ``patch_type``'d in-place are tracked
+        for later ``system.unpatch_type`` by the caller.
     """
     namespace = module.__dict__ if hasattr(module, '__dict__') and not isinstance(module, dict) else module
+
+    # Record every mutation so we can undo them.
+    ns_undos = []       # (name, old_value) for namespace replacements
+    added_immutables = []  # types added to system.immutable_types
 
     def _apply(name, old, new):
         """Replace *name* in the namespace and optionally update refs."""
         if old is not new:
             namespace[name] = new
+            ns_undos.append((name, old))
             if update_refs:
                 update(old, new)
 
@@ -101,6 +129,8 @@ def patch(module, spec, system, update_refs = False):
                 if name not in namespace:
                     continue
                 value = namespace[name]
+                if not (isinstance(value, type) or callable(value)):
+                    continue
                 patched = system.patch(value)
                 _apply(name, value, patched)
 
@@ -119,6 +149,7 @@ def patch(module, spec, system, update_refs = False):
                 value = namespace[name]
                 if isinstance(value, type):
                     system.immutable_types.add(value)
+                    added_immutables.append(value)
 
         elif directive == 'bind':
             for name in config:
@@ -170,13 +201,24 @@ def patch(module, spec, system, update_refs = False):
                         for attr, new_val in cls_ns.items():
                             old_val = getattr(cls, attr, None)
                             if old_val is not new_val:
-                                utils.update(cls, attr, new_val)
+                                setattr(cls, attr, new_val)
 
         elif directive == 'patch_hash':
             pass  # Deferred — requires deterministic hash counter
 
         elif directive in ('default', 'ignore'):
             pass  # Informational directives, no action needed
+
+    def undo():
+        """Reverse all namespace mutations made by this patch call."""
+        # Restore namespace entries in reverse order.
+        for name, old_value in reversed(ns_undos):
+            namespace[name] = old_value
+        # Remove types we added to the immutable set.
+        for cls in added_immutables:
+            system.immutable_types.discard(cls)
+
+    return undo
 
 def resolve(path):
     module, sep, name = path.rpartition('.')

@@ -10,11 +10,16 @@ After a module is executed, its namespace is patched according to its
 TOML configuration (``proxy``, ``immutable``, ``bind``, ``disable``,
 etc.).
 
+Returns an uninstall callable so the hooks can be cleanly removed
+(e.g. for running record/replay inside pytest).
+
 Usage::
 
     from retracesoftware.install.importhook import install_import_hooks
 
-    install_import_hooks(system, module_patcher)
+    uninstall = install_import_hooks(system.disable_for, module_patcher)
+    # ... run ...
+    uninstall()
 """
 
 import sys
@@ -39,25 +44,34 @@ def install_import_hooks(disable_for, module_patcher):
         Called after a module is loaded to apply TOML-derived patches
         to its ``__dict__``.  Typically built from
         ``patcher.patch`` + ``ModuleConfigResolver``.
+
+    Returns
+    -------
+    callable
+        An uninstall function that restores all patched entry points.
     """
 
+    # ── save originals ────────────────────────────────────────
+    orig_import = builtins.__import__
+    orig_import_module = importlib.import_module
+    orig_exec_dynamic = _imp.exec_dynamic
+    orig_exec_builtin = _imp.exec_builtin
+
+    # We need to capture the original exec_module before wrapping.
+    # utils.update returns the old value — but we capture the whole
+    # _LoaderBasics.exec_module method for clean restore.
+    orig_exec_module = _bootstrap_external._LoaderBasics.exec_module
+
+    # We also need the original _run_code.
+    orig_run_code = runpy._run_code
+
     # ── __import__ / importlib.import_module ──────────────────
-    #
-    # The import machinery is a hot path with heavy caching.
-    # Disable the gates for the duration of each import so
-    # patched types don't fire during module loading.
     builtins.__import__ = disable_for(builtins.__import__)
     importlib.import_module = disable_for(importlib.import_module)
 
     _orig_exec = builtins.exec
 
     # ── exec_module (LoaderBasics) ────────────────────────────
-    #
-    # The standard loader calls ``exec(code, module.__dict__)`` to
-    # run a module's source.  We replace ``exec`` inside
-    # ``_LoaderBasics.exec_module`` so that after the module's code
-    # runs, its namespace is patched according to TOML config.
-
     def _exec_and_patch(source, globals=None, locals=None):
         _orig_exec(source, globals, locals)
         if globals is not None:
@@ -68,12 +82,6 @@ def install_import_hooks(disable_for, module_patcher):
                  exec=_exec_and_patch)
 
     # ── runpy._run_code ───────────────────────────────────────
-    #
-    # ``runpy.run_module`` and ``runpy.run_path`` use ``_run_code``
-    # to execute the entry script (``python -m module``).  We
-    # replace ``exec`` inside ``_run_code`` so the script's
-    # namespace is also patched after execution.
-
     def _exec_and_patch_entry(source, globals=None, locals=None):
         _orig_exec(source, globals, locals)
         if globals is not None:
@@ -84,14 +92,6 @@ def install_import_hooks(disable_for, module_patcher):
                  exec=_exec_and_patch_entry)
 
     # ── _imp.exec_dynamic / _imp.exec_builtin ─────────────────
-    #
-    # C extensions and built-in modules don't go through
-    # exec_module — they're initialised by _imp directly.
-    # Wrap them so the module is patched after init.
-
-    _orig_exec_dynamic = _imp.exec_dynamic
-    _orig_exec_builtin = _imp.exec_builtin
-
     def _wrap_exec(orig):
         def wrapper(module):
             orig(module)
@@ -99,8 +99,19 @@ def install_import_hooks(disable_for, module_patcher):
             return module
         return wrapper
 
-    _imp.exec_dynamic = _wrap_exec(_orig_exec_dynamic)
-    _imp.exec_builtin = _wrap_exec(_orig_exec_builtin)
+    _imp.exec_dynamic = _wrap_exec(orig_exec_dynamic)
+    _imp.exec_builtin = _wrap_exec(orig_exec_builtin)
+
+    # ── uninstall ─────────────────────────────────────────────
+    def uninstall():
+        builtins.__import__ = orig_import
+        importlib.import_module = orig_import_module
+        _imp.exec_dynamic = orig_exec_dynamic
+        _imp.exec_builtin = orig_exec_builtin
+        _bootstrap_external._LoaderBasics.exec_module = orig_exec_module
+        runpy._run_code = orig_run_code
+
+    return uninstall
 
 
 def patch_already_loaded(module_patcher, module_config):
