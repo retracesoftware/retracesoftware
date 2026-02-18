@@ -1,7 +1,0 @@
-# pycurl C extension — HTTP I/O via libcurl.
-# All HTTP I/O (DNS, TLS, sockets) happens in C.
-# None of this flows through Python's _socket or _ssl.
-
-package = "pycurl"
-
-# TODO

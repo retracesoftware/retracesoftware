@@ -8,10 +8,8 @@ import retracesoftware.utils as utils
 import retracesoftware.functional as functional
 from retracesoftware.install.stackdifference import on_stack_difference
 from pathlib import Path
-from retracesoftware.proxy.old.record import RecordProxySystem
-from retracesoftware.proxy.old.replay import ReplayProxySystem
+from retracesoftware.proxy.messagestream import MessageStream
 import retracesoftware.stream as stream
-from retracesoftware.install.startthread import thread_id
 import datetime
 import json
 from shutil import copy2
@@ -20,8 +18,10 @@ import time
 import gc
 import hashlib
 
+from retracesoftware.proxy.system import System
+
 from retracesoftware.run import run_with_retrace
-from retracesoftware.install import install_system, ImmutableTypes, thread_states
+from retracesoftware.install import run_with_context, stream_writer
 from retracesoftware.exceptions import RecordingNotFoundError, VersionMismatchError, ConfigurationError
 
 def expand_recording_path(path):
@@ -168,25 +168,34 @@ def record(options, args):
     from retracesoftware.install import edgecases
     edgecases.recording_path = path
 
-    # Write recording files (skip if disabled)
+    # Build header dict and sidecar files (skip if disabled)
+    preamble = None
     if path:
         path_info = stream.get_path_info()
-        dump_as_json(path / 'settings.json', {
+        settings = {
             'argv': args,
             'executable': sys.executable,
-            'magic_markers': options.magic_markers,
             'trace_inputs': options.trace_inputs,
             'trace_shutdown': options.trace_shutdown,
             'python_version': sys.version,
             'cwd': path_info['cwd'],
             'sys_path': path_info['sys_path'],
-        })
-        dump_as_json(path / 'md5_checksums.json', checksums())
+        }
+        recorded_checksums = checksums()
         
-        # Write env to standard .env file
+        # Header dict is written as first object in the trace stream
+        preamble = {
+            **settings,
+            'checksums': recorded_checksums,
+            'env': dict(os.environ),
+        }
+        
+        # Sidecar files for human/tooling consumption
+        dump_as_json(path / 'settings.json', settings)
+        dump_as_json(path / 'md5_checksums.json', recorded_checksums)
+        
         with open(path / '.env', 'w') as f:
             for key, value in os.environ.items():
-                # Escape newlines and quotes for .env format
                 escaped = value.replace('\\', '\\\\').replace('\n', '\\n').replace('"', '\\"')
                 f.write(f'{key}="{escaped}"\n')
 
@@ -198,9 +207,9 @@ def record(options, args):
     write_timeout = getattr(options, 'write_timeout', None)
 
     with stream.writer(path = trace_path,
-                       thread = thread_id, 
+                       thread = utils.thread_id,
                        verbose = options.verbose, 
-                       magic_markers = options.magic_markers,
+                       preamble = preamble,
                        backpressure_timeout = write_timeout) as writer:
 
         if options.stacktraces:
@@ -210,36 +219,62 @@ def record(options, args):
         else:
             stackfactory = None
 
-        thread_state = utils.ThreadState(*thread_states)
+        system = System()
+        pw = stream_writer(writer=writer, stackfactory=stackfactory)
+        context = system.record_context(
+            writer=pw, stacktraces=options.stacktraces)
 
-        tracing_config = {}
+        on_weakref_start = writer.handle('ON_WEAKREF_CALLBACK_START')
+        on_weakref_end = writer.handle('ON_WEAKREF_CALLBACK_END')
 
-        multiplier = 2
-        gc.set_threshold(*map(lambda x: x * multiplier, gc.get_threshold()))
+        def wrap_callback(callback):
+            return utils.observer(
+                on_call=functional.lazy(on_weakref_start),
+                on_result=functional.lazy(on_weakref_end),
+                on_error=functional.lazy(on_weakref_end),
+                function=callback)
 
-        system = RecordProxySystem(
-            writer = writer,
-            thread_state = thread_state,
-            immutable_types = ImmutableTypes(), 
-            tracing_config = tracing_config,
-            maybe_collect = collector(multiplier = multiplier),
-            traceargs = options.trace_inputs,
-            stackfactory = stackfactory)
+        run_with_context(system, context, args, wrap_callback,
+                         trace_shutdown=options.trace_shutdown)
 
-        # Exclude patchfindspec from stacktraces (install-layer concern)
-        if stackfactory:
-            from retracesoftware.install.patchfindspec import patch_find_spec
-            system.exclude_from_stacktrace(patch_find_spec.__call__)
+def parse_fork_path(s):
+    """Parse fork path to binary string of '0' (parent) and '1' (child).
 
-        # force a full collection
-        install_system(system)
+    Accepts raw binary ('1101'), bare keywords ('child', 'parent'),
+    or run-length encoded ('child-4-2-2' → '11110011').
+    """
+    if not s:
+        return ''
+    if s == 'child':
+        return '1' * 1000
+    if s == 'parent':
+        return ''
+    if all(c in '01' for c in s):
+        return s
+    parts = s.split('-')
+    bit = '1' if parts[0] == 'child' else '0'
+    result = []
+    for count in parts[1:]:
+        result.append(bit * int(count))
+        bit = '0' if bit == '1' else '1'
+    return ''.join(result)
 
-        gc.collect()
-        gc.callbacks.append(system.on_gc_event)
-    
-        run_with_retrace(system, args, options.trace_shutdown)
 
-        gc.callbacks.remove(system.on_gc_event)
+def make_replay_fork(proxied_fork, reader, fork_path):
+    """Wrap a proxied os.fork to handle PID switching on replay."""
+    fork_index = [0]
+    def replay_fork():
+        child_pid = proxied_fork()
+        follow_child = (fork_index[0] < len(fork_path)
+                        and fork_path[fork_index[0]] == '1')
+        fork_index[0] += 1
+        if follow_child:
+            reader.set_pid(child_pid)
+            reader()  # consume orphaned RESULT(0) from child stream
+            return 0
+        return child_pid
+    return replay_fork
+
 
 def replay(args):
     # Resolve path before any chdir
@@ -248,51 +283,71 @@ def replay(args):
     if not path.exists():
         raise RecordingNotFoundError(f"Recording path: {path} does not exist")
 
-    settings = load_json(path / "settings.json")
-    recorded_checksums = load_json(path / "md5_checksums.json")
+    trace_path = path / 'trace.bin'
 
-    current_checksums = checksums()
-    if recorded_checksums != current_checksums:
-        diffs = diff_dicts(recorded_checksums, current_checksums)
-        diff_str = "\n".join(diffs) if diffs else "(no differences found in structure)"
-        raise VersionMismatchError(f"Checksums for Retrace do not match:\n{diff_str}")
+    if getattr(args, 'list_pids', False):
+        pids = stream.list_pids(trace_path)
+        for pid in sorted(pids):
+            print(pid)
+        return
 
-    if settings['python_version'] != sys.version:
-        raise VersionMismatchError("Python version does not match, cannot run replay with different version of Python to record")
-
-    os.environ.update(load_env(path / '.env'))
-
-    if sys.executable != settings['executable']:
-        raise ConfigurationError(f"Stopping replay as current python executable: {sys.executable} is not what was used for record: {settings['executable']}")
-
-    # Change to recorded cwd - replay from same directory as recording
-    os.chdir(settings['cwd'])
-
-    thread_state = utils.ThreadState(*thread_states)
-
-    with stream.reader(path = path / 'trace.bin',
+    with stream.reader(path = trace_path,
                         read_timeout = args.read_timeout,
-                        verbose = args.verbose,
-                        magic_markers = settings['magic_markers']) as reader:
+                        verbose = args.verbose) as reader:
 
-        tracing_config = {}
+        # First object in the stream is the header dict with all replay metadata
+        header = reader()
 
-        system = ReplayProxySystem(
-            reader = reader,
-            thread_state = thread_state,
-            immutable_types = ImmutableTypes(), 
-            tracing_config = tracing_config,
-            traceargs = settings['trace_inputs'],
-            verbose = args.verbose,
-            skip_weakref_callbacks = args.skip_weakref_callbacks)
+        recorded_checksums = header['checksums']
+        current_checksums = checksums()
+        if recorded_checksums != current_checksums:
+            diffs = diff_dicts(recorded_checksums, current_checksums)
+            diff_str = "\n".join(diffs) if diffs else "(no differences found in structure)"
+            raise VersionMismatchError(f"Checksums for Retrace do not match:\n{diff_str}")
 
-        install_system(system)
+        if header['python_version'] != sys.version:
+            raise VersionMismatchError("Python version does not match, cannot run replay with different version of Python to record")
 
+        os.environ.update(header['env'])
+
+        if sys.executable != header['executable']:
+            raise ConfigurationError(f"Stopping replay as current python executable: {sys.executable} is not what was used for record: {header['executable']}")
+
+        # Change to recorded cwd - replay from same directory as recording
+        os.chdir(header['cwd'])
+
+        system = System()
+
+        per_thread_source = stream.per_thread(
+            source=reader, thread=utils.thread_id,
+            timeout=max(1, args.read_timeout // 1000))
+        context = system.replay_context(reader=MessageStream(per_thread_source))
+
+        # During replay, weakref callbacks fire naturally and handle
+        # messages (ON_WEAKREF_CALLBACK_START/END) on the tape are
+        # auto-skipped by MessageStream, so wrap_callback is identity.
+        def wrap_callback(callback):
+            return callback
+
+        # GC execution is captured during record and replayed
+        # deterministically, so disable automatic GC to prevent
+        # nondeterministic collections that would desync the replay.
+        # Flush any pending garbage first.
         gc.collect()
         gc.disable()
 
-        # Use original argv - scripts are now relative to cwd (recording/run)
-        run_with_retrace(system, settings['argv'], settings['trace_shutdown'])
+        fork_path = parse_fork_path(getattr(args, 'fork_path', ''))
+
+        def install_fork_handler():
+            if not fork_path:
+                return
+            import posix
+            proxied_fork = posix.fork
+            posix.fork = make_replay_fork(proxied_fork, reader, fork_path)
+
+        run_with_context(system, context, header['argv'], wrap_callback,
+                         header['trace_shutdown'], on_ready=install_fork_handler)
+        gc.enable()
 
 def pth_source():
     return Path(__file__).parent / 'retrace.pth'
@@ -363,12 +418,6 @@ def main():
         )
 
         parser.add_argument(
-            '--magic_markers', 
-            action='store_true', 
-            help='Write magic markers to tracefile, used for debugging'
-        )
-
-        parser.add_argument(
             '--trace_shutdown',
             action='store_true', 
             help='Whether to trace system shutdown and cleanup hooks'
@@ -414,6 +463,20 @@ def main():
             type = int,
             default = 1000,
             help = 'timeout in milliseconds for incomplete read of element to timeout'
+        )
+
+        parser.add_argument(
+            '--fork_path',
+            type = str,
+            default = '',
+            help = 'Fork path: binary string (e.g. "1101") or RLE (e.g. "child-2-1-1"). '
+                   '0=parent, 1=child at each fork point.'
+        )
+
+        parser.add_argument(
+            '--list_pids',
+            action = 'store_true',
+            help = 'List all PIDs in the trace and exit'
         )
 
         replay(parser.parse_args())

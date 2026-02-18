@@ -1,8 +1,0 @@
-# Core file I/O — FileIO, BufferedReader, BufferedWriter, BufferedRandom, TextIOWrapper.
-# Direct read/write/open syscalls in C, bypassing posix module.
-# Almost every Python program touches file I/O through this module.
-#
-# Needs patch_class wrappers for readinto/readinto1 on FileIO, BufferedReader,
-# BufferedRandom, BufferedRWPair (see Buffer Protocol section in MODULES_GUIDE.md).
-
-# TODO

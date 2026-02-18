@@ -45,9 +45,6 @@ else:
             if is_true('RETRACE_SHUTDOWN'):
                 new_argv.append('--trace_shutdown')
 
-            if is_true('RETRACE_MAGIC_MARKERS'):
-                new_argv.append('--magic_markers')
-
             if is_true('RETRACE_TRACE_INPUTS'):
                 new_argv.append('--trace_inputs')
 

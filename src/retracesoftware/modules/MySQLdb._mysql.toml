@@ -1,7 +1,0 @@
-# mysqlclient C extension — MySQL I/O via libmysqlclient.
-# All socket I/O happens in C (mysql_real_connect, mysql_real_query, mysql_store_result).
-# None of this flows through Python's _socket or _ssl.
-
-package = "mysqlclient"
-
-# TODO
