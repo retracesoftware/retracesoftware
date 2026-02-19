@@ -159,9 +159,6 @@ def record(options, args):
         trace_path.parent.mkdir(parents=True, exist_ok=True)
         trace_path.touch(exist_ok=True)
 
-    from retracesoftware.install import edgecases
-    edgecases.recording_path = trace_path.parent if trace_path else None
-
     preamble = None
     if trace_path:
         path_info = stream.get_path_info()
