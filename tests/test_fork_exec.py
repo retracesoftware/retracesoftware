@@ -136,6 +136,57 @@ class TestMultiProcess:
         assert rec.stdout == rep.stdout
 
 
+# ── fork tree: record all paths, replay specific paths ─────────
+
+class TestForkTree:
+    """Record a script that forks 3 times (8 leaf processes), then
+    replay with --fork_path to follow a single path through the tree."""
+
+    @pytest.mark.skipif(
+        not hasattr(os, "fork"), reason="os.fork not available"
+    )
+    def test_record_produces_all_paths(self, tmpdir):
+        script = SCRIPTS / "fork_tree.py"
+        recording = os.path.join(tmpdir, "recording")
+        rec = run_record(script, recording)
+        assert rec.returncode == 0, f"stderr: {rec.stderr}"
+
+        paths = sorted(
+            line.split(":")[1]
+            for line in rec.stdout.strip().splitlines()
+            if line.startswith("path:")
+        )
+        expected = sorted(format(i, '03b') for i in range(8))
+        assert paths == expected
+
+    @pytest.mark.skipif(
+        not hasattr(os, "fork"), reason="os.fork not available"
+    )
+    @pytest.mark.parametrize("fork_path", [
+        "000", "001", "010", "011", "100", "101", "110", "111",
+    ])
+    def test_replay_follows_fork_path(self, tmpdir, fork_path):
+        script = SCRIPTS / "fork_tree.py"
+        recording = os.path.join(tmpdir, "recording")
+        rec = run_record(script, recording)
+        assert rec.returncode == 0, f"stderr: {rec.stderr}"
+
+        rep = run_replay(recording, extra_args=["--fork_path", fork_path])
+        assert rep.returncode == 0, (
+            f"Replay failed (exit {rep.returncode}) for --fork_path {fork_path}:\n"
+            f"stdout: {rep.stdout}\nstderr: {rep.stderr}"
+        )
+
+        lines = [
+            line for line in rep.stdout.strip().splitlines()
+            if line.startswith("path:")
+        ]
+        assert len(lines) == 1, (
+            f"Expected exactly 1 path line, got {len(lines)}: {lines}"
+        )
+        assert lines[0] == f"path:{fork_path}"
+
+
 # ── parse_fork_path unit tests ─────────────────────────────────
 
 from retracesoftware.__main__ import parse_fork_path

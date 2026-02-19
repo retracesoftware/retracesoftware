@@ -177,6 +177,7 @@ def record(options, args):
             'executable': sys.executable,
             'trace_inputs': options.trace_inputs,
             'trace_shutdown': options.trace_shutdown,
+            'monitor': getattr(options, 'monitor', 0),
             'python_version': sys.version,
             'cwd': path_info['cwd'],
             'sys_path': path_info['sys_path'],
@@ -234,8 +235,19 @@ def record(options, args):
                 on_error=functional.lazy(on_weakref_end),
                 function=callback)
 
+        monitor_level = getattr(options, 'monitor', 0)
+        if monitor_level > 0:
+            monitor_handle = writer.handle('MONITOR')
+            def _write_monitor(value):
+                monitor_handle(value)
+            monitor_fn = system.disable_for(_write_monitor)
+        else:
+            monitor_fn = None
+
         run_with_context(system, context, args, wrap_callback,
-                         trace_shutdown=options.trace_shutdown)
+                         trace_shutdown=options.trace_shutdown,
+                         monitor_level=monitor_level,
+                         monitor_fn=monitor_fn)
 
 def parse_fork_path(s):
     """Parse fork path to binary string of '0' (parent) and '1' (child).
@@ -261,7 +273,11 @@ def parse_fork_path(s):
 
 
 def make_replay_fork(proxied_fork, reader, fork_path):
-    """Wrap a proxied os.fork to handle PID switching on replay."""
+    """Wrap a proxied os.fork to handle PID switching on replay.
+
+    The orphaned RESULT(0) left in the child's stream is naturally
+    skipped by MessageStream.sync() on the next proxy call.
+    """
     fork_index = [0]
     def replay_fork():
         child_pid = proxied_fork()
@@ -270,7 +286,6 @@ def make_replay_fork(proxied_fork, reader, fork_path):
         fork_index[0] += 1
         if follow_child:
             reader.set_pid(child_pid)
-            reader()  # consume orphaned RESULT(0) from child stream
             return 0
         return child_pid
     return replay_fork
@@ -318,10 +333,21 @@ def replay(args):
 
         system = System()
 
+        monitor_level = header.get('monitor', 0)
+
         per_thread_source = stream.per_thread(
             source=reader, thread=utils.thread_id,
             timeout=max(1, args.read_timeout // 1000))
-        context = system.replay_context(reader=MessageStream(per_thread_source))
+        msg_stream = MessageStream(per_thread_source,
+                                   monitor_enabled=(monitor_level > 0))
+        context = system.replay_context(reader=msg_stream)
+
+        if monitor_level > 0:
+            def _verify_monitor(value):
+                msg_stream.monitor_checkpoint(value)
+            monitor_fn = system.disable_for(_verify_monitor)
+        else:
+            monitor_fn = None
 
         # During replay, weakref callbacks fire naturally and handle
         # messages (ON_WEAKREF_CALLBACK_START/END) on the tape are
@@ -343,10 +369,14 @@ def replay(args):
                 return
             import posix
             proxied_fork = posix.fork
-            posix.fork = make_replay_fork(proxied_fork, reader, fork_path)
+            wrapper = make_replay_fork(proxied_fork, reader, fork_path)
+            posix.fork = wrapper
+            os.fork = wrapper
 
         run_with_context(system, context, header['argv'], wrap_callback,
-                         header['trace_shutdown'], on_ready=install_fork_handler)
+                         header['trace_shutdown'], on_ready=install_fork_handler,
+                         monitor_level=monitor_level,
+                         monitor_fn=monitor_fn)
         gc.enable()
 
 def pth_source():
@@ -442,6 +472,14 @@ def main():
             default=None,
             help='Backpressure timeout in seconds. 0=drop immediately if persister is slow (production), '
                  '>0=wait up to N seconds then drop, None=wait forever (default)'
+        )
+
+        parser.add_argument(
+            '--monitor',
+            type=int,
+            default=0,
+            help='Monitoring level for fine-grained divergence detection: '
+                 '0=off (default), 1=PY calls/returns, 2=+C calls, 3=+LINE'
         )
 
         parser.add_argument('rest', nargs = argparse.REMAINDER, help='target application and arguments')

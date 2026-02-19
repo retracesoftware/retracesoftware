@@ -5,6 +5,8 @@ record and replay, verifying end-to-end behaviour including fork/exec
 scenarios.
 """
 import os
+os.environ["RETRACE_DEBUG"] = "1"
+
 import sys
 import shutil
 import tempfile
@@ -33,6 +35,7 @@ def run_record(script_path, recording_dir, extra_args=None, env=None):
     cmd = [
         PYTHON, "-m", "retracesoftware",
         "--recording", recording_dir,
+        "--stacktraces",
         "--", str(script_path),
     ]
     if extra_args:
