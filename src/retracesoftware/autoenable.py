@@ -48,9 +48,9 @@ else:
             if is_true('RETRACE_TRACE_INPUTS'):
                 new_argv.append('--trace_inputs')
 
-            if 'RETRACE_CREATE_TRACEDIR_CMD' in os.environ:
-                new_argv.append('--create_tracedir_cmd')
-                new_argv.append(os.environ['RETRACE_CREATE_TRACEDIR_CMD'])
+            if 'RETRACE_WORKSPACE_PATH' in os.environ:
+                new_argv.append('--workspace')
+                new_argv.append(os.environ['RETRACE_WORKSPACE_PATH'])
 
             if 'RETRACE_WRITE_TIMEOUT' in os.environ:
                 new_argv.append('--write_timeout')

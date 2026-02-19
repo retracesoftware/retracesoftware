@@ -11,7 +11,7 @@ When something breaks, enable all diagnostics first:
 
 ```bash
 RETRACE_DEBUG=1 python -m retracesoftware \
-    --recording /tmp/debug_trace \
+    --recording /tmp/trace.bin \
     --verbose \
     --stacktraces \
     -- my_script.py
@@ -21,7 +21,7 @@ For replay:
 
 ```bash
 RETRACE_DEBUG=1 python -m retracesoftware \
-    --recording /tmp/debug_trace \
+    --recording /tmp/trace.bin \
     --verbose
 ```
 
@@ -44,6 +44,7 @@ RETRACE_DEBUG=1 python -m retracesoftware \
 | `--verbose` | Prints every message the writer emits to stdout, tagged with PID, message index, and byte offset. |
 | `--stacktraces` | Captures a stack delta for every proxied call and writes it to the trace as a `STACKTRACE` message.  Invaluable for identifying *where* a particular message originates. |
 | `--write_timeout N` | Backpressure timeout in seconds.  `0` = drop immediately, omit = wait forever. |
+| `--workspace PATH` | Generate a VS Code workspace directory with sidecar files (`settings.json`, `.env`, checksums, launch config). |
 | `--monitor N` | Enable `sys.monitoring` divergence detection (Python 3.12+).  `0` = off (default), `1` = Python calls/returns, `2` = + C calls, `3` = + line events.  See [Monitor mode](#7-using-monitor-mode) below. |
 
 ### CLI flags (replay)
@@ -345,7 +346,7 @@ is claimed, no callbacks registered, no MONITOR messages written.
 
 ```bash
 python -m retracesoftware \
-    --recording /tmp/trace \
+    --recording /tmp/trace.bin \
     --monitor 1 \
     -- my_script.py
 ```
@@ -355,7 +356,7 @@ automatically — no extra flag needed:
 
 ```bash
 python -m retracesoftware \
-    --recording /tmp/trace
+    --recording /tmp/trace.bin
 ```
 
 **How it helps:**
@@ -441,14 +442,14 @@ runner.replay(recording, do_work, monitor=1)
 ```bash
 # Record (add --monitor 1 on Python 3.12+ for function-level divergence)
 RETRACE_DEBUG=1 python -m retracesoftware \
-    --recording /tmp/trace \
+    --recording /tmp/trace.bin \
     --verbose --stacktraces --monitor 1 \
     -- my_script.py \
     > /tmp/record.log 2>&1
 
 # Replay
 RETRACE_DEBUG=1 python -m retracesoftware \
-    --recording /tmp/trace \
+    --recording /tmp/trace.bin \
     --verbose \
     > /tmp/replay.log 2>&1
 ```
