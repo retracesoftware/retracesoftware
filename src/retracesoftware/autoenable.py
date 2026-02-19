@@ -24,20 +24,18 @@ else:
     def is_running_retrace():
         return sys.orig_argv[1] == '-m' and sys.orig_argv[2].startswith('retracesoftware')
     
-    # only do anything is the RETRACE env variable is set
-    if is_true('RETRACE'):
+    if 'RETRACE_RECORDING' in os.environ:
         import sys
 
         if not is_running_retrace():
             
             new_argv = [sys.orig_argv[0], '-m', 'retracesoftware']
 
+            new_argv.append('--recording')
+            new_argv.append(os.environ['RETRACE_RECORDING'])
+
             if is_true('RETRACE_VERBOSE'):
                 new_argv.append('--verbose')
-
-            if 'RETRACE_RECORDING_PATH' in os.environ:
-                new_argv.append('--recording')
-                new_argv.append(os.environ['RETRACE_RECORDING_PATH'])
 
             if is_true('RETRACE_STACKTRACES'):
                 new_argv.append('--stacktraces')
