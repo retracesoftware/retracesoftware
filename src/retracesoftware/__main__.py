@@ -130,18 +130,16 @@ def retrace_module_paths():
 def checksums():
     return {name: checksum(path) for name, path in retrace_module_paths().items()}
 
-def run_create_tracedir_cmd(create_tracedir_cmd, path):
-    import subprocess
-    result = subprocess.run([create_tracedir_cmd, str(path)], capture_output=True, text=True)
-    if result.returncode != 0:
-        msg = f"create_tracedir_cmd '{create_tracedir_cmd}' failed with exit code {result.returncode}"
-        if result.stdout:
-            msg += f"\nstdout: {result.stdout}"
-        if result.stderr:
-            msg += f"\nstderr: {result.stderr}"
-        raise ConfigurationError(msg)
-    if not path.exists():
-        raise ConfigurationError(f"create_tracedir_cmd '{create_tracedir_cmd}' exited successfully but directory '{path}' does not exist")
+def generate_workspace(workspace_path, settings, recorded_checksums, env):
+    """Write VS Code workspace sidecar files to *workspace_path*."""
+    workspace_path.mkdir(parents=True, exist_ok=True)
+    dump_as_json(workspace_path / 'settings.json', settings)
+    dump_as_json(workspace_path / 'md5_checksums.json', recorded_checksums)
+    with open(workspace_path / '.env', 'w') as f:
+        for key, value in env.items():
+            escaped = value.replace('\\', '\\\\').replace('\n', '\\n').replace('"', '\\"')
+            f.write(f'{key}="{escaped}"\n')
+    dump_as_json(workspace_path / 'replay.code-workspace', vscode_workspace)
 
 def record(options, args):
     
@@ -150,27 +148,22 @@ def record(options, args):
     
     if options.verbose:
         if recording_disabled:
-            print(f"Retrace enabled, recording DISABLED (performance testing mode)", file=sys.stderr)
+            print("Retrace enabled, recording DISABLED (performance testing mode)", file=sys.stderr)
         else:
             print(f"Retrace enabled, recording to {options.recording}", file=sys.stderr)
 
     if recording_disabled:
-        path = None
+        trace_path = None
     else:
-        path = Path(expand_recording_path(options.recording))
-        
-        # Create trace directory via custom command or default mkdir
-        if options.create_tracedir_cmd:
-            run_create_tracedir_cmd(options.create_tracedir_cmd, path)
-        else:
-            path.mkdir(parents=True, exist_ok=True) 
+        trace_path = Path(expand_recording_path(options.recording))
+        trace_path.parent.mkdir(parents=True, exist_ok=True)
+        trace_path.touch(exist_ok=True)
 
     from retracesoftware.install import edgecases
-    edgecases.recording_path = path
+    edgecases.recording_path = trace_path.parent if trace_path else None
 
-    # Build header dict and sidecar files (skip if disabled)
     preamble = None
-    if path:
+    if trace_path:
         path_info = stream.get_path_info()
         settings = {
             'argv': args,
@@ -184,26 +177,16 @@ def record(options, args):
         }
         recorded_checksums = checksums()
         
-        # Header dict is written as first object in the trace stream
         preamble = {
             **settings,
             'checksums': recorded_checksums,
             'env': dict(os.environ),
         }
         
-        # Sidecar files for human/tooling consumption
-        dump_as_json(path / 'settings.json', settings)
-        dump_as_json(path / 'md5_checksums.json', recorded_checksums)
-        
-        with open(path / '.env', 'w') as f:
-            for key, value in os.environ.items():
-                escaped = value.replace('\\', '\\\\').replace('\n', '\\n').replace('"', '\\"')
-                f.write(f'{key}="{escaped}"\n')
-
-        dump_as_json(path / 'replay.code-workspace', vscode_workspace)
-
-    # path=None disables all trace writes (performance testing mode)
-    trace_path = None if recording_disabled else path / 'trace.bin'
+        workspace = getattr(options, 'workspace', None)
+        if workspace:
+            generate_workspace(
+                Path(workspace), settings, recorded_checksums, dict(os.environ))
 
     write_timeout = getattr(options, 'write_timeout', None)
 
@@ -211,7 +194,8 @@ def record(options, args):
                        thread = utils.thread_id,
                        verbose = options.verbose, 
                        preamble = preamble,
-                       backpressure_timeout = write_timeout) as writer:
+                       backpressure_timeout = write_timeout,
+                       append = True) as writer:
 
         if options.stacktraces:
             stackfactory = utils.StackFactory()
@@ -295,18 +279,16 @@ def replay(args):
     # Resolve path before any chdir
     path = Path(args.recording).resolve()
 
-    if not path.exists():
-        raise RecordingNotFoundError(f"Recording path: {path} does not exist")
-
-    trace_path = path / 'trace.bin'
+    if not path.is_file():
+        raise RecordingNotFoundError(f"Recording path: {path} is not a file")
 
     if getattr(args, 'list_pids', False):
-        pids = stream.list_pids(trace_path)
+        pids = stream.list_pids(path)
         for pid in sorted(pids):
             print(pid)
         return
 
-    with stream.reader(path = trace_path,
+    with stream.reader(path = path,
                         read_timeout = args.read_timeout,
                         verbose = args.verbose) as reader:
 
@@ -436,8 +418,8 @@ def main():
     parser.add_argument(
         '--recording',
         type = str,
-        default = '.',
-        help = 'the directory to place the recording files'
+        default = 'trace.bin',
+        help = 'Trace file path (default: trace.bin)'
     )
 
     if '--' in sys.argv:
@@ -460,10 +442,11 @@ def main():
         )
 
         parser.add_argument(
-            '--create_tracedir_cmd',
+            '--workspace',
             type=str,
             default=None,
-            help='Command to create trace directory (receives directory path as argument)'
+            help='Generate VS Code workspace directory with sidecar files '
+                 '(settings.json, .env, checksums, launch config)'
         )
 
         parser.add_argument(
