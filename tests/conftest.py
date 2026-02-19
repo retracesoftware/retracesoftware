@@ -27,14 +27,15 @@ def tmpdir():
     shutil.rmtree(d, ignore_errors=True)
 
 
-def run_record(script_path, recording_dir, extra_args=None, env=None):
+def run_record(script_path, recording, extra_args=None, env=None):
     """Run a script under retrace recording.
 
+    *recording* is a trace file path (e.g. ``/tmp/dir/trace.bin``).
     Returns the CompletedProcess.
     """
     cmd = [
         PYTHON, "-m", "retracesoftware",
-        "--recording", recording_dir,
+        "--recording", recording,
         "--stacktraces",
         "--", str(script_path),
     ]
@@ -51,14 +52,15 @@ def run_record(script_path, recording_dir, extra_args=None, env=None):
     )
 
 
-def run_replay(recording_dir, extra_args=None, env=None):
-    """Replay from a recording directory.
+def run_replay(recording, extra_args=None, env=None):
+    """Replay from a trace file.
 
+    *recording* is a trace file path (e.g. ``/tmp/dir/trace.bin``).
     Returns the CompletedProcess.
     """
     cmd = [
         PYTHON, "-m", "retracesoftware",
-        "--recording", recording_dir,
+        "--recording", recording,
     ]
     if extra_args:
         cmd.extend(extra_args)
