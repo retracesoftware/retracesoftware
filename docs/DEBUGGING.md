@@ -44,6 +44,7 @@ RETRACE_DEBUG=1 python -m retracesoftware \
 | `--verbose` | Prints every message the writer emits to stdout, tagged with PID, message index, and byte offset. |
 | `--stacktraces` | Captures a stack delta for every proxied call and writes it to the trace as a `STACKTRACE` message.  Invaluable for identifying *where* a particular message originates. |
 | `--write_timeout N` | Backpressure timeout in seconds.  `0` = drop immediately, omit = wait forever. |
+| `--monitor N` | Enable `sys.monitoring` divergence detection (Python 3.12+).  `0` = off (default), `1` = Python calls/returns, `2` = + C calls, `3` = + line events.  See [Monitor mode](#7-using-monitor-mode) below. |
 
 ### CLI flags (replay)
 
@@ -318,6 +319,119 @@ point, and the other thread waits forever.
   around each `THREAD_SWITCH` message.
 - Check which thread is blocked and what call it's waiting for.
 
+### 7. Using monitor mode
+
+**What it does:**
+
+`--monitor N` uses Python 3.12's `sys.monitoring` API to write a
+`MONITOR` checkpoint for every Python function call and return inside
+the sandbox.  During replay, the same callbacks fire and verify each
+`MONITOR` message matches.  A mismatch immediately identifies the
+exact function where execution diverged.
+
+**Granularity levels:**
+
+| Level | Events | Typical slowdown |
+|-------|--------|-----------------|
+| 0 | Off (default) — zero overhead, no `sys.monitoring` interaction | None |
+| 1 | `PY_START` + `PY_RETURN` — Python function boundaries | ~2–5x |
+| 2 | + `CALL` + `C_RETURN` — includes C builtins | ~5–10x |
+| 3 | + `LINE` — every source line | ~10–50x |
+
+Level 0 is byte-identical to a trace without the feature.  No tool ID
+is claimed, no callbacks registered, no MONITOR messages written.
+
+**Example — recording with monitor:**
+
+```bash
+python -m retracesoftware \
+    --recording /tmp/trace \
+    --monitor 1 \
+    -- my_script.py
+```
+
+Replay reads the monitor level from the recording's header
+automatically — no extra flag needed:
+
+```bash
+python -m retracesoftware \
+    --recording /tmp/trace
+```
+
+**How it helps:**
+
+Standard replay divergence tells you *what* value differed but not
+*where* the code path first diverged.  With `--monitor 1`, the replay
+raises `ReplayDivergence` at the first function call or return that
+differs:
+
+```
+ReplayDivergence: monitor divergence: expected 'S:parse_response', got 'S:handle_error'
+```
+
+This tells you that after some shared prefix of execution, the
+recording entered `parse_response` but the replay entered
+`handle_error` — the divergence happened in the code *before* this
+call (e.g. a branch that checked a non-deterministic value).
+
+**MONITOR message format:**
+
+Each checkpoint is a compact string:
+
+| Prefix | Meaning | Example |
+|--------|---------|---------|
+| `S:` | `PY_START` — function entry | `S:module.Class.method` |
+| `R:` | `PY_RETURN` — function return | `R:module.Class.method` |
+| `C:` | `CALL` — C function call (level 2+) | `C:len` |
+| `CR:` | `C_RETURN` — C function return (level 2+) | `CR:len` |
+| `L:` | `LINE` — line event (level 3) | `L:module.func:42` |
+
+The writer's handle deduplication means repeated calls to the same
+function cost only 2–3 bytes each after the first occurrence.
+
+**Filtering:**
+
+Monitor callbacks automatically filter out retrace's own code:
+
+- C extensions (`utils.observer`, `Gate`, `functional` primitives)
+  never fire `PY_START`/`PY_RETURN` events — they are invisible at
+  level 1.
+- Python functions with `co_filename` inside any `retracesoftware`
+  package directory return `sys.monitoring.DISABLE`, permanently
+  disabling the callback for that code object at the CPython level.
+- A thread-local reentrancy guard prevents recursive monitoring
+  during checkpoint writes.
+- The `_in_sandbox()` check skips events outside a record/replay
+  context.
+
+**In-process testing:**
+
+The `TestRunner` accepts a `monitor=` parameter:
+
+```python
+runner = install_for_pytest(modules=["socket"])
+
+def test_dns():
+    runner.run(socket.getaddrinfo, "localhost", 80, monitor=1)
+```
+
+Or with separate record/replay:
+
+```python
+recording = runner.record(do_work, monitor=1)
+runner.replay(recording, do_work, monitor=1)
+```
+
+**When to use each level:**
+
+- **Level 0** (default): Production recordings.  Zero overhead.
+- **Level 1**: First line of investigation when a replay diverges.
+  Pinpoints which function call/return mismatched.
+- **Level 2**: When the divergence is inside a C extension call
+  (level 1 shows the Python caller matches, but the result differs).
+- **Level 3**: Last resort.  Pinpoints the exact source line, but
+  generates very large traces.
+
 ---
 
 ## Debugging workflow
@@ -325,10 +439,10 @@ point, and the other thread waits forever.
 ### Step 1: Reproduce with diagnostics
 
 ```bash
-# Record
+# Record (add --monitor 1 on Python 3.12+ for function-level divergence)
 RETRACE_DEBUG=1 python -m retracesoftware \
     --recording /tmp/trace \
-    --verbose --stacktraces \
+    --verbose --stacktraces --monitor 1 \
     -- my_script.py \
     > /tmp/record.log 2>&1
 
@@ -409,6 +523,9 @@ The recording also stores `python_version` and `executable` path.
 | `AsyncFilePersister: PID mismatch!` | `persister.cpp` | Frame stamped with wrong PID (fork lifecycle bug) |
 | `VersionMismatchError` | `__main__.py` | Module checksums differ between record and replay |
 | `ReplayDivergence: replay demux timed out` | `messagestream.py` | Thread couldn't acquire its turn on the tape |
+| `ReplayDivergence: monitor divergence: expected X, got Y` | `messagestream.py` | MONITOR checkpoint mismatch — function call/return differs between record and replay |
+| `ReplayDivergence: expected MONITOR(X), got ...` | `messagestream.py` | Replay produced a function call that the recording didn't have |
+| `ReplayDivergence: unexpected MONITOR(X) during sync` | `messagestream.py` | Recording had function calls that replay didn't replicate |
 
 ---
 
