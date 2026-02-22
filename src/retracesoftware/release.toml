@@ -1,0 +1,41 @@
+# Release preset -- optimized for low overhead in production recordings.
+
+[writer]
+# Maximum bytes queued between the producer (ObjectWriter) and the
+# background persister thread.  When exceeded the producer yields until
+# the persister catches up, providing backpressure.
+inflight_limit = "128MB"
+
+# How long the producer will wait when the queue is full or the inflight
+# limit is exceeded before it gives up and disables recording.
+stall_timeout = "5s"
+
+# Capacity of the lock-free SPSC queue carrying serialized entries from
+# the producer to the persister thread.  Larger values absorb bursts but
+# use more memory.
+queue_capacity = 65536
+
+# Capacity of the return queue carrying PyObject* back from the persister
+# to the drain thread for reference-count release.
+return_queue_capacity = 131072
+
+# How often a background thread calls flush() on the writer, ensuring
+# buffered data reaches the file descriptor.
+flush_interval = "100ms"
+
+[record]
+# Default output path for the trace file.
+recording = "trace.bin"
+
+# Print diagnostic messages to stderr during recording.
+verbose = false
+
+# Capture a Python stack trace with every recorded event.
+# Adds significant overhead -- use for debugging only.
+stacktraces = false
+
+# Continue recording during interpreter shutdown and cleanup hooks.
+trace_shutdown = false
+
+# Record call arguments for every proxied call (large traces).
+trace_inputs = false
