@@ -141,6 +141,8 @@ def generate_workspace(workspace_path, settings, recorded_checksums, env):
             f.write(f'{key}="{escaped}"\n')
     dump_as_json(workspace_path / 'replay.code-workspace', vscode_workspace)
 
+thread_id = utils.ThreadLocal()
+
 def record(options, args):
     
     # Check if recording is disabled (for performance testing)
@@ -185,14 +187,16 @@ def record(options, args):
             generate_workspace(
                 Path(workspace), settings, recorded_checksums, dict(os.environ))
 
-    write_timeout = getattr(options, 'write_timeout', None)
-
     with stream.writer(path = trace_path,
-                       thread = utils.thread_id,
-                       verbose = options.verbose, 
+                       thread = thread_id,
+                       verbose = options.verbose,
                        preamble = preamble,
-                       backpressure_timeout = write_timeout,
-                       append = True) as writer:
+                       append = True,
+                       inflight_limit = options.inflight_limit,
+                       stall_timeout = options.stall_timeout,
+                       queue_capacity = options.queue_capacity,
+                       return_queue_capacity = options.return_queue_capacity,
+                       flush_interval = options.flush_interval) as writer:
 
         if options.stacktraces:
             stackfactory = utils.StackFactory()
@@ -225,10 +229,15 @@ def record(options, args):
         else:
             monitor_fn = None
 
-        run_with_context(system, context, args, wrap_callback,
+        run_with_context(system = system, 
+                         context = context,
+                         argv = args, 
+                         wrap_callback = wrap_callback,
+                         thread_id=thread_id,
                          trace_shutdown=options.trace_shutdown,
                          monitor_level=monitor_level,
-                         monitor_fn=monitor_fn)
+                         monitor_fn=monitor_fn,
+                         retrace_file_patterns=getattr(options, 'retrace_file_patterns', None))
 
 def parse_fork_path(s):
     """Parse fork path to binary string of '0' (parent) and '1' (child).
@@ -251,7 +260,6 @@ def parse_fork_path(s):
         result.append(bit * int(count))
         bit = '0' if bit == '1' else '1'
     return ''.join(result)
-
 
 def make_replay_fork(proxied_fork, reader, fork_path):
     """Wrap a proxied os.fork to handle PID switching on replay.
@@ -285,9 +293,10 @@ def replay(args):
             print(pid)
         return
 
+
     with stream.reader(path = path,
-                        read_timeout = args.read_timeout,
-                        verbose = args.verbose) as reader:
+                       read_timeout = args.read_timeout,
+                       verbose = args.verbose) as reader:
 
         # First object in the stream is the header dict with all replay metadata
         header = reader()
@@ -315,7 +324,7 @@ def replay(args):
         monitor_level = header.get('monitor', 0)
 
         per_thread_source = stream.per_thread(
-            source=reader, thread=utils.thread_id,
+            source=reader, thread = thread_id.get,
             timeout=max(1, args.read_timeout // 1000))
         msg_stream = MessageStream(per_thread_source,
                                    monitor_enabled=(monitor_level > 0))
@@ -352,10 +361,14 @@ def replay(args):
             posix.fork = wrapper
             os.fork = wrapper
 
-        run_with_context(system, context, header['argv'], wrap_callback,
-                         header['trace_shutdown'], on_ready=install_fork_handler,
+        run_with_context(system=system, thread_id=thread_id,
+                         context=context, argv=header['argv'],
+                         wrap_callback=wrap_callback,
+                         trace_shutdown=header['trace_shutdown'],
+                         on_ready=install_fork_handler,
                          monitor_level=monitor_level,
-                         monitor_fn=monitor_fn)
+                         monitor_fn=monitor_fn,
+                         retrace_file_patterns=getattr(args, 'retrace_file_patterns', None))
         gc.enable()
 
 def pth_source():
@@ -447,20 +460,32 @@ def main():
         )
 
         parser.add_argument(
-            '--write_timeout',
-            type=float,
-            default=None,
-            help='Backpressure timeout in seconds. 0=drop immediately if persister is slow (production), '
-                 '>0=wait up to N seconds then drop, None=wait forever (default)'
-        )
+            '--stall_timeout', type=int, default=5,
+            help='Seconds to wait when writer queue is full or inflight limit exceeded (default: 5)')
 
         parser.add_argument(
-            '--monitor',
-            type=int,
-            default=0,
-            help='Monitoring level for fine-grained divergence detection: '
-                 '0=off (default), 1=PY calls/returns, 2=+C calls, 3=+LINE'
-        )
+            '--inflight_limit', type=int, default=128 * 1024 * 1024,
+            help='Maximum bytes in-flight between writer and persister (default: 128MB)')
+
+        parser.add_argument(
+            '--queue_capacity', type=int, default=65536,
+            help='Forward SPSC queue capacity (default: 65536)')
+
+        parser.add_argument(
+            '--return_queue_capacity', type=int, default=131072,
+            help='Return SPSC queue capacity (default: 131072)')
+
+        parser.add_argument(
+            '--flush_interval', type=float, default=0.1,
+            help='Periodic flush interval in seconds (default: 0.1)')
+
+        parser.add_argument(
+            '--monitor', type=int, default=0,
+            help='Monitoring level: 0=off (default), 1=PY calls/returns, 2=+C calls, 3=+LINE')
+
+        parser.add_argument(
+            '--retrace_file_patterns', type=str, default=None,
+            help='Path to file with additional regex patterns for path-based retrace filtering')
 
         parser.add_argument('rest', nargs = argparse.REMAINDER, help='target application and arguments')
 
@@ -490,6 +515,10 @@ def main():
             help = 'Fork path: binary string (e.g. "1101") or RLE (e.g. "child-2-1-1"). '
                    '0=parent, 1=child at each fork point.'
         )
+
+        parser.add_argument(
+            '--retrace_file_patterns', type=str, default=None,
+            help='Path to file with additional regex patterns for path-based retrace filtering')
 
         parser.add_argument(
             '--list_pids',

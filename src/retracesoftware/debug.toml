@@ -1,0 +1,31 @@
+# Debug preset -- verbose output, smaller buffers, faster flushes.
+# Useful for diagnosing retrace itself or inspecting traces in real time.
+
+[writer]
+# Smaller inflight budget so backpressure kicks in sooner, making
+# buffer-related issues easier to reproduce.
+inflight_limit = "16MB"
+
+# Longer stall timeout gives the persister more time to drain under
+# a debugger or heavy logging.
+stall_timeout = "10s"
+
+# Smaller queues surface full-queue conditions earlier.
+queue_capacity = 4096
+return_queue_capacity = 8192
+
+# Aggressive flush interval so trace data hits disk almost immediately,
+# useful when tailing the output or debugging crashes.
+flush_interval = "10ms"
+
+[record]
+recording = "trace.bin"
+
+# Verbose diagnostics enabled by default.
+verbose = true
+
+# Always capture stack traces in debug mode.
+stacktraces = true
+
+trace_shutdown = false
+trace_inputs = false

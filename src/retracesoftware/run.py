@@ -1,7 +1,6 @@
 import sys
 import os
 import runpy
-from pathlib import Path
 import builtins
 import atexit
 import retracesoftware.utils as utils
@@ -46,26 +45,19 @@ def wait_for_non_daemon_threads(timeout=None):
         # Sleep briefly to avoid busy-wait
         time.sleep(0.1)
 
+
 def run_python_command(argv):
-    """
-    Run a Python app from a command list using runpy.
+    """Run a Python app from a command list.
 
     Supports:
         ['-m', 'module', 'arg1', ...]     → like `python -m module arg1 ...`
         ['script.py', 'arg1', ...]        → like `python script.py arg1 ...`
-
-    Args:
-        argv: List of command-line arguments (first item is either '-m' or script path)
-
-    Returns:
-        Exit code (0 on success, 1+ on error)
     """
     if not argv:
         print("Error: No command provided", file=sys.stderr)
         return 1
 
     original_argv = sys.argv[:]
-    original_cwd = os.getcwd()
 
     try:
         if argv[0] == '-m':
@@ -81,20 +73,12 @@ def run_python_command(argv):
         else:
             script_path = argv[0]
             script_args = argv[1:]
-            path = Path(script_path)
 
-            if not path.exists():
-                print(f"Error: Script not found: {script_path}", file=sys.stderr)
-                return 1
-
-            if path.suffix != ".py":
+            if not script_path.endswith(".py"):
                 print(f"Error: Not a Python script: {script_path}", file=sys.stderr)
                 return 1
 
-            # Use the path as given (relative or absolute) to preserve cwd-relative paths
-            # for stack trace normalization during record/replay
             sys.argv = [script_path] + script_args
-
             runpy.run_path(script_path, run_name="__main__")
             return 0
 
@@ -103,7 +87,6 @@ def run_python_command(argv):
         return 1
     finally:
         sys.argv = original_argv
-        os.chdir(original_cwd)
 
 def run_with_retrace(system, argv, trace_shutdown = False):
 

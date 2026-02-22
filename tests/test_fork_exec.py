@@ -191,6 +191,31 @@ class TestForkTree:
         assert lines[0] == f"path:{fork_path}"
 
 
+# ── DynamicProxy vs C-struct composition ────────────────────────
+
+class TestTextIOWrapperProxy:
+    """Minimal repro for the DynamicProxy / C-struct bug.
+
+    io.open() returns a BufferedReader.  The proxy_output step wraps it
+    in a DynamicProxy (a Wrapped object whose C layout is just {target}).
+    TextIOWrapper.__init__ then tries to access the BufferedReader's C
+    struct internals directly — not through Python attribute lookup — and
+    gets ValueError: I/O operation on uninitialized object.
+
+    This blocks all subprocess recording (Popen uses the same pattern).
+    """
+
+    def test_record_textiowrapper_on_pipe(self, tmpdir):
+        script = SCRIPTS / "textiowrapper_pipe.py"
+        recording = os.path.join(tmpdir, "trace.bin")
+        rec = run_record(script, recording)
+        assert rec.returncode == 0, (
+            f"Record failed (exit {rec.returncode}):\n"
+            f"stdout: {rec.stdout}\nstderr: {rec.stderr}"
+        )
+        assert rec.stdout.strip() == "hello"
+
+
 # ── subprocess inherits recording ───────────────────────────────
 
 class TestSubprocessRecorded:
@@ -286,3 +311,43 @@ class TestForkPath:
 
     def test_rle_single_run(self):
         assert parse_fork_path('child-5') == '11111'
+
+
+# ── Replay stream misalignment bug ─────────────────────────────
+
+class TestReplayStatResult:
+    """Replay crashes with stat_result in sys.path_importer_cache.
+
+    Even a trivial ``print("ok")`` script fails on replay.
+    Infrastructure code in ``run_python_command`` (``Path.exists``,
+    ``path.suffix``) and inside ``runpy.run_path`` (``pkgutil.get_importer``)
+    runs inside the replay context.  These calls consume stream messages
+    that don't align with the recording, so later reads return wrong
+    types (e.g. ``os.stat_result`` where a string was expected).
+    """
+
+    def test_trivial_replay(self, tmpdir):
+        rec, rep = record_and_replay(tmpdir, "stat_result.py")
+        assert rep.returncode == 0, f"Replay stderr: {rep.stderr}"
+        assert rep.stdout.strip() == "ok"
+
+
+# ── TextIOWrapper allocation bug ───────────────────────────────
+
+class TestTextIOWrapperNew:
+    """TextIOWrapper.__new__ alone fails under recording.
+
+    The _on_alloc hook fires ext_bind on the freshly allocated (but
+    uninitialized) instance.  The C++ writer calls PyObject_Str on
+    it, which hits CHECK_INITIALIZED → ValueError.
+    """
+
+    def test_record_textiowrapper_new(self, tmpdir):
+        script = SCRIPTS / "textiowrapper_new.py"
+        recording = os.path.join(tmpdir, "trace.bin")
+        rec = run_record(script, recording)
+        assert rec.returncode == 0, (
+            f"Record failed (exit {rec.returncode}):\n"
+            f"stdout: {rec.stdout}\nstderr: {rec.stderr}"
+        )
+        assert rec.stdout.strip() == "ok"

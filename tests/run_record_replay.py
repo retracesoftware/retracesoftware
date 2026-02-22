@@ -13,16 +13,13 @@ TIMEOUT = 30
 
 
 def record_then_replay(tmpdir, script_file):
-    """Record to disk, then replay from disk.
-
-    Creates a ``recording/`` subdirectory inside *tmpdir*.
-    """
-    recording_dir = os.path.join(tmpdir, "recording")
+    """Record to disk, then replay from disk."""
+    trace_file = os.path.join(tmpdir, "trace.bin")
 
     # --- record ---
     rec = subprocess.run(
         [PYTHON, "-m", "retracesoftware",
-         "--recording", recording_dir,
+         "--recording", trace_file,
          "--", script_file],
         capture_output=True, text=True, timeout=TIMEOUT,
     )
@@ -30,20 +27,16 @@ def record_then_replay(tmpdir, script_file):
     print("RECORD stderr:", rec.stderr)
 
     assert rec.returncode == 0, f"Record failed (exit {rec.returncode}):\n{rec.stderr}"
-    assert os.path.isfile(os.path.join(recording_dir, "trace.bin")), \
-        "trace.bin not created"
+    assert os.path.isfile(trace_file), "trace file not created"
 
-    _replay_and_compare(recording_dir, rec)
+    _replay_and_compare(trace_file, rec)
 
 
-def record_then_replay_via_pipe(pipedir, script_file):
+def record_then_replay_via_pipe(pipe_path, script_file):
     """Record through a FIFO, materialise the trace, then replay.
 
-    *pipedir* must already contain a FIFO at ``trace.bin``
-    (e.g. created by ``os.mkfifo``).
+    *pipe_path* must be a FIFO (e.g. created by ``os.mkfifo``).
     """
-    pipe_path = os.path.join(pipedir, "trace.bin")
-
     drain_result = {}
     reader = threading.Thread(
         target=_drain_pipe, args=(pipe_path, drain_result))
@@ -51,8 +44,7 @@ def record_then_replay_via_pipe(pipedir, script_file):
 
     rec = subprocess.run(
         [PYTHON, "-m", "retracesoftware",
-         "--recording", pipedir,
-         "--create_tracedir_cmd", "true",
+         "--recording", pipe_path,
          "--", script_file],
         capture_output=True, text=True, timeout=TIMEOUT,
     )
@@ -72,7 +64,7 @@ def record_then_replay_via_pipe(pipedir, script_file):
     with open(pipe_path, "wb") as f:
         f.write(trace_bytes)
 
-    _replay_and_compare(pipedir, rec)
+    _replay_and_compare(pipe_path, rec)
 
 
 # -- internal helpers --
@@ -82,10 +74,10 @@ def _drain_pipe(path, result):
         result["data"] = f.read()
 
 
-def _replay_and_compare(recording_dir, rec):
+def _replay_and_compare(trace_file, rec):
     rep = subprocess.run(
         [PYTHON, "-m", "retracesoftware",
-         "--recording", recording_dir],
+         "--recording", trace_file],
         capture_output=True, text=True, timeout=TIMEOUT,
     )
     print("REPLAY stdout:", repr(rep.stdout))
