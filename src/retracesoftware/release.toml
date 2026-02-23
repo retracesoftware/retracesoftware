@@ -17,7 +17,7 @@ queue_capacity = 65536
 
 # Capacity of the return queue carrying PyObject* back from the persister
 # to the drain thread for reference-count release.
-return_queue_capacity = 131072
+return_queue_capacity = 65536
 
 # How often a background thread calls flush() on the writer, ensuring
 # buffered data reaches the file descriptor.
