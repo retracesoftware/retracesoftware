@@ -81,10 +81,11 @@ fi
 echo ""
 
 # Isolate installed packages by test name and image to avoid cross-test contamination.
-SAFE_IMAGE_TAG="$(echo "$TEST_IMAGE" | tr '/:@' '___' | tr -c '[:alnum:]_.-' '_')"
-SAFE_TEST_NAME="$(echo "$TEST_NAME" | tr -c '[:alnum:]_.-' '_')"
-TEST_PACKAGES_DIR="./.cache/packages/${TEST_NAME}/${SAFE_IMAGE_TAG}"
-TEST_PACKAGES_DEBUG_DIR="./.cache/packages-debug/${TEST_NAME}/${SAFE_IMAGE_TAG}"
+SAFE_IMAGE_TAG="$(printf '%s' "$TEST_IMAGE" | tr '/:@' '___' | tr -c '[:alnum:]_.-' '_')"
+SAFE_TEST_NAME="$(printf '%s' "$TEST_NAME" | tr -c '[:alnum:]_.-' '_')"
+mkdir -p "./.cache/packages" "./.cache/packages-debug" "./.cache/pip"
+TEST_PACKAGES_DIR="$(pwd)/.cache/packages/${TEST_NAME}/${SAFE_IMAGE_TAG}"
+TEST_PACKAGES_DEBUG_DIR="$(pwd)/.cache/packages-debug/${TEST_NAME}/${SAFE_IMAGE_TAG}"
 COMPOSE_PROJECT_NAME="retracetest_${SAFE_TEST_NAME}_$(date +%s)_$$"
 mkdir -p "$TEST_PACKAGES_DIR" "$TEST_PACKAGES_DEBUG_DIR"
 
@@ -213,10 +214,11 @@ if [ "$DEBUG_MODE" = true ]; then
     # Run record interactively with GDB and debug packages
     docker run -it --rm \
         --cap-add=SYS_PTRACE \
+        -v "$(pwd)/../src:/app/src:ro" \
         -v "$(pwd)/$TEST_DIR:/app/test:ro" \
         -v "$(pwd)/$TEST_DIR/recording:/recording:rw" \
         -v "$(pwd)/$TEST_PACKAGES_DEBUG_DIR:/app/packages:ro" \
-        -e "PYTHONPATH=/app/packages" \
+        -e "PYTHONPATH=/app/src:/app/packages" \
         -e "RETRACE=1" \
         -e "RETRACE_RECORDING_PATH=/recording" \
         "$TEST_IMAGE" \
