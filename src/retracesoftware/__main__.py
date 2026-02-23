@@ -6,7 +6,6 @@ import argparse
 from typing import Tuple, List
 import retracesoftware.utils as utils
 import retracesoftware.functional as functional
-from retracesoftware.install.stackdifference import on_stack_difference
 from pathlib import Path
 from retracesoftware.proxy.messagestream import MessageStream
 import retracesoftware.stream as stream
@@ -20,38 +19,15 @@ import hashlib
 
 from retracesoftware.proxy.system import System
 
-from retracesoftware.run import run_with_retrace
 from retracesoftware.install import run_with_context, stream_writer
 from retracesoftware.exceptions import RecordingNotFoundError, VersionMismatchError, ConfigurationError
 
 def expand_recording_path(path):
     return datetime.datetime.now().strftime(path.format(pid = os.getpid()))
 
-def load_json(file):
-    with open(file, "r", encoding="utf-8") as f:
-        return json.load(f)
-
 def dump_as_json(path, obj):
     with open(path, 'w') as f:
         json.dump(obj, f, indent=2)
-
-def load_env(file):
-    """Load a .env file into a dict."""
-    env = {}
-    with open(file, 'r') as f:
-        for line in f:
-            line = line.strip()
-            if not line or line.startswith('#'):
-                continue
-            if '=' in line:
-                key, value = line.split('=', 1)
-                # Remove surrounding quotes if present
-                if value.startswith('"') and value.endswith('"'):
-                    value = value[1:-1]
-                # Unescape
-                value = value.replace('\\n', '\n').replace('\\"', '"').replace('\\\\', '\\')
-                env[key] = value
-    return env
 
 vscode_workspace = {
     "folders": [{ 'path': '.' }],
@@ -79,14 +55,6 @@ vscode_workspace = {
         }]
     },
 }
-
-def scriptname(argv):
-    return argv[1] if argv[0] == "-m" else argv[0]
-
-def collector(multiplier):
-    collect_gen = utils.CollectPred(multiplier = multiplier)
-
-    return functional.lazy(functional.sequence(collect_gen, functional.when_not_none(gc.collect)))
 
 def file_md5(path):
     return hashlib.md5(path.read_bytes()).hexdigest()
