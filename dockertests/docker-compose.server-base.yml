@@ -33,10 +33,11 @@ services:
       install:
         condition: service_completed_successfully
     volumes:
+      - ../src:/app/src:ro
       - ${TEST_DIR}:/app/test:ro
       - ${TEST_PACKAGES_DIR:-./.cache/packages}:/app/packages:ro
     environment:
-      PYTHONPATH: /app/packages
+      PYTHONPATH: /app/src:/app/packages
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:${SERVER_PORT:-5000}${SERVER_HEALTH_PATH:-/health}')"]
       interval: 2s
@@ -62,11 +63,12 @@ services:
       dryrun:
         condition: service_completed_successfully
     volumes:
+      - ../src:/app/src:ro
       - ${TEST_DIR}:/app/test:ro
       - ${TEST_DIR}/recording:/recording:rw
       - ${TEST_PACKAGES_DIR:-./.cache/packages}:/app/packages:ro
     environment:
-      PYTHONPATH: /app/packages
+      PYTHONPATH: /app/src:/app/packages
       RETRACE: "1"
       RETRACE_RECORDING_PATH: /recording
     healthcheck:
@@ -95,11 +97,12 @@ services:
         condition: service_completed_successfully
     network_mode: none
     volumes:
+      - ../src:/app/src:ro
       - ${TEST_DIR}:/app/test:ro
       - ${TEST_DIR}/recording:/recording:ro
       - ${TEST_PACKAGES_DIR:-./.cache/packages}:/app/packages:ro
     environment:
-      PYTHONPATH: /app/packages
+      PYTHONPATH: /app/src:/app/packages
     command: python -m retracesoftware --recording /recording
 
   # Cleanup
