@@ -428,7 +428,7 @@ def main():
         )
 
         parser.add_argument(
-            '--stall_timeout', type=int, default=5,
+            '--stall_timeout', type=lambda v: int(float(v)), default=5,
             help='Seconds to wait when writer queue is full or inflight limit exceeded (default: 5)')
 
         parser.add_argument(
