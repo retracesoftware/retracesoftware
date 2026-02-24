@@ -8,6 +8,7 @@ dependencies = [
     "retracesoftware_utils",
     "retracesoftware_functional",
     "retracesoftware_stream",
+    "retracesoftware_install",
 ]
 
 [build-system]
