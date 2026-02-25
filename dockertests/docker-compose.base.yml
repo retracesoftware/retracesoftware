@@ -20,11 +20,10 @@ services:
       install:
         condition: service_completed_successfully
     volumes:
-      - ../src:/app/src:ro
       - ${TEST_DIR:-.}:/app/test:ro
       - ${TEST_PACKAGES_DIR:-./.cache/packages}:/app/packages:ro
     environment:
-      PYTHONPATH: /app/src:/app/packages
+      PYTHONPATH: /app/packages
     command: python /app/test/test.py
 
   record:
@@ -33,14 +32,14 @@ services:
       dryrun:
         condition: service_completed_successfully
     volumes:
-      - ../src:/app/src:ro
       - ${TEST_DIR:-.}:/app/test:ro
       - ${TEST_DIR:-.}/recording:/recording:rw
       - ${TEST_PACKAGES_DIR:-./.cache/packages}:/app/packages:ro
+    working_dir: /recording
     environment:
-      PYTHONPATH: /app/src:/app/packages
-      RETRACE: "1"
-      RETRACE_RECORDING_PATH: /recording
+      PYTHONPATH: /app/packages
+      RETRACE_CONFIG: debug
+      RETRACE_STACKTRACES: "0"
     command: bash -c "python -m retracesoftware install && python /app/test/test.py"
 
   replay:
@@ -50,13 +49,12 @@ services:
         condition: service_completed_successfully
     network_mode: none
     volumes:
-      - ../src:/app/src:ro
       - ${TEST_DIR:-.}:/app/test:ro
       - ${TEST_DIR:-.}/recording:/recording:ro
       - ${TEST_PACKAGES_DIR:-./.cache/packages}:/app/packages:ro
     environment:
-      PYTHONPATH: /app/src:/app/packages
-    command: python -m retracesoftware --recording /recording
+      PYTHONPATH: /app/packages
+    command: python -m retracesoftware --recording /recording/trace.bin
 
   cleanup:
     image: alpine

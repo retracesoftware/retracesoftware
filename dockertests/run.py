@@ -370,6 +370,21 @@ def clean_harness_state(dockertests_dir: Path) -> None:
             shutil.rmtree(path)
             print(f"   Removed: {path}")
 
+    # Remove stale per-test recordings so failed prior runs cannot
+    # affect new record/replay results.
+    tests_dir = dockertests_dir / "tests"
+    removed_recording_files = 0
+    if tests_dir.exists():
+        for recording_dir in tests_dir.glob("*/recording"):
+            if not recording_dir.is_dir():
+                continue
+            for stale in recording_dir.iterdir():
+                if stale.is_file():
+                    stale.unlink()
+                    removed_recording_files += 1
+    if removed_recording_files:
+        print(f"   Removed stale recording files: {removed_recording_files}")
+
     # Best-effort docker cleanup for stale harness containers/networks.
     # Keep this non-fatal so users can still run tests without docker available.
     try:

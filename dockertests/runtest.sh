@@ -15,6 +15,9 @@
 
 set -e
 
+# Timeout controls (seconds). Override per run via env vars.
+PIPELINE_TIMEOUT_SEC="${RETRACE_PIPELINE_TIMEOUT_SEC:-600}"
+
 # Parse arguments
 DEBUG_MODE=false
 TEST_IMAGE="python:3.11-slim"
@@ -62,6 +65,15 @@ if [ ! -f "$TEST_DIR/test.py" ]; then
     exit 1
 fi
 
+# Ensure per-test recording directory exists and stale traces are removed
+# before each run, so failed prior runs cannot poison current results.
+mkdir -p "$TEST_DIR/recording"
+if [ ! -d "$TEST_DIR/recording" ]; then
+    echo "❌ Failed to prepare recording directory: $TEST_DIR/recording"
+    exit 1
+fi
+rm -f "$TEST_DIR/recording/trace.bin" "$TEST_DIR/recording/trace.bin.lock"
+
 # Detect test type: server (has client.py) or script (default)
 if [ -f "$TEST_DIR/client.py" ]; then
     BASE_COMPOSE="docker-compose.server-base.yml"
@@ -81,13 +93,19 @@ fi
 echo ""
 
 # Isolate installed packages by test name and image to avoid cross-test contamination.
-SAFE_IMAGE_TAG="$(printf '%s' "$TEST_IMAGE" | tr '/:@' '___' | tr -c '[:alnum:]_.-' '_')"
-SAFE_TEST_NAME="$(printf '%s' "$TEST_NAME" | tr -c '[:alnum:]_.-' '_')"
+SAFE_IMAGE_TAG="$(printf '%s' "$TEST_IMAGE" | tr '/:@' '___' | tr -c '[:alnum:]_.-' '_' | tr -d '\n')"
+SAFE_TEST_NAME="$(printf '%s' "$TEST_NAME" | tr -c '[:alnum:]_.-' '_' | tr -d '\n')"
 mkdir -p "./.cache/packages" "./.cache/packages-debug" "./.cache/pip"
-TEST_PACKAGES_DIR="$(pwd)/.cache/packages/${TEST_NAME}/${SAFE_IMAGE_TAG}"
-TEST_PACKAGES_DEBUG_DIR="$(pwd)/.cache/packages-debug/${TEST_NAME}/${SAFE_IMAGE_TAG}"
+TEST_PACKAGES_DIR="$(pwd)/.cache/packages/${SAFE_TEST_NAME}_${SAFE_IMAGE_TAG}"
+TEST_PACKAGES_DEBUG_DIR="$(pwd)/.cache/packages-debug/${SAFE_TEST_NAME}_${SAFE_IMAGE_TAG}"
 COMPOSE_PROJECT_NAME="retracetest_${SAFE_TEST_NAME}_$(date +%s)_$$"
 mkdir -p "$TEST_PACKAGES_DIR" "$TEST_PACKAGES_DEBUG_DIR"
+if [ ! -d "$TEST_PACKAGES_DIR" ] || [ ! -d "$TEST_PACKAGES_DEBUG_DIR" ]; then
+    echo "❌ Failed to create package cache directories"
+    echo "   TEST_PACKAGES_DIR=$TEST_PACKAGES_DIR"
+    echo "   TEST_PACKAGES_DEBUG_DIR=$TEST_PACKAGES_DEBUG_DIR"
+    exit 1
+fi
 
 # Export variables
 export TEST_IMAGE
@@ -110,6 +128,9 @@ cleanup_compose() {
         echo "⚠️  Warning: docker compose cleanup failed for project: $COMPOSE_PROJECT_NAME"
     fi
 }
+
+# Always cleanup compose resources even on unexpected early exits.
+trap cleanup_compose EXIT
 
 detect_failed_phase() {
     local compose_output
@@ -184,6 +205,106 @@ print("")
 '
 }
 
+detect_active_phase() {
+    local compose_output
+    compose_output="$($COMPOSE_CMD ps -a --format json 2>/dev/null || true)"
+    if [ -z "$compose_output" ]; then
+        echo ""
+        return
+    fi
+
+    local phases_csv
+    phases_csv="$(IFS=,; echo "${PHASE_SERVICES[*]}")"
+
+    # Find the earliest phase still running to classify timeout hangs.
+    printf '%s\n' "$compose_output" | PHASE_SERVICES_CSV="$phases_csv" python -c '
+import json
+import os
+import sys
+
+phase_order = [p for p in os.environ.get("PHASE_SERVICES_CSV", "").split(",") if p]
+state_by_service = {}
+
+raw = sys.stdin.read().strip()
+if not raw:
+    print("")
+    sys.exit(0)
+
+def feed(item):
+    service = item.get("Service")
+    if not service:
+        return
+    state = str(item.get("State", "")).lower()
+    state_by_service[service] = state
+
+try:
+    parsed = json.loads(raw)
+    if isinstance(parsed, list):
+        for item in parsed:
+            if isinstance(item, dict):
+                feed(item)
+    elif isinstance(parsed, dict):
+        feed(parsed)
+except json.JSONDecodeError:
+    for line in raw.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            item = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(item, dict):
+            feed(item)
+
+for phase in phase_order:
+    if state_by_service.get(phase) in {"running", "restarting"}:
+        print(phase)
+        sys.exit(0)
+
+print("")
+'
+}
+
+run_with_timeout() {
+    local timeout_sec="$1"
+    shift
+    if command -v python3 >/dev/null 2>&1; then
+        python3 - "$timeout_sec" "$@" <<'PY'
+import os
+import signal
+import subprocess
+import sys
+
+timeout_sec = int(sys.argv[1])
+cmd = sys.argv[2:]
+if not cmd:
+    sys.exit(2)
+
+proc = subprocess.Popen(cmd, preexec_fn=os.setsid)
+try:
+    proc.wait(timeout=timeout_sec)
+    sys.exit(proc.returncode)
+except subprocess.TimeoutExpired:
+    try:
+        os.killpg(proc.pid, signal.SIGTERM)
+    except ProcessLookupError:
+        pass
+    try:
+        proc.wait(timeout=10)
+    except subprocess.TimeoutExpired:
+        try:
+            os.killpg(proc.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+        proc.wait()
+    sys.exit(124)
+PY
+    else
+        "$@"
+    fi
+}
+
 if [ "$DEBUG_MODE" = true ]; then
     # Debug mode: install debug packages, run dryrun, then record under GDB
     echo "📦 Installing debug packages..."
@@ -195,8 +316,9 @@ if [ "$DEBUG_MODE" = true ]; then
         -v "$(pwd)/.cache/pip:/root/.cache/pip" \
         -v "$(pwd)/$TEST_PACKAGES_DEBUG_DIR:/app/packages" \
         "$TEST_IMAGE" \
-        bash -c "pip install --target /app/packages -r /app/dockertests/base-requirements.txt && \
-                 if [ -f /app/test/requirements.txt ]; then pip install --target /app/packages -r /app/test/requirements.txt; fi"
+        bash -c "shopt -s dotglob nullglob && rm -rf /app/packages/* && shopt -u dotglob nullglob && \
+                 pip install --no-cache-dir --upgrade --target /app/packages -r /app/dockertests/base-requirements.txt && \
+                 if [ -f /app/test/requirements.txt ]; then pip install --no-cache-dir --upgrade --target /app/packages -r /app/test/requirements.txt; fi"
     
     echo "🔍 Running dryrun..."
     docker run --rm \
@@ -214,13 +336,12 @@ if [ "$DEBUG_MODE" = true ]; then
     # Run record interactively with GDB and debug packages
     docker run -it --rm \
         --cap-add=SYS_PTRACE \
-        -v "$(pwd)/../src:/app/src:ro" \
         -v "$(pwd)/$TEST_DIR:/app/test:ro" \
         -v "$(pwd)/$TEST_DIR/recording:/recording:rw" \
         -v "$(pwd)/$TEST_PACKAGES_DEBUG_DIR:/app/packages:ro" \
-        -e "PYTHONPATH=/app/src:/app/packages" \
-        -e "RETRACE=1" \
-        -e "RETRACE_RECORDING_PATH=/recording" \
+        -w /recording \
+        -e "PYTHONPATH=/app/packages" \
+        -e "RETRACE_CONFIG=debug" \
         "$TEST_IMAGE" \
         bash -c "apt-get update -qq && apt-get install -qq -y gdb > /dev/null && \
                  python -m retracesoftware install && \
@@ -237,24 +358,41 @@ if [ "$DEBUG_MODE" = true ]; then
     else
         echo "❌ Debug session failed (exit code: $DEBUG_EXIT_CODE)."
     fi
+    if [ "$DEBUG_EXIT_CODE" -eq 0 ] && [ ! -f "$TEST_DIR/recording/trace.bin" ]; then
+        echo "❌ Debug record completed but trace.bin is missing at $TEST_DIR/recording/trace.bin"
+        exit 1
+    fi
     echo "Recording may be incomplete."
     exit "$DEBUG_EXIT_CODE"
 fi
 
 # Normal mode: run full pipeline
 set +e
-$COMPOSE_CMD run --rm --quiet-pull cleanup
+run_with_timeout "$PIPELINE_TIMEOUT_SEC" bash -lc "$COMPOSE_CMD run --rm --quiet-pull cleanup"
 EXIT_CODE=$?
 set -e
 
+TIMED_OUT_PHASE=""
+if [ "$EXIT_CODE" -eq 124 ]; then
+    TIMED_OUT_PHASE="$(detect_active_phase)"
+fi
 
 if [ $EXIT_CODE -eq 0 ]; then
     echo "✅ Test passed: $TEST_NAME"
 else
     FAILED_PHASE="$(detect_failed_phase)"
+    if [ "$EXIT_CODE" -eq 124 ] && [ -n "$TIMED_OUT_PHASE" ]; then
+        FAILED_PHASE="$TIMED_OUT_PHASE"
+    fi
 
     echo ""
     echo "❌ Test failed: $TEST_NAME (exit code: $EXIT_CODE)"
+    if [ "$EXIT_CODE" -eq 124 ]; then
+        echo "⏱️  Pipeline timed out after ${PIPELINE_TIMEOUT_SEC}s"
+        if [ -n "$TIMED_OUT_PHASE" ]; then
+            echo "⏱️  Timed out phase: $TIMED_OUT_PHASE"
+        fi
+    fi
     if [ -n "$FAILED_PHASE" ]; then
         echo "❌ Failed phase: $FAILED_PHASE"
     else
@@ -269,7 +407,5 @@ else
     $COMPOSE_CMD logs --tail=50 || true
     echo "─────────────────────────────────────────────"
 fi
-
-cleanup_compose
 
 exit $EXIT_CODE

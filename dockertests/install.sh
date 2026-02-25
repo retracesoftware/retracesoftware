@@ -24,13 +24,13 @@ fi
 # Install base requirements (common deps for retrace)
 if [ -f "/app/dockertests/base-requirements.txt" ]; then
     echo "[install.sh] Installing base requirements to $TARGET..."
-    pip install --upgrade --target "$TARGET" -r /app/dockertests/base-requirements.txt
+    pip install --no-cache-dir --upgrade --target "$TARGET" -r /app/dockertests/base-requirements.txt
 fi
 
 # Install test-specific requirements if present
 if [ -f "/app/test/requirements.txt" ]; then
     echo "[install.sh] Installing test-specific requirements to $TARGET..."
-    pip install --upgrade --target "$TARGET" -r /app/test/requirements.txt
+    pip install --no-cache-dir --upgrade --target "$TARGET" -r /app/test/requirements.txt
 fi
 
 echo "[install.sh] Dependencies installed to $TARGET"
