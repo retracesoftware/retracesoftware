@@ -291,6 +291,8 @@ def replay(args):
 
         monitor_level = header.get('monitor', 0)
 
+        thread_id.set(())
+
         per_thread_source = stream.per_thread(
             source=reader, thread = thread_id.get,
             timeout=max(1, args.read_timeout // 1000))
