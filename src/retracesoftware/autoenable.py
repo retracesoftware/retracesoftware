@@ -29,11 +29,13 @@ else:
 
         replay_bin = shutil.which('replay')
         if replay_bin is None:
-            replay_bin = '/usr/bin/env replay'
+            shebang = '#!/usr/bin/env -S replay --recording\n'
+        else:
+            shebang = f'#!{replay_bin} --recording\n'
 
         os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
         with open(path, 'wb') as f:
-            f.write(f'#!{replay_bin}\n'.encode())
+            f.write(shebang.encode())
         os.chmod(path, 0o755)
         os.environ['RETRACE_INODE'] = str(os.stat(path).st_ino)
 
