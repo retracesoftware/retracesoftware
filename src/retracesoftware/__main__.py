@@ -219,7 +219,8 @@ def record(options, args):
                          trace_shutdown=options.trace_shutdown,
                          monitor_level=monitor_level,
                          monitor_fn=monitor_fn,
-                         retrace_file_patterns=getattr(options, 'retrace_file_patterns', None))
+                         retrace_file_patterns=getattr(options, 'retrace_file_patterns', None),
+                         verbose=options.verbose)
 
 def parse_fork_path(s):
     """Parse fork path to binary string of '0' (parent) and '1' (child).
@@ -353,7 +354,8 @@ def replay(args):
                          on_ready=install_fork_handler,
                          monitor_level=monitor_level,
                          monitor_fn=monitor_fn,
-                         retrace_file_patterns=getattr(args, 'retrace_file_patterns', None))
+                         retrace_file_patterns=getattr(args, 'retrace_file_patterns', None),
+                         verbose=args.verbose)
         gc.enable()
 
 def pth_source():
