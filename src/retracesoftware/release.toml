@@ -39,3 +39,6 @@ trace_shutdown = false
 
 # Record call arguments for every proxied call (large traces).
 trace_inputs = false
+
+# Silently drop serialization errors to avoid crashing the application.
+quit_on_error = false

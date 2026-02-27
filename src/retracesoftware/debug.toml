@@ -29,3 +29,6 @@ stacktraces = true
 
 trace_shutdown = false
 trace_inputs = false
+
+# Terminate on serialization errors instead of silently dropping them.
+quit_on_error = true

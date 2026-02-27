@@ -16,6 +16,27 @@ else:
                 and sys.orig_argv[1] == '-m'
                 and sys.orig_argv[2].startswith('retracesoftware'))
 
+    def _prepare_trace_file(path):
+        """If root retrace process, truncate trace file and add shebang."""
+        import shutil
+        try:
+            existing_inode = str(os.stat(path).st_ino)
+        except FileNotFoundError:
+            existing_inode = None
+
+        if os.environ.get('RETRACE_INODE') == existing_inode and existing_inode is not None:
+            return  # child process, file already prepared by root
+
+        replay_bin = shutil.which('replay')
+        if replay_bin is None:
+            replay_bin = '/usr/bin/env replay'
+
+        os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
+        with open(path, 'wb') as f:
+            f.write(f'#!{replay_bin}\n'.encode())
+        os.chmod(path, 0o755)
+        os.environ['RETRACE_INODE'] = str(os.stat(path).st_ino)
+
     if 'RETRACE_RECORDING' in os.environ or 'RETRACE_CONFIG' in os.environ:
         import sys
 
@@ -30,6 +51,9 @@ else:
             if "recording" not in config.get("record", {}):
                 pass  # no recording path, nothing to do
             else:
+                recording = config["record"]["recording"]
+                _prepare_trace_file(recording)
+
                 new_argv = [sys.orig_argv[0], '-m', 'retracesoftware']
                 new_argv.extend(config_to_argv(config))
                 new_argv.append('--')

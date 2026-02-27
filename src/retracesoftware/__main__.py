@@ -127,7 +127,6 @@ def record(options, args):
     else:
         trace_path = Path(expand_recording_path(options.recording))
         trace_path.parent.mkdir(parents=True, exist_ok=True)
-        trace_path.touch(exist_ok=True)
 
     preamble = None
     if trace_path:
@@ -159,12 +158,13 @@ def record(options, args):
                        thread = thread_id,
                        verbose = options.verbose,
                        preamble = preamble,
-                       append = True,
                        inflight_limit = options.inflight_limit,
                        stall_timeout = options.stall_timeout,
                        queue_capacity = options.queue_capacity,
                        return_queue_capacity = options.return_queue_capacity,
-                       flush_interval = options.flush_interval) as writer:
+                       flush_interval = options.flush_interval,
+                       quit_on_error = options.quit_on_error,
+                       serialize_errors = not options.quit_on_error) as writer:
 
         if options.stacktraces:
             stackfactory = utils.StackFactory()
@@ -174,9 +174,23 @@ def record(options, args):
             stackfactory = None
 
         system = System()
-        pw = stream_writer(writer=writer, stackfactory=stackfactory)
+
+        def on_write_error(exc_type, exc_value, exc_tb):
+            import traceback
+            print(f'\nretrace: serialization error: {exc_type.__name__}: {exc_value}', file=sys.stderr)
+            if exc_tb:
+                print('\nTraceback (serialization error):', file=sys.stderr)
+                traceback.print_tb(exc_tb, file=sys.stderr)
+            print('\nCall stack:', file=sys.stderr)
+            traceback.print_stack(file=sys.stderr)
+            os._exit(1)
+
+        pw = stream_writer(writer=writer, stackfactory=stackfactory, 
+                           on_write_error = system.disable_for(on_write_error) if options.quit_on_error else None)
+        
         context = system.record_context(
-            writer=pw, stacktraces=options.stacktraces)
+            writer=pw, 
+            stacktraces = options.stacktraces)
 
         on_weakref_start = writer.handle('ON_WEAKREF_CALLBACK_START')
         on_weakref_end = writer.handle('ON_WEAKREF_CALLBACK_END')
@@ -252,22 +266,29 @@ def replay(args):
     # Resolve path before any chdir
     path = Path(args.recording).resolve()
 
-    if not path.is_file():
+    raw = getattr(args, 'raw', False)
+    if not raw and not path.is_file():
         raise RecordingNotFoundError(f"Recording path: {path} is not a file")
 
     if getattr(args, 'list_pids', False):
-        pids = stream.list_pids(path)
-        for pid in sorted(pids):
-            print(pid)
+        if raw:
+            header, _ = stream.read_process_info(path, raw=True)
+            import json
+            print(json.dumps(header, indent=2))
+        else:
+            pids = stream.list_pids(path)
+            for pid in sorted(pids):
+                print(pid)
         return
 
 
+    header, data_offset = stream.read_process_info(path, raw=raw)
+
     with stream.reader(path = path,
                        read_timeout = args.read_timeout,
-                       verbose = args.verbose) as reader:
-
-        # First object in the stream is the header dict with all replay metadata
-        header = reader()
+                       verbose = args.verbose,
+                       start_offset = data_offset,
+                       raw = raw) as reader:
 
         recorded_checksums = header['checksums']
         current_checksums = checksums()
@@ -280,12 +301,6 @@ def replay(args):
             raise VersionMismatchError("Python version does not match, cannot run replay with different version of Python to record")
 
         os.environ.update(header['env'])
-
-        if sys.executable != header['executable']:
-            raise ConfigurationError(f"Stopping replay as current python executable: {sys.executable} is not what was used for record: {header['executable']}")
-
-        # Change to recorded cwd - replay from same directory as recording
-        os.chdir(header['cwd'])
 
         system = System()
 
@@ -416,9 +431,15 @@ def main():
         )
 
         parser.add_argument(
-            '--trace_inputs', 
-            action='store_true', 
+            '--trace_inputs',
+            action='store_true',
             help='Whether to write call parameters, used for debugging'
+        )
+
+        parser.add_argument(
+            '--quit_on_error',
+            action='store_true',
+            help='Terminate on serialization errors instead of silently dropping them'
         )
 
         parser.add_argument(
@@ -494,6 +515,12 @@ def main():
             '--list_pids',
             action = 'store_true',
             help = 'List all PIDs in the trace and exit'
+        )
+
+        parser.add_argument(
+            '--raw',
+            action = 'store_true',
+            help = 'Recording is a raw message stream (no PID framing)'
         )
 
         replay(parser.parse_args())
