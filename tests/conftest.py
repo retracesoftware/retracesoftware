@@ -30,7 +30,7 @@ def tmpdir():
 def run_record(script_path, recording, extra_args=None, env=None):
     """Run a script under retrace recording.
 
-    *recording* is a trace file path (e.g. ``/tmp/dir/trace.bin``).
+    *recording* is a trace file path (e.g. ``/tmp/dir/trace.retrace``).
     Returns the CompletedProcess.
     """
     cmd = [
@@ -55,7 +55,7 @@ def run_record(script_path, recording, extra_args=None, env=None):
 def run_replay(recording, extra_args=None, env=None):
     """Replay from a trace file.
 
-    *recording* is a trace file path (e.g. ``/tmp/dir/trace.bin``).
+    *recording* is a trace file path (e.g. ``/tmp/dir/trace.retrace``).
     Returns the CompletedProcess.
     """
     cmd = [

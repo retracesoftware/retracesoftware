@@ -1,0 +1,9 @@
+# Default retrace file patterns.
+# Paths matching any pattern are RETRACED (proxied for record/replay).
+# Paths matching no pattern PASSTHROUGH to the real function.
+# One regex per line. Lines starting with # are comments. Blank lines ignored.
+/dev/
+/proc/
+/sys/
+/tmp/
+/var/tmp/

@@ -26,7 +26,7 @@ SCRIPTS = Path(__file__).parent / "scripts"
 def record_and_replay(tmpdir, script_name, extra_record_args=None):
     """Record a script, then replay it.  Return (record_proc, replay_proc)."""
     script = SCRIPTS / script_name
-    recording = os.path.join(tmpdir, "trace.bin")
+    recording = os.path.join(tmpdir, "trace.retrace")
 
     rec = run_record(script, recording, extra_args=extra_record_args)
     if rec.returncode != 0:
@@ -46,7 +46,7 @@ class TestSimpleRecordReplay:
 
     def test_record_succeeds(self, tmpdir):
         script = SCRIPTS / "simple_print.py"
-        recording = os.path.join(tmpdir, "trace.bin")
+        recording = os.path.join(tmpdir, "trace.retrace")
         rec = run_record(script, recording)
         assert rec.returncode == 0, f"stderr: {rec.stderr}"
 
@@ -64,7 +64,7 @@ class TestFork:
     )
     def test_fork_record_succeeds(self, tmpdir):
         script = SCRIPTS / "fork_child.py"
-        recording = os.path.join(tmpdir, "trace.bin")
+        recording = os.path.join(tmpdir, "trace.retrace")
         rec = run_record(script, recording)
         assert rec.returncode == 0, f"stderr: {rec.stderr}"
         # Both parent and child should have printed
@@ -85,7 +85,7 @@ class TestSubprocess:
 
     def test_subprocess_record_succeeds(self, tmpdir):
         script = SCRIPTS / "subprocess_echo.py"
-        recording = os.path.join(tmpdir, "trace.bin")
+        recording = os.path.join(tmpdir, "trace.retrace")
         rec = run_record(script, recording)
         assert rec.returncode == 0, f"stderr: {rec.stderr}"
         assert "parent got: hello from child" in rec.stdout
@@ -108,7 +108,7 @@ class TestExec:
     )
     def test_exec_record_succeeds(self, tmpdir):
         script = SCRIPTS / "exec_replacement.py"
-        recording = os.path.join(tmpdir, "trace.bin")
+        recording = os.path.join(tmpdir, "trace.retrace")
         rec = run_record(script, recording)
         assert rec.returncode == 0, f"stderr: {rec.stderr}"
 
@@ -126,7 +126,7 @@ class TestMultiProcess:
 
     def test_multiple_subprocesses_record(self, tmpdir):
         script = SCRIPTS / "multiprocess_values.py"
-        recording = os.path.join(tmpdir, "trace.bin")
+        recording = os.path.join(tmpdir, "trace.retrace")
         rec = run_record(script, recording)
         assert rec.returncode == 0, f"stderr: {rec.stderr}"
         # Output should be a JSON list of 3 floats
@@ -151,7 +151,7 @@ class TestForkTree:
     )
     def test_record_produces_all_paths(self, tmpdir):
         script = SCRIPTS / "fork_tree.py"
-        recording = os.path.join(tmpdir, "trace.bin")
+        recording = os.path.join(tmpdir, "trace.retrace")
         rec = run_record(script, recording)
         assert rec.returncode == 0, f"stderr: {rec.stderr}"
 
@@ -171,7 +171,7 @@ class TestForkTree:
     ])
     def test_replay_follows_fork_path(self, tmpdir, fork_path):
         script = SCRIPTS / "fork_tree.py"
-        recording = os.path.join(tmpdir, "trace.bin")
+        recording = os.path.join(tmpdir, "trace.retrace")
         rec = run_record(script, recording)
         assert rec.returncode == 0, f"stderr: {rec.stderr}"
 
@@ -207,7 +207,7 @@ class TestTextIOWrapperProxy:
 
     def test_record_textiowrapper_on_pipe(self, tmpdir):
         script = SCRIPTS / "textiowrapper_pipe.py"
-        recording = os.path.join(tmpdir, "trace.bin")
+        recording = os.path.join(tmpdir, "trace.retrace")
         rec = run_record(script, recording)
         assert rec.returncode == 0, (
             f"Record failed (exit {rec.returncode}):\n"
@@ -244,7 +244,7 @@ class TestSubprocessRecorded:
 
     def test_subprocess_time_record_succeeds(self, tmpdir, autoenable_env):
         script = SCRIPTS / "subprocess_time.py"
-        recording = os.path.join(tmpdir, "trace.bin")
+        recording = os.path.join(tmpdir, "trace.retrace")
 
         env = {**autoenable_env, "RETRACE_RECORDING": recording}
 
@@ -261,7 +261,7 @@ class TestSubprocessRecorded:
     )
     def test_subprocess_time_replay_deterministic(self, tmpdir, autoenable_env):
         script = SCRIPTS / "subprocess_time.py"
-        recording = os.path.join(tmpdir, "trace.bin")
+        recording = os.path.join(tmpdir, "trace.retrace")
 
         env = {**autoenable_env, "RETRACE_RECORDING": recording}
 
@@ -344,7 +344,7 @@ class TestTextIOWrapperNew:
 
     def test_record_textiowrapper_new(self, tmpdir):
         script = SCRIPTS / "textiowrapper_new.py"
-        recording = os.path.join(tmpdir, "trace.bin")
+        recording = os.path.join(tmpdir, "trace.retrace")
         rec = run_record(script, recording)
         assert rec.returncode == 0, (
             f"Record failed (exit {rec.returncode}):\n"

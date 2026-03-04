@@ -24,10 +24,8 @@ return_queue_capacity = 65536
 flush_interval = "100ms"
 
 [record]
-# Output path for the trace file.  Supports {script} (base name of the
-# recorded script without extension) and {pid} placeholders, plus
-# strftime format codes.
-recording = "{script}.retrace"
+# Default output path for the trace file.
+recording = "trace.bin"
 
 # Print diagnostic messages to stderr during recording.
 verbose = false
@@ -41,6 +39,3 @@ trace_shutdown = false
 
 # Record call arguments for every proxied call (large traces).
 trace_inputs = false
-
-# Silently drop serialization errors to avoid crashing the application.
-quit_on_error = false

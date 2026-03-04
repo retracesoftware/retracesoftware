@@ -1,60 +1,22 @@
-import re
 import sys
-import runpy
 import os
 import argparse
-from typing import Tuple, List
 import retracesoftware.utils as utils
 import retracesoftware.functional as functional
 from pathlib import Path
 from retracesoftware.proxy.messagestream import MessageStream
 import retracesoftware.stream as stream
 import datetime
-import json
-from shutil import copy2
-import threading
-import time
 import gc
 import hashlib
 
 from retracesoftware.proxy.system import System
 
 from retracesoftware.install import run_with_context, stream_writer
-from retracesoftware.exceptions import RecordingNotFoundError, VersionMismatchError, ConfigurationError
+from retracesoftware.exceptions import RecordingNotFoundError, VersionMismatchError
 
 def expand_recording_path(path):
     return datetime.datetime.now().strftime(path.format(pid = os.getpid()))
-
-def dump_as_json(path, obj):
-    with open(path, 'w') as f:
-        json.dump(obj, f, indent=2)
-
-vscode_workspace = {
-    "folders": [{ 'path': '.' }],
-    "settings": {
-        "python.defaultInterpreterPath": sys.executable,
-    },
-    "launch": {
-        "version": "0.2.0",
-        "configurations": [{
-            "name": "replay",
-            "type": "debugpy",
-            "request": "launch",
-            
-            "python": sys.executable,
-            "module": "retracesoftware",
-            "args": [
-                "--recording", "..",
-                "--skip_weakref_callbacks",
-                "--read_timeout", "1000"
-            ],
-            
-            "cwd": "${workspaceFolder}/run",
-            "console": "integratedTerminal",
-            "justMyCode": False
-        }]
-    },
-}
 
 def file_md5(path):
     return hashlib.md5(path.read_bytes()).hexdigest()
@@ -98,22 +60,17 @@ def retrace_module_paths():
 def checksums():
     return {name: checksum(path) for name, path in retrace_module_paths().items()}
 
-def generate_workspace(workspace_path, settings, recorded_checksums, env):
-    """Write VS Code workspace sidecar files to *workspace_path*."""
-    workspace_path.mkdir(parents=True, exist_ok=True)
-    dump_as_json(workspace_path / 'settings.json', settings)
-    dump_as_json(workspace_path / 'md5_checksums.json', recorded_checksums)
-    with open(workspace_path / '.env', 'w') as f:
-        for key, value in env.items():
-            escaped = value.replace('\\', '\\\\').replace('\n', '\\n').replace('"', '\\"')
-            f.write(f'{key}="{escaped}"\n')
-    dump_as_json(workspace_path / 'replay.code-workspace', vscode_workspace)
-
 thread_id = utils.ThreadLocal()
 
-def record(options, args):
-    
-    # Check if recording is disabled (for performance testing)
+def record(system, options, args):
+
+    if options.recording is None:
+        options.recording = '{script}.retrace'
+
+    if '{script}' in options.recording:
+        stem = Path(args[0]).stem if args else 'recording'
+        options.recording = options.recording.replace('{script}', stem)
+
     recording_disabled = (options.recording == 'disable')
     
     if options.verbose:
@@ -144,16 +101,12 @@ def record(options, args):
         recorded_checksums = checksums()
         
         preamble = {
+            'type': 'exec',
             **settings,
             'checksums': recorded_checksums,
             'env': dict(os.environ),
         }
         
-        workspace = getattr(options, 'workspace', None)
-        if workspace:
-            generate_workspace(
-                Path(workspace), settings, recorded_checksums, dict(os.environ))
-
     with stream.writer(path = trace_path,
                        thread = thread_id,
                        verbose = options.verbose,
@@ -172,9 +125,7 @@ def record(options, args):
             stackfactory.exclude.add(main)
         else:
             stackfactory = None
-
-        system = System()
-
+            
         def on_write_error(exc_type, exc_value, exc_tb):
             import traceback
             print(f'\nretrace: serialization error: {exc_type.__name__}: {exc_value}', file=sys.stderr)
@@ -222,6 +173,16 @@ def record(options, args):
                          retrace_file_patterns=getattr(options, 'retrace_file_patterns', None),
                          verbose=options.verbose)
 
+def parse_breakpoint(s):
+    """Parse 'file:line' or 'file:line:condition' into (path, line, condition)."""
+    parts = s.split(':', maxsplit=2)
+    if len(parts) < 2:
+        raise ValueError(f"Invalid breakpoint format: {s!r} (expected file:line[:condition])")
+    path = os.path.realpath(parts[0])
+    line = int(parts[1])
+    condition = parts[2] if len(parts) > 2 else None
+    return path, line, condition
+
 def parse_fork_path(s):
     """Parse fork path to binary string of '0' (parent) and '1' (child).
 
@@ -262,101 +223,101 @@ def make_replay_fork(proxied_fork, reader, fork_path):
         return child_pid
     return replay_fork
 
+def replay(system, args):
 
-def replay(args):
-    # Resolve path before any chdir
+    chunk_ms = getattr(args, 'chunk_ms', None)
+    control_socket = getattr(args, 'control_socket', None)
+
+    # Resolve path before any chdir.  Go replay has already stripped
+    # PID framing, so the recording is always a raw message stream.
     path = Path(args.recording).resolve()
 
-    raw = getattr(args, 'raw', False)
-    if not raw and not path.is_file():
+    if not path.is_file():
         raise RecordingNotFoundError(f"Recording path: {path} is not a file")
 
-    if getattr(args, 'list_pids', False):
-        if raw:
-            header, _ = stream.read_process_info(path, raw=True)
-            import json
-            print(json.dumps(header, indent=2))
-        else:
-            pids = stream.list_pids(path)
-            for pid in sorted(pids):
-                print(pid)
-        return
-
-
-    header, data_offset = stream.read_process_info(path, raw=raw)
+    header, data_offset = stream.read_process_info(path, raw=True)
 
     with stream.reader(path = path,
-                       read_timeout = args.read_timeout,
-                       verbose = args.verbose,
-                       start_offset = data_offset,
-                       raw = raw) as reader:
+                    read_timeout = args.read_timeout,
+                    verbose = args.verbose,
+                    start_offset = data_offset,
+                    raw = True) as reader:
 
-        recorded_checksums = header['checksums']
-        current_checksums = checksums()
-        if recorded_checksums != current_checksums:
-            diffs = diff_dicts(recorded_checksums, current_checksums)
-            diff_str = "\n".join(diffs) if diffs else "(no differences found in structure)"
-            raise VersionMismatchError(f"Checksums for Retrace do not match:\n{diff_str}")
+            if chunk_ms is not None:
+                from retracesoftware.search import install_timeslice_search
+                install_timeslice_search(
+                    chunk_ms=chunk_ms,
+                    get_offset=lambda: reader.messages_read,
+                )
 
-        if header['python_version'] != sys.version:
-            raise VersionMismatchError("Python version does not match, cannot run replay with different version of Python to record")
+            recorded_checksums = header['checksums']
+            current_checksums = checksums()
+            if recorded_checksums != current_checksums:
+                diffs = diff_dicts(recorded_checksums, current_checksums)
+                diff_str = "\n".join(diffs) if diffs else "(no differences found in structure)"
+                raise VersionMismatchError(f"Checksums for Retrace do not match:\n{diff_str}")
 
-        os.environ.update(header['env'])
+            if header['python_version'] != sys.version:
+                raise VersionMismatchError("Python version does not match, cannot run replay with different version of Python to record")
 
-        system = System()
+            os.environ.update(header['env'])
 
-        monitor_level = header.get('monitor', 0)
+            monitor_level = header.get('monitor', 0)
 
-        thread_id.set(())
+            thread_id.set(())
 
-        per_thread_source = stream.per_thread(
-            source=reader, thread = thread_id.get,
-            timeout=max(1, args.read_timeout // 1000))
-        msg_stream = MessageStream(per_thread_source,
-                                   monitor_enabled=(monitor_level > 0))
-        context = system.replay_context(reader=msg_stream)
+            per_thread_source = stream.per_thread(
+                source=reader, thread = thread_id.get,
+                timeout=max(1, args.read_timeout // 1000))
+            msg_stream = MessageStream(per_thread_source,
+                                    monitor_enabled=(monitor_level > 0))
 
-        if monitor_level > 0:
-            def _verify_monitor(value):
-                msg_stream.monitor_checkpoint(value)
-            monitor_fn = system.disable_for(_verify_monitor)
-        else:
-            monitor_fn = None
+            if control_socket:
+                from retracesoftware.control_runtime import Controller
+                controller = Controller(control_socket)
+                _original_sync = msg_stream.sync
+                def _sync():
+                    _original_sync()
+                    controller.on_new_message(None)
+                msg_stream.sync = _sync
 
-        # During replay, weakref callbacks fire naturally and handle
-        # messages (ON_WEAKREF_CALLBACK_START/END) on the tape are
-        # auto-skipped by MessageStream, so wrap_callback is identity.
-        def wrap_callback(callback):
-            return callback
+            context = system.replay_context(reader=msg_stream)
 
-        # GC execution is captured during record and replayed
-        # deterministically, so disable automatic GC to prevent
-        # nondeterministic collections that would desync the replay.
-        # Flush any pending garbage first.
-        gc.collect()
-        gc.disable()
+            if monitor_level > 0:
+                def _verify_monitor(value):
+                    msg_stream.monitor_checkpoint(value)
+                monitor_fn = system.disable_for(_verify_monitor)
+            else:
+                monitor_fn = None
 
-        fork_path = parse_fork_path(getattr(args, 'fork_path', ''))
+            # During replay, weakref callbacks fire naturally and handle
+            # messages (ON_WEAKREF_CALLBACK_START/END) on the tape are
+            # auto-skipped by MessageStream, so wrap_callback is identity.
+            def wrap_callback(callback):
+                return callback
 
-        def install_fork_handler():
-            if not fork_path:
-                return
-            import posix
-            proxied_fork = posix.fork
-            wrapper = make_replay_fork(proxied_fork, reader, fork_path)
-            posix.fork = wrapper
-            os.fork = wrapper
+            # GC execution is captured during record and replayed
+            # deterministically, so disable automatic GC to prevent
+            # nondeterministic collections that would desync the replay.
+            # Flush any pending garbage first.
+            gc.collect()
+            gc.disable()
 
-        run_with_context(system=system, thread_id=thread_id,
-                         context=context, argv=header['argv'],
-                         wrap_callback=wrap_callback,
-                         trace_shutdown=header['trace_shutdown'],
-                         on_ready=install_fork_handler,
-                         monitor_level=monitor_level,
-                         monitor_fn=monitor_fn,
-                         retrace_file_patterns=getattr(args, 'retrace_file_patterns', None),
-                         verbose=args.verbose)
-        gc.enable()
+            try:
+                run_with_context(system=system, thread_id=thread_id,
+                                context=context, argv=header['argv'],
+                                wrap_callback=wrap_callback,
+                                trace_shutdown=header['trace_shutdown'],
+                                monitor_level=monitor_level,
+                                monitor_fn=monitor_fn,
+                                retrace_file_patterns=getattr(args, 'retrace_file_patterns', None),
+                                verbose=args.verbose)
+            except Exception:
+                raise
+            finally:
+                gc.enable()
+                if control_socket and controller:
+                    controller.on_replay_finished()
 
 def pth_source():
     return Path(__file__).parent / 'retrace.pth'
@@ -383,6 +344,9 @@ def cmd_uninstall(args):
         print(f'Nothing to remove: {target} does not exist')
 
 def main():
+
+    system = System()
+
     # Check for "install" or "uninstall" subcommands first
     if len(sys.argv) >= 2 and sys.argv[1] in ('install', 'uninstall'):
         parser = argparse.ArgumentParser(
@@ -415,8 +379,8 @@ def main():
     parser.add_argument(
         '--recording',
         type = str,
-        default = 'trace.bin',
-        help = 'Trace file path (default: trace.bin)'
+        default = None,
+        help = 'Trace file path (default: {script}.retrace)'
     )
 
     if '--' in sys.argv:
@@ -442,14 +406,6 @@ def main():
             '--quit_on_error',
             action='store_true',
             help='Terminate on serialization errors instead of silently dropping them'
-        )
-
-        parser.add_argument(
-            '--workspace',
-            type=str,
-            default=None,
-            help='Generate VS Code workspace directory with sidecar files '
-                 '(settings.json, .env, checksums, launch config)'
         )
 
         parser.add_argument(
@@ -484,7 +440,7 @@ def main():
 
         args = parser.parse_args()
 
-        record(args, args.rest[1:])
+        record(system, args, args.rest[1:])
 
     else:
 
@@ -514,18 +470,19 @@ def main():
             help='Path to file with additional regex patterns for path-based retrace filtering')
 
         parser.add_argument(
-            '--list_pids',
-            action = 'store_true',
-            help = 'List all PIDs in the trace and exit'
-        )
+            '--control_socket',
+            type=str,
+            default=None,
+            help='Connect to Go replay control socket at this path')
 
         parser.add_argument(
-            '--raw',
-            action = 'store_true',
-            help = 'Recording is a raw message stream (no PID framing)'
-        )
+            '--chunk_ms',
+            type=float,
+            default=None,
+            help='Search for replay chunk boundaries every N milliseconds of execution time')
 
-        replay(parser.parse_args())
+        args = parser.parse_args()
+        replay(system, args)
 
 if __name__ == "__main__":
     main()
