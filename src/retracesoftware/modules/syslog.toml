@@ -1,0 +1,5 @@
+# POSIX syslog interface — openlog(3), closelog(3), syslog(3), setlogmask(3).
+# All functions wrap direct libc syslog calls in C.
+# LOG_MASK and LOG_UPTO are pure bitmask helpers (deterministic).
+
+proxy = ["openlog", "closelog", "syslog", "setlogmask"]

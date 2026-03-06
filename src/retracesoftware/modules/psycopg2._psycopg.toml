@@ -1,0 +1,3 @@
+# psycopg2 C extension — PostgreSQL I/O via libpq.
+
+proxy = ["connect", "cursor", "connection"]

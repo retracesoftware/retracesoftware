@@ -1,0 +1,13 @@
+# Pillow C extension — image file I/O via libjpeg, libpng, libtiff, etc.
+# Direct file read/write syscalls in C for image loading and saving.
+#
+# ImagingCore — core image object, created by open() or new().
+# ImagingDraw — drawing primitives on images.
+# open — reads image files directly in C via libjpeg/libpng/etc.
+#
+# Note: some Pillow code paths read through Python file objects (covered by
+# _io proxy), but direct C file I/O paths exist for common formats.
+
+package = "Pillow"
+
+proxy = ["open", "ImagingCore", "ImagingDraw"]

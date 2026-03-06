@@ -15,7 +15,7 @@ from pathlib import Path
 
 import pytest
 
-from conftest import run_record, run_replay
+from tests.helpers import run_record, run_replay
 
 
 SCRIPTS = Path(__file__).parent / "scripts"

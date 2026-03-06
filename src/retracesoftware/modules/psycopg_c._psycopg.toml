@@ -1,0 +1,13 @@
+# psycopg3 C-accelerated extension — PostgreSQL I/O via libpq.
+# Direct socket I/O in C, similar pattern to psycopg2._psycopg.
+#
+# PGconn — wraps libpq PGconn, performs all PostgreSQL network I/O.
+# PGresult — wraps libpq PGresult, retrieves query results.
+# PGcancel — wraps libpq PGcancel, sends query cancellation.
+# Connector — handles async connection setup.
+
+package = "psycopg_c"
+
+proxy = ["PGconn", "PGresult", "PGcancel", "Connector"]
+
+immutable = ["OperationalError", "InterfaceError"]

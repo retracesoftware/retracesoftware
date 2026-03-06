@@ -1,0 +1,14 @@
+# NumPy random C extensions — own RNG via C (PCG64, MT19937, etc.).
+# Seeds from OS entropy directly in C, bypassing _random and posix.urandom.
+#
+# Generator — main random number generator, wraps a BitGenerator.
+# BitGenerator subclasses — PCG64, MT19937, Philox, SFC64 seed from OS entropy
+#   in C via getrandom(2) / /dev/urandom, bypassing Python's posix.urandom.
+# SeedSequence — processes seed material, may read OS entropy.
+# default_rng — factory function, creates Generator with PCG64.
+
+package = "numpy"
+
+proxy = ["default_rng",
+         "Generator", "BitGenerator", "SeedSequence",
+         "PCG64", "MT19937", "Philox", "SFC64"]

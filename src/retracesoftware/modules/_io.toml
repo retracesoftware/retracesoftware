@@ -1,0 +1,37 @@
+# Core file I/O — FileIO, BufferedReader, BufferedWriter, BufferedRandom, TextIOWrapper.
+# Direct read/write/open syscalls in C, bypassing posix module.
+#
+# BytesIO and StringIO are in-memory only — no syscalls, no proxy needed.
+# IncrementalNewlineDecoder is deterministic text processing — no proxy needed.
+#
+# Needs patch_class wrappers for readinto/readinto1 on buffered types
+# (see Buffer Protocol section in MODULES_GUIDE.md).
+
+proxy = ["open", "open_code",
+         "FileIO", "BufferedReader", "BufferedWriter",
+         "BufferedRandom", "BufferedRWPair", "TextIOWrapper"]
+
+# Functions/constructors whose path parameter refers to stable filesystem
+# locations can bypass the proxy. Returned objects are unbound, so their
+# methods also pass through (instance-level binding).
+[pathparam]
+open = "file"
+open_code = "path"
+FileIO = "file"
+
+immutable = ["BlockingIOError", "UnsupportedOperation"]
+
+[patch_class.FileIO]
+readinto = "retracesoftware.install.edgecases.readinto"
+
+[patch_class.BufferedReader]
+readinto = "retracesoftware.install.edgecases.readinto"
+readinto1 = "retracesoftware.install.edgecases.readinto1"
+
+[patch_class.BufferedRandom]
+readinto = "retracesoftware.install.edgecases.readinto"
+readinto1 = "retracesoftware.install.edgecases.readinto1"
+
+[patch_class.BufferedRWPair]
+readinto = "retracesoftware.install.edgecases.readinto"
+readinto1 = "retracesoftware.install.edgecases.readinto1"

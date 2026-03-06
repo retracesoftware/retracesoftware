@@ -1,0 +1,11 @@
+# Memory-mapped file I/O — wraps mmap(2) syscall directly.
+# The mmap type performs direct memory-mapped reads/writes in C.
+#
+# Needs patch_class wrapper for mmap.readinto (see Buffer Protocol section
+# in MODULES_GUIDE.md).
+
+proxy = ["mmap"]
+immutable = ["error"]
+
+[patch_class.mmap]
+readinto = "retracesoftware.install.edgecases.mmap_readinto"

@@ -206,3 +206,16 @@ marimo/_static/
 marimo/_lsp/
 __marimo__/
 test/.DS_Store
+
+# Meson build
+builddir/
+subprojects/
+
+# Go
+_build/
+go/replay/replay
+go/cmd/replay/replay
+
+# Trace recordings
+*.retrace
+*.bin

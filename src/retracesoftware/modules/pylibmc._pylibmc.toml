@@ -1,0 +1,11 @@
+# pylibmc C extension — memcached I/O via libmemcached.
+# Direct socket I/O in C for all memcached protocol operations.
+#
+# client — wraps memcached_st, performs get/set/delete and other
+#          memcached operations over TCP or Unix sockets.
+
+package = "pylibmc"
+
+proxy = ["client"]
+
+immutable = ["Error", "CacheMiss", "SomeErrors"]

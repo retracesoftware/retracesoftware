@@ -1,0 +1,5 @@
+# System resource limits and usage — getrlimit(2), setrlimit(2), getrusage(2).
+# All functions wrap direct syscalls in C.
+
+proxy = ["getpagesize", "getrlimit", "getrusage", "setrlimit"]
+immutable = ["error", "struct_rusage"]

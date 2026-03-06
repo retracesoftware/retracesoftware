@@ -1,0 +1,12 @@
+# pymssql Cython extension — MS SQL Server I/O via FreeTDS (libsybdb).
+# Direct socket I/O in C for all TDS protocol operations.
+#
+# MSSQLConnection — wraps DBPROCESS*, performs queries and transactions.
+# MSSQLStoredProcedure — wraps stored procedure execution.
+
+package = "pymssql"
+
+proxy = ["connect", "MSSQLConnection", "MSSQLStoredProcedure"]
+
+immutable = ["MSSQLException", "MSSQLDriverException",
+             "MSSQLDatabaseException"]

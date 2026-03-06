@@ -26,13 +26,8 @@ jobs:
 
           WORKDIR /app
 
-          # Install dependencies
           RUN pip install --no-cache-dir \
-              retracesoftware_proxy \
-              retracesoftware_utils \
-              retracesoftware_functional \
-              retracesoftware_stream \
-              pytest
+              meson-python meson ninja setuptools_scm pytest
 
           DOCKERFILE
 
