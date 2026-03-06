@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"io"
 	"log"
-	"os"
 )
 
 // QueryEngine is a stateless query interface over a recorded trace.
@@ -24,13 +23,15 @@ type SimpleQueryEngine struct {
 	root     *Replay
 	pidFile  string
 	provider *SimpleSnapshotProvider
+	stderr   io.Writer
 }
 
-func NewQueryEngine(root *Replay, pidFile string) *SimpleQueryEngine {
+func NewQueryEngine(root *Replay, pidFile string, stderr io.Writer) *SimpleQueryEngine {
 	return &SimpleQueryEngine{
 		root:     root,
 		pidFile:  pidFile,
 		provider: NewSimpleSnapshotProvider(root),
+		stderr:   stderr,
 	}
 }
 
@@ -48,7 +49,7 @@ func (e *SimpleQueryEngine) BreakpointHits(ctx context.Context, spec map[string]
 
 		log.Printf("engine: starting fresh replay for breakpoint spec %v from pidFile %s", spec, e.pidFile)
 		var stderrBuf bytes.Buffer
-		stderrW := io.MultiWriter(os.Stderr, &stderrBuf)
+		stderrW := io.MultiWriter(e.stderr, &stderrBuf)
 		rp, err := StartReplayFromPidFile(ctx, e.pidFile, io.Discard, stderrW)
 		if err != nil {
 			errs <- fmt.Errorf("start replay: %w", err)

@@ -313,7 +313,7 @@ func TestDebuggerAddBreakpointPopulatesHitList(t *testing.T) {
 	if err != nil {
 		t.Fatalf("StartReplayFromPidFile: %v", err)
 	}
-	engine := NewQueryEngine(root, pidFile)
+	engine := NewQueryEngine(root, pidFile, os.Stderr)
 	debugger := NewDebugger(engine)
 	defer debugger.Close()
 

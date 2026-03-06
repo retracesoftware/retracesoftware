@@ -410,7 +410,7 @@ def per_thread(source, thread, timeout):
 
 class reader(_backend_mod.ObjectStreamReader):
 
-    def __init__(self, path, read_timeout, verbose, start_offset=0):
+    def __init__(self, path, read_timeout, verbose, start_offset=0, raw=False):
         super().__init__(
             path=str(path),
             deserialize=self.deserialize,

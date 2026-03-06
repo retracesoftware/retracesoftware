@@ -150,11 +150,12 @@ func (p *Proxy) handleLaunch(env envelope) error {
 
 	if p.debugger == nil {
 		ctx := context.Background()
-		root, err := StartReplayFromPidFile(ctx, p.pidFile, nil, os.Stderr)
+		dapLog := NewDAPLogWriter(p.clientW)
+		root, err := StartReplayFromPidFile(ctx, p.pidFile, dapLog, dapLog)
 		if err != nil {
 			return p.clientW.Write(errorResponse(env.Seq, "launch", err.Error()))
 		}
-		engine := NewQueryEngine(root, p.pidFile)
+		engine := NewQueryEngine(root, p.pidFile, dapLog)
 		p.debugger = NewDebugger(engine)
 		p.provider = engine.Provider()
 	}
