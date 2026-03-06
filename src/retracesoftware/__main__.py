@@ -60,6 +60,38 @@ def retrace_module_paths():
 def checksums():
     return {name: checksum(path) for name, path in retrace_module_paths().items()}
 
+def _find_replay_bin(explicit=None):
+    """Resolve the Go replay binary path for the trace file shebang.
+
+    Search order: explicit arg, REPLAY_BIN env var, then
+    retracesoftware.replay.binary_path() which finds (or builds)
+    the Go binary from the sibling repo.
+    """
+    if explicit:
+        return str(Path(explicit).resolve())
+
+    from_env = os.environ.get('REPLAY_BIN')
+    if from_env:
+        return str(Path(from_env).resolve())
+
+    try:
+        from retracesoftware.replay import binary_path
+        return binary_path()
+    except Exception:
+        return None
+
+def _write_shebang(trace_path, replay_bin):
+    """Prepend a shebang line to trace_path so it's self-describing.
+
+    The VSCode extension reads this to locate the replay binary.
+    The FramedWriter opens with O_APPEND so PID-framed data
+    follows the shebang.
+    """
+    shebang = f'#!{replay_bin} --recording\n' if replay_bin else '#!/usr/bin/env replay --recording\n'
+    with open(str(trace_path), 'wb') as f:
+        f.write(shebang.encode('utf-8'))
+    os.chmod(str(trace_path), 0o755)
+
 thread_id = utils.ThreadLocal()
 
 def record(system, options, args):
@@ -84,6 +116,8 @@ def record(system, options, args):
     else:
         trace_path = Path(expand_recording_path(options.recording))
         trace_path.parent.mkdir(parents=True, exist_ok=True)
+        replay_bin = _find_replay_bin(getattr(options, 'replay_bin', None))
+        _write_shebang(trace_path, replay_bin)
 
     preamble = None
     if trace_path:
@@ -107,6 +141,8 @@ def record(system, options, args):
             'env': dict(os.environ),
         }
         
+    raw = getattr(options, 'raw', False)
+
     with stream.writer(path = trace_path,
                        thread = thread_id,
                        verbose = options.verbose,
@@ -117,7 +153,8 @@ def record(system, options, args):
                        return_queue_capacity = options.return_queue_capacity,
                        flush_interval = options.flush_interval,
                        quit_on_error = options.quit_on_error,
-                       serialize_errors = not options.quit_on_error) as writer:
+                       serialize_errors = not options.quit_on_error,
+                       raw = raw) as writer:
 
         if options.stacktraces:
             stackfactory = utils.StackFactory()
@@ -226,7 +263,8 @@ def make_replay_fork(proxied_fork, reader, fork_path):
 def replay(system, args):
 
     chunk_ms = getattr(args, 'chunk_ms', None)
-    control_socket = getattr(args, 'control_socket', None)
+    control_socket_path = getattr(args, 'control_socket', None)
+    use_stdio = getattr(args, 'stdio', False)
 
     # Resolve path before any chdir.  Go replay has already stripped
     # PID framing, so the recording is always a raw message stream.
@@ -272,9 +310,49 @@ def replay(system, args):
             msg_stream = MessageStream(per_thread_source,
                                     monitor_enabled=(monitor_level > 0))
 
-            if control_socket:
-                from retracesoftware.control_runtime import Controller
-                controller = Controller(control_socket)
+            controller = None
+            if control_socket_path or use_stdio:
+                from retracesoftware.control_runtime import Controller, UnixControlSocket, StdioControlSocket
+                if use_stdio:
+                    import io
+                    # The replay proxy patches file types and os module
+                    # functions at the class level, so any normal
+                    # TextIOWrapper / os.write will be intercepted.
+                    # Capture the real os.write and dup stdout's fd
+                    # BEFORE the proxy activates so protocol I/O is
+                    # completely invisible to the replay.
+                    _real_os_write = os.write
+                    _proto_fd = os.dup(sys.stdout.fileno())
+                    sys.stdout = sys.stderr
+
+                    class _RawFdWriter:
+                        """Bypass proxy by writing directly via captured os.write."""
+                        def write(self, data):
+                            b = data.encode("utf-8") if isinstance(data, str) else data
+                            _real_os_write(_proto_fd, b)
+                            return len(data)
+                        def flush(self):
+                            pass
+
+                    _stdin_buf = io.StringIO(sys.stdin.read())
+                    ctrl_sock = StdioControlSocket(reader=_stdin_buf, writer=_RawFdWriter())
+                else:
+                    ctrl_sock = UnixControlSocket(control_socket_path)
+
+                def _before_fork():
+                    offset = reader.file_offset()
+                    reader.close()
+                    return offset
+
+                def _after_fork(offset):
+                    reader.reopen(offset)
+
+                controller = Controller(
+                    ctrl_sock,
+                    on_before_fork=_before_fork,
+                    on_after_fork=_after_fork,
+                    disable_for=system.disable_for,
+                )
                 _original_sync = msg_stream.sync
                 def _sync():
                     _original_sync()
@@ -303,6 +381,18 @@ def replay(system, args):
             gc.collect()
             gc.disable()
 
+            def on_ready():
+                _gate_fork = os.fork
+
+                def post_fork_replay(recorded_result):
+                    if recorded_result == 0:
+                        pid = system.disable_for(_gate_fork)()
+                        if pid != 0:
+                            system.disable_for(os._exit)(0)
+                    return recorded_result
+
+                os.fork = functional.sequence(_gate_fork, post_fork_replay)
+
             try:
                 run_with_context(system=system, thread_id=thread_id,
                                 context=context, argv=header['argv'],
@@ -311,12 +401,13 @@ def replay(system, args):
                                 monitor_level=monitor_level,
                                 monitor_fn=monitor_fn,
                                 retrace_file_patterns=getattr(args, 'retrace_file_patterns', None),
-                                verbose=args.verbose)
+                                verbose=args.verbose,
+                                on_ready=on_ready)
             except Exception:
                 raise
             finally:
                 gc.enable()
-                if control_socket and controller:
+                if controller:
                     controller.on_replay_finished()
 
 def pth_source():
@@ -436,6 +527,14 @@ def main():
             '--retrace_file_patterns', type=str, default=None,
             help='Path to file with additional regex patterns for path-based retrace filtering')
 
+        parser.add_argument(
+            '--raw', action='store_true',
+            help='Write raw trace without PID framing (single-process, for testing)')
+
+        parser.add_argument(
+            '--replay_bin', type=str, default=None,
+            help='Path to replay binary for trace file shebang (auto-detected if omitted)')
+
         parser.add_argument('rest', nargs = argparse.REMAINDER, help='target application and arguments')
 
         args = parser.parse_args()
@@ -474,6 +573,11 @@ def main():
             type=str,
             default=None,
             help='Connect to Go replay control socket at this path')
+
+        parser.add_argument(
+            '--stdio',
+            action='store_true',
+            help='Read control commands from stdin, write responses to stdout')
 
         parser.add_argument(
             '--chunk_ms',
