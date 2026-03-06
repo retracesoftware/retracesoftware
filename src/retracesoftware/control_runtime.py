@@ -148,6 +148,66 @@ class StoppedStateInspector(Protocol):
         ...
 
 
+class FrameInspector:
+    """StoppedStateInspector backed by a live Python frame object."""
+
+    def __init__(self, frame):
+        self._frame = frame
+
+    @staticmethod
+    def _frame_lineno(frame) -> int:
+        lineno = frame.f_lineno
+        if lineno > 0:
+            return lineno
+        lasti = frame.f_lasti
+        for start, end, line in frame.f_code.co_lines():
+            if line is not None and line > 0 and start <= lasti < end:
+                return line
+        return frame.f_code.co_firstlineno or 1
+
+    def stack(self, params: dict[str, Any]) -> dict[str, Any]:
+        frames = []
+        f = self._frame
+        while f is not None:
+            frames.append({
+                "filename": f.f_code.co_filename,
+                "function": f.f_code.co_name,
+                "line": self._frame_lineno(f),
+            })
+            f = f.f_back
+        return {"frames": frames}
+
+    def locals(self, params: dict[str, Any]) -> dict[str, Any]:
+        if self._frame is None:
+            return {"variables": []}
+        result = []
+        for name, value in self._frame.f_locals.items():
+            try:
+                val_repr = repr(value)
+            except Exception:
+                val_repr = "<repr failed>"
+            result.append({
+                "name": name,
+                "value": val_repr,
+                "type": type(value).__name__,
+            })
+        return {"variables": result}
+
+    def inspect(self, params: dict[str, Any]) -> dict[str, Any]:
+        return {}
+
+    def evaluate(self, params: dict[str, Any]) -> dict[str, Any]:
+        return {}
+
+    def source_location(self, params: dict[str, Any]) -> dict[str, Any]:
+        if self._frame is None:
+            return {}
+        return {
+            "filename": self._frame.f_code.co_filename,
+            "line": self._frame_lineno(self._frame),
+        }
+
+
 def _normalize_breakpoint(raw: dict[str, Any]) -> dict[str, Any]:
     if "function" in raw:
         return {"function": raw["function"]}
@@ -278,7 +338,7 @@ def _build_instruction_lineno_list(code: CodeType) -> list[int]:
 def control_event_loop(
     set_backstop: Callable[[int], None],
     control_socket: ControlSocket,
-    inspector: Optional[StoppedStateInspector] = None,
+    get_inspector: Callable[[], Optional[StoppedStateInspector]] = lambda: None,
     get_message_index: Callable[[], int] = lambda: 0,
     get_instruction_map: Optional[Callable[[], Optional[list[int]]]] = None,
     on_before_fork: Optional[Callable[[], Any]] = None,
@@ -313,7 +373,7 @@ def control_event_loop(
                     continue
 
                 if command in {"stack", "locals", "inspect", "eval", "source_location"}:
-                    result = _run_inspection_command(inspector, frame, request_id, command, params)
+                    result = _run_inspection_command(get_inspector(), frame, request_id, command, params)
                     _write_ok(control_socket.write_response, request_id, result)
                     continue
 
@@ -448,6 +508,9 @@ def control_event_loop(
 
                 _write_error(control_socket.write_response, request_id, "unknown_command", f"unsupported command: {command}")
 
+            except ParseRequestError as err:
+                _write_error(control_socket.write_response, err.request_id, err.code, err.message)
+
             except BackstopHitError as err:
                 _write_stop(control_socket.write_response, {
                     "reason": "backstop",
@@ -510,7 +573,6 @@ class Controller:
     def __init__(
         self,
         control_socket: ControlSocket,
-        inspector: Optional[StoppedStateInspector] = None,
         on_before_fork: Optional[Callable[[], Any]] = None,
         on_after_fork: Optional[Callable[[Any], None]] = None,
         disable_for: Optional[Callable] = None,
@@ -530,7 +592,7 @@ class Controller:
         self.event_loop = control_event_loop(
             set_backstop=self._set_backstop,
             control_socket=control_socket,
-            inspector=inspector,
+            get_inspector=self._get_inspector,
             get_message_index=lambda: self._message_index,
             get_instruction_map=self._get_instruction_map,
             on_before_fork=on_before_fork,
@@ -544,6 +606,11 @@ class Controller:
 
     def _set_backstop(self, message_index: int):
         self._backstop = message_index
+
+    def _get_inspector(self) -> Optional[StoppedStateInspector]:
+        if self._stopped_frame is not None:
+            return FrameInspector(self._stopped_frame)
+        return None
 
     def on_new_message(self, message):
         self._message_index += 1
