@@ -150,6 +150,9 @@ func (c *ControlClient) RunToCursor(ctx context.Context, cursor RawCursor) (Cont
 		if err != nil {
 			return ControlStopResult{}, err
 		}
+		if msg.Error != nil {
+			return ControlStopResult{}, fmt.Errorf("run_to_cursor: %s: %s", msg.Error.Code, msg.Error.Message)
+		}
 		if msg.Kind == "stop" {
 			return parseStopResult(msg.Payload), nil
 		}

@@ -2,12 +2,20 @@ package replay
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"log"
 	"os"
 	"runtime"
+	"sync"
 )
+
+// ErrReplayProcessDied is returned when the Python replay subprocess
+// exits unexpectedly (crash, signal, unhandled exception). Callers can
+// use errors.Is(err, ErrReplayProcessDied) to distinguish a process
+// death from a normal EOF or protocol error.
+var ErrReplayProcessDied = errors.New("replay process died")
 
 // StartReplayFromPidFile reads a PidFile's preamble and starts a single
 // replay process from the beginning of the trace.
@@ -34,10 +42,58 @@ type Replay struct {
 	forks     *AwaitingCollection
 	ownsForks bool
 	location  Location
+
+	dead      chan struct{} // closed when the process exits
+	exitErr   error        // set once by watchProcess, then immutable
+	closeOnce sync.Once
 }
 
 // Location returns the trace position this replay was last navigated to.
 func (r *Replay) Location() Location { return r.location }
+
+// Err returns ErrReplayProcessDied (wrapping the exit status) if the
+// Python subprocess has exited, or nil if it is still running.
+func (r *Replay) Err() error {
+	select {
+	case <-r.dead:
+		return r.exitErr
+	default:
+		return nil
+	}
+}
+
+// Dead returns a channel that is closed when the Python subprocess exits.
+func (r *Replay) Dead() <-chan struct{} { return r.dead }
+
+// wrapErr checks whether the process has died and, if so, replaces err
+// with the richer exitErr. This turns opaque io.EOF / broken-pipe errors
+// into a clear ErrReplayProcessDied with exit code context.
+func (r *Replay) wrapErr(err error) error {
+	if err == nil {
+		return nil
+	}
+	if exitErr := r.Err(); exitErr != nil {
+		return exitErr
+	}
+	return err
+}
+
+// watchProcess blocks until the Python subprocess exits, then records the
+// exit status and tears down the socket so any blocked reads unblock with
+// an error.
+func (r *Replay) watchProcess() {
+	state, waitErr := r.proc.Wait()
+	if waitErr != nil {
+		r.exitErr = fmt.Errorf("replay process died: %w", ErrReplayProcessDied)
+	} else if !state.Success() {
+		r.exitErr = fmt.Errorf("replay process died (exit %d): %w",
+			state.ExitCode(), ErrReplayProcessDied)
+	} else {
+		r.exitErr = fmt.Errorf("replay process exited cleanly: %w", ErrReplayProcessDied)
+	}
+	_ = r.client.Close()
+	close(r.dead)
+}
 
 // startReplayProcess is the internal hook used by StartReplay, replaceable
 // in tests to inject a mock connection.
@@ -59,8 +115,12 @@ func StartReplay(ctx context.Context, target runnerTarget, stdout, stderr io.Wri
 		cleanup()
 		return nil, fmt.Errorf("create fork collection: %w", err)
 	}
-	r := &Replay{client: client, proc: proc, cleanup: cleanup, forks: ac, ownsForks: true}
+	r := &Replay{
+		client: client, proc: proc, cleanup: cleanup,
+		forks: ac, ownsForks: true, dead: make(chan struct{}),
+	}
 	runtime.SetFinalizer(r, (*Replay).Close)
+	go r.watchProcess()
 
 	if _, err := client.Request(ctx, "hello", nil); err != nil {
 		r.Close()
@@ -83,7 +143,7 @@ func (r *Replay) FindBreakpoints(ctx context.Context, breakpoint map[string]any)
 		if _, err := r.client.SendCommand("hit_breakpoints", map[string]any{
 			"breakpoint": breakpoint,
 		}); err != nil {
-			errs <- fmt.Errorf("hit_breakpoints: %w", err)
+			errs <- r.wrapErr(fmt.Errorf("hit_breakpoints: %w", err))
 			return
 		}
 
@@ -96,10 +156,18 @@ func (r *Replay) FindBreakpoints(ctx context.Context, breakpoint map[string]any)
 			}
 			msg, err := r.client.ReadMessage()
 			if err != nil {
+				if exitErr := r.Err(); exitErr != nil {
+					errs <- exitErr
+					return
+				}
 				if err == io.EOF {
 					return
 				}
 				errs <- fmt.Errorf("read: %w", err)
+				return
+			}
+			if msg.Error != nil {
+				errs <- fmt.Errorf("hit_breakpoints: %s: %s", msg.Error.Code, msg.Error.Message)
 				return
 			}
 			if msg.Kind == "event" && msg.Event == "log" {
@@ -135,7 +203,7 @@ func (r *Replay) FindFirstBreakpoint(ctx context.Context, breakpoint map[string]
 		"breakpoint": breakpoint,
 		"max_hits":   1,
 	}); err != nil {
-		return nil, fmt.Errorf("hit_breakpoints: %w", err)
+		return nil, r.wrapErr(fmt.Errorf("hit_breakpoints: %w", err))
 	}
 
 	for {
@@ -146,10 +214,16 @@ func (r *Replay) FindFirstBreakpoint(ctx context.Context, breakpoint map[string]
 		}
 		msg, err := r.client.ReadMessage()
 		if err != nil {
+			if exitErr := r.Err(); exitErr != nil {
+				return nil, exitErr
+			}
 			if err == io.EOF {
 				return nil, nil
 			}
 			return nil, fmt.Errorf("read: %w", err)
+		}
+		if msg.Error != nil {
+			return nil, fmt.Errorf("hit_breakpoints: %s: %s", msg.Error.Code, msg.Error.Message)
 		}
 		if msg.Kind == "event" && msg.Event == "breakpoint_hit" {
 			loc := parseLocationFromPayload(msg.Payload)
@@ -169,15 +243,16 @@ func (r *Replay) FindFirstBreakpoint(ctx context.Context, breakpoint map[string]
 // Replay's current Location from the stop result.
 func (r *Replay) RunToCursor(ctx context.Context, cursor RawCursor) (ControlStopResult, error) {
 	result, err := r.client.RunToCursor(ctx, cursor)
-	if err == nil {
-		r.location = Location{
-			ThreadID:       result.Cursor.ThreadID,
-			FunctionCounts: result.Cursor.FunctionCounts,
-			FLasti:         result.Cursor.FLasti,
-			MessageIndex:   result.MessageIndex,
-		}
+	if err != nil {
+		return result, r.wrapErr(err)
 	}
-	return result, err
+	r.location = Location{
+		ThreadID:       result.Cursor.ThreadID,
+		FunctionCounts: result.Cursor.FunctionCounts,
+		FLasti:         result.Cursor.FLasti,
+		MessageIndex:   result.MessageIndex,
+	}
+	return result, nil
 }
 
 // SetBackstop sets the backstop message index on the replay.
@@ -185,7 +260,7 @@ func (r *Replay) SetBackstop(ctx context.Context, messageIndex int) error {
 	_, err := r.client.Request(ctx, "set_backstop", map[string]any{
 		"message_index": messageIndex,
 	})
-	return err
+	return r.wrapErr(err)
 }
 
 // RunToReturn sends a run_to_return command and collects the streamed
@@ -193,12 +268,14 @@ func (r *Replay) SetBackstop(ctx context.Context, messageIndex int) error {
 // final stop result (reason is "return", "backstop", or
 // "call_counter_limit").
 func (r *Replay) RunToReturn(ctx context.Context, maxCallCounter *int) ([]Location, ControlStopResult, error) {
-	params := map[string]any{}
+	params := map[string]any{
+		"function_counts": r.location.FunctionCounts,
+	}
 	if maxCallCounter != nil {
 		params["max_call_counter"] = *maxCallCounter
 	}
 	if _, err := r.client.SendCommand("run_to_return", params); err != nil {
-		return nil, ControlStopResult{}, fmt.Errorf("run_to_return: %w", err)
+		return nil, ControlStopResult{}, r.wrapErr(fmt.Errorf("run_to_return: %w", err))
 	}
 
 	var locations []Location
@@ -210,17 +287,30 @@ func (r *Replay) RunToReturn(ctx context.Context, maxCallCounter *int) ([]Locati
 		}
 		msg, err := r.client.ReadMessage()
 		if err != nil {
+			if exitErr := r.Err(); exitErr != nil {
+				return locations, ControlStopResult{}, exitErr
+			}
 			if err == io.EOF {
 				return locations, ControlStopResult{Reason: "eof"}, nil
 			}
 			return locations, ControlStopResult{}, fmt.Errorf("read: %w", err)
+		}
+		if msg.Error != nil {
+			return locations, ControlStopResult{}, fmt.Errorf("run_to_return: %s: %s", msg.Error.Code, msg.Error.Message)
 		}
 		if msg.Kind == "event" && msg.Event == "cursor" {
 			locations = append(locations, parseLocationFromPayload(msg.Payload))
 			continue
 		}
 		if msg.Kind == "stop" {
-			return locations, parseStopResult(msg.Payload), nil
+			stop := parseStopResult(msg.Payload)
+			r.location = Location{
+				ThreadID:       stop.Cursor.ThreadID,
+				FunctionCounts: stop.Cursor.FunctionCounts,
+				FLasti:         stop.Cursor.FLasti,
+				MessageIndex:   stop.MessageIndex,
+			}
+			return locations, stop, nil
 		}
 	}
 }
@@ -231,7 +321,7 @@ func (r *Replay) RunToReturn(ctx context.Context, maxCallCounter *int) ([]Locati
 // RunToCursor) before calling this.
 func (r *Replay) NextInstruction(ctx context.Context) (Location, error) {
 	if _, err := r.client.SendCommand("next_instruction", nil); err != nil {
-		return Location{}, fmt.Errorf("next_instruction: %w", err)
+		return Location{}, r.wrapErr(fmt.Errorf("next_instruction: %w", err))
 	}
 	for {
 		select {
@@ -241,10 +331,16 @@ func (r *Replay) NextInstruction(ctx context.Context) (Location, error) {
 		}
 		msg, err := r.client.ReadMessage()
 		if err != nil {
+			if exitErr := r.Err(); exitErr != nil {
+				return Location{}, exitErr
+			}
 			if err == io.EOF {
 				return Location{}, fmt.Errorf("next_instruction: unexpected EOF")
 			}
 			return Location{}, fmt.Errorf("read: %w", err)
+		}
+		if msg.Error != nil {
+			return Location{}, fmt.Errorf("next_instruction: %s: %s", msg.Error.Code, msg.Error.Message)
 		}
 		if msg.Kind == "stop" {
 			stop := parseStopResult(msg.Payload)
@@ -266,7 +362,7 @@ func (r *Replay) NextInstruction(ctx context.Context) (Location, error) {
 func (r *Replay) InstructionToLineno(ctx context.Context) ([]int, error) {
 	resp, err := r.client.Request(ctx, "instruction_to_lineno", nil)
 	if err != nil {
-		return nil, fmt.Errorf("instruction_to_lineno: %w", err)
+		return nil, r.wrapErr(fmt.Errorf("instruction_to_lineno: %w", err))
 	}
 	raw, ok := resp.Result["linenos"].([]any)
 	if !ok {
@@ -286,7 +382,7 @@ func (r *Replay) InstructionToLineno(ctx context.Context) ([]int, error) {
 func (r *Replay) Stack(ctx context.Context) ([]map[string]any, error) {
 	resp, err := r.client.Request(ctx, "stack", nil)
 	if err != nil {
-		return nil, fmt.Errorf("stack: %w", err)
+		return nil, r.wrapErr(fmt.Errorf("stack: %w", err))
 	}
 	return parseFrameList(resp.Result, "frames")
 }
@@ -296,7 +392,7 @@ func (r *Replay) Stack(ctx context.Context) ([]map[string]any, error) {
 func (r *Replay) Locals(ctx context.Context) ([]map[string]any, error) {
 	resp, err := r.client.Request(ctx, "locals", nil)
 	if err != nil {
-		return nil, fmt.Errorf("locals: %w", err)
+		return nil, r.wrapErr(fmt.Errorf("locals: %w", err))
 	}
 	return parseFrameList(resp.Result, "variables")
 }
@@ -306,7 +402,7 @@ func (r *Replay) Locals(ctx context.Context) ([]map[string]any, error) {
 func (r *Replay) SourceLocation(ctx context.Context) (map[string]any, error) {
 	resp, err := r.client.Request(ctx, "source_location", nil)
 	if err != nil {
-		return nil, fmt.Errorf("source_location: %w", err)
+		return nil, r.wrapErr(fmt.Errorf("source_location: %w", err))
 	}
 	return resp.Result, nil
 }
@@ -333,7 +429,7 @@ func (r *Replay) fork(ctx context.Context) (*Replay, error) {
 		"socket_path": r.forks.SocketPath(),
 	})
 	if err != nil {
-		return nil, fmt.Errorf("fork request: %w", err)
+		return nil, r.wrapErr(fmt.Errorf("fork request: %w", err))
 	}
 
 	var childPID int
@@ -352,24 +448,33 @@ func (r *Replay) fork(ctx context.Context) (*Replay, error) {
 		proc:     childProc,
 		forks:    r.forks,
 		location: r.location,
+		dead:     make(chan struct{}),
 	}
 	runtime.SetFinalizer(child, (*Replay).Close)
 	return child, nil
 }
 
 // Close kills the replay process and releases all resources.
+// It is safe to call multiple times.
 func (r *Replay) Close() error {
-	if r.client != nil {
-		_ = r.client.Close()
-	}
-	if r.proc != nil {
-		_ = r.proc.Kill()
-	}
-	if r.forks != nil && r.ownsForks {
-		_ = r.forks.Close()
-	}
-	if r.cleanup != nil {
-		r.cleanup()
-	}
+	r.closeOnce.Do(func() {
+		if r.client != nil {
+			_ = r.client.Close()
+		}
+		if r.proc != nil {
+			select {
+			case <-r.dead:
+				// already exited, nothing to kill
+			default:
+				_ = r.proc.Kill()
+			}
+		}
+		if r.forks != nil && r.ownsForks {
+			_ = r.forks.Close()
+		}
+		if r.cleanup != nil {
+			r.cleanup()
+		}
+	})
 	return nil
 }

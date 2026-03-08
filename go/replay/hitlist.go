@@ -101,3 +101,18 @@ func (h *HitList) PrevBefore(messageIndex uint64) (BreakpointHit, bool) {
 	}
 	return h.hits[i-1], true
 }
+
+// LastAtOrBefore returns the last hit with MessageIndex <= the given value.
+// Returns false if no such hit exists.
+func (h *HitList) LastAtOrBefore(messageIndex uint64) (BreakpointHit, bool) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+
+	i := sort.Search(len(h.hits), func(j int) bool {
+		return h.hits[j].Location.MessageIndex > messageIndex
+	})
+	if i == 0 {
+		return BreakpointHit{}, false
+	}
+	return h.hits[i-1], true
+}

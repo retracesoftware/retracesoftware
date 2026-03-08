@@ -174,6 +174,15 @@ func (c *Cursor) StepInto(ctx context.Context) (*Cursor, error) {
 // Return runs forward until the current function returns (DAP stepOut).
 func (c *Cursor) Return(ctx context.Context) (*Cursor, error) {
 	rp := c.takeReplay()
+
+	if rp != nil {
+		_, stopResult, err := rp.RunToReturn(ctx, nil)
+		if err != nil || stopResult.Reason == "eof" {
+			rp.Close()
+			rp = nil
+		}
+	}
+
 	if rp == nil {
 		snap, err := c.provider.ClosestBeforeCall(ctx, c.location.ThreadID, c.location.FunctionCounts)
 		if err != nil {
@@ -188,8 +197,16 @@ func (c *Cursor) Return(ctx context.Context) (*Cursor, error) {
 			rp.Close()
 			return nil, err
 		}
+		if _, stopResult, err := rp.RunToReturn(ctx, nil); err != nil {
+			rp.Close()
+			return nil, err
+		} else if stopResult.Reason == "eof" {
+			rp.Close()
+			return nil, ErrNotImplemented
+		}
 	}
-	if _, _, err := rp.RunToReturn(ctx, nil); err != nil {
+
+	if _, err := rp.NextInstruction(ctx); err != nil {
 		rp.Close()
 		return nil, err
 	}
@@ -223,12 +240,21 @@ func (c *Cursor) Previous(ctx context.Context) (*Cursor, error) {
 		return nil, err
 	}
 
-	if _, err := entry.RunToCursor(ctx, Location{
+	entryCounts := make([]int, len(loc.FunctionCounts))
+	copy(entryCounts, loc.FunctionCounts)
+	entryCounts[len(entryCounts)-1] = 0
+
+	stopResult, err := entry.RunToCursor(ctx, Location{
 		ThreadID:       loc.ThreadID,
-		FunctionCounts: loc.FunctionCounts,
-	}.RawCursor()); err != nil {
+		FunctionCounts: entryCounts,
+	}.RawCursor())
+	if err != nil {
 		entry.Close()
 		return nil, err
+	}
+	if stopResult.Reason == "eof" {
+		entry.Close()
+		return nil, ErrNotImplemented
 	}
 
 	result, err := advanceUntilLine(ctx, entry, currentLine)

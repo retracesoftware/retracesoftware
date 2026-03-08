@@ -47,6 +47,7 @@ type Proxy struct {
 	breakpointIDs       map[string]int // "file:line[:cond]" -> debugger breakpoint ID
 	currentMessageIndex uint64
 	currentCursor       *Cursor // current position, nil until first navigation
+	navigatedFromHit    bool    // true after step/nav, false after continue lands on a hit
 }
 
 func NewProxy(pidFile string, clientIn io.Reader, clientW *Writer) *Proxy {
@@ -363,7 +364,11 @@ func (p *Proxy) handleContinue(ctx context.Context, reverse bool) error {
 	if p.currentCursor == nil {
 		hit, ok = p.debugger.Hits().FirstFrom(0)
 	} else if reverse {
-		hit, ok = p.debugger.Hits().PrevBefore(p.currentMessageIndex)
+		if p.navigatedFromHit {
+			hit, ok = p.debugger.Hits().LastAtOrBefore(p.currentMessageIndex)
+		} else {
+			hit, ok = p.debugger.Hits().PrevBefore(p.currentMessageIndex)
+		}
 	} else {
 		hit, ok = p.debugger.Hits().NextAfter(p.currentMessageIndex)
 	}
@@ -373,6 +378,7 @@ func (p *Proxy) handleContinue(ctx context.Context, reverse bool) error {
 	}
 
 	p.currentMessageIndex = hit.Location.MessageIndex
+	p.navigatedFromHit = false
 	snap, err := p.provider.ClosestBeforeCall(ctx, hit.Location.ThreadID, hit.Location.FunctionCounts)
 	if err != nil {
 		log.Printf("warning: failed to get snapshot: %v", err)
@@ -409,28 +415,12 @@ func (p *Proxy) handleCursorNav(ctx context.Context, reason string, nav func() (
 
 	next, err := nav()
 	if err != nil {
-		log.Printf("navigation failed: %v, falling back to HitList", err)
-		hit, ok := p.debugger.Hits().NextAfter(p.currentMessageIndex)
-		if !ok {
-			return p.clientW.Write(makeEvent("terminated", map[string]any{}))
-		}
-		p.currentMessageIndex = hit.Location.MessageIndex
-		snap, snapErr := p.provider.ClosestBeforeCall(ctx, hit.Location.ThreadID, hit.Location.FunctionCounts)
-		if snapErr != nil {
-			log.Printf("warning: failed to get snapshot: %v", snapErr)
-		} else if rp, forkErr := snap.Replay(ctx); forkErr != nil {
-			log.Printf("warning: failed to fork snapshot: %v", forkErr)
-		} else if _, runErr := rp.RunToCursor(ctx, hit.Location.RawCursor()); runErr != nil {
-			log.Printf("warning: failed to materialise replay: %v", runErr)
-			rp.Close()
-		} else {
-			p.currentCursor = NewCursor(rp.Location(), p.provider, rp)
-		}
+		log.Printf("navigation failed: %v, staying at current position", err)
 	} else {
 		nl := next.Location()
 		log.Printf("handleCursorNav: advanced to msgIdx=%d FLasti=%v", nl.MessageIndex, nl.FLasti)
-		p.currentMessageIndex = nl.MessageIndex
 		p.currentCursor = next
+		p.navigatedFromHit = true
 	}
 
 	return p.clientW.Write(makeEvent("stopped", map[string]any{
