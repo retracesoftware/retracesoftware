@@ -54,7 +54,15 @@ def retrace_extension_paths():
 
 def retrace_module_paths():
     paths = retrace_extension_paths()
-    paths['retracesoftware'] = Path(sys.modules['retracesoftware'].__file__).parent
+    mod = sys.modules.get('retracesoftware')
+    if mod is not None:
+        mod_file = getattr(mod, '__file__', None)
+        if mod_file is not None:
+            paths['retracesoftware'] = Path(mod_file).parent
+        else:
+            for p in getattr(mod, '__path__', []):
+                paths['retracesoftware'] = Path(p)
+                break
     return paths
 
 def checksums():
@@ -291,9 +299,12 @@ def replay(system, args):
             recorded_checksums = header['checksums']
             current_checksums = checksums()
             if recorded_checksums != current_checksums:
-                diffs = diff_dicts(recorded_checksums, current_checksums)
-                diff_str = "\n".join(diffs) if diffs else "(no differences found in structure)"
-                raise VersionMismatchError(f"Checksums for Retrace do not match:\n{diff_str}")
+                if os.environ.get('RETRACE_SKIP_CHECKSUMS'):
+                    print("WARNING: checksum mismatch ignored (RETRACE_SKIP_CHECKSUMS set)", file=sys.stderr)
+                else:
+                    diffs = diff_dicts(recorded_checksums, current_checksums)
+                    diff_str = "\n".join(diffs) if diffs else "(no differences found in structure)"
+                    raise VersionMismatchError(f"Checksums for Retrace do not match:\n{diff_str}")
 
             if header['python_version'] != sys.version:
                 raise VersionMismatchError("Python version does not match, cannot run replay with different version of Python to record")

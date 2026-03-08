@@ -1,0 +1,203 @@
+{
+  "trace_file": "/Users/nathanmatthews/Documents/GitHub/retracesoftware/examples/target_hello.retrace",
+  "root": {
+    "pid": 38990,
+    "type": "exec",
+    "preamble": {
+      "argv": [
+        "target_hello.py"
+      ],
+      "checksums": {
+        "_retracesoftware_functional_release": "0b80eb71a94156b52ed71d0fbc80e36f",
+        "_retracesoftware_stream_release": "e554c20c5d599b7720deed65ff67ad34",
+        "_retracesoftware_utils_release": "314b5db4c25811a62d8fd98f63453c54",
+        "retracesoftware": {
+          "__init__.py": "c4d8ad515406117a13bc7817ef38656f",
+          "__main__.py": "2d8bdb0e8066da75cbfa5c2745088208",
+          "autoenable.py": "5167ac3edc426389e82fc476d30b0327",
+          "breakpoint.py": "cf73e55a4079d69514781081411b7baf",
+          "config.json": "2959a34a2ab3e6fbe93e3d4ac293cc4a",
+          "control_runtime.py": "c694a4a00035fd984902ac92c984e037",
+          "cursor.py": "8caa7eab55526fe7a426725f9551b016",
+          "dap": {
+            "__init__.py": "2ae673604f2bc27b7971825c0b1ced9d",
+            "adapter.py": "0b3d6b6c30bd3553193239c9a2b0fa32",
+            "debug": {
+              "__init__.py": "d41d8cd98f00b204e9800998ecf8427e",
+              "breakpoints.py": "cc7fe4c387a63dcce257c7513419c37e",
+              "cursor.py": "e806155c4659b86128993cd022f3c02f",
+              "hooks.py": "86c4ccb14a5e1bd4ca8fc533fc1bee47",
+              "inspection.py": "8a23b58fe5c6fb8f285e1881bb13d380",
+              "stepping.py": "2b3121409c02c29f15716fe0c7dbeb84"
+            },
+            "protocol": {
+              "__init__.py": "2d6125ea4ea6100773ff5dbb9569f5f6",
+              "dispatch.py": "72936e00a76103edadf321a2287b3312",
+              "framing.py": "0a07d43a4bbd07351a10bde28f7983b3",
+              "types.py": "5a5f2651032e78edc34d39d15ca13caf"
+            },
+            "replay": {
+              "__init__.py": "d41d8cd98f00b204e9800998ecf8427e",
+              "fork.py": "3e613953c4dee063ddb381236eac3b51",
+              "gate.py": "0fb5a2f2afe54447fe10688cb6e098d3",
+              "transport.py": "80e22b884775d75dc92f08537c06f08e"
+            }
+          },
+          "debug.toml": "994b50558b2aaaa574f690c92e8cd98f",
+          "exceptions.py": "820bb619b79eebea2ffb2bc392bb49bf",
+          "functional": {
+            "__init__.py": "609c1198bfc6154a1920c9920d188e41",
+            "_pure.py": "95d536f028dc08aebee1fcdb9373ebdf"
+          },
+          "install": {
+            "__init__.py": "4a84d2fb267908d8171f02818788374d",
+            "config.py": "29afb1ba1149227e5c3b7001edbe3536",
+            "edgecases.py": "7c4ed50ccf57f4b4d2a97dd6cc960413",
+            "globals.py": "2220d08ccfad8ecabb177d812666b1b3",
+            "hooks.py": "c22dab425b15583d22575f03e6269c17",
+            "importhook.py": "e01fbfb10be16baa0c2bdeacd36e515c",
+            "monitoring.py": "3f6614ad5b920a457663a56404be6f75",
+            "patcher.py": "e58da9d2cda0387934fc64f979b21eb7",
+            "patchfindspec.py": "4aa151f57c04015a203e146198474202",
+            "pathpredicate.py": "8c36690dcc252e6dbf318acc4c4ada66",
+            "replace.py": "135991564e17c5d509172f2d1ecd9db4",
+            "startthread.py": "54c668fcb27cd66c893c26a2afb50322"
+          },
+          "modules": {
+            "MySQLdb._mysql.toml": "4a88357aeda21dabd66ba82addac445f",
+            "PIL._imaging.toml": "0bd970d3806a09281798fcf02f99dc8f",
+            "__init__.py": "f1f1329fd062a6a97d71161459c337ab",
+            "_io.toml": "d81d7b78917486287a2727efd90cca79",
+            "_sqlite3.toml": "08d3f6963191c5386b142197024760f2",
+            "confluent_kafka.cimpl.toml": "54d04e7c85d483e892744aad9f2fcace",
+            "debuggers.toml": "6579c1c49eeb0fbc6214739ca3a20723",
+            "grpc._cython.cygrpc.toml": "49ba4b6352863eaf31cc7fafef8a7459",
+            "mmap.toml": "ebe6f91f12b79ada28a83a4b60cb496d",
+            "numpy.random.toml": "37fdd6b54a669430d6eaead80955ec85",
+            "psycopg2._psycopg.toml": "db2ead780d83c2be91239104b520a1dd",
+            "psycopg_c._psycopg.toml": "83f493587d90675a96ce988b04fc8712",
+            "pycurl.toml": "df29484f4ef489a64bad37df9e684590",
+            "pylibmc._pylibmc.toml": "cf65ca462994da61fe32fe5a6cf59adf",
+            "pymssql._pymssql.toml": "879b61d60d1c55d54e1a3fdcbb16111c",
+            "resource.toml": "530f387fac78a16edd01329f47d285a5",
+            "stdlib.toml": "33ca77d43cd928f75d3781ef7363c294",
+            "syslog.toml": "ad735cfeb08ab0d3f253224b846deb68"
+          },
+          "preload.txt": "097d604a7f4ac34cc63792c7c84ce62e",
+          "proxy": {
+            "__init__.py": "68b329da9893e34099c7d8ad5cb9c940",
+            "gateway.py": "763dee907d649e8ade384fa6209eaffe",
+            "globalref.py": "ac9febfdfa63a40e70e7284d0504aad4",
+            "messagestream.py": "03993e14aa2f5b14183b29b240e3ebd3",
+            "protocol.py": "aa28b914feadd01f47379c7c733d95c2",
+            "proxyfactory.py": "97691ba11be620bba031feaf04447558",
+            "proxysystem.py": "8b20e9e8615f8a8693a9e648dd4836f9",
+            "proxytype.py": "94959aa2237bc6a712a60f18dde367a0",
+            "record.py": "d21344d1cefc794570e26ff3b86ab91b",
+            "record_system.py": "54763dc43fb5f885313e8e1b4397146f",
+            "replay.py": "c810fff58d6d461299d86b55bcb3bd18",
+            "serializer.py": "1159cf95f4cb21685c8c23ba6d0d8a97",
+            "startthread.py": "a44aaf20b0313987c6ba794deeda0763",
+            "stubfactory.py": "91542789a9f6e6056c677a9b9d38c592",
+            "system.py": "06c9cf76cd07c699dc09b6dcce373ab6",
+            "thread.py": "4b1b28907f6d8cfdbe0c9b318585052f",
+            "typeutils.py": "57b30e68bd082020415271aa6262d779"
+          },
+          "release.toml": "8262190b9305671952f06063fcbdce16",
+          "replay": {
+            "__init__.py": "64de72e6c487acf58c11e64e6c1731cd",
+            "__main__.py": "1bbcbc9b8a593f39ac8bb301f0966679"
+          },
+          "replay_protocol.py": "3dd8379ee51e91047056ee6d6a1e2462",
+          "retrace.pth": "88f4750900351cc6a4c6de5064a5e358",
+          "retrace_patterns.txt": "567c004610dd2ebbf68c684d2b4ae54e",
+          "run.py": "af05ed590474653076f08d07ab52bb8d",
+          "search.py": "03b3b6e246123a8dba59fb7d90b2876e",
+          "stream": {
+            "__init__.py": "1f83e075c471270c6a154fa0f31ab6fc"
+          },
+          "utils": {
+            "__init__.py": "4c459802d815664be3b1f38b47e9b179",
+            "breakpoint.py": "f0aa30adf3dfc118244b20577620a2f3",
+            "threadcontext.py": "df89ebeddea6552cd20420b573731166",
+            "trace.py": "809b6ae4f2558dccedf87ced53541df6"
+          }
+        }
+      },
+      "cwd": "/Users/nathanmatthews/Documents/GitHub/retracesoftware/examples",
+      "encoding_version": 1,
+      "env": {
+        "BUNDLED_DEBUGPY_PATH": "/Users/nathanmatthews/.cursor/extensions/ms-python.debugpy-2025.18.0-darwin-arm64/bundled/libs/debugpy",
+        "CODELLDB_LAUNCH_CONNECT_FILE": "/Users/nathanmatthews/Library/Application Support/Cursor/User/workspaceStorage/13ec2522bf12a9a01b82a61eeb467b50/vadimcn.vscode-lldb/rpcaddress.txt",
+        "COLORTERM": "truecolor",
+        "COMMAND_MODE": "unix2003",
+        "CURSOR_TRACE_ID": "ea850df79e684cd5ad0b3a418b9233ee",
+        "DISPLAY": "/private/tmp/com.apple.launchd.w7dvpajOAa/org.xquartz:0",
+        "GIT_ASKPASS": "/Applications/Cursor.app/Contents/Resources/app/extensions/git/dist/askpass.sh",
+        "HOME": "/Users/nathanmatthews",
+        "HOMEBREW_CELLAR": "/opt/homebrew/Cellar",
+        "HOMEBREW_PREFIX": "/opt/homebrew",
+        "HOMEBREW_REPOSITORY": "/opt/homebrew",
+        "INFOPATH": "/opt/homebrew/share/info:/opt/homebrew/share/info:",
+        "LANG": "C.UTF-8",
+        "LOGNAME": "nathanmatthews",
+        "MallocNanoZone": "0",
+        "OLDPWD": "/Users/nathanmatthews/Documents/GitHub/retracesoftware",
+        "OSLogRateLimit": "64",
+        "PATH": "/Users/nathanmatthews/Documents/GitHub/retracesoftware/.venv312/bin:/Users/nathanmatthews/.pyenv/plugins/pyenv-virtualenv/shims:/Users/nathanmatthews/.pyenv/shims:/Users/nathanmatthews/.pyenv/bin:/usr/local/bin:/usr/local/sbin:/Users/nathanmatthews/.cursor/extensions/vadimcn.vscode-lldb-1.12.0/bin:/opt/homebrew/bin:/opt/homebrew/sbin:/usr/local/bin:/System/Cryptexes/App/usr/bin:/usr/bin:/bin:/usr/sbin:/sbin:/var/run/com.apple.security.cryptexd/codex.system/bootstrap/usr/local/bin:/var/run/com.apple.security.cryptexd/codex.system/bootstrap/usr/bin:/var/run/com.apple.security.cryptexd/codex.system/bootstrap/usr/appleinternal/bin:/opt/pmk/env/global/bin:/opt/X11/bin:/Users/nathanmatthews/.cursor/extensions/vadimcn.vscode-lldb-1.12.0/bin:/Users/nathanmatthews/.local/bin:/Users/nathanmatthews/.pyenv/plugins/pyenv-virtualenv/shims:/Users/nathanmatthews/.pyenv/bin:/usr/local/sbin:/Users/nathanmatthews/.cabal/bin:/Users/nathanmatthews/.ghcup/bin:/Users/nathanmatthews/.cursor/extensions/ms-python.debugpy-2025.18.0-darwin-arm64/bundled/scripts/noConfigScripts",
+        "PS1": "((.venv312) ) %n@%m %1~ %# ",
+        "PWD": "/Users/nathanmatthews/Documents/GitHub/retracesoftware/examples",
+        "PYDEVD_DISABLE_FILE_VALIDATION": "1",
+        "PYENV_SHELL": "zsh",
+        "PYENV_VIRTUALENV_INIT": "1",
+        "RETRACE_CONFIG": "debug",
+        "RETRACE_INODE": "233724636",
+        "SHELL": "/bin/zsh",
+        "SHLVL": "1",
+        "SSH_AUTH_SOCK": "/private/tmp/com.apple.launchd.g5tkFWpJV8/Listeners",
+        "TERM": "xterm-256color",
+        "TERM_PROGRAM": "vscode",
+        "TERM_PROGRAM_VERSION": "2.6.13",
+        "TMPDIR": "/var/folders/10/sj2qsskd20n1lqk_ww_w0t100000gn/T/",
+        "USER": "nathanmatthews",
+        "USER_ZDOTDIR": "/Users/nathanmatthews",
+        "VIRTUAL_ENV": "/Users/nathanmatthews/Documents/GitHub/retracesoftware/.venv312",
+        "VIRTUAL_ENV_PROMPT": "(.venv312) ",
+        "VSCODE_DEBUGPY_ADAPTER_ENDPOINTS": "/Users/nathanmatthews/.cursor/extensions/ms-python.debugpy-2025.18.0-darwin-arm64/.noConfigDebugAdapterEndpoints/endpoint-b798f96167dda54b.txt",
+        "VSCODE_GIT_ASKPASS_EXTRA_ARGS": "",
+        "VSCODE_GIT_ASKPASS_MAIN": "/Applications/Cursor.app/Contents/Resources/app/extensions/git/dist/askpass-main.js",
+        "VSCODE_GIT_ASKPASS_NODE": "/Applications/Cursor.app/Contents/Frameworks/Cursor Helper (Plugin).app/Contents/MacOS/Cursor Helper (Plugin)",
+        "VSCODE_GIT_IPC_AUTH_TOKEN": "1842029ead1dd6bad72b7f70eba583cb48f1cf7ab74e8e06941b5e5d73ff0181",
+        "VSCODE_GIT_IPC_HANDLE": "/var/folders/10/sj2qsskd20n1lqk_ww_w0t100000gn/T/vscode-git-91997a5239.sock",
+        "VSCODE_INJECTION": "1",
+        "VSCODE_PROFILE_INITIALIZED": "1",
+        "XPC_FLAGS": "0x0",
+        "XPC_SERVICE_NAME": "0",
+        "ZDOTDIR": "/Users/nathanmatthews",
+        "_": "/Users/nathanmatthews/Documents/GitHub/retracesoftware/.venv312/bin/python",
+        "__CFBundleIdentifier": "com.todesktop.230313mzl4w4u92",
+        "__CF_USER_TEXT_ENCODING": "0x1F5:0:2"
+      },
+      "executable": "/Users/nathanmatthews/Documents/GitHub/retracesoftware/.venv312/bin/python",
+      "monitor": 0,
+      "python_version": "3.12.10 (v3.12.10:0cc81280367, Apr  8 2025, 08:46:59) [Clang 13.0.0 (clang-1300.0.29.30)]",
+      "sys_path": [
+        "/Users/nathanmatthews/Documents/GitHub/retracesoftware/examples",
+        "/Library/Frameworks/Python.framework/Versions/3.12/lib/python312.zip",
+        "/Library/Frameworks/Python.framework/Versions/3.12/lib/python3.12",
+        "/Library/Frameworks/Python.framework/Versions/3.12/lib/python3.12/lib-dynload",
+        "/Users/nathanmatthews/Documents/GitHub/retracesoftware/.venv312/lib/python3.12/site-packages"
+      ],
+      "trace_inputs": false,
+      "trace_shutdown": false,
+      "type": "exec"
+    },
+    "segments": [
+      {
+        "offset": 83,
+        "size": 19395
+      }
+    ],
+    "children": []
+  }
+}

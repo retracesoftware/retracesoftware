@@ -95,9 +95,6 @@ namespace retracesoftware {
 
     extern PyTypeObject ThreadContextWrapper_Type;
 
-    extern PyTypeObject CallCounter_Type;
-    extern PyTypeObject DisabledCallback_Type;
-
     PyObject *start_new_thread_wrapper(PyObject *module, PyObject *const *args, Py_ssize_t nargs);
     bool threadcontext_init(PyObject *module);
 

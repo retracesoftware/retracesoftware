@@ -137,16 +137,18 @@ func (c *Cursor) Next(ctx context.Context) (*Cursor, error) {
 	return NewCursor(rp.Location(), c.provider, rp), nil
 }
 
-// StepInto increments the last call counter and positions at the start
-// of the next child call (DAP stepIn).
+// StepInto enters the next child call from the current position (DAP stepIn).
+// It increments the parent's call count and appends a zero for the child frame,
+// so the target matches PY_START of the callee at exact depth.
 func (c *Cursor) StepInto(ctx context.Context) (*Cursor, error) {
 	loc := c.location
 	if len(loc.FunctionCounts) == 0 {
 		return nil, ErrNotImplemented
 	}
-	childCounts := make([]int, len(loc.FunctionCounts))
+	childCounts := make([]int, len(loc.FunctionCounts)+1)
 	copy(childCounts, loc.FunctionCounts)
-	childCounts[len(childCounts)-1]++
+	childCounts[len(loc.FunctionCounts)-1]++
+	childCounts[len(loc.FunctionCounts)] = 0
 
 	target := Location{ThreadID: loc.ThreadID, FunctionCounts: childCounts}
 

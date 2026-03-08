@@ -88,14 +88,18 @@ def install_breakpoint(
     breakpoint: BreakpointSpec,
     callback: Callable[[dict], None],
     log: Optional[Callable[[str], None]] = None,
+    disable_for: Optional[Callable] = None,
 ) -> BreakpointMonitor:
     """Install a file:line breakpoint via sys.monitoring.
 
     Returns a monitor handle with `.close()` for teardown.
     ``log``, when provided, is called with diagnostic strings that the
     caller can forward over the control socket.
+    ``disable_for``, when provided, wraps monitoring callbacks so they
+    don't perturb call-count tracking.
     """
     _log = log or (lambda msg: None)
+    _wrap = disable_for or call_counter_disable_for
     _log(f"install_breakpoint: file={breakpoint.file!r} line={breakpoint.line}")
 
     install_call_counter()
@@ -120,8 +124,8 @@ def install_breakpoint(
         return None
 
     events = E.PY_START | E.LINE
-    sys.monitoring.register_callback(tool_id, E.PY_START, call_counter_disable_for(on_py_start))
-    sys.monitoring.register_callback(tool_id, E.LINE, call_counter_disable_for(on_line))
+    sys.monitoring.register_callback(tool_id, E.PY_START, _wrap(on_py_start))
+    sys.monitoring.register_callback(tool_id, E.LINE, _wrap(on_line))
     sys.monitoring.set_events(tool_id, E.PY_START)
     _log(f"hooks installed, monitoring PY_START events")
 
@@ -131,6 +135,7 @@ def install_breakpoint(
 def install_function_breakpoint(
     target: object,
     callback: Callable[[dict], None],
+    disable_for: Optional[Callable] = None,
 ) -> BreakpointMonitor:
     """Install a breakpoint on calls to a specific callable (including C functions).
 
@@ -139,6 +144,7 @@ def install_function_breakpoint(
 
     Returns a monitor handle with `.close()` for teardown.
     """
+    _wrap = disable_for or call_counter_disable_for
     install_call_counter()
     tool_id = _acquire_tool_id("retrace_func_bp")
 
@@ -149,7 +155,7 @@ def install_function_breakpoint(
             callback(cursor_snapshot().to_dict())
         return None
 
-    sys.monitoring.register_callback(tool_id, E.CALL, call_counter_disable_for(on_call))
+    sys.monitoring.register_callback(tool_id, E.CALL, _wrap(on_call))
     sys.monitoring.set_events(tool_id, E.CALL)
 
     return BreakpointMonitor(tool_id, E.CALL)

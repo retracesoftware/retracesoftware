@@ -1,0 +1,21 @@
+{
+  "folders": [
+    {
+      "path": "/Users/nathanmatthews/Documents/GitHub/retracesoftware/examples"
+    }
+  ],
+  "settings": {
+    "retrace.recording": "/Users/nathanmatthews/Documents/GitHub/retracesoftware/examples/target_hello.retrace"
+  },
+  "launch": {
+    "version": "0.2.0",
+    "configurations": [
+      {
+        "type": "retrace",
+        "request": "launch",
+        "name": "Retrace",
+        "recording": "/Users/nathanmatthews/Documents/GitHub/retracesoftware/examples/target_hello.retrace"
+      }
+    ]
+  }
+}

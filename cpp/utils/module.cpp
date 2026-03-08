@@ -708,7 +708,6 @@ PyMODINIT_FUNC CONCAT(PyInit_, MODULE_NAME)(void) {
         &retracesoftware::DeallocBridge_Type,
         &retracesoftware::ThreadContextWrapper_Type,
         &retracesoftware::ThreadLocalContext_Type,
-        &retracesoftware::DisabledCallback_Type,
         nullptr
     };
 
@@ -751,7 +750,6 @@ PyMODINIT_FUNC CONCAT(PyInit_, MODULE_NAME)(void) {
         &retracesoftware::Gate_Type,
         &retracesoftware::MemoryAddresses_Type,
         &retracesoftware::ThreadLocal_Type,
-        &retracesoftware::CallCounter_Type,
             NULL
     };
 

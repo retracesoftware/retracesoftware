@@ -22,6 +22,7 @@ py.install_sources(
   _py_root / 'autoenable.py',
   _py_root / 'breakpoint.py',
   _py_root / 'control_runtime.py',
+  _py_root / 'cursor.py',
   _py_root / 'exceptions.py',
   _py_root / 'replay_protocol.py',
   _py_root / 'run.py',
@@ -168,4 +169,5 @@ py.install_sources(
 
 subdir('cpp/functional')
 subdir('cpp/utils')
+subdir('cpp/cursor')
 subdir('cpp/stream')

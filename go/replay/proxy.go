@@ -9,6 +9,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"time"
 )
 
 // envelope is the minimal structure we unmarshal for routing decisions.
@@ -320,7 +321,8 @@ func (p *Proxy) runToNextStop(command string) error {
 		return fmt.Errorf("no active debugger")
 	}
 
-	ctx := context.Background()
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
 
 	switch command {
 	case "continue":

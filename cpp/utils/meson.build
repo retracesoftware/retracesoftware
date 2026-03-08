@@ -1,7 +1,6 @@
 _utils_name = '_retracesoftware_utils'
 _utils_sources = files(
   'counter.cpp',
-  'cursor.cpp',
   'demux.cpp',
   'dictintercept.cpp',
   'dispatcher.cpp',

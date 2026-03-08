@@ -2,12 +2,11 @@
 
 Provides ``trace_function_instructions`` which installs sys.monitoring
 INSTRUCTION hooks on a single function invocation identified by
-(thread_id, call_counters), firing a callback for every bytecode
+call_counters on the current thread, firing a callback for every bytecode
 instruction until the function returns.
 """
 
 import sys
-import _thread
 from types import CodeType
 
 from . import (
@@ -77,12 +76,12 @@ def _classify_position(target: tuple, current: tuple) -> str:
 
 
 def trace_function_instructions(
-    thread_id, call_counters, callback, *, target_frame=None, on_complete=None
+    call_counters, callback, *, target_frame=None, on_complete=None
 ):
     """Fire *callback(code, instruction_offset)* for every bytecode instruction
-    executed within the function invocation at (*thread_id*, *call_counters*).
+    executed within the function invocation at *call_counters* on the current thread.
 
-    **Position cases** (determined automatically for same-thread callers):
+    **Position cases**:
 
     - *ahead*:    target not yet entered — arms ``watch(on_start)``
     - *ancestor*: currently deeper than target — arms ``watch(on_return)``
@@ -104,17 +103,12 @@ def trace_function_instructions(
     install_call_counter()
     call_counters = tuple(call_counters)
 
-    # --- Reachability check (same-thread only; cross-thread defers to watch) ---
-    if _thread.get_ident() == thread_id:
-        current = current_call_counts()
-        position = _classify_position(call_counters, current)
-        if position == "behind":
-            raise TargetUnreachableError(
-                f"target {call_counters} already passed (current: {current})"
-            )
-    else:
-        current = None
-        position = "ahead"
+    current = current_call_counts()
+    position = _classify_position(call_counters, current)
+    if position == "behind":
+        raise TargetUnreachableError(
+            f"target {call_counters} already passed (current: {current})"
+        )
 
     # --- Allocate a dedicated tool_id for INSTRUCTION events ---
     tool_id = _acquire_tool_id("retrace_trace_fn")
@@ -148,7 +142,7 @@ def trace_function_instructions(
                 on_complete()
 
         exit_cb = call_counter_disable_for(_on_exit)
-        watch(thread_id, call_counters, on_return=exit_cb, on_unwind=exit_cb)
+        watch(call_counters, on_return=exit_cb, on_unwind=exit_cb)
 
     def _begin_tracing():
         """Phase 1→2 bridge: resolve frame from the watch callback context."""
@@ -171,9 +165,9 @@ def trace_function_instructions(
         # The immediate child of the target is at one level deeper than target.
         # When that child returns, execution resumes in the target frame.
         child_counters = current[:len(call_counters) + 1]
-        watch(thread_id, child_counters, on_return=begin, on_unwind=begin)
+        watch(child_counters, on_return=begin, on_unwind=begin)
 
     else:  # ahead
-        watch(thread_id, call_counters, on_start=begin)
+        watch(call_counters, on_start=begin)
 
     return monitor

@@ -20,6 +20,7 @@ from typing import Any, Callable, Generator, Optional, Protocol, TextIO
 
 import retracesoftware.functional as functional
 import retracesoftware.utils as utils
+import retracesoftware.cursor as cursor
 from retracesoftware.utils.breakpoint import BreakpointSpec, install_breakpoint, install_function_breakpoint, _acquire_tool_id
 
 _real_fork = os.fork
@@ -34,13 +35,18 @@ class StopAtCursor:
 
 @dataclass
 class RunToReturn:
+    function_counts: tuple[int, ...]
     max_call_counter: int | None = None
 
 @dataclass
 class NextInstruction:
     pass
 
-ControlExecutionIntent = StopAtBreakpoint | StopAtCursor | RunToReturn | NextInstruction
+@dataclass
+class WaitForThreadChange:
+    pass
+
+ControlExecutionIntent = StopAtBreakpoint | StopAtCursor | RunToReturn | NextInstruction | WaitForThreadChange
 
 
 class BackstopHitError(Exception):
@@ -259,9 +265,9 @@ def _parse_request_fields(request: Any) -> tuple[str, str, dict[str, Any]]:
 def _parse_cursor_param(params: dict[str, Any], request_id: str) -> dict[str, Any]:
     raw_cursor = params.get("cursor")
     if not isinstance(raw_cursor, dict):
-        raise ParseRequestError(request_id, "invalid_params", "cursor must be a dict with thread_id and function_counts")
-    if "thread_id" not in raw_cursor or "function_counts" not in raw_cursor:
-        raise ParseRequestError(request_id, "invalid_params", "cursor requires thread_id and function_counts")
+        raise ParseRequestError(request_id, "invalid_params", "cursor must be a dict with function_counts")
+    if "function_counts" not in raw_cursor:
+        raise ParseRequestError(request_id, "invalid_params", "cursor requires function_counts")
     return raw_cursor
 
 
@@ -340,6 +346,7 @@ def control_event_loop(
     control_socket: ControlSocket,
     get_inspector: Callable[[], Optional[StoppedStateInspector]] = lambda: None,
     get_message_index: Callable[[], int] = lambda: 0,
+    get_thread_id: Callable[[], Any] = lambda: None,
     get_instruction_map: Optional[Callable[[], Optional[list[int]]]] = None,
     on_before_fork: Optional[Callable[[], Any]] = None,
     on_after_fork: Optional[Callable[[Any], None]] = None,
@@ -426,13 +433,19 @@ def control_event_loop(
                     continue
 
                 elif command == "run_to_return":
+                    raw_fc = params.get("function_counts")
+                    if not isinstance(raw_fc, (list, tuple)) or not raw_fc:
+                        raise ParseRequestError(
+                            request_id, "invalid_params",
+                            "run_to_return requires non-empty function_counts",
+                        )
                     max_cc = params.get("max_call_counter")
                     if max_cc is not None and (not isinstance(max_cc, int) or max_cc < 0):
                         raise ParseRequestError(
                             request_id, "invalid_params",
                             "max_call_counter must be a non-negative integer",
                         )
-                    intent = RunToReturn(max_call_counter=max_cc)
+                    intent = RunToReturn(function_counts=tuple(raw_fc), max_call_counter=max_cc)
                     frame = None
                     last_cursor: dict[str, Any] = {}
                     while True:
@@ -472,6 +485,20 @@ def control_event_loop(
                             "cursor": result,
                             "thread_cursors": {},
                         })
+                    continue
+
+                if command == "wait_for_thread":
+                    target_tid = params.get("thread_id")
+                    if target_tid is None:
+                        raise ParseRequestError(
+                            request_id, "invalid_params",
+                            "wait_for_thread requires thread_id",
+                        )
+                    while target_tid != get_thread_id():
+                        yield WaitForThreadChange()
+                    _write_ok(control_socket.write_response, request_id, {
+                        "thread_id": get_thread_id(),
+                    })
                     continue
 
                 if command == "fork":
@@ -538,24 +565,55 @@ def _resolve_callable(name: str):
     return getattr(mod, attr)
 
 
-def register_breakpoint_callback(breakpoint_dict, callback, log=None):
+def register_breakpoint_callback(breakpoint_dict, callback, log=None, disable_for=None):
     if "function" in breakpoint_dict:
         target = _resolve_callable(breakpoint_dict["function"])
-        return install_function_breakpoint(target, callback)
+        return install_function_breakpoint(target, callback, disable_for=disable_for)
     spec = BreakpointSpec(
         file=breakpoint_dict["file"],
         line=breakpoint_dict["line"],
         condition=breakpoint_dict.get("condition"),
     )
-    return install_breakpoint(spec, callback, log=log)
+    return install_breakpoint(spec, callback, disable_for=disable_for, log=log)
 
-def register_cursor_callback(cursor_dict, callback):
-    utils.install_call_counter()
-    utils.yield_at_call_counts(
-        callback,
-        cursor_dict["thread_id"],
-        tuple(cursor_dict["function_counts"]),
-    )
+def register_cursor_callback(cursor_dict, callback, on_missed=None):
+    cursor.install_call_counter()
+    target_f_lasti = cursor_dict.get("f_lasti")
+    counts = tuple(cursor_dict["function_counts"])
+
+    if target_f_lasti is None:
+        cursor.watch(counts, on_start=callback, on_missed=on_missed)
+        return
+
+    os_tid = _thread.get_ident()
+
+    def _on_counts_match():
+        frame = _find_user_frame()
+        target_code = frame.f_code if frame else None
+        tool_id = _acquire_tool_id("retrace_cursor_advance")
+        E = sys.monitoring.events
+
+        def _on_instruction(code, offset):
+            if _thread.get_ident() != os_tid:
+                return
+            if code is not target_code:
+                return
+            if offset != target_f_lasti:
+                return
+            sys.monitoring.set_events(tool_id, 0)
+            sys.monitoring.register_callback(tool_id, E.INSTRUCTION, None)
+            sys.monitoring.free_tool_id(tool_id)
+            callback()
+
+        sys.monitoring.register_callback(
+            tool_id, E.INSTRUCTION,
+            cursor.call_counter_disable_for(_on_instruction),
+        )
+        sys.monitoring.set_events(tool_id, E.INSTRUCTION)
+
+    cursor.watch(counts,
+                 on_start=cursor.call_counter_disable_for(_on_counts_match),
+                 on_missed=on_missed)
 
 def _find_user_frame():
     """Walk the call stack to find the first frame outside retracesoftware internals."""
@@ -576,8 +634,10 @@ class Controller:
         on_before_fork: Optional[Callable[[], Any]] = None,
         on_after_fork: Optional[Callable[[Any], None]] = None,
         disable_for: Optional[Callable] = None,
+        get_thread_id: Optional[Callable[[], Any]] = None,
     ):
-        self._disable_for = functional.sequence(utils.call_counter_disable_for, disable_for)
+        self._get_thread_id = get_thread_id or _thread.get_ident
+        self._disable_for = functional.sequence(cursor.call_counter_disable_for, disable_for)
         self._control_socket = control_socket
         self._in_control_log = False
         self._monitor = None
@@ -594,15 +654,33 @@ class Controller:
             control_socket=control_socket,
             get_inspector=self._get_inspector,
             get_message_index=lambda: self._message_index,
+            get_thread_id=self._get_thread_id,
             get_instruction_map=self._get_instruction_map,
             on_before_fork=on_before_fork,
             on_after_fork=on_after_fork,
         )
 
         try:
-            self._handle_intent(next(self.event_loop))
+            intent = self._disable_for(lambda: next(self.event_loop))()
+            self._handle_intent(intent)
         except StopIteration:
             self._done = True
+
+    def _cursor_dict(self, snapshot: Optional[dict] = None) -> dict[str, Any]:
+        """Build a cursor dict using the configured thread_id source.
+
+        If *snapshot* is given (e.g. from ``cursor_snapshot().to_dict()``),
+        overwrite its ``thread_id`` with the stable one.  Otherwise build
+        a fresh cursor from current call counts.
+        """
+        if snapshot is not None:
+            snapshot["thread_id"] = self._get_thread_id()
+            return snapshot
+        return {
+            "thread_id": self._get_thread_id(),
+            "function_counts": list(cursor.current_call_counts()),
+            "f_lasti": None,
+        }
 
     def _set_backstop(self, message_index: int):
         self._backstop = message_index
@@ -619,7 +697,7 @@ class Controller:
         if self._backstop is not None and self._message_index >= self._backstop:
             err = BackstopHitError(
                 message_index=self._message_index,
-                cursor=utils.cursor_snapshot().to_dict(),
+                cursor=self._cursor_dict(cursor.cursor_snapshot().to_dict()),
             )
             try:
                 self.event_loop.throw(err)
@@ -645,10 +723,15 @@ class Controller:
                 self._monitor = register_breakpoint_callback(
                     intent.breakpoint, self._disable_for(self._on_breakpoint_hit),
                     log=self._disable_for(self._control_log),
+                    disable_for=self._disable_for,
                 )
 
         elif isinstance(intent, StopAtCursor):
-            register_cursor_callback(intent.cursor, self._disable_for(self._on_cursor_hit))
+            register_cursor_callback(
+                intent.cursor,
+                self._disable_for(self._on_cursor_hit),
+                on_missed=self._disable_for(lambda: self._send_reason("eof")),
+            )
 
         elif isinstance(intent, RunToReturn):
             self._install_run_to_return(intent)
@@ -656,53 +739,60 @@ class Controller:
         elif isinstance(intent, NextInstruction):
             self._install_next_instruction()
 
+        elif isinstance(intent, WaitForThreadChange):
+            self._install_wait_for_thread_change()
+
         else:
             raise RuntimeError(f"unexpected intent: {intent}")
 
     def _install_run_to_return(self, intent: RunToReturn):
-        thread_id = _thread.get_ident()
-        counters = utils.current_call_counts()
+        counters = intent.function_counts
+        cursor.install_call_counter()
 
-        if self._trace_monitor is not None:
-            self._trace_monitor.close()
+        def _on_return():
+            snapshot = self._cursor_dict(cursor.cursor_snapshot().to_dict())
+            try:
+                self.event_loop.send(snapshot)
+                intent2 = self.event_loop.send("return")
+                self._handle_intent(intent2)
+            except StopIteration:
+                self._cleanup()
 
-        self._trace_monitor = utils.trace_function_instructions(
-            thread_id, counters, self._disable_for(self._on_instruction_hit),
-            target_frame=self._stopped_frame,
-            on_complete=self._disable_for(self._on_trace_complete),
-        )
+        def _on_missed():
+            self._send_reason("eof")
+
+        cursor.watch(counters,
+                     on_return=self._disable_for(_on_return),
+                     on_missed=self._disable_for(_on_missed))
 
         if intent.max_call_counter is not None:
             limit_counters = counters + (intent.max_call_counter,)
 
             def _on_limit():
-                if self._trace_monitor is not None:
-                    self._trace_monitor.close()
-                    self._trace_monitor = None
                 self._send_reason("call_counter")
 
-            utils.watch(thread_id, limit_counters, on_start=self._disable_for(_on_limit))
+            cursor.watch(limit_counters, on_start=self._disable_for(_on_limit))
 
     def _install_next_instruction(self):
         if self._trace_monitor is not None:
             self._trace_monitor.close()
 
-        thread_id = _thread.get_ident()
+        os_tid = _thread.get_ident()
         tool_id = _acquire_tool_id("retrace_next_instr")
         E = sys.monitoring.events
         monitor = utils.InstructionMonitor(tool_id)
         self._trace_monitor = monitor
 
         def on_hit(code, offset):
-            if _thread.get_ident() != thread_id:
+            if _thread.get_ident() != os_tid:
                 return
             monitor.close()
             self._trace_monitor = None
             self._last_code = code
             self._stopped_frame = _find_user_frame()
             cursor_dict = {
-                "thread_id": thread_id,
-                "function_counts": list(utils.current_call_counts()),
+                "thread_id": self._get_thread_id(),
+                "function_counts": list(cursor.current_call_counts()),
                 "f_lasti": offset,
             }
             try:
@@ -715,6 +805,19 @@ class Controller:
             tool_id, E.INSTRUCTION, self._disable_for(on_hit)
         )
         sys.monitoring.set_events(tool_id, E.INSTRUCTION)
+
+    def _install_wait_for_thread_change(self):
+        def on_switch():
+            cursor.set_on_thread_switch(None)
+            self._stopped_frame = _find_user_frame()
+            cursor_dict = self._cursor_dict(cursor.cursor_snapshot().to_dict())
+            try:
+                next_intent = self.event_loop.send(cursor_dict)
+                self._handle_intent(next_intent)
+            except StopIteration:
+                self._cleanup()
+
+        cursor.set_on_thread_switch(self._disable_for(on_switch))
 
     def _get_instruction_map(self) -> list[int] | None:
         code = None
@@ -729,8 +832,8 @@ class Controller:
     def _on_instruction_hit(self, code, offset):
         self._last_code = code
         cursor_dict = {
-            "thread_id": _thread.get_ident(),
-            "function_counts": list(utils.current_call_counts()),
+            "thread_id": self._get_thread_id(),
+            "function_counts": list(cursor.current_call_counts()),
             "f_lasti": offset,
         }
         try:
@@ -759,10 +862,10 @@ class Controller:
         except (StopIteration, ReplayEOF):
             self._cleanup()
 
-    def _on_breakpoint_hit(self, cursor_dict):
+    def _on_breakpoint_hit(self, frame):
         self._stopped_frame = _find_user_frame()
         try:
-            intent = self.event_loop.send(cursor_dict)
+            intent = self.event_loop.send(self._cursor_dict(cursor.cursor_snapshot().to_dict()))
             self._handle_intent(intent)
         except StopIteration:
             self._cleanup()
@@ -770,7 +873,7 @@ class Controller:
     def _on_cursor_hit(self):
         self._stopped_frame = _find_user_frame()
         try:
-            intent = self.event_loop.send(utils.cursor_snapshot().to_dict())
+            intent = self.event_loop.send(self._cursor_dict(cursor.cursor_snapshot().to_dict()))
             self._handle_intent(intent)
         except StopIteration:
             self._cleanup()
@@ -784,4 +887,5 @@ class Controller:
         if self._trace_monitor is not None:
             self._trace_monitor.close()
             self._trace_monitor = None
+        cursor.set_on_thread_switch(None)
         self._stopped_frame = None
