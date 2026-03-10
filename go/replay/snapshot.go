@@ -26,8 +26,8 @@ func (s *Snapshot) Replay(ctx context.Context) (*Replay, error) {
 // SnapshotProvider manages a pool of Snapshots and finds the closest
 // one before a target call or return position.
 type SnapshotProvider interface {
-	ClosestBeforeCall(ctx context.Context, threadID uint64, callCounts []int) (*Snapshot, error)
-	ClosestBeforeReturn(ctx context.Context, threadID uint64, callCounts []int) (*Snapshot, error)
+	ClosestBeforeCall(ctx context.Context, threadID uint64, callCounts FunctionCounts) (*Snapshot, error)
+	ClosestBeforeReturn(ctx context.Context, threadID uint64, callCounts FunctionCounts) (*Snapshot, error)
 }
 
 // SimpleSnapshotProvider is a SnapshotProvider seeded with a single
@@ -42,10 +42,10 @@ func NewSimpleSnapshotProvider(root *Replay) *SimpleSnapshotProvider {
 	}
 }
 
-func (p *SimpleSnapshotProvider) ClosestBeforeCall(_ context.Context, _ uint64, _ []int) (*Snapshot, error) {
+func (p *SimpleSnapshotProvider) ClosestBeforeCall(_ context.Context, _ uint64, _ FunctionCounts) (*Snapshot, error) {
 	return p.snapshots[0], nil
 }
 
-func (p *SimpleSnapshotProvider) ClosestBeforeReturn(_ context.Context, _ uint64, _ []int) (*Snapshot, error) {
+func (p *SimpleSnapshotProvider) ClosestBeforeReturn(_ context.Context, _ uint64, _ FunctionCounts) (*Snapshot, error) {
 	return p.snapshots[0], nil
 }

@@ -7,8 +7,8 @@ Provides:
   that records then replays a function call, raising on divergence.
 """
 
-import pkgutil
 import importlib
+import importlib.resources
 
 def run_with_context(system,
                      thread_id,
@@ -84,7 +84,10 @@ def run_with_context(system,
         uninstallers.append(install_monitoring(system, monitor_fn, monitor_level))
 
     # ── preload commonly-used modules before patching ─────────
-    preload = pkgutil.get_data("retracesoftware", "preload.txt")
+    try:
+        preload = importlib.resources.files("retracesoftware").joinpath("preload.txt").read_bytes()
+    except (FileNotFoundError, TypeError):
+        preload = b""
     for name in preload.decode("utf-8").splitlines():
         try:
             importlib.import_module(name.strip())
@@ -483,7 +486,10 @@ def install_for_pytest(modules=None):
     init_weakref()
 
     # ── preload commonly-used modules before patching ─────────
-    preload = pkgutil.get_data("retracesoftware", "preload.txt")
+    try:
+        preload = importlib.resources.files("retracesoftware").joinpath("preload.txt").read_bytes()
+    except (FileNotFoundError, TypeError):
+        preload = b""
     for name in preload.decode("utf-8").splitlines():
         try:
             importlib.import_module(name.strip())

@@ -10,6 +10,11 @@ requires_311 = pytest.mark.skipif(
     reason="CallCounter hooks require Python 3.11+",
 )
 
+requires_312 = pytest.mark.skipif(
+    sys.version_info < (3, 12),
+    reason="JUMP monitoring requires Python 3.12+",
+)
+
 
 @pytest.fixture
 def call_counter():
@@ -208,7 +213,11 @@ class TestCallCounting:
         cursors = with_loop()
 
         parent_counts = [c[0] for c in cursors]
-        assert parent_counts == [1, 2, 3]
+        if sys.version_info >= (3, 12):
+            # backward jumps also increment: call+backjump per iteration
+            assert parent_counts == [1, 3, 5]
+        else:
+            assert parent_counts == [1, 2, 3]
 
         inner_counts = [c[1] for c in cursors]
         assert inner_counts == [0, 0, 0]
@@ -229,7 +238,10 @@ class TestCallCounting:
 
         cursors = with_while()
         parent_counts = [c[0] for c in cursors]
-        assert parent_counts == [1, 2, 3, 4]
+        if sys.version_info >= (3, 12):
+            assert parent_counts == [1, 3, 5, 7]
+        else:
+            assert parent_counts == [1, 2, 3, 4]
 
     def test_nested_loops(self, call_counter):
         call_counter.install()
@@ -247,7 +259,11 @@ class TestCallCounting:
         cursors = nested()
         assert len(cursors) == 4
         parent_counts = [c[0] for c in cursors]
-        assert parent_counts == [1, 2, 3, 4]
+        if sys.version_info >= (3, 12):
+            # inner call + inner backjump per iter, plus outer backjump
+            assert parent_counts == [1, 3, 6, 8]
+        else:
+            assert parent_counts == [1, 2, 3, 4]
 
     def test_sequential_calls_increment(self, call_counter):
         call_counter.install()
@@ -265,6 +281,61 @@ class TestCallCounting:
         assert b[-2] == 2
         assert a[-1] == 0
         assert b[-1] == 0
+
+    @requires_312
+    def test_loop_backjump_increments_call_count(self, call_counter):
+        """Backward jumps (loop back-edges) should increment call_count even
+        when the loop body contains only C-level calls (no Python functions)."""
+        call_counter.install()
+
+        def with_loop():
+            results = []
+            for i in range(3):
+                results.append(call_counter.current())
+            return results
+
+        cursors = with_loop()
+        loop_counts = [c[-1] for c in cursors]
+        assert loop_counts == [0, 1, 2], (
+            f"Each backward jump should increment call_count; got {loop_counts}"
+        )
+
+    @requires_312
+    def test_while_backjump_increments_call_count(self, call_counter):
+        """While-loop back-edges should also increment call_count."""
+        call_counter.install()
+
+        def with_while():
+            results = []
+            i = 0
+            while i < 3:
+                results.append(call_counter.current())
+                i += 1
+            return results
+
+        cursors = with_while()
+        loop_counts = [c[-1] for c in cursors]
+        assert loop_counts == [0, 1, 2], (
+            f"Each while-loop back-edge should increment call_count; got {loop_counts}"
+        )
+
+    @requires_312
+    def test_nested_loop_backjumps(self, call_counter):
+        """Nested loops: both inner and outer back-edges increment."""
+        call_counter.install()
+
+        def with_nested():
+            results = []
+            for i in range(2):
+                for j in range(2):
+                    results.append(call_counter.current())
+            return results
+
+        cursors = with_nested()
+        counts = [c[-1] for c in cursors]
+        assert counts[0] < counts[1] < counts[2] < counts[3], (
+            f"Nested loop counts should be strictly increasing; got {counts}"
+        )
 
 
 # ============================================================================

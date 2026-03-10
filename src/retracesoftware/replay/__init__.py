@@ -3,6 +3,12 @@ import sys
 
 _REPO_MARKERS = ('meson.build', 'pyproject.toml', '.git')
 
+# The Go replay binary lives inside this package directory.
+# In a shipped wheel it is included as package data; during
+# development it is built from source into the same location.
+_PKG_DIR = os.path.dirname(os.path.abspath(__file__))
+_BINARY = os.path.join(_PKG_DIR, 'replay')
+
 
 def _find_repo_root(start: str) -> str | None:
     """Walk up from *start* looking for a directory that contains a repo marker."""
@@ -30,44 +36,44 @@ def _find_go_source(repo_root: str) -> str | None:
 
 
 def binary_path() -> str:
-    """Return the absolute path to the Go replay binary, building it if needed."""
+    """Return the absolute path to the Go replay binary, building it if needed.
+
+    The binary lives inside the retracesoftware package directory so that
+    ``import retracesoftware`` is all that's needed to locate it.  In a
+    shipped wheel the binary is included as package data.  During
+    development, if the binary is missing it is built from the Go source
+    tree into the same package-relative location.
+
+    RETRACE_REPLAY_BIN overrides everything for unusual setups.
+    """
     env_bin = os.environ.get('RETRACE_REPLAY_BIN')
     if env_bin and os.path.isfile(env_bin) and os.access(env_bin, os.X_OK):
         return env_bin
 
-    pkg_dir = os.path.dirname(os.path.abspath(__file__))
+    if os.path.isfile(_BINARY) and os.access(_BINARY, os.X_OK):
+        return _BINARY
 
-    # Packaged binary (inside installed wheel)
-    go_bin = os.path.join(pkg_dir, 'replay')
-    if os.path.isfile(go_bin) and os.access(go_bin, os.X_OK):
-        return go_bin
-
-    # Dev build: find repo root by walking up from this file
-    repo_root = _find_repo_root(pkg_dir)
+    # Binary missing — try to build from source into the package dir
+    repo_root = _find_repo_root(_PKG_DIR)
     if repo_root is None:
         raise FileNotFoundError(
-            "Cannot locate retracesoftware repo root from "
-            f"{pkg_dir}; set RETRACE_REPLAY_BIN to the replay binary path"
+            f"Go replay binary not found at {_BINARY} and cannot locate "
+            f"repo root from {_PKG_DIR}; set RETRACE_REPLAY_BIN"
         )
 
-    go_bin = os.path.join(repo_root, '_build', 'replay')
-    if os.path.isfile(go_bin) and os.access(go_bin, os.X_OK):
-        return go_bin
-
-    # Binary doesn't exist yet — try to build from source
     go_dir = _find_go_source(repo_root)
     if go_dir is None:
         raise FileNotFoundError(
-            f"Cannot find Go replay source (checked {repo_root}/go and "
+            f"Go replay binary not found at {_BINARY} and cannot find "
+            f"Go source (checked {repo_root}/go and "
             f"{os.path.dirname(repo_root)}/replay); "
             "set RETRACE_REPLAY_SRC or RETRACE_REPLAY_BIN"
         )
 
     import subprocess
-    os.makedirs(os.path.dirname(go_bin), exist_ok=True)
-    print(f"replay: building Go binary → {go_bin}", file=sys.stderr)
-    subprocess.check_call(['go', 'build', '-o', go_bin, './cmd/replay'], cwd=go_dir)
-    return go_bin
+    print(f"replay: building Go binary → {_BINARY}", file=sys.stderr)
+    subprocess.check_call(['go', 'build', '-o', _BINARY, './cmd/replay'], cwd=go_dir)
+    return _BINARY
 
 
 def extract_binary_path() -> str:

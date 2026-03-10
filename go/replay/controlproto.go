@@ -54,9 +54,10 @@ func parseControlMessage(line []byte) (ControlMessage, error) {
 // RawCursor is the protocol-level cursor representation: a dict with
 // thread_id, function_counts, and an optional f_lasti.
 type RawCursor struct {
-	ThreadID       uint64 `json:"thread_id"`
-	FunctionCounts []int  `json:"function_counts"`
-	FLasti         *int   `json:"f_lasti,omitempty"`
+	ThreadID       uint64         `json:"thread_id"`
+	FunctionCounts FunctionCounts `json:"function_counts"`
+	FLasti         *int           `json:"f_lasti,omitempty"`
+	Lineno         int            `json:"lineno,omitempty"`
 }
 
 // ToMap converts RawCursor to map[string]any for embedding in protocol messages.
@@ -89,7 +90,7 @@ func parseRawCursor(v any) RawCursor {
 		rc.ThreadID = uint64(tid)
 	}
 	if raw, ok := m["function_counts"].([]any); ok {
-		rc.FunctionCounts = make([]int, 0, len(raw))
+		rc.FunctionCounts = make(FunctionCounts, 0, len(raw))
 		for _, item := range raw {
 			if n, ok := item.(float64); ok {
 				rc.FunctionCounts = append(rc.FunctionCounts, int(n))
@@ -99,6 +100,9 @@ func parseRawCursor(v any) RawCursor {
 	if fl, ok := m["f_lasti"].(float64); ok {
 		v := int(fl)
 		rc.FLasti = &v
+	}
+	if ln, ok := m["lineno"].(float64); ok {
+		rc.Lineno = int(ln)
 	}
 	return rc
 }

@@ -75,6 +75,8 @@ func (p *Proxy) SetDebugger(d Debugger) {
 
 // Run processes DAP messages until the session ends.
 func (p *Proxy) Run() error {
+	log.Printf("protocol debug logging: %v (RETRACE_DEBUG_PROTOCOL=%q)",
+		debugProtocol, os.Getenv("RETRACE_DEBUG_PROTOCOL"))
 	if err := p.handlePreLaunch(); err != nil {
 		return fmt.Errorf("pre-launch: %w", err)
 	}
@@ -257,6 +259,13 @@ func (p *Proxy) handlePostLaunch() error {
 	}
 }
 
+func flasti(p *int) string {
+	if p == nil {
+		return "<nil>"
+	}
+	return fmt.Sprintf("%d", *p)
+}
+
 func breakpointKey(spec BreakpointSpec) string {
 	k := fmt.Sprintf("%s:%d", spec.File, spec.Line)
 	if spec.Condition != "" {
@@ -344,7 +353,7 @@ func (p *Proxy) runToNextStop(command string) error {
 		})
 	case "stepBack":
 		return p.handleCursorNav(ctx, "step", func() (*Cursor, error) {
-			return p.currentCursor.Previous(ctx)
+			return p.currentCursor.PreviousStatement(ctx)
 		})
 	default:
 		return fmt.Errorf("unhandled navigation command: %s", command)
@@ -401,7 +410,14 @@ func (p *Proxy) handleContinue(ctx context.Context, reverse bool) error {
 	}))
 }
 
-func (p *Proxy) handleCursorNav(ctx context.Context, reason string, nav func() (*Cursor, error)) error {
+func (p *Proxy) handleCursorNav(ctx context.Context, reason string, nav func() (*Cursor, error)) (retErr error) {
+	defer func() {
+		if r := recover(); r != nil {
+			log.Printf("PANIC in handleCursorNav (%s): %v", reason, r)
+			retErr = fmt.Errorf("panic during %s: %v", reason, r)
+		}
+	}()
+
 	if p.currentCursor == nil {
 		return p.clientW.Write(makeEvent("stopped", map[string]any{
 			"reason":            reason,
@@ -411,14 +427,16 @@ func (p *Proxy) handleCursorNav(ctx context.Context, reason string, nav func() (
 	}
 
 	loc := p.currentCursor.Location()
-	log.Printf("handleCursorNav: reason=%s msgIdx=%d FLasti=%v", reason, loc.MessageIndex, loc.FLasti)
+	log.Printf("handleCursorNav: reason=%s msgIdx=%d flasti=%s fc=%v",
+		reason, loc.MessageIndex, flasti(loc.FLasti), loc.FunctionCounts)
 
 	next, err := nav()
 	if err != nil {
-		log.Printf("navigation failed: %v, staying at current position", err)
+		log.Printf("navigation failed (%s): %v, staying at current position", reason, err)
 	} else {
 		nl := next.Location()
-		log.Printf("handleCursorNav: advanced to msgIdx=%d FLasti=%v", nl.MessageIndex, nl.FLasti)
+		log.Printf("handleCursorNav: advanced to msgIdx=%d flasti=%s fc=%v",
+			nl.MessageIndex, flasti(nl.FLasti), nl.FunctionCounts)
 		p.currentCursor = next
 		p.navigatedFromHit = true
 	}

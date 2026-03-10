@@ -15,7 +15,9 @@ static ThreadCallCounts *create_thread_call_counts()
     if (obj) {
         new (&obj->cursor_stack) std::vector<CursorEntry>();
         new (&obj->watches) std::vector<WatchState>();
+        new (&obj->pending_watches) std::vector<WatchState>();
         obj->suspend_depth = 0;
+        obj->check_watches_depth = 0;
         obj->root_parent_frame = nullptr;
         obj->root_parent_lasti = -1;
         obj->root_repeat_count = 0;
@@ -71,6 +73,7 @@ void invalidate_tc_cache(PyObject *owner)
 
 static void ThreadCallCounts_dealloc(ThreadCallCounts *self)
 {
+    self->pending_watches.~vector();
     self->watches.~vector();
     self->cursor_stack.~vector();
     Py_TYPE(self)->tp_free((PyObject *)self);
@@ -198,10 +201,30 @@ tc_add_watch(ThreadCallCounts *self,
         target.push_back((int)value);
     }
 
-    tc->watches.emplace_back(std::move(target),
-                            kw_start, kw_return, kw_unwind,
-                            kw_backjump, kw_overshoot);
-    if (kw_start) check_watches(WatchSlot::start);
+    if (tc->check_watches_depth > 0) {
+        tc->pending_watches.emplace_back(std::move(target),
+                                kw_start, kw_return, kw_unwind,
+                                kw_backjump, kw_overshoot);
+    } else {
+        tc->watches.emplace_back(std::move(target),
+                                kw_start, kw_return, kw_unwind,
+                                kw_backjump, kw_overshoot);
+        if (kw_start) check_watches(WatchSlot::start);
+    }
+    Py_RETURN_NONE;
+}
+
+static PyObject *
+tc_discard_watches(ThreadCallCounts *self, PyObject *Py_UNUSED(ignored))
+{
+    for (auto &w : self->watches) {
+        w.detach();
+    }
+    self->watches.clear();
+    for (auto &w : self->pending_watches) {
+        w.detach();
+    }
+    self->pending_watches.clear();
     Py_RETURN_NONE;
 }
 
@@ -238,8 +261,12 @@ tc_exit(ThreadCallCounts *self, PyObject *const *args, Py_ssize_t nargs)
     for (auto &w : self->watches) {
         w.fire_overshoot();
     }
+    for (auto &w : self->pending_watches) {
+        w.fire_overshoot();
+    }
     self->cursor_stack.clear();
     self->watches.clear();
+    self->pending_watches.clear();
     self->root_parent_valid = false;
     self->root_parent_frame = nullptr;
     self->root_parent_lasti = -1;
@@ -266,6 +293,8 @@ static PyMethodDef ThreadCallCounts_methods[] = {
                          "Add a one-shot watch for a target call-counts position."},
     {"reset_stack",      (PyCFunction)tc_reset_stack,      METH_NOARGS,
      "Clear the cursor stack and reset root tracking."},
+    {"discard_watches",  (PyCFunction)tc_discard_watches,  METH_NOARGS,
+     "Discard all watches without firing callbacks (fork-safe)."},
     {"__enter__",        (PyCFunction)tc_enter,            METH_NOARGS,  nullptr},
     {"__exit__",         (PyCFunction)tc_exit,             METH_FASTCALL, nullptr},
     {nullptr}

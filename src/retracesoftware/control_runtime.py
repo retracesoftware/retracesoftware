@@ -323,13 +323,25 @@ def _run_inspection_command(
     raise ParseRequestError(request_id, "unknown_command", f"unsupported command: {command}")
 
 
-def _build_instruction_lineno_list(code: CodeType) -> list[int]:
-    """Build a list mapping instruction index to source line number.
+def _build_instruction_info(code: CodeType) -> tuple[list[int], list[int]]:
+    """Build per-instruction lineno and sequential_before arrays.
 
-    Index ``i`` corresponds to bytecode offset ``i * 2``.  Caller looks up
-    a cursor's ``f_lasti`` via ``linenos[f_lasti // 2]``.
+    Index ``i`` corresponds to bytecode offset ``i * 2``.
+
+    ``sequential_before[i]`` is the number of immediately preceding
+    instructions that are safe to step back through sequentially (no
+    jump targets, generator/coroutine resume points, function entry,
+    or child-call boundaries in between).  A value of 0 means this
+    instruction is an entry point and backward sequential stepping is
+    not safe.
     """
-    size = len(code.co_code) // 2
+    import dis
+    import opcode
+
+    raw = code.co_code
+    size = len(raw) // 2
+
+    # --- linenos ---
     linenos = [0] * size
     for start, end, lineno in code.co_lines():
         if lineno is None:
@@ -338,7 +350,41 @@ def _build_instruction_lineno_list(code: CodeType) -> list[int]:
             idx = offset // 2
             if idx < size:
                 linenos[idx] = lineno
-    return linenos
+
+    # --- entry points (non-sequential) ---
+    entry_points: set[int] = {0}
+
+    for offset in dis.findlabels(raw):
+        entry_points.add(offset)
+
+    resume_op = opcode.opmap.get("RESUME")
+    if resume_op is not None:
+        for i in range(size):
+            if raw[i * 2] == resume_op:
+                entry_points.add(i * 2)
+
+    # Mark instructions following CALL-family opcodes as entry points.
+    # After a child call returns, FunctionCounts has changed, so the
+    # fast path must not scan backward across that boundary.
+    call_opcodes = frozenset(
+        opcode.opmap[n]
+        for n in ("CALL", "CALL_FUNCTION_EX")
+        if n in opcode.opmap
+    )
+    instrs = list(dis.get_instructions(code))
+    for i, instr in enumerate(instrs):
+        if instr.opcode in call_opcodes and i + 1 < len(instrs):
+            entry_points.add(instrs[i + 1].offset)
+
+    # --- sequential_before ---
+    sequential_before = [0] * size
+    for i in range(size):
+        if i * 2 in entry_points:
+            sequential_before[i] = 0
+        else:
+            sequential_before[i] = (sequential_before[i - 1] + 1) if i > 0 else 0
+
+    return linenos, sequential_before
 
 
 def control_event_loop(
@@ -347,7 +393,7 @@ def control_event_loop(
     get_inspector: Callable[[], Optional[StoppedStateInspector]] = lambda: None,
     get_message_index: Callable[[], int] = lambda: 0,
     get_thread_id: Callable[[], Any] = lambda: None,
-    get_instruction_map: Optional[Callable[[], Optional[list[int]]]] = None,
+    get_instruction_map: Optional[Callable[[], Optional[tuple[list[int], list[int]]]]] = None,
     on_before_fork: Optional[Callable[[], Any]] = None,
     on_after_fork: Optional[Callable[[Any], None]] = None,
 ) -> Generator[ControlExecutionIntent, dict[str, Any], None]:
@@ -390,13 +436,17 @@ def control_event_loop(
                             request_id, "not_available",
                             "instruction_to_lineno is not supported",
                         )
-                    linenos = get_instruction_map()
-                    if linenos is None:
+                    info = get_instruction_map()
+                    if info is None:
                         raise ParseRequestError(
                             request_id, "not_stopped",
                             "no code object available (stop at a breakpoint or run run_to_return first)",
                         )
-                    _write_ok(control_socket.write_response, request_id, {"linenos": linenos})
+                    linenos, sequential_before = info
+                    _write_ok(control_socket.write_response, request_id, {
+                        "linenos": linenos,
+                        "sequential_before": sequential_before,
+                    })
                     continue
 
                 if command == "hit_breakpoints":
@@ -509,9 +559,14 @@ def control_event_loop(
                             request_id, "invalid_params", "fork requires socket_path"
                         )
 
+                    _raw_cc = cursor._get_shared_raw_cc()
+
                     saved = on_before_fork() if on_before_fork else None
 
                     child_pid = _real_fork()
+
+                    if child_pid == 0:
+                        _raw_cc().discard_watches()
 
                     if on_after_fork:
                         on_after_fork(saved)
@@ -553,6 +608,18 @@ def control_event_loop(
                     "cursor": {},
                     "thread_cursors": {},
                 })
+
+            except BaseException as err:
+                import traceback
+                tb = traceback.format_exc()
+                try:
+                    _write_error(
+                        control_socket.write_response, request_id,
+                        "internal_error", f"{type(err).__name__}: {err}\n{tb}",
+                    )
+                except Exception:
+                    pass
+                raise
     finally:
         control_socket.close()
 
@@ -655,7 +722,7 @@ class Controller:
             get_inspector=self._get_inspector,
             get_message_index=lambda: self._message_index,
             get_thread_id=self._get_thread_id,
-            get_instruction_map=self._get_instruction_map,
+            get_instruction_map=self._get_instruction_info,
             on_before_fork=on_before_fork,
             on_after_fork=on_after_fork,
         )
@@ -675,6 +742,15 @@ class Controller:
         """
         if snapshot is not None:
             snapshot["thread_id"] = self._get_thread_id()
+            if "lineno" not in snapshot:
+                code = None
+                if self._stopped_frame is not None:
+                    code = self._stopped_frame.f_code
+                elif self._last_code is not None:
+                    code = self._last_code
+                f_lasti = snapshot.get("f_lasti")
+                if code is not None and f_lasti is not None:
+                    snapshot["lineno"] = self._lineno_from_code(code, f_lasti)
             return snapshot
         return {
             "thread_id": self._get_thread_id(),
@@ -730,7 +806,7 @@ class Controller:
             register_cursor_callback(
                 intent.cursor,
                 self._disable_for(self._on_cursor_hit),
-                on_missed=self._disable_for(lambda: self._send_reason("eof")),
+                on_missed=self._disable_for(lambda: self._send_reason("overshoot")),
             )
 
         elif isinstance(intent, RunToReturn):
@@ -759,7 +835,7 @@ class Controller:
                 self._cleanup()
 
         def _on_missed():
-            self._send_reason("eof")
+            self._send_reason("overshoot")
 
         cursor.watch(counters,
                      on_return=self._disable_for(_on_return),
@@ -794,6 +870,7 @@ class Controller:
                 "thread_id": self._get_thread_id(),
                 "function_counts": list(cursor.current_call_counts()),
                 "f_lasti": offset,
+                "lineno": self._lineno_from_code(code, offset),
             }
             try:
                 intent = self.event_loop.send(cursor_dict)
@@ -819,7 +896,7 @@ class Controller:
 
         cursor.set_on_thread_switch(self._disable_for(on_switch))
 
-    def _get_instruction_map(self) -> list[int] | None:
+    def _get_instruction_info(self) -> tuple[list[int], list[int]] | None:
         code = None
         if self._stopped_frame is not None:
             code = self._stopped_frame.f_code
@@ -827,7 +904,15 @@ class Controller:
             code = self._last_code
         if code is None:
             return None
-        return _build_instruction_lineno_list(code)
+        return _build_instruction_info(code)
+
+    @staticmethod
+    def _lineno_from_code(code, offset):
+        linenos, _ = _build_instruction_info(code)
+        idx = offset // 2
+        if idx < len(linenos):
+            return linenos[idx]
+        return 0
 
     def _on_instruction_hit(self, code, offset):
         self._last_code = code
@@ -835,6 +920,7 @@ class Controller:
             "thread_id": self._get_thread_id(),
             "function_counts": list(cursor.current_call_counts()),
             "f_lasti": offset,
+            "lineno": self._lineno_from_code(code, offset),
         }
         try:
             intent = self.event_loop.send(cursor_dict)

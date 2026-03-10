@@ -2,6 +2,7 @@ package replay
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -14,6 +15,8 @@ import (
 	"sync/atomic"
 	"time"
 )
+
+var debugProtocol = os.Getenv("RETRACE_DEBUG_PROTOCOL") != ""
 
 type ControlClient struct {
 	conn   net.Conn
@@ -53,6 +56,9 @@ func (c *ControlClient) send(req ControlRequest) error {
 	if err != nil {
 		return err
 	}
+	if debugProtocol {
+		log.Printf("control >> %s", b)
+	}
 	if _, err := c.writer.Write(b); err != nil {
 		return err
 	}
@@ -65,7 +71,13 @@ func (c *ControlClient) send(req ControlRequest) error {
 func (c *ControlClient) ReadMessage() (ControlMessage, error) {
 	line, err := c.reader.ReadBytes('\n')
 	if err != nil {
+		if debugProtocol {
+			log.Printf("control << ERROR: %v (partial: %q)", err, line)
+		}
 		return ControlMessage{}, err
+	}
+	if debugProtocol {
+		log.Printf("control << %s", bytes.TrimRight(line, "\n"))
 	}
 	return parseControlMessage(line)
 }

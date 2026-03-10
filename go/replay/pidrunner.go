@@ -65,6 +65,7 @@ func parseLocationFromPayload(payload map[string]any) Location {
 		ThreadID:       rc.ThreadID,
 		FunctionCounts: rc.FunctionCounts,
 		FLasti:         rc.FLasti,
+		Lineno:         rc.Lineno,
 		MessageIndex:   msgIdx,
 	}
 }

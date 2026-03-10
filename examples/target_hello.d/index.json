@@ -1,7 +1,7 @@
 {
   "trace_file": "/Users/nathanmatthews/Documents/GitHub/retracesoftware/examples/target_hello.retrace",
   "root": {
-    "pid": 38990,
+    "pid": 78110,
     "type": "exec",
     "preamble": {
       "argv": [
@@ -13,11 +13,11 @@
         "_retracesoftware_utils_release": "314b5db4c25811a62d8fd98f63453c54",
         "retracesoftware": {
           "__init__.py": "c4d8ad515406117a13bc7817ef38656f",
-          "__main__.py": "2d8bdb0e8066da75cbfa5c2745088208",
-          "autoenable.py": "5167ac3edc426389e82fc476d30b0327",
+          "__main__.py": "eac87733ab30c95ea53e9151d6394fcf",
+          "autoenable.py": "0cf806c3b4337fbf46b702243c2c127f",
           "breakpoint.py": "cf73e55a4079d69514781081411b7baf",
           "config.json": "2959a34a2ab3e6fbe93e3d4ac293cc4a",
-          "control_runtime.py": "c694a4a00035fd984902ac92c984e037",
+          "control_runtime.py": "1c0b8af2a29975bbdce902ee80af2a46",
           "cursor.py": "8caa7eab55526fe7a426725f9551b016",
           "dap": {
             "__init__.py": "2ae673604f2bc27b7971825c0b1ced9d",
@@ -50,8 +50,8 @@
             "_pure.py": "95d536f028dc08aebee1fcdb9373ebdf"
           },
           "install": {
-            "__init__.py": "4a84d2fb267908d8171f02818788374d",
-            "config.py": "29afb1ba1149227e5c3b7001edbe3536",
+            "__init__.py": "55f9d5f4895ca5e0779fef85358febbd",
+            "config.py": "c1104e4d9c33e511e5f014ee3f047dc1",
             "edgecases.py": "7c4ed50ccf57f4b4d2a97dd6cc960413",
             "globals.py": "2220d08ccfad8ecabb177d812666b1b3",
             "hooks.py": "c22dab425b15583d22575f03e6269c17",
@@ -105,12 +105,13 @@
           },
           "release.toml": "8262190b9305671952f06063fcbdce16",
           "replay": {
-            "__init__.py": "64de72e6c487acf58c11e64e6c1731cd",
-            "__main__.py": "1bbcbc9b8a593f39ac8bb301f0966679"
+            "__init__.py": "13f06bc720a9001ec892d89dd6815ba6",
+            "__main__.py": "1bbcbc9b8a593f39ac8bb301f0966679",
+            "replay": "968e93bcb02908f5126efa6d17a7cc0f"
           },
           "replay_protocol.py": "3dd8379ee51e91047056ee6d6a1e2462",
-          "retrace.pth": "88f4750900351cc6a4c6de5064a5e358",
           "retrace_patterns.txt": "567c004610dd2ebbf68c684d2b4ae54e",
+          "retracesoftware_autoenable.pth": "88f4750900351cc6a4c6de5064a5e358",
           "run.py": "af05ed590474653076f08d07ab52bb8d",
           "search.py": "03b3b6e246123a8dba59fb7d90b2876e",
           "stream": {
@@ -131,7 +132,7 @@
         "CODELLDB_LAUNCH_CONNECT_FILE": "/Users/nathanmatthews/Library/Application Support/Cursor/User/workspaceStorage/13ec2522bf12a9a01b82a61eeb467b50/vadimcn.vscode-lldb/rpcaddress.txt",
         "COLORTERM": "truecolor",
         "COMMAND_MODE": "unix2003",
-        "CURSOR_TRACE_ID": "ea850df79e684cd5ad0b3a418b9233ee",
+        "CURSOR_TRACE_ID": "f08ff7801d7b46768d61d217b6256f2e",
         "DISPLAY": "/private/tmp/com.apple.launchd.w7dvpajOAa/org.xquartz:0",
         "GIT_ASKPASS": "/Applications/Cursor.app/Contents/Resources/app/extensions/git/dist/askpass.sh",
         "HOME": "/Users/nathanmatthews",
@@ -194,8 +195,8 @@
     },
     "segments": [
       {
-        "offset": 83,
-        "size": 19395
+        "offset": 103,
+        "size": 17254
       }
     ],
     "children": []

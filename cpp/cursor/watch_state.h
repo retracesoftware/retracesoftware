@@ -28,6 +28,7 @@ public:
                     const std::vector<CursorEntry> &cursor_stack);
 
     void fire_overshoot();
+    void detach();
 
 private:
     bool completed() const;
@@ -45,6 +46,7 @@ private:
     void clear();
     static void fire_synchronously(PyObject *cb);
 
-    bool fire_exact(PyObject *&slot, const std::vector<CursorEntry> &cursor_stack);
+    bool fire_exact(PyObject *&slot, const std::vector<CursorEntry> &cursor_stack,
+                    bool relaxed_last = false);
     bool fire_start(const std::vector<CursorEntry> &cursor_stack);
 };

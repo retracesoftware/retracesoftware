@@ -5,12 +5,23 @@ void
 check_watches(WatchSlot slot)
 {
     if (tc->suspend_depth > 0) return;
+    tc->check_watches_depth++;
     auto &ws = tc->watches;
     ws.erase(
         std::remove_if(ws.begin(), ws.end(), [&](WatchState &w) {
             return w(slot, tc->cursor_stack);
         }),
         ws.end());
+    tc->check_watches_depth--;
+    if (tc->check_watches_depth == 0 && !tc->pending_watches.empty()) {
+        for (auto &pw : tc->pending_watches) {
+            ws.push_back(std::move(pw));
+        }
+        tc->pending_watches.clear();
+        if (slot == WatchSlot::start) {
+            check_watches(WatchSlot::start);
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -19,6 +30,8 @@ check_watches(WatchSlot slot)
 
 struct CallCounter;
 static void check_thread_switch(CallCounter *cc);
+
+static PyObject *s_monitoring_DISABLE = nullptr;
 
 // ---------------------------------------------------------------------------
 // sys.monitoring callbacks (module-level PyCFunctions for registration)
@@ -108,6 +121,14 @@ on_py_jump(PyObject *self, PyObject *const *args, Py_ssize_t nargs)
     }
     if (dst < src) {
         check_watches(WatchSlot::backjump);
+        if (!tc->cursor_stack.empty()) {
+            tc->cursor_stack.back().call_count++;
+        }
+        check_watches(WatchSlot::start);
+        Py_RETURN_NONE;
+    }
+    if (s_monitoring_DISABLE) {
+        return Py_NewRef(s_monitoring_DISABLE);
     }
     Py_RETURN_NONE;
 }
@@ -196,8 +217,10 @@ reset_cursor_state(PyObject *owner)
     tc->root_parent_lasti = -1;
     tc->root_repeat_count = 0;
     tc->suspend_depth = 0;
+    tc->check_watches_depth = 0;
     tc->suspended_frame = nullptr;
     tc->watches.clear();
+    tc->pending_watches.clear();
 }
 
 // ---------------------------------------------------------------------------
@@ -383,6 +406,10 @@ struct CallCounter : public PyObject {
         PyObject *monitoring = PyObject_GetAttrString(sys_mod, "monitoring");
         Py_DECREF(sys_mod);
         if (!monitoring) return nullptr;
+
+        Py_XDECREF(s_monitoring_DISABLE);
+        s_monitoring_DISABLE = PyObject_GetAttrString(monitoring, "DISABLE");
+        if (!s_monitoring_DISABLE) PyErr_Clear();
 
         int tid = -1;
         for (int i = 0; i < 6; i++) {
@@ -627,8 +654,12 @@ struct CallCounter : public PyObject {
             }
             target.push_back((int)value);
         }
-        tc->watches.emplace_back(std::move(target), callback);
-        check_watches(WatchSlot::start);
+        if (tc->check_watches_depth > 0) {
+            tc->pending_watches.emplace_back(std::move(target), callback);
+        } else {
+            tc->watches.emplace_back(std::move(target), callback);
+            check_watches(WatchSlot::start);
+        }
         Py_RETURN_NONE;
     }
 

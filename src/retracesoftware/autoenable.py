@@ -3,8 +3,8 @@ if __name__ == "__main__":
     import pathlib
     import shutil
 
-    source = pathlib.Path(__file__).parent / 'retrace.pth'
-    target = pathlib.Path(sysconfig.get_paths()["purelib"]) / 'retrace.pth'
+    source = pathlib.Path(__file__).parent / 'retracesoftware_autoenable.pth'
+    target = pathlib.Path(sysconfig.get_paths()["purelib"]) / 'retracesoftware_autoenable.pth'
     shutil.copy(source, target)
     print(f'Retrace autoinstall enabled: {source} -> {target}')
 else:

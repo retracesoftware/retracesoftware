@@ -9,6 +9,8 @@ import (
 	"os"
 	"runtime"
 	"sync"
+	"syscall"
+	"time"
 )
 
 // ErrReplayProcessDied is returned when the Python replay subprocess
@@ -250,6 +252,7 @@ func (r *Replay) RunToCursor(ctx context.Context, cursor RawCursor) (ControlStop
 		ThreadID:       result.Cursor.ThreadID,
 		FunctionCounts: result.Cursor.FunctionCounts,
 		FLasti:         result.Cursor.FLasti,
+		Lineno:         result.Cursor.Lineno,
 		MessageIndex:   result.MessageIndex,
 	}
 	return result, nil
@@ -287,7 +290,26 @@ func (r *Replay) RunToReturn(ctx context.Context, maxCallCounter *int) ([]Locati
 		}
 		msg, err := r.client.ReadMessage()
 		if err != nil {
-			if exitErr := r.Err(); exitErr != nil {
+			exitErr := r.Err()
+			alive := "unknown"
+			if r.proc != nil {
+				if killErr := r.proc.Signal(syscall.Signal(0)); killErr != nil {
+					alive = fmt.Sprintf("dead (%v)", killErr)
+				} else {
+					alive = "alive"
+				}
+			}
+			// Brief wait in case watchProcess is about to collect the exit status.
+			if exitErr == nil {
+				select {
+				case <-r.dead:
+					exitErr = r.exitErr
+				case <-time.After(100 * time.Millisecond):
+				}
+			}
+			log.Printf("run_to_return: read error: %v, exitErr: %v, process: %s, fc=%v",
+				err, exitErr, alive, r.location.FunctionCounts)
+			if exitErr != nil {
 				return locations, ControlStopResult{}, exitErr
 			}
 			if err == io.EOF {
@@ -308,6 +330,7 @@ func (r *Replay) RunToReturn(ctx context.Context, maxCallCounter *int) ([]Locati
 				ThreadID:       stop.Cursor.ThreadID,
 				FunctionCounts: stop.Cursor.FunctionCounts,
 				FLasti:         stop.Cursor.FLasti,
+				Lineno:         stop.Cursor.Lineno,
 				MessageIndex:   stop.MessageIndex,
 			}
 			return locations, stop, nil
@@ -348,6 +371,7 @@ func (r *Replay) NextInstruction(ctx context.Context) (Location, error) {
 				ThreadID:       stop.Cursor.ThreadID,
 				FunctionCounts: stop.Cursor.FunctionCounts,
 				FLasti:         stop.Cursor.FLasti,
+				Lineno:         stop.Cursor.Lineno,
 				MessageIndex:   stop.MessageIndex,
 			}
 			r.location = loc
@@ -356,25 +380,41 @@ func (r *Replay) NextInstruction(ctx context.Context) (Location, error) {
 	}
 }
 
+// InstructionInfo holds per-instruction metadata for a code object.
+type InstructionInfo struct {
+	Linenos          []int
+	SequentialBefore []int
+}
+
 // InstructionToLineno sends an instruction_to_lineno command and returns
-// a flat list mapping instruction index (offset // 2) to source line number
-// for the code object of the currently stopped function.
-func (r *Replay) InstructionToLineno(ctx context.Context) ([]int, error) {
+// per-instruction metadata for the code object of the currently stopped
+// function.
+func (r *Replay) InstructionToLineno(ctx context.Context) (InstructionInfo, error) {
 	resp, err := r.client.Request(ctx, "instruction_to_lineno", nil)
 	if err != nil {
-		return nil, r.wrapErr(fmt.Errorf("instruction_to_lineno: %w", err))
+		return InstructionInfo{}, r.wrapErr(fmt.Errorf("instruction_to_lineno: %w", err))
 	}
 	raw, ok := resp.Result["linenos"].([]any)
 	if !ok {
-		return nil, fmt.Errorf("instruction_to_lineno: missing linenos in response")
+		return InstructionInfo{}, fmt.Errorf("instruction_to_lineno: missing linenos in response")
 	}
-	linenos := make([]int, len(raw))
+	info := InstructionInfo{
+		Linenos: make([]int, len(raw)),
+	}
 	for i, v := range raw {
 		if n, ok := v.(float64); ok {
-			linenos[i] = int(n)
+			info.Linenos[i] = int(n)
 		}
 	}
-	return linenos, nil
+	if rawSeq, ok := resp.Result["sequential_before"].([]any); ok {
+		info.SequentialBefore = make([]int, len(rawSeq))
+		for i, v := range rawSeq {
+			if n, ok := v.(float64); ok {
+				info.SequentialBefore[i] = int(n)
+			}
+		}
+	}
+	return info, nil
 }
 
 // Stack asks the Python inspector for the current call stack.

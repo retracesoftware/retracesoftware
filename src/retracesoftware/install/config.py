@@ -1,4 +1,4 @@
-import pkgutil
+import importlib.resources
 import os
 import re
 import tomllib
@@ -69,8 +69,10 @@ def load_retrace_config(name_or_path=None):
         with open(raw, "rb") as f:
             config = tomllib.load(f)
     else:
-        data = pkgutil.get_data("retracesoftware", f"{raw}.toml")
-        if data is None:
+        ref = importlib.resources.files("retracesoftware").joinpath(f"{raw}.toml")
+        try:
+            data = ref.read_bytes()
+        except (FileNotFoundError, TypeError):
             raise FileNotFoundError(f"No bundled retrace config preset: {raw}")
         config = tomllib.loads(data.decode("utf-8"))
 

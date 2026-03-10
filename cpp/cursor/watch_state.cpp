@@ -89,6 +89,15 @@ void WatchState::clear()
     start_match_prefix_ = 0;
 }
 
+void WatchState::detach()
+{
+    start_ = nullptr;
+    return_ = nullptr;
+    unwind_ = nullptr;
+    backjump_ = nullptr;
+    overshoot_ = nullptr;
+}
+
 void WatchState::fire_synchronously(PyObject *cb)
 {
     if (!cb) return;
@@ -104,13 +113,20 @@ bool WatchState::completed() const
 }
 
 bool WatchState::fire_exact(PyObject *&slot,
-                            const std::vector<CursorEntry> &cursor_stack)
+                            const std::vector<CursorEntry> &cursor_stack,
+                            bool relaxed_last)
 {
     if (!slot) return completed();
     const size_t n = cursor_stack.size();
     if (n != target_.size()) return completed();
     for (size_t i = 0; i < n; i++) {
-        if (cursor_stack[i].call_count != target_[i]) return completed();
+        const int cur = cursor_stack[i].call_count;
+        const int tgt = target_[i];
+        if (relaxed_last && i == n - 1) {
+            if (cur < tgt) return completed();
+        } else {
+            if (cur != tgt) return completed();
+        }
     }
     PyObject *cb = slot;
     slot = nullptr;
@@ -162,7 +178,8 @@ bool WatchState::operator()(WatchSlot slot,
     if (slot == WatchSlot::start) {
         return fire_start(cursor_stack);
     } else {
-        return fire_exact(get_slot(slot), cursor_stack);
+        bool relaxed = (slot == WatchSlot::on_return || slot == WatchSlot::unwind);
+        return fire_exact(get_slot(slot), cursor_stack, relaxed);
     }
 }
 

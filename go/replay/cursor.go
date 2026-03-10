@@ -6,18 +6,132 @@ import (
 	"errors"
 	"fmt"
 	"iter"
+	"log"
+	"slices"
 )
 
 var ErrNotImplemented = errors.New("not implemented")
+
+func isStopFailure(reason string) bool {
+	return reason == "eof" || reason == "overshoot"
+}
+
+// FunctionCounts is a per-frame call-count path through the execution tree.
+// Each element records how many child calls the function at that depth has
+// dispatched so far. Dropping the last element gives the parent frame.
+type FunctionCounts []int
+
+// Depth returns the call-stack depth (number of frames).
+func (fc FunctionCounts) Depth() int { return len(fc) }
+
+// Parent returns the counts with the innermost frame removed.
+// Returns nil for an empty (root) path.
+func (fc FunctionCounts) Parent() FunctionCounts {
+	if len(fc) == 0 {
+		return nil
+	}
+	out := make(FunctionCounts, len(fc)-1)
+	copy(out, fc[:len(fc)-1])
+	return out
+}
+
+// PreviousCall finds the most recent child call by trimming trailing
+// zeros, decrementing the last non-zero element, and repeating if the
+// decrement produces another zero (since a 0 suffix is a function
+// entry, not a call). Returns ok=false when no previous call exists.
+func (fc FunctionCounts) PreviousCall() (result FunctionCounts, ok bool) {
+	result = make(FunctionCounts, len(fc))
+	copy(result, fc)
+	for {
+		for len(result) > 0 && result[len(result)-1] == 0 {
+			result = result[:len(result)-1]
+		}
+		if len(result) == 0 {
+			return nil, false
+		}
+		result[len(result)-1]--
+		if result[len(result)-1] > 0 {
+			return result, true
+		}
+	}
+}
+
+// Compare returns -1 if fc is earlier in execution than other, +1 if
+// later, 0 if equal. Lexicographic on the shared prefix; when one is a
+// prefix of the other the longer (deeper) array is earlier because it
+// represents a position inside a child call that hasn't returned yet.
+func (fc FunctionCounts) Compare(other FunctionCounts) int {
+	n := len(fc)
+	if len(other) < n {
+		n = len(other)
+	}
+	for i := 0; i < n; i++ {
+		if fc[i] < other[i] {
+			return -1
+		}
+		if fc[i] > other[i] {
+			return 1
+		}
+	}
+	if len(fc) > len(other) {
+		return -1
+	}
+	if len(fc) < len(other) {
+		return 1
+	}
+	return 0
+}
+
+// Before reports whether fc is strictly earlier in execution than other.
+func (fc FunctionCounts) Before(other FunctionCounts) bool {
+	return fc.Compare(other) < 0
+}
+
+func Map[A, B any](seq iter.Seq[A], f func(A) B) iter.Seq[B] {
+	return func(yield func(B) bool) {
+		for a := range seq {
+			if !yield(f(a)) {
+				return
+			}
+		}
+	}
+}
+
+// Decreasing yields FunctionCounts in strictly decreasing execution order,
+// starting from fc itself. After exhausting decrements at the deepest
+// frame it pops up to the parent and continues.
+//
+//	[1,2,4,1] → [1,2,4,0] → [1,2,4] → [1,2,3] → [1,2,2] → …
+func (fc FunctionCounts) Decreasing() iter.Seq[FunctionCounts] {
+	return func(yield func(FunctionCounts) bool) {
+		cur := slices.Clone([]int(fc))
+		for len(cur) > 0 {
+			if !yield(FunctionCounts(slices.Clone(cur))) {
+				return
+			}
+			cur[len(cur)-1]--
+			for len(cur) > 0 && cur[len(cur)-1] < 0 {
+				cur = cur[:len(cur)-1]
+				if len(cur) > 0 {
+					if !yield(FunctionCounts(slices.Clone(cur))) {
+						return
+					}
+					cur[len(cur)-1]--
+				}
+			}
+		}
+	}
+}
 
 // Location is a pure-data position within a recorded trace. It holds the
 // thread ID, per-frame call counts, optional bytecode offset, and message
 // index. It is cheap to copy and safe to store in bulk (e.g. HitList).
 type Location struct {
-	ThreadID       uint64 `json:"thread_id"`
-	FunctionCounts []int  `json:"function_counts"`
-	FLasti         *int   `json:"f_lasti,omitempty"`
-	MessageIndex   uint64 `json:"message_index"`
+	ThreadID       uint64         `json:"thread_id"`
+	FunctionCounts FunctionCounts `json:"function_counts"`
+	FLasti         *int           `json:"f_lasti,omitempty"`
+	Lineno         int            `json:"lineno,omitempty"`
+	MessageIndex   uint64         `json:"message_index"`
 }
 
 func (l Location) IsZero() bool {
@@ -29,6 +143,7 @@ func (l Location) RawCursor() RawCursor {
 		ThreadID:       l.ThreadID,
 		FunctionCounts: l.FunctionCounts,
 		FLasti:         l.FLasti,
+		Lineno:         l.Lineno,
 	}
 }
 
@@ -94,10 +209,10 @@ func (c *Cursor) Locals(ctx context.Context) ([]map[string]any, error) {
 	return rp.Locals(ctx)
 }
 
-func (c *Cursor) InstructionToLineno(ctx context.Context) ([]int, error) {
+func (c *Cursor) InstructionToLineno(ctx context.Context) (InstructionInfo, error) {
 	rp, err := c.ensureReplay(ctx)
 	if err != nil {
-		return nil, err
+		return InstructionInfo{}, err
 	}
 	return rp.InstructionToLineno(ctx)
 }
@@ -145,7 +260,7 @@ func (c *Cursor) StepInto(ctx context.Context) (*Cursor, error) {
 	if len(loc.FunctionCounts) == 0 {
 		return nil, ErrNotImplemented
 	}
-	childCounts := make([]int, len(loc.FunctionCounts)+1)
+	childCounts := make(FunctionCounts, len(loc.FunctionCounts)+1)
 	copy(childCounts, loc.FunctionCounts)
 	childCounts[len(loc.FunctionCounts)-1]++
 	childCounts[len(loc.FunctionCounts)] = 0
@@ -176,8 +291,11 @@ func (c *Cursor) Return(ctx context.Context) (*Cursor, error) {
 	rp := c.takeReplay()
 
 	if rp != nil {
+		// Sync replay location from cursor to guarantee FunctionCounts
+		// are populated even if the replay's internal location drifted.
+		rp.location = c.location
 		_, stopResult, err := rp.RunToReturn(ctx, nil)
-		if err != nil || stopResult.Reason == "eof" {
+		if err != nil || isStopFailure(stopResult.Reason) {
 			rp.Close()
 			rp = nil
 		}
@@ -200,7 +318,7 @@ func (c *Cursor) Return(ctx context.Context) (*Cursor, error) {
 		if _, stopResult, err := rp.RunToReturn(ctx, nil); err != nil {
 			rp.Close()
 			return nil, err
-		} else if stopResult.Reason == "eof" {
+		} else if isStopFailure(stopResult.Reason) {
 			rp.Close()
 			return nil, ErrNotImplemented
 		}
@@ -215,58 +333,208 @@ func (c *Cursor) Return(ctx context.Context) (*Cursor, error) {
 
 // --- backward navigation (fresh replay from provider) ---
 
-// Previous finds the last position before the current one that is on a
-// different source line (DAP stepBack).
-func (c *Cursor) Previous(ctx context.Context) (*Cursor, error) {
+// Returned replays to the position described by fc.  fc is expected to
+// represent a point in a parent frame just after a child call returned
+// (e.g. the result of PreviousCall).  Only RunToCursor is needed
+// because fc already identifies the post-return position in the parent.
+func (c *Cursor) Returned(ctx context.Context, fc FunctionCounts) (*Cursor, error) {
+	log.Printf("Returned: fc=%v", fc)
+	snap, err := c.provider.ClosestBeforeCall(ctx, c.location.ThreadID, fc)
+	if err != nil {
+		return nil, err
+	}
+	rp, err := snap.Replay(ctx)
+	if err != nil {
+		return nil, err
+	}
+	cursor := RawCursor{ThreadID: c.location.ThreadID, FunctionCounts: fc}
+	if _, err := rp.RunToCursor(ctx, cursor); err != nil {
+		rp.Close()
+		return nil, err
+	}
+	return NewCursor(rp.Location(), c.provider, rp), nil
+}
+
+// PreviousReturned steps back to the position just after the previous
+// child call returned. It computes PreviousCall on the current
+// FunctionCounts and delegates to Returned.
+func (c *Cursor) PreviousReturned(ctx context.Context) (*Cursor, error) {
+	modCounts, ok := c.location.FunctionCounts.PreviousCall()
+	if !ok {
+		return nil, ErrNotImplemented
+	}
+
+	log.Printf("PreviousReturned: from fc=%v, target fc=%v",
+		c.location.FunctionCounts, modCounts)
+
+	result, err := c.Returned(ctx, modCounts)
+	if err != nil {
+		return nil, err
+	}
+
+	if !result.Location().FunctionCounts.Before(c.location.FunctionCounts) {
+		log.Printf("PreviousReturned: ASSERTION FAILED: result fc=%v >= input fc=%v",
+			result.Location().FunctionCounts, c.location.FunctionCounts)
+		return nil, fmt.Errorf("PreviousReturned: result not before input")
+	}
+
+	return result, nil
+}
+
+// previousReturnedUntilLineDiffers loops PreviousReturned until either the
+// source line or the frame depth changes from the starting position.
+// A parent frame might coincidentally share the same line number.
+func (c *Cursor) previousReturnedUntilLineDiffers(ctx context.Context, fromLine int) (*Cursor, error) {
+	fromDepth := len(c.location.FunctionCounts)
+	cur := c
+	for {
+		prev, err := cur.PreviousReturned(ctx)
+		if err != nil {
+			return nil, err
+		}
+		prevRp, err := prev.ensureReplay(ctx)
+		if err != nil {
+			return nil, err
+		}
+		prevDepth := len(prevRp.Location().FunctionCounts)
+		line, err := sourceLine(ctx, prevRp)
+		if err != nil {
+			return nil, err
+		}
+		if line != 0 && (line != fromLine || prevDepth != fromDepth) {
+			return prev, nil
+		}
+		cur = prev
+	}
+}
+
+// PreviousStatement finds the first instruction of the previous source line
+// (DAP stepBack). Uses a 3-step algorithm:
+//  1. Loop PreviousReturned until the source line differs from current line L.
+//  2. Walk forward to the last instruction before line L (corrects overshoot).
+//  3. Loop PreviousReturned until line differs from P, then walk forward to
+//     the first instruction of line P.
+func (c *Cursor) PreviousStatement(ctx context.Context) (*Cursor, error) {
+	loc := c.location
+
 	rp, err := c.ensureReplay(ctx)
 	if err != nil {
 		return nil, err
 	}
 	currentLine, err := sourceLine(ctx, rp)
-	if err != nil {
-		return nil, err
-	}
-	if currentLine == 0 {
+	if err != nil || currentLine == 0 {
 		return nil, ErrNotImplemented
 	}
+	log.Printf("PreviousStatement: start fc=%v flasti=%v line=%d",
+		loc.FunctionCounts, loc.FLasti, currentLine)
 
-	loc := c.location
-	snap, err := c.provider.ClosestBeforeCall(ctx, loc.ThreadID, loc.FunctionCounts)
+	// Sequential fast path: DISABLED for now — needs a way to know
+	// whether FunctionCounts changed within the sequential window
+	// (any opcode can dispatch a child call via dunder methods).
+	// TODO: re-enable once we have runtime FC-aware gating.
+	if false && loc.FLasti != nil {
+		info, infoErr := rp.InstructionToLineno(ctx)
+		if infoErr == nil && len(info.SequentialBefore) > 0 {
+			curIdx := *loc.FLasti / 2
+			if curIdx >= 0 && curIdx < len(info.SequentialBefore) {
+				seqBefore := info.SequentialBefore[curIdx]
+				if seqBefore > 0 {
+					minIdx := curIdx - seqBefore
+					targetIdx := -1
+					for i := curIdx - 1; i >= minIdx; i-- {
+						if info.Linenos[i] != currentLine && info.Linenos[i] != 0 && info.SequentialBefore[i] > 0 {
+							targetIdx = i
+							break
+						}
+					}
+					if targetIdx >= 0 {
+						targetFLasti := targetIdx * 2
+						targetLoc := Location{
+							ThreadID:       loc.ThreadID,
+							FunctionCounts: loc.FunctionCounts,
+							FLasti:         &targetFLasti,
+							Lineno:         info.Linenos[targetIdx],
+							MessageIndex:   loc.MessageIndex,
+						}
+						log.Printf("PreviousStatement: fast path fc=%v flasti=%d->%d line=%d->%d",
+							loc.FunctionCounts, *loc.FLasti, targetFLasti, currentLine, info.Linenos[targetIdx])
+						c.replay = nil
+						rp.Close()
+						return NewCursor(targetLoc, c.provider, nil), nil
+					}
+				}
+			}
+		}
+	}
+
+	// Step 1: Find any position on a line different from L.
+	step1, err := c.previousReturnedUntilLineDiffers(ctx, currentLine)
 	if err != nil {
+		log.Printf("PreviousStatement: step1 failed: %v", err)
 		return nil, err
 	}
-	entry, err := snap.Replay(ctx)
+	step1Loc := step1.Location()
+	step1Line, _ := sourceLine(ctx, step1.replay)
+	log.Printf("PreviousStatement: step1 done fc=%v flasti=%v line=%d",
+		step1Loc.FunctionCounts, step1Loc.FLasti, step1Line)
+
+	// Step 2: Walk forward to the last instruction before line L,
+	// stopping at FC boundaries to avoid crossing loop iterations.
+	step2Rp := step1.takeReplay()
+	step2Rp, err = advanceUntilLine(ctx, step2Rp, currentLine)
 	if err != nil {
+		log.Printf("PreviousStatement: step2 advanceUntilLine failed: %v", err)
 		return nil, err
 	}
-
-	entryCounts := make([]int, len(loc.FunctionCounts))
-	copy(entryCounts, loc.FunctionCounts)
-	entryCounts[len(entryCounts)-1] = 0
-
-	stopResult, err := entry.RunToCursor(ctx, Location{
-		ThreadID:       loc.ThreadID,
-		FunctionCounts: entryCounts,
-	}.RawCursor())
-	if err != nil {
-		entry.Close()
-		return nil, err
-	}
-	if stopResult.Reason == "eof" {
-		entry.Close()
+	targetLine, err := sourceLine(ctx, step2Rp)
+	if err != nil || targetLine == 0 || targetLine == currentLine {
+		log.Printf("PreviousStatement: step2 failed targetLine=%d currentLine=%d err=%v",
+			targetLine, currentLine, err)
+		step2Rp.Close()
 		return nil, ErrNotImplemented
 	}
+	step2Loc := step2Rp.Location()
+	log.Printf("PreviousStatement: step2 done fc=%v flasti=%v targetLine=%d",
+		step2Loc.FunctionCounts, step2Loc.FLasti, targetLine)
+	step2Rp.Close()
 
-	result, err := advanceUntilLine(ctx, entry, currentLine)
+	// Step 3: Find the beginning of targetLine by replaying to step1's
+	// position (start of the same iteration) and walking forward.
+	step3Cur, err := c.Returned(ctx, step1Loc.FunctionCounts)
 	if err != nil {
+		log.Printf("PreviousStatement: step3 replay to step1 fc failed: %v", err)
 		return nil, err
 	}
-	line, err := sourceLine(ctx, result)
-	if err != nil || line == 0 || line == currentLine {
-		result.Close()
-		return nil, ErrNotImplemented
+	step3Rp := step3Cur.takeReplay()
+	step3Line, _ := sourceLine(ctx, step3Rp)
+	log.Printf("PreviousStatement: step3 replayed to fc=%v line=%d, advancing to targetLine=%d",
+		step3Rp.Location().FunctionCounts, step3Line, targetLine)
+
+	for {
+		loc, err := step3Rp.NextInstruction(ctx)
+		if err != nil {
+			log.Printf("PreviousStatement: step3 advance failed: %v", err)
+			step3Rp.Close()
+			return nil, ErrNotImplemented
+		}
+		line := loc.Lineno
+		if line == 0 {
+			line, _ = sourceLine(ctx, step3Rp)
+		}
+		if line == targetLine {
+			break
+		}
+		if !slices.Equal(FunctionCounts(loc.FunctionCounts), step1Loc.FunctionCounts) {
+			log.Printf("PreviousStatement: step3 FC changed before reaching targetLine")
+			step3Rp.Close()
+			return nil, ErrNotImplemented
+		}
 	}
-	return NewCursor(result.Location(), c.provider, result), nil
+	finalLoc := step3Rp.Location()
+	finalLine, _ := sourceLine(ctx, step3Rp)
+	log.Printf("PreviousStatement: result fc=%v flasti=%v line=%d",
+		finalLoc.FunctionCounts, finalLoc.FLasti, finalLine)
+	return NewCursor(step3Rp.Location(), c.provider, step3Rp), nil
 }
 
 // StepBackInto steps back into the function identified by the current
@@ -387,14 +655,14 @@ func FindInstruction(ctx context.Context, rp *Replay, pred ReplayPredicate) (*Re
 
 // decliningCallCounts yields call counts with the last element
 // decremented on each step.
-func decliningCallCounts(cc []int) iter.Seq[[]int] {
-	return func(yield func([]int) bool) {
+func decliningCallCounts(cc FunctionCounts) iter.Seq[FunctionCounts] {
+	return func(yield func(FunctionCounts) bool) {
 		if len(cc) == 0 {
 			return
 		}
 		base := cc[:len(cc)-1]
 		for i := cc[len(cc)-1] - 1; i >= 0; i-- {
-			out := make([]int, len(base)+1)
+			out := make(FunctionCounts, len(base)+1)
 			copy(out, base)
 			out[len(base)] = i
 			if !yield(out) {
@@ -404,25 +672,27 @@ func decliningCallCounts(cc []int) iter.Seq[[]int] {
 	}
 }
 
-// advanceUntilLine walks forward from rp through the current frame,
+// advanceUntilLine walks forward from rp instruction by instruction,
 // returning the last position before the source line becomes targetLine.
+// Also stops at FunctionCounts boundaries (backward jumps) to avoid
+// crossing loop iteration edges.
 func advanceUntilLine(ctx context.Context, rp *Replay, targetLine int) (*Replay, error) {
+	prevLoc := rp.Location()
+	startFC := slices.Clone(rp.Location().FunctionCounts)
 	for {
-		next, err := NextFrameInstruction(ctx, rp)
+		loc, err := rp.NextInstruction(ctx)
 		if err != nil {
 			return rp, nil
 		}
-		line, err := sourceLine(ctx, next)
-		if err != nil {
-			next.Close()
+		line := loc.Lineno
+		if line == 0 {
+			line, _ = sourceLine(ctx, rp)
+		}
+		if line == targetLine || !slices.Equal(FunctionCounts(loc.FunctionCounts), FunctionCounts(startFC)) {
+			rp.location = prevLoc
 			return rp, nil
 		}
-		if line == targetLine {
-			next.Close()
-			return rp, nil
-		}
-		rp.Close()
-		rp = next
+		prevLoc = loc
 	}
 }
 
@@ -430,12 +700,15 @@ func advanceUntilLine(ctx context.Context, rp *Replay, targetLine int) (*Replay,
 // or 0 if unresolvable.
 func sourceLine(ctx context.Context, rp *Replay) (int, error) {
 	loc := rp.Location()
+	if loc.Lineno > 0 {
+		return loc.Lineno, nil
+	}
 	if loc.FLasti != nil {
-		linenos, err := rp.InstructionToLineno(ctx)
+		info, err := rp.InstructionToLineno(ctx)
 		if err == nil {
 			idx := *loc.FLasti / 2
-			if idx < len(linenos) && linenos[idx] > 0 {
-				return linenos[idx], nil
+			if idx < len(info.Linenos) && info.Linenos[idx] > 0 {
+				return info.Linenos[idx], nil
 			}
 		}
 	}
@@ -455,15 +728,15 @@ func locationLine(l Location, ctx context.Context, rp *Replay) (int, error) {
 	if l.FLasti == nil {
 		return 0, nil
 	}
-	linenos, err := rp.InstructionToLineno(ctx)
+	info, err := rp.InstructionToLineno(ctx)
 	if err != nil {
 		return 0, err
 	}
 	idx := *l.FLasti / 2
-	if idx >= len(linenos) {
+	if idx >= len(info.Linenos) {
 		return 0, nil
 	}
-	return linenos[idx], nil
+	return info.Linenos[idx], nil
 }
 
 // --- JSON ---

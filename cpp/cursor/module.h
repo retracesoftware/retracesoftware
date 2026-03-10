@@ -9,7 +9,9 @@
 struct ThreadCallCounts : public PyObject {
     std::vector<CursorEntry> cursor_stack;
     int suspend_depth;
+    int check_watches_depth;
     std::vector<WatchState> watches;
+    std::vector<WatchState> pending_watches;
 
     void *root_parent_frame;
     int root_parent_lasti;

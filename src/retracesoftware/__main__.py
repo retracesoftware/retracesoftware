@@ -422,11 +422,11 @@ def replay(system, args):
                     controller.on_replay_finished()
 
 def pth_source():
-    return Path(__file__).parent / 'retrace.pth'
+    return Path(__file__).parent / 'retracesoftware_autoenable.pth'
 
 def pth_target():
     import sysconfig
-    return Path(sysconfig.get_paths()["purelib"]) / 'retrace.pth'
+    return Path(sysconfig.get_paths()["purelib"]) / 'retracesoftware_autoenable.pth'
 
 def cmd_install(args):
     """Install the .pth file so retrace auto-activates via RETRACE=1."""

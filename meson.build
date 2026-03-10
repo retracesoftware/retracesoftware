@@ -36,7 +36,7 @@ py.install_sources(
   _py_root / 'debug.toml',
   _py_root / 'release.toml',
   _py_root / 'preload.txt',
-  _py_root / 'retrace.pth',
+  _py_root / 'retracesoftware_autoenable.pth',
   _py_root / 'retrace_patterns.txt',
   subdir: 'retracesoftware',
 )
