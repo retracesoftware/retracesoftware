@@ -20,7 +20,7 @@ immutable = ["TracebackType", "ModuleType"]
 patch_hash = ["object"]
 disable = ["print"]
 immutable = ["BaseException", "memoryview", "int", "float", "complex", "str", "bytes", "bool", "bytearray",
-            "type", "slice", "tuple", "list", "dict", "set", "frozenset"]
+            "type", "slice"]
 
 [_thread]
 proxy = ["allocate", "allocate_lock", "RLock"]

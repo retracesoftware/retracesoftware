@@ -134,6 +134,22 @@ type Location struct {
 	MessageIndex   uint64         `json:"message_index"`
 }
 
+func (l Location) Equal(other Location) bool {
+	if l.ThreadID != other.ThreadID {
+		return false
+	}
+	if l.FunctionCounts.Compare(other.FunctionCounts) != 0 {
+		return false
+	}
+	if l.FLasti == nil && other.FLasti == nil {
+		return true
+	}
+	if l.FLasti == nil || other.FLasti == nil {
+		return false
+	}
+	return *l.FLasti == *other.FLasti
+}
+
 func (l Location) IsZero() bool {
 	return l.ThreadID == 0 && len(l.FunctionCounts) == 0 && l.MessageIndex == 0
 }
@@ -331,6 +347,144 @@ func (c *Cursor) Return(ctx context.Context) (*Cursor, error) {
 	return NewCursor(rp.Location(), c.provider, rp), nil
 }
 
+// StepTowards advances one bytecode instruction toward target. If the
+// instruction enters a child function not on the direct path to target,
+// it automatically exits via RunToReturn and returns the parent-frame
+// position instead. Returns the target cursor itself when the journey
+// is complete (FC match), transferring the replay cache if the target
+// lacks one.
+func (c *Cursor) StepTowards(ctx context.Context, target *Cursor) (*Cursor, error) {
+	cFC := c.location.FunctionCounts
+	tFC := target.location.FunctionCounts
+
+	cmp := cFC.Compare(tFC)
+	if cmp == 0 && c.location.Equal(target.location) {
+		log.Printf("StepTowards: already at target fc=%v flasti=%v", cFC, c.location.FLasti)
+		if target.replay == nil {
+			target.replay = c.takeReplay()
+		} else if c.replay != nil {
+			c.replay.Close()
+			c.replay = nil
+		}
+		return target, nil
+	}
+	if cmp > 0 {
+		return nil, fmt.Errorf("StepTowards: target is behind current position")
+	}
+
+	log.Printf("StepTowards: fc=%v -> target fc=%v", cFC, tFC)
+
+	rp, err := c.ensureReplay(ctx)
+	if err != nil {
+		return nil, err
+	}
+	rp = c.takeReplay()
+
+	prevDepth := len(cFC)
+	if _, err := rp.NextInstruction(ctx); err != nil {
+		rp.Close()
+		return nil, err
+	}
+
+	newFC := rp.Location().FunctionCounts
+	log.Printf("StepTowards: NextInstruction fc=%v (depth %d->%d)", newFC, prevDepth, len(newFC))
+
+	if len(newFC) > prevDepth {
+		parentIdx := prevDepth - 1
+		onPath := len(tFC) > prevDepth && parentIdx >= 0 && tFC[parentIdx] == newFC[parentIdx]
+		if !onPath {
+			log.Printf("StepTowards: wrong child at depth %d (fc[%d]=%d, target fc[%d]=%d), exiting",
+				len(newFC), parentIdx, newFC[parentIdx], parentIdx, tFC[parentIdx])
+			if _, _, err := rp.RunToReturn(ctx, nil); err != nil {
+				rp.Close()
+				return nil, err
+			}
+			if _, err := rp.NextInstruction(ctx); err != nil {
+				rp.Close()
+				return nil, err
+			}
+			log.Printf("StepTowards: back in parent fc=%v", rp.Location().FunctionCounts)
+		} else {
+			log.Printf("StepTowards: on path, entered child")
+		}
+	}
+
+	if rp.Location().Equal(target.location) {
+		log.Printf("StepTowards: reached target fc=%v flasti=%v", rp.Location().FunctionCounts, rp.Location().FLasti)
+		if target.replay == nil {
+			target.replay = rp
+		} else {
+			rp.Close()
+		}
+		return target, nil
+	}
+	return NewCursor(rp.Location(), c.provider, rp), nil
+}
+
+// StepsTo collects every intermediate cursor position from c to target
+// by repeatedly calling StepTowards. The result is inclusive of c and
+// exclusive of target.
+func (c *Cursor) StepsTo(ctx context.Context, target *Cursor) ([]*Cursor, error) {
+	log.Printf("StepsTo: from fc=%v to fc=%v", c.location.FunctionCounts, target.location.FunctionCounts)
+	var steps []*Cursor
+	cur := c
+	for {
+		steps = append(steps, cur)
+		next, err := cur.StepTowards(ctx, target)
+		if err != nil {
+			log.Printf("StepsTo: error after %d steps: %v", len(steps), err)
+			return steps, err
+		}
+		if next == target {
+			log.Printf("StepsTo: reached target in %d steps", len(steps))
+			return steps, nil
+		}
+		cur = next
+	}
+}
+
+// BackwardsSteps returns a lazy sequence of cursors at every bytecode
+// instruction in reverse execution order, starting from c toward program
+// start. It uses Decreasing() for FC boundary scaffolding and StepsTo +
+// reverse to fill in each chunk of bytecode instructions between boundaries.
+func (c *Cursor) BackwardsSteps(ctx context.Context) iter.Seq[*Cursor] {
+	return func(yield func(*Cursor) bool) {
+		log.Printf("BackwardsSteps: starting from fc=%v", c.location.FunctionCounts)
+		if !yield(c) {
+			return
+		}
+		lastCursor := c
+		first := true
+		chunkIdx := 0
+		for fc := range c.location.FunctionCounts.Decreasing() {
+			if first {
+				first = false
+				continue
+			}
+			log.Printf("BackwardsSteps: chunk %d, boundary fc=%v", chunkIdx, fc)
+			newCursor, err := c.Returned(ctx, fc)
+			if err != nil {
+				log.Printf("BackwardsSteps: Returned failed for fc=%v: %v", fc, err)
+				return
+			}
+			steps, err := newCursor.StepsTo(ctx, lastCursor)
+			if err != nil {
+				log.Printf("BackwardsSteps: StepsTo failed for chunk %d: %v", chunkIdx, err)
+				return
+			}
+			log.Printf("BackwardsSteps: chunk %d has %d steps, yielding reversed", chunkIdx, len(steps))
+			for i := len(steps) - 1; i >= 0; i-- {
+				if !yield(steps[i]) {
+					return
+				}
+			}
+			lastCursor = newCursor
+			chunkIdx++
+		}
+		log.Printf("BackwardsSteps: exhausted after %d chunks", chunkIdx)
+	}
+}
+
 // --- backward navigation (fresh replay from provider) ---
 
 // Returned replays to the position described by fc.  fc is expected to
@@ -381,39 +535,10 @@ func (c *Cursor) PreviousReturned(ctx context.Context) (*Cursor, error) {
 	return result, nil
 }
 
-// previousReturnedUntilLineDiffers loops PreviousReturned until either the
-// source line or the frame depth changes from the starting position.
-// A parent frame might coincidentally share the same line number.
-func (c *Cursor) previousReturnedUntilLineDiffers(ctx context.Context, fromLine int) (*Cursor, error) {
-	fromDepth := len(c.location.FunctionCounts)
-	cur := c
-	for {
-		prev, err := cur.PreviousReturned(ctx)
-		if err != nil {
-			return nil, err
-		}
-		prevRp, err := prev.ensureReplay(ctx)
-		if err != nil {
-			return nil, err
-		}
-		prevDepth := len(prevRp.Location().FunctionCounts)
-		line, err := sourceLine(ctx, prevRp)
-		if err != nil {
-			return nil, err
-		}
-		if line != 0 && (line != fromLine || prevDepth != fromDepth) {
-			return prev, nil
-		}
-		cur = prev
-	}
-}
-
 // PreviousStatement finds the first instruction of the previous source line
-// (DAP stepBack). Uses a 3-step algorithm:
-//  1. Loop PreviousReturned until the source line differs from current line L.
-//  2. Walk forward to the last instruction before line L (corrects overshoot).
-//  3. Loop PreviousReturned until line differs from P, then walk forward to
-//     the first instruction of line P.
+// (DAP stepBack). Walks backward through every bytecode instruction via
+// BackwardsSteps, finds where the line changes, then continues to the
+// first instruction of that line.
 func (c *Cursor) PreviousStatement(ctx context.Context) (*Cursor, error) {
 	loc := c.location
 
@@ -467,74 +592,45 @@ func (c *Cursor) PreviousStatement(ctx context.Context) (*Cursor, error) {
 		}
 	}
 
-	// Step 1: Find any position on a line different from L.
-	step1, err := c.previousReturnedUntilLineDiffers(ctx, currentLine)
-	if err != nil {
-		log.Printf("PreviousStatement: step1 failed: %v", err)
-		return nil, err
-	}
-	step1Loc := step1.Location()
-	step1Line, _ := sourceLine(ctx, step1.replay)
-	log.Printf("PreviousStatement: step1 done fc=%v flasti=%v line=%d",
-		step1Loc.FunctionCounts, step1Loc.FLasti, step1Line)
-
-	// Step 2: Walk forward to the last instruction before line L,
-	// stopping at FC boundaries to avoid crossing loop iterations.
-	step2Rp := step1.takeReplay()
-	step2Rp, err = advanceUntilLine(ctx, step2Rp, currentLine)
-	if err != nil {
-		log.Printf("PreviousStatement: step2 advanceUntilLine failed: %v", err)
-		return nil, err
-	}
-	targetLine, err := sourceLine(ctx, step2Rp)
-	if err != nil || targetLine == 0 || targetLine == currentLine {
-		log.Printf("PreviousStatement: step2 failed targetLine=%d currentLine=%d err=%v",
-			targetLine, currentLine, err)
-		step2Rp.Close()
-		return nil, ErrNotImplemented
-	}
-	step2Loc := step2Rp.Location()
-	log.Printf("PreviousStatement: step2 done fc=%v flasti=%v targetLine=%d",
-		step2Loc.FunctionCounts, step2Loc.FLasti, targetLine)
-	step2Rp.Close()
-
-	// Step 3: Find the beginning of targetLine by replaying to step1's
-	// position (start of the same iteration) and walking forward.
-	step3Cur, err := c.Returned(ctx, step1Loc.FunctionCounts)
-	if err != nil {
-		log.Printf("PreviousStatement: step3 replay to step1 fc failed: %v", err)
-		return nil, err
-	}
-	step3Rp := step3Cur.takeReplay()
-	step3Line, _ := sourceLine(ctx, step3Rp)
-	log.Printf("PreviousStatement: step3 replayed to fc=%v line=%d, advancing to targetLine=%d",
-		step3Rp.Location().FunctionCounts, step3Line, targetLine)
-
-	for {
-		loc, err := step3Rp.NextInstruction(ctx)
+	// Walk backward instruction by instruction.
+	// Phase 1: skip past instructions still on currentLine.
+	// Phase 2: find the first instruction of the new line P.
+	var prevLine int
+	var result *Cursor
+	first := true
+	for cur := range c.BackwardsSteps(ctx) {
+		if first {
+			first = false
+			continue
+		}
+		curRp, err := cur.ensureReplay(ctx)
 		if err != nil {
-			log.Printf("PreviousStatement: step3 advance failed: %v", err)
-			step3Rp.Close()
-			return nil, ErrNotImplemented
-		}
-		line := loc.Lineno
-		if line == 0 {
-			line, _ = sourceLine(ctx, step3Rp)
-		}
-		if line == targetLine {
 			break
 		}
-		if !slices.Equal(FunctionCounts(loc.FunctionCounts), step1Loc.FunctionCounts) {
-			log.Printf("PreviousStatement: step3 FC changed before reaching targetLine")
-			step3Rp.Close()
-			return nil, ErrNotImplemented
+		line, err := sourceLine(ctx, curRp)
+		if err != nil || line == 0 {
+			continue
 		}
+		if prevLine == 0 && line == currentLine {
+			continue
+		}
+		if prevLine == 0 {
+			prevLine = line
+			result = cur
+			continue
+		}
+		if line == prevLine {
+			result = cur
+			continue
+		}
+		break
 	}
-	finalLoc := step3Rp.Location()
-	finalLine, _ := sourceLine(ctx, step3Rp)
+	if result == nil {
+		return nil, ErrNotImplemented
+	}
 	log.Printf("PreviousStatement: result fc=%v flasti=%v line=%d",
-		finalLoc.FunctionCounts, finalLoc.FLasti, finalLine)
-	return NewCursor(step3Rp.Location(), c.provider, step3Rp), nil
+		result.location.FunctionCounts, result.location.FLasti, prevLine)
+	return result, nil
 }
 
 // StepBackInto steps back into the function identified by the current
@@ -669,30 +765,6 @@ func decliningCallCounts(cc FunctionCounts) iter.Seq[FunctionCounts] {
 				return
 			}
 		}
-	}
-}
-
-// advanceUntilLine walks forward from rp instruction by instruction,
-// returning the last position before the source line becomes targetLine.
-// Also stops at FunctionCounts boundaries (backward jumps) to avoid
-// crossing loop iteration edges.
-func advanceUntilLine(ctx context.Context, rp *Replay, targetLine int) (*Replay, error) {
-	prevLoc := rp.Location()
-	startFC := slices.Clone(rp.Location().FunctionCounts)
-	for {
-		loc, err := rp.NextInstruction(ctx)
-		if err != nil {
-			return rp, nil
-		}
-		line := loc.Lineno
-		if line == 0 {
-			line, _ = sourceLine(ctx, rp)
-		}
-		if line == targetLine || !slices.Equal(FunctionCounts(loc.FunctionCounts), FunctionCounts(startFC)) {
-			rp.location = prevLoc
-			return rp, nil
-		}
-		prevLoc = loc
 	}
 }
 
