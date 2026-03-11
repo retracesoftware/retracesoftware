@@ -6,10 +6,37 @@ using namespace ankerl::unordered_dense;
 
 namespace retracesoftware {
 
-    static map<PyTypeObject *, allocfunc> allocfuncs;
-    static map<PyTypeObject *, destructor> deallocfuncs;
-    static map<PyObject *, PyObject *> dealloc_callbacks;
-    static map<PyTypeObject *, PyObject *> alloc_callbacks;
+    struct TypePatchState : PyObject {
+        PyTypeObject *type;
+        PyObject *alloc_callback;
+        PyObject *type_weakref;
+        allocfunc original_alloc;
+        destructor original_dealloc;
+    };
+
+    static map<PyTypeObject *, TypePatchState *> type_patches;
+    static map<PyObject *, PyObject *> instance_dealloc_callbacks;
+
+    static void clear_type_patch(TypePatchState *state) {
+        bool drop_map_ref = false;
+
+        if (state->type) {
+            auto it = type_patches.find(state->type);
+            if (it != type_patches.end() && it->second == state) {
+                type_patches.erase(it);
+                drop_map_ref = true;
+            }
+        }
+
+        state->type = nullptr;
+        state->original_alloc = nullptr;
+        state->original_dealloc = nullptr;
+        Py_CLEAR(state->alloc_callback);
+        Py_CLEAR(state->type_weakref);
+
+        if (drop_map_ref)
+            Py_DECREF((PyObject *)state);
+    }
 
     // ── DeallocBridge ────────────────────────────────────────────
     // Minimal callable that wraps a no-arg dealloc callback for use
@@ -52,6 +79,35 @@ namespace retracesoftware {
         .tp_flags = Py_TPFLAGS_DEFAULT,
     };
 
+    static void TypePatchState_dealloc(TypePatchState *self) {
+        Py_XDECREF(self->alloc_callback);
+        Py_XDECREF(self->type_weakref);
+        Py_TYPE(self)->tp_free((PyObject *)self);
+    }
+
+    static PyObject *TypePatchState_call(PyObject *self, PyObject *, PyObject *) {
+        TypePatchState *state = (TypePatchState *)self;
+        Py_INCREF(self);
+
+        PyObject *exc_type, *exc_value, *exc_tb;
+        PyErr_Fetch(&exc_type, &exc_value, &exc_tb);
+
+        clear_type_patch(state);
+
+        PyErr_Restore(exc_type, exc_value, exc_tb);
+        Py_DECREF(self);
+        Py_RETURN_NONE;
+    }
+
+    PyTypeObject TypePatchState_Type = {
+        .ob_base = PyVarObject_HEAD_INIT(NULL, 0)
+        .tp_name = "_retracesoftware_utils.TypePatchState",
+        .tp_basicsize = sizeof(TypePatchState),
+        .tp_dealloc = (destructor)TypePatchState_dealloc,
+        .tp_call = TypePatchState_call,
+        .tp_flags = Py_TPFLAGS_DEFAULT,
+    };
+
     static PyObject *create_dealloc_bridge(PyObject *callback) {
         DeallocBridge *bridge = PyObject_New(DeallocBridge, &DeallocBridge_Type);
         if (!bridge) return nullptr;
@@ -60,26 +116,76 @@ namespace retracesoftware {
         return (PyObject *)bridge;
     }
 
-    // ── helpers ──────────────────────────────────────────────────
+    static TypePatchState *get_type_patch(PyTypeObject * type) {
+        auto it = type_patches.find(type);
+        if (it == type_patches.end()) return nullptr;
+        return it->second;
+    }
 
-    static PyObject * find_callback(PyTypeObject * cls) {
-        while (cls) {
-            auto it = alloc_callbacks.find(cls);
-            if (it != alloc_callbacks.end()) return it->second;
-            cls = cls->tp_base;
+    static TypePatchState *find_type_patch(PyTypeObject * type) {
+        while (type) {
+            TypePatchState *state = get_type_patch(type);
+            if (state) return state;
+            type = type->tp_base;
         }
         return nullptr;
     }
+
+    static TypePatchState *find_callback_patch(PyTypeObject * type) {
+        while (type) {
+            TypePatchState *state = get_type_patch(type);
+            if (state && state->alloc_callback) return state;
+            type = type->tp_base;
+        }
+        return nullptr;
+    }
+
+    static TypePatchState *find_dealloc_patch(PyTypeObject * type) {
+        while (type) {
+            TypePatchState *state = get_type_patch(type);
+            if (state && state->original_dealloc) return state;
+            type = type->tp_base;
+        }
+        return nullptr;
+    }
+
+    static TypePatchState *ensure_type_patch(PyTypeObject * type) {
+        TypePatchState *state = get_type_patch(type);
+        if (state) return state;
+
+        state = PyObject_New(TypePatchState, &TypePatchState_Type);
+        if (!state) return nullptr;
+
+        state->type = type;
+        state->alloc_callback = nullptr;
+        state->type_weakref = nullptr;
+        state->original_alloc = nullptr;
+        state->original_dealloc = nullptr;
+
+        if (type->tp_flags & Py_TPFLAGS_HEAPTYPE) {
+            PyObject *wr = PyWeakref_NewRef((PyObject *)type, (PyObject *)state);
+            if (!wr) {
+                Py_DECREF((PyObject *)state);
+                return nullptr;
+            }
+            state->type_weakref = wr;
+        }
+
+        type_patches[type] = state;
+        return state;
+    }
+
+    // ── helpers ──────────────────────────────────────────────────
 
     static thread_local bool in_callback = false;
 
     static bool call_callback(PyObject * allocated) {
         if (in_callback || _Py_IsFinalizing()) return true;
-        PyObject * callback = find_callback(Py_TYPE(allocated));
-        if (!callback) return true;
+        TypePatchState *state = find_callback_patch(Py_TYPE(allocated));
+        if (!state) return true;
 
         in_callback = true;
-        PyObject * result = PyObject_CallOneArg(callback, allocated);
+        PyObject * result = PyObject_CallOneArg(state->alloc_callback, allocated);
         in_callback = false;
         if (!result) return false;
 
@@ -98,7 +204,7 @@ namespace retracesoftware {
                 Py_DECREF(bridge);
                 if (!wr) return false;
             } else {
-                dealloc_callbacks[allocated] = result;
+                instance_dealloc_callbacks[allocated] = result;
             }
             return true;
         }
@@ -113,10 +219,10 @@ namespace retracesoftware {
     // ── dealloc callback helpers ────────────────────────────────
 
     static PyObject * take_dealloc_callback(PyObject * obj) {
-        auto it = dealloc_callbacks.find(obj);
-        if (it == dealloc_callbacks.end()) return nullptr;
+        auto it = instance_dealloc_callbacks.find(obj);
+        if (it == instance_dealloc_callbacks.end()) return nullptr;
         PyObject * cb = it->second;
-        dealloc_callbacks.erase(it);
+        instance_dealloc_callbacks.erase(it);
         return cb;
     }
 
@@ -137,14 +243,9 @@ namespace retracesoftware {
     static void generic_dealloc(PyObject * obj) {
         PyObject * cb = _Py_IsFinalizing() ? nullptr : take_dealloc_callback(obj);
 
-        PyTypeObject * type = Py_TYPE(obj);
-        while (type && type->tp_dealloc != generic_dealloc)
-            type = type->tp_base;
-        if (type) {
-            auto dit = deallocfuncs.find(type);
-            if (dit != deallocfuncs.end())
-                dit->second(obj);
-        }
+        TypePatchState *state = find_dealloc_patch(Py_TYPE(obj));
+        if (state)
+            state->original_dealloc(obj);
 
         if (cb) fire_dealloc_callback(cb);
     }
@@ -152,14 +253,14 @@ namespace retracesoftware {
     // ── alloc patching ───────────────────────────────────────────
 
     static PyObject * generic_alloc(PyTypeObject *type, Py_ssize_t nitems) {
-
-        auto it = allocfuncs.find(type);
-        if (it == allocfuncs.end()) {
+        TypePatchState *state = get_type_patch(type);
+        if (!state) {
             PyErr_Format(PyExc_RuntimeError, "Original tp_alloc mapping for type: %S not found",
                             type);
             return nullptr;
         }
-        PyObject * obj = it->second(type, nitems);
+        allocfunc original = state->original_alloc ? state->original_alloc : PyType_GenericAlloc;
+        PyObject * obj = original(type, nitems);
 
         if (obj) {
             if (!call_callback(obj)) {
@@ -170,30 +271,17 @@ namespace retracesoftware {
         return obj;
     }
 
-    static PyObject * PyType_GenericAlloc_Wrapper(PyTypeObject *type, Py_ssize_t nitems) {
-
-        PyObject * obj = PyType_GenericAlloc(type, nitems);
-
-        if (obj) {
-            if (!call_callback(obj)) {
-                Py_DECREF(obj);
-                return nullptr;
-            }
-        }
-        return obj;
+    bool is_alloc_patched(allocfunc func) {
+        return func == generic_alloc;
     }
 
-    static bool is_alloc_patched(allocfunc func) {
-        return func == PyType_GenericAlloc_Wrapper || func == generic_alloc;
-    }
+    static bool patch_alloc(PyTypeObject * cls) {
+        TypePatchState *state = ensure_type_patch(cls);
+        if (!state) return false;
 
-    static void patch_alloc(PyTypeObject * cls) {
-        if (cls->tp_alloc == PyType_GenericAlloc) {
-            cls->tp_alloc = PyType_GenericAlloc_Wrapper;
-        } else {
-            allocfuncs[cls] = cls->tp_alloc;
-            cls->tp_alloc = generic_alloc;
-        }
+        state->original_alloc = cls->tp_alloc == PyType_GenericAlloc ? nullptr : cls->tp_alloc;
+        cls->tp_alloc = generic_alloc;
+        return true;
     }
 
     // ── dealloc patching (fallback for non-weakref types) ────────
@@ -246,30 +334,40 @@ namespace retracesoftware {
         if (cb) fire_dealloc_callback(cb);
     }
 
-    static void patch_dealloc(PyTypeObject * cls) {
+    static bool patch_dealloc(PyTypeObject * cls) {
         if (!cls->tp_dealloc
             || cls->tp_dealloc == generic_dealloc
-            || cls->tp_dealloc == replacement_subtype_dealloc) return;
+            || cls->tp_dealloc == replacement_subtype_dealloc) return true;
         if (cls->tp_dealloc == get_subtype_dealloc()) {
             cls->tp_dealloc = replacement_subtype_dealloc;
         } else {
-            deallocfuncs[cls] = cls->tp_dealloc;
+            TypePatchState *state = ensure_type_patch(cls);
+            if (!state) return false;
+            state->original_dealloc = cls->tp_dealloc;
             cls->tp_dealloc = generic_dealloc;
         }
+        return true;
     }
 
-    static void patch_alloc_subclasses(PyTypeObject * type) {
+    static bool patch_alloc_subclasses(PyTypeObject * type) {
         PyObject * subs = PyObject_CallMethod((PyObject *)type, "__subclasses__", NULL);
-        if (!subs) { PyErr_Clear(); return; }
+        if (!subs) { PyErr_Clear(); return true; }
 
         Py_ssize_t n = PyList_Size(subs);
         for (Py_ssize_t i = 0; i < n; i++) {
             PyTypeObject * sub = (PyTypeObject *)PyList_GetItem(subs, i);
             if (!is_alloc_patched(sub->tp_alloc))
-                patch_alloc(sub);
-            patch_alloc_subclasses(sub);
+                if (!patch_alloc(sub)) {
+                    Py_DECREF(subs);
+                    return false;
+                }
+            if (!patch_alloc_subclasses(sub)) {
+                Py_DECREF(subs);
+                return false;
+            }
         }
         Py_DECREF(subs);
+        return true;
     }
 
     bool set_on_alloc(PyTypeObject *type, PyObject * callback) {
@@ -281,22 +379,36 @@ namespace retracesoftware {
                 "set_on_alloc cannot patch the root object type");
             return false;
         }
-        if (alloc_callbacks.find(type) != alloc_callbacks.end()) {
-            PyErr_Format(PyExc_RuntimeError,
-                "set_on_alloc: type '%.200s' is already patched; "
-                "each type may only be patched once per process",
-                type->tp_name);
-            return false;
+        TypePatchState *state = ensure_type_patch(type);
+        if (!state) return false;
+
+        if (state->alloc_callback) {
+            bool stale_heap_type = state->type_weakref
+                && PyWeakref_GetObject(state->type_weakref) == Py_None;
+            if (stale_heap_type) {
+                clear_type_patch(state);
+                state = ensure_type_patch(type);
+                if (!state) return false;
+            } else {
+                PyErr_Format(PyExc_RuntimeError,
+                    "set_on_alloc: type '%.200s' is already patched; "
+                    "each type may only be patched once per process",
+                    type->tp_name);
+                return false;
+            }
         }
         if (!is_alloc_patched(type->tp_alloc))
-            patch_alloc(type);
-        patch_alloc_subclasses(type);
+            if (!patch_alloc(type))
+                return false;
+        if (!patch_alloc_subclasses(type))
+            return false;
 
         if (!((type->tp_flags & Py_TPFLAGS_HEAPTYPE) && type->tp_weaklistoffset))
-            patch_dealloc(type);
+            if (!patch_dealloc(type))
+                return false;
 
         Py_INCREF(callback);
-        alloc_callbacks[type] = callback;
+        state->alloc_callback = callback;
         return true;
     }
 }

@@ -22,12 +22,9 @@ except Exception:
 
 _RawCallCounter = _cursor_mod.CallCounter
 
-_shared_raw_cc = None
+_shared_raw_cc = _RawCallCounter()
 
 def _get_shared_raw_cc():
-    global _shared_raw_cc
-    if _shared_raw_cc is None:
-        _shared_raw_cc = _RawCallCounter()
     return _shared_raw_cc
 
 
@@ -48,7 +45,27 @@ class CallCounter:
     """
 
     def __init__(self):
-        self._cc = _get_shared_raw_cc()
+        object.__setattr__(self, "_cc", _get_shared_raw_cc())
+
+    def __getattribute__(self, name):
+        if name in {
+            "current",
+            "reset",
+            "frame_positions",
+            "disable_for",
+            "installed",
+            "tool_id",
+            "depth",
+            "on_thread_switch",
+        }:
+            return getattr(object.__getattribute__(self, "_cc"), name)
+        return object.__getattribute__(self, name)
+
+    def __setattr__(self, name, value):
+        if name == "on_thread_switch":
+            setattr(object.__getattribute__(self, "_cc"), name, value)
+            return
+        object.__setattr__(self, name, value)
 
     def install(self):
         """Install call-count tracking hooks via sys.monitoring (3.12+).
@@ -76,25 +93,25 @@ class CallCounter:
         self._cc.uninstall()
         _cc_tool_id = None
 
-    def disable_for(self, fn):
-        """Return a C wrapper that freezes call-count tracking for *fn*."""
-        return self._cc.disable_for(fn)
+    def position(self):
+        return self().position()
 
-    @property
-    def on_thread_switch(self):
-        return self._cc.on_thread_switch
+    def _yield_at_impl(self, callback, thread_id, call_counts):
+        if thread_id == _thread.get_ident():
+            self._cc.yield_at(callback, call_counts)
+            return
 
-    @on_thread_switch.setter
-    def on_thread_switch(self, value):
-        self._cc.on_thread_switch = value
+        def _arm_on_target_thread():
+            callback_on_thread(thread_id, callback)
 
-    @property
-    def installed(self):
-        return _cc_tool_id is not None
+        self._cc.yield_at(_arm_on_target_thread, call_counts)
 
-    @property
-    def tool_id(self):
-        return _cc_tool_id if _cc_tool_id is not None else -1
+    def yield_at(self, callback, thread_id, call_counts):
+        wrapped = getattr(self, "_yield_at_wrapped", None)
+        if wrapped is None:
+            wrapped = self._cc.disable_for(self._yield_at_impl)
+            object.__setattr__(self, "_yield_at_wrapped", wrapped)
+        wrapped(callback, thread_id, call_counts)
 
     def __call__(self):
         """Return the ThreadCallCounts for the current thread.
@@ -105,6 +122,20 @@ class CallCounter:
         if not self.installed:
             self.install()
         return self._cc()
+
+    def __len__(self):
+        return self.depth
+
+    def __enter__(self):
+        self.install()
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        self.uninstall()
+        return False
+
+    def __repr__(self):
+        return repr(self._cc)
 
 
 def callback_on_thread(thread_id, callback):
@@ -145,17 +176,9 @@ def uninstall_call_counter():
     """Remove call-count tracking hooks and reset the stack."""
     _get_shared_cc().uninstall()
 
-def current_call_counts():
-    """Return the current call counts as a tuple of ints."""
-    return _get_default_call_counter().current()
-
-def call_counter_frame_positions():
-    """Return a tuple of f_lasti ints aligned to the call-count stack."""
-    return _get_default_call_counter().frame_positions()
-
-def call_counter_reset():
-    """Clear the call-count stack."""
-    _get_default_call_counter().reset()
+current_call_counts = _shared_raw_cc.current
+call_counter_frame_positions = _shared_raw_cc.frame_positions
+call_counter_reset = _shared_raw_cc.reset
 
 def call_counter_position():
     """Return (call_count, f_lasti) pairs for every frame on the stack."""
@@ -164,11 +187,9 @@ def call_counter_position():
 
 def yield_at_call_counts(callback, call_counts):
     """Arm a one-shot callback for a target call-counts position on the current thread."""
-    _get_default_call_counter().yield_at(callback, call_counts)
+    _get_shared_cc().yield_at(callback, _thread.get_ident(), call_counts)
 
-def call_counter_disable_for(fn):
-    """Return a C wrapper that freezes call-count tracking for the duration of fn."""
-    return _get_default_call_counter().disable_for(fn)
+call_counter_disable_for = _shared_raw_cc.disable_for
 
 def set_on_thread_switch(callback):
     """Set the global on_thread_switch callback on the shared CallCounter."""
@@ -268,7 +289,7 @@ def _yield_at_cursor_impl(thread_id, counters, f_lasti, callback):
 
 _yield_at_cursor_wrapped = None
 
-def yield_at_cursor(thread_id, counters, f_lasti, callback):
+def yield_at_cursor(*args):
     """Yield at a precise cursor position using a two-phase approach.
 
     If *f_lasti* is ``None``, arms *callback* via ``on_start`` for
@@ -287,6 +308,19 @@ def yield_at_cursor(thread_id, counters, f_lasti, callback):
     The function itself is wrapped with ``disable_for`` so it does not
     perturb the call-count stack.
     """
+    if len(args) == 3:
+        callback, thread_id, cursor = args
+        if isinstance(cursor, Cursor):
+            counters = cursor.function_counts
+            f_lasti = cursor.f_lasti
+        else:
+            counters = cursor
+            f_lasti = None
+    elif len(args) == 4:
+        thread_id, counters, f_lasti, callback = args
+    else:
+        raise TypeError("yield_at_cursor expects (callback, thread_id, cursor) or (thread_id, counters, f_lasti, callback)")
+
     global _yield_at_cursor_wrapped
     if _yield_at_cursor_wrapped is None:
         _yield_at_cursor_wrapped = call_counter_disable_for(_yield_at_cursor_impl)

@@ -22,15 +22,16 @@ Two gates control all interception:
                 that *override* a base class method are routed through
                 this gate (see "Why only overrides?" below).
 
-Two additional "bind" gates handle object lifecycle notifications:
+Two additional lifecycle gates handle object allocation/binding:
 
-    _bind       Notified when a new object is allocated while the
-                internal gate is active (we're inside the sandbox and
-                an external method returned a new object).
+    _new_patched
+                Notified when a patched object is allocated while
+                retrace is active.  The current record/replay path
+                passes the newly allocated object directly.
 
-    _ext_bind   Notified when a new object is allocated while the
-                external gate is active (we're outside the sandbox and
-                a callback produced a new object).
+    _bind       Generic binding hook used by stream backends.
+                This is the protocol-level "attach an identity"
+                operation.
 
 All four gates are thread-local — each thread has its own executor
 state, so recording on the main thread does not interfere with a
@@ -400,8 +401,8 @@ class System:
     -------------------------------------------------
     _internal             Gate for ext→int callbacks.
     _external             Gate for int→ext calls.
-    _bind                 Gate notified on object allocation (internal).
-    _ext_bind             Gate notified on object allocation (external).
+    _new_patched          Gate notified on patched object allocation.
+    _bind                 Generic stream/object binding hook.
     _in_sandbox()         True when the external gate has an executor
                           (i.e. we are inside a record/replay context).
     _out_sandbox()        True when the internal gate has an executor.
@@ -517,13 +518,17 @@ class System:
     def __init__(self) -> None:
         # ── Primary gates ──────────────────────────────────────────
         #
-        # _external: intercepts int→ext calls (methods on the patched
-        #   C/base type).  When its executor is set, every call to a
-        #   patched method routes through the executor instead of
-        #   calling the original implementation directly.
+        # _internal: ambient "retrace is enabled on this thread" gate.
+        #   It is installed for the whole lifetime of a record/replay
+        #   context and handles ext→int callbacks (methods on Python
+        #   subclasses of the patched type).
         #
-        # _internal: intercepts ext→int callbacks (methods on Python
-        #   subclasses of the patched type).  Same routing logic.
+        # _external: phase gate for int→ext calls (methods on the
+        #   patched C/base type).  During normal sandbox execution it
+        #   is set alongside _internal.  While the external call body
+        #   itself runs, apply_with(None) temporarily clears only this
+        #   gate, which makes "internal" and "external" phases cheap
+        #   to distinguish without mutating _internal.
         #
         # Both gates are thread-local: each thread has its own
         # executor slot, so recording on one thread does not affect
@@ -531,21 +536,20 @@ class System:
         self._internal = utils.Gate()
         self._external = utils.Gate()
         
-        # ── Bind gates ─────────────────────────────────────────────
+        # ── Binding / allocation gates ────────────────────────────
         #
         # These are gates whose default state is noop (not None).
         # They are called from _on_alloc when a patched type is
         # instantiated, to notify the writer/reader that a new object
         # has entered the boundary.
         #
-        # _bind:     called when allocating inside the sandbox
-        #            (external gate active → we are in an ext call,
-        #            and the ext call produced a new object).
-        # _ext_bind: called when allocating outside the sandbox
-        #            (internal gate active → we are in an int callback,
-        #            and the callback produced a new object).
+        # _new_patched: allocation-origin notification.  Receives the
+        #               allocated object itself; backends can recover
+        #               the concrete type from the live object.
+        # _bind:        generic binding hook kept separate from
+        #               allocation-origin semantics.
+        self._new_patched = utils.Gate(default = utils.noop)
         self._bind = utils.Gate(default = utils.noop)
-        self._ext_bind = utils.Gate(default = utils.noop)
 
         # ── Unretraced set ────────────────────────────────────────
         #
@@ -575,12 +579,14 @@ class System:
 
         # ── Sandbox predicates ─────────────────────────────────────
         #
-        # _in_sandbox(): True when the external gate has an executor.
-        #   This means we are inside a record/replay context and
-        #   int→ext calls will be intercepted.
+        # _in_sandbox(): True when the external phase gate is set.
+        #   In practice this means we are in the normal retraced
+        #   "internal" phase of a record/replay context.
         #
-        # _out_sandbox(): True when the internal gate has an executor.
-        #   This means ext→int callbacks will be intercepted.
+        # _out_sandbox(): True when the ambient internal gate is set.
+        #   This means retrace is enabled on the current thread,
+        #   including both the internal phase and the temporary
+        #   external-call phase.
         #
         # Both are bound methods of Gate.is_set (C-level, fast).
         self._in_sandbox = self._external.is_set
@@ -613,13 +619,10 @@ class System:
             functional.apply,
             self._external)
 
-        # Internal callbacks only route through retrace when the external gate
-        # is currently off. If retrace is fully disabled (both gates off),
-        # self._internal naturally passthroughs.
-        self._int_handler = functional.if_then_else(
-            functional.repeatedly(self._external.is_set),
-            functional.apply,
-            self._internal)
+        # Internal overrides always route through the internal gate while
+        # retrace is active. When retrace is disabled, ``self._internal``
+        # naturally passthroughs to the original target.
+        self._int_handler = self._internal
 
         # ── Allocation hook ────────────────────────────────────────
         #
@@ -628,21 +631,21 @@ class System:
         # new instance of the patched type (or any of its subclasses)
         # is created.
         #
-        # The bind gates (_ext_bind, _bind) are called directly —
+        # The allocation gate (_new_patched) is called directly —
         # gate(obj) dispatches to the executor when set, or to the
         # default (utils.noop) when no context is active.
         #
         # The logic:
-        #   - If _in_sandbox (external gate active): _ext_bind(obj)
-        #     → notify writer that an ext call produced a new object.
-        #   - Elif _out_sandbox (internal gate active): _bind(obj)
-        #     → notify writer that a callback produced a new object.
+        #   - When the external gate is active: _bind(obj), because the
+        #     concrete object already exists and only needs a stream
+        #     identity.
+        #   - When the internal gate is active: _new_patched(obj)
+        #     so replay can materialize patched objects by type.
         #   - Otherwise: _unretraced.add(obj) → mark as unbound so
         #     _ext_handler will passthrough calls on this instance.
-
         self._on_alloc = functional.cond(
-            self._external.is_set, self._ext_bind,
-            self._internal.is_set, self._bind,
+            self._external.is_set, self._bind,
+            self._internal.is_set, self._new_patched,
             self._unretraced.add)
 
     @property
@@ -682,7 +685,7 @@ class System:
         """Build a reusable, thread-safe context manager for gate executors.
 
         Each keyword argument names a private gate attribute on self
-        (e.g. ``_internal``, ``_external``, ``_bind``, ``_ext_bind``).
+        (e.g. ``_internal``, ``_external``, ``_new_patched``, ``_bind``).
         The corresponding gate's executor is saved on ``__enter__``,
         replaced with the given value, then restored on ``__exit__``.
 
@@ -894,8 +897,8 @@ class System:
             instead of executing the real function).
 
         **args
-            Additional gate executors to set (e.g. ``_bind``,
-            ``_ext_bind``).
+            Additional gate executors to set (e.g. ``_new_patched``,
+            ``_bind``).
 
         Executor construction
         ---------------------
@@ -1097,7 +1100,7 @@ class System:
         Parameters
         ----------
         writer : object
-            Must provide: ``bind(obj)``, ``ext_bind(obj)``,
+            Must provide: ``bind(obj)``, ``new_patched(obj)``,
             ``write_call(*a, **kw)``, ``sync()``,
             ``write_result(*a, **kw)``, ``write_error(*a, **kw)``.
             If *normalize* is set, must also provide
@@ -1133,22 +1136,25 @@ class System:
         checkpoint = functional.sequence(normalize, writer.checkpoint) \
             if normalize else None
 
+        def write_internal_call(_fn, *args, **kwargs):
+            writer.write_call(*args, **kwargs)
+
         if stacktraces:
             def write_stack_then(*args, **kwargs):
                 writer.stacktrace()
             ext_on_call = utils.chain(write_stack_then, writer.sync)
-            int_on_call = utils.chain(write_stack_then, writer.write_call)
+            int_on_call = utils.chain(write_stack_then, write_internal_call)
         else:
             ext_on_call = writer.sync
-            int_on_call = writer.write_call
+            int_on_call = write_internal_call
 
         def register_type_serializer(proxytype, cls):
             stub_ref = StubRef(cls)
             writer.type_serializer[proxytype] = lambda value: stub_ref
 
         return self._create_context(
+            _new_patched = writer.new_patched,
             _bind = writer.bind,
-            _ext_bind = writer.ext_bind,
             int_spec = self._create_int_spec(
                 bind = writer.bind,
                 on_call = int_on_call,
@@ -1201,7 +1207,6 @@ class System:
 
         return self._create_context(
             _bind = reader.bind,
-            _ext_bind = utils.noop,
             int_spec = self._create_int_spec(
                 bind = reader.bind,
                 on_result = checkpoint,

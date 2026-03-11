@@ -83,6 +83,10 @@ namespace retracesoftware_stream {
             return as_ptr(consume_next());
         }
 
+        PyObject* consume_borrowed_ptr() {
+            return as_ptr(consume_next());
+        }
+
         void return_obj(PyObject* obj) {
             if (is_immortal(obj)) return;
             if (!return_queue->try_push(obj)) {
@@ -182,16 +186,15 @@ namespace retracesoftware_stream {
                             self->return_obj(obj);
                             break;
                         }
-                        case TAG_BIND: {
+                        case TAG_NEW_PATCHED: {
                             PyObject* obj = as_ptr(e);
-                            try { self->stream->bind(obj, false); } catch (...) { handle_write_error(quit_on_error); }
-                            self->return_obj(obj);
+                            PyObject* type = self->consume_borrowed_ptr();
+                            try { self->stream->new_patched(obj, type); } catch (...) { handle_write_error(quit_on_error); }
                             break;
                         }
-                        case TAG_EXT_BIND: {
+                        case TAG_BIND: {
                             PyObject* obj = as_ptr(e);
-                            try { self->stream->bind(obj, true); } catch (...) { handle_write_error(quit_on_error); }
-                            self->return_obj(obj);
+                            try { self->stream->bind(obj); } catch (...) { handle_write_error(quit_on_error); }
                             break;
                         }
 #endif
@@ -276,16 +279,15 @@ namespace retracesoftware_stream {
                                     self->return_obj(obj);
                                     break;
                                 }
-                                case CMD_BIND: {
-                                    PyObject* obj = self->consume_ptr();
-                                    try { self->stream->bind(obj, false); } catch (...) { handle_write_error(quit_on_error); }
-                                    self->return_obj(obj);
+                                case CMD_NEW_PATCHED: {
+                                    PyObject* obj = self->consume_borrowed_ptr();
+                                    PyObject* type = self->consume_borrowed_ptr();
+                                    try { self->stream->new_patched(obj, type); } catch (...) { handle_write_error(quit_on_error); }
                                     break;
                                 }
-                                case CMD_EXT_BIND: {
-                                    PyObject* obj = self->consume_ptr();
-                                    try { self->stream->bind(obj, true); } catch (...) { handle_write_error(quit_on_error); }
-                                    self->return_obj(obj);
+                                case CMD_BIND: {
+                                    PyObject* obj = self->consume_borrowed_ptr();
+                                    try { self->stream->bind(obj); } catch (...) { handle_write_error(quit_on_error); }
                                     break;
                                 }
                                 case CMD_SHUTDOWN:
@@ -376,14 +378,22 @@ namespace retracesoftware_stream {
 #if SIZEOF_VOID_P >= 8
                 case TAG_PICKLED:
                 case TAG_NEW_HANDLE:
-                case TAG_BIND:
-                case TAG_EXT_BIND:
 #endif
                 {
                     PyObject* obj = as_ptr(e);
                     if (!is_immortal(obj)) Py_DECREF(obj);
                     break;
                 }
+#if SIZEOF_VOID_P >= 8
+                case TAG_BIND:
+                    break;
+#endif
+#if SIZEOF_VOID_P >= 8
+                case TAG_NEW_PATCHED: {
+                    (void)consume_borrowed_ptr();
+                    break;
+                }
+#endif
                 case TAG_COMMAND:
                     switch (cmd_of(e)) {
                         case CMD_LIST:
@@ -399,9 +409,14 @@ namespace retracesoftware_stream {
                             break;
                         case CMD_PICKLED:
                         case CMD_NEW_HANDLE:
-                        case CMD_BIND:
-                        case CMD_EXT_BIND:
                             drain_value();
+                            break;
+                        case CMD_BIND:
+                            (void)consume_borrowed_ptr();
+                            break;
+                        case CMD_NEW_PATCHED:
+                            (void)consume_borrowed_ptr();
+                            (void)consume_borrowed_ptr();
                             break;
                         default: break;
                     }
@@ -420,14 +435,22 @@ namespace retracesoftware_stream {
 #if SIZEOF_VOID_P >= 8
                     case TAG_PICKLED:
                     case TAG_NEW_HANDLE:
-                    case TAG_BIND:
-                    case TAG_EXT_BIND:
 #endif
                     {
                         PyObject* obj = as_ptr(e);
                         if (!is_immortal(obj)) Py_DECREF(obj);
                         break;
                     }
+#if SIZEOF_VOID_P >= 8
+                    case TAG_BIND:
+                        break;
+#endif
+#if SIZEOF_VOID_P >= 8
+                    case TAG_NEW_PATCHED: {
+                        (void)consume_borrowed_ptr();
+                        break;
+                    }
+#endif
                     case TAG_DELETE:
                     case TAG_THREAD:
                         break;
@@ -446,9 +469,14 @@ namespace retracesoftware_stream {
                                 break;
                             case CMD_PICKLED:
                             case CMD_NEW_HANDLE:
-                            case CMD_BIND:
-                            case CMD_EXT_BIND:
                                 drain_value();
+                                break;
+                            case CMD_BIND:
+                                (void)consume_borrowed_ptr();
+                                break;
+                            case CMD_NEW_PATCHED:
+                                (void)consume_borrowed_ptr();
+                                (void)consume_borrowed_ptr();
                                 break;
                             default: break;
                         }

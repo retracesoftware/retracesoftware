@@ -35,8 +35,7 @@ namespace retracesoftware_stream {
         bool pending_bind = false;
         int binding_counter = 0;
         PyObject * create_pickled = nullptr;
-
-        PyObject * bind_singleton;
+        PyObject * stub_factory = nullptr;
         PyObject * create_stack_delta;
         PyObject * create_thread_switch;
         PyObject * create_dropped = nullptr;
@@ -47,7 +46,7 @@ namespace retracesoftware_stream {
             
             PyObject * path;
             PyObject * create_pickled;
-            PyObject * bind_singleton;
+            PyObject * stub_factory;
             PyObject * create_stack_delta;
             PyObject * create_thread_switch;
             PyObject * create_dropped = nullptr;
@@ -60,7 +59,7 @@ namespace retracesoftware_stream {
             static const char* kwlist[] = {
                 "path", 
                 "deserialize",
-                "bind_singleton",
+                "stub_factory",
                 "create_stack_delta",
                 "on_thread_switch",
                 "read_timeout",
@@ -73,7 +72,7 @@ namespace retracesoftware_stream {
             if (!PyArg_ParseTupleAndKeywords(args, kwds, "O!OOOOip|OOL", (char **)kwlist, 
                 &PyUnicode_Type, &path, 
                 &create_pickled,
-                &bind_singleton,
+                &stub_factory,
                 &create_stack_delta,
                 &create_thread_switch,
                 &read_timeout,
@@ -90,7 +89,7 @@ namespace retracesoftware_stream {
             new (&self->bindings) map<int, PyObject *>();
 
             self->create_pickled = Py_NewRef(create_pickled);
-            self->bind_singleton = Py_NewRef(bind_singleton);
+            self->stub_factory = Py_NewRef(stub_factory);
             self->create_stack_delta = Py_NewRef(create_stack_delta);
             self->create_thread_switch = Py_NewRef(create_thread_switch);
             self->create_dropped = Py_XNewRef(create_dropped);
@@ -135,7 +134,7 @@ namespace retracesoftware_stream {
         static int traverse(ObjectStream* self, visitproc visit, void* arg) {
             Py_VISIT(self->path);
             Py_VISIT(self->create_pickled);
-            Py_VISIT(self->bind_singleton);
+            Py_VISIT(self->stub_factory);
             Py_VISIT(self->create_stack_delta);
             Py_VISIT(self->create_thread_switch);
             Py_VISIT(self->create_dropped);
@@ -163,7 +162,7 @@ namespace retracesoftware_stream {
 
             Py_CLEAR(self->path);
             Py_CLEAR(self->create_pickled);
-            Py_CLEAR(self->bind_singleton);
+            Py_CLEAR(self->stub_factory);
             Py_CLEAR(self->create_stack_delta);
             Py_CLEAR(self->create_thread_switch);
             Py_CLEAR(self->create_dropped);
@@ -507,7 +506,6 @@ namespace retracesoftware_stream {
                     return Py_NewRef(Py_False);
                 case FixedSizeTypes::NEG1: 
                     return PyLong_FromLong(-1);
-                // case FixedSizeTypes::BIND: return Py_NewRef(bind_singleton);
                 case FixedSizeTypes::FLOAT:
                     return PyFloat_FromDouble(read<double>());
                 case FixedSizeTypes::INT64:
@@ -546,30 +544,64 @@ namespace retracesoftware_stream {
                 : read_sized(control);
         }
 
-        PyObject * read_ext_bind() {
+        PyTypeObject * read_bound_type(const char * opname) {
+            PyObject * type_obj = read();
 
-            PyTypeObject * cls = (PyTypeObject *)read();
-            
-            if (!cls) {
+            if (!type_obj) {
                 if (!PyErr_Occurred()) {
-                    PyErr_SetString(PyExc_RuntimeError, "read() returned NULL without setting exception in read_ext_bind");
+                    PyErr_Format(PyExc_RuntimeError, "read() returned NULL without setting exception in %s", opname);
                 }
                 throw nullptr;
             }
 
-            if (!PyType_Check((PyObject *)cls)) {
-                PyErr_Format(PyExc_TypeError, "Expected next item read to be a type but was: %S", cls);
-                Py_DECREF(cls);
+            if (!PyType_Check(type_obj)) {
+                PyErr_Format(PyExc_TypeError, "%s expected a type but read: %S", opname, type_obj);
+                Py_DECREF(type_obj);
                 throw nullptr;
             }
+
+            return reinterpret_cast<PyTypeObject *>(type_obj);
+        }
+
+        PyObject * create_stub(PyTypeObject * cls, const char * opname) {
+            PyObject * instance = PyObject_CallOneArg(stub_factory, reinterpret_cast<PyObject *>(cls));
+
+            if (!instance) {
+                throw nullptr;
+            }
+
+            if (!PyObject_TypeCheck(instance, cls)) {
+                PyErr_Format(PyExc_TypeError,
+                    "%s stub_factory returned <%s object at %p> for type %s",
+                    opname, Py_TYPE(instance)->tp_name, (void *)instance, cls->tp_name);
+                Py_DECREF(instance);
+                throw nullptr;
+            }
+
+            return instance;
+        }
+
+        PyObject * read_new_patched(const char * opname) {
+            PyTypeObject * cls = read_bound_type(opname);
+            PyObject * instance = create_stub(cls, opname);
+            Py_DECREF(reinterpret_cast<PyObject *>(cls));
+            return instance;
+        }
+
+        PyObject * read_ext_bind() {
+            PyTypeObject * cls = read_bound_type("BIND");
             PyObject * empty = PyTuple_New(0);
+
+            if (!empty) {
+                Py_DECREF(reinterpret_cast<PyObject *>(cls));
+                throw nullptr;
+            }
 
             PyObject * instance = cls->tp_new(cls, empty, nullptr);
 
             Py_DECREF(empty);
-            Py_DECREF(cls);
+            Py_DECREF(reinterpret_cast<PyObject *>(cls));
 
-            // PyObject * instance = PyObject_CallNoArgs(cls);
             if (!instance) {
                 throw nullptr;
             }
@@ -608,9 +640,13 @@ namespace retracesoftware_stream {
                     Py_DECREF(bindings[size]);
                     bindings.erase(size);
                     messages_read++;
-                } else if (control == ExtBind) {                
-                    if (verbose) printf("Retrace - ObjectStream[%lu, %lu] - Consumed EXT_BIND\n", messages_read, start);
-                    bindings[binding_counter++] = read_ext_bind();
+                } else if (control == Bind) {                
+                    if (verbose) printf("Retrace - ObjectStream[%lu, %lu] - Consumed BIND\n", messages_read, start);
+                    pending_bind = true;
+                    messages_read++;
+                } else if (control == NewPatched) {
+                    if (verbose) printf("Retrace - ObjectStream[%lu, %lu] - Consumed NEW_PATCHED\n", messages_read, start);
+                    bindings[binding_counter++] = read_new_patched("NEW_PATCHED");
                     messages_read++;
                 } else {
                     return control;
@@ -622,7 +658,7 @@ namespace retracesoftware_stream {
             if (!pending_bind) {
                 PyErr_Format(PyExc_RuntimeError, "Trying to bind when no pending bind");
                 return false;
-            } 
+            }
             bindings[binding_counter++] = Py_NewRef(binding);
             pending_bind = false;
             return true;
@@ -630,8 +666,9 @@ namespace retracesoftware_stream {
 
         static PyObject * py_bind(ObjectStream * self, PyObject * binding) {
             try {
-                if (!self->bind(binding)) 
+                if (!self->bind(binding)) {
                     return nullptr;
+                }
             } catch (...) {
                 assert(PyErr_Occurred());
                 return nullptr;
@@ -748,13 +785,6 @@ namespace retracesoftware_stream {
                 }
                 Py_DECREF(payload);
                 return next();
-            }
-            if (control == Bind) {
-                if (verbose) printf("Retrace - ObjectStream[%lu, %lu] - Read BIND\n", messages_read, start);
-
-                pending_bind = true;
-                messages_read++;
-                return Py_NewRef(bind_singleton);
             }
             else {
                 PyObject * result = read(control);

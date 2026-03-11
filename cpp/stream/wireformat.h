@@ -69,11 +69,11 @@ namespace retracesoftware_stream {
 
         NEG1,
         INT64,
-        EXT_BIND,
+        BIND,
         THREAD_SWITCH,
         
         NEW_HANDLE,
-        BIND,
+        NEW_PATCHED,
         STACK,
         ADD_FILENAME,
         
@@ -144,7 +144,7 @@ namespace retracesoftware_stream {
     constexpr Control Heartbeat = create_fixed_size(FixedSizeTypes::HEARTBEAT);
     constexpr Control SerializeError = create_fixed_size(FixedSizeTypes::SERIALIZE_ERROR);
     constexpr Control Bind = create_fixed_size(FixedSizeTypes::BIND);
-    constexpr Control ExtBind = create_fixed_size(FixedSizeTypes::EXT_BIND);
+    constexpr Control NewPatched = create_fixed_size(FixedSizeTypes::NEW_PATCHED);
     // constexpr Control BindingDelete = create_fixed_size(FixedSizeTypes::);
 
     constexpr bool is_binding_delete(Control control) {
@@ -219,10 +219,10 @@ namespace retracesoftware_stream {
             case FixedSizeTypes::FLOAT: return "FLOAT";
             case FixedSizeTypes::NEG1: return "NEG1";
             case FixedSizeTypes::INT64: return "INT64";
-            case FixedSizeTypes::EXT_BIND: return "EXT_BIND";
+            case FixedSizeTypes::BIND: return "BIND";
             case FixedSizeTypes::THREAD_SWITCH: return "THREAD_SWITCH";
             case FixedSizeTypes::NEW_HANDLE: return "NEW_HANDLE";
-            case FixedSizeTypes::BIND: return "BIND";
+            case FixedSizeTypes::NEW_PATCHED: return "NEW_PATCHED";
             case FixedSizeTypes::STACK: return "STACK";
             case FixedSizeTypes::ADD_FILENAME: return "ADD_FILENAME";
             case FixedSizeTypes::CHECKSUM: return "CHECKSUM";

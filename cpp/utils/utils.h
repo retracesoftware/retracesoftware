@@ -89,6 +89,7 @@ namespace retracesoftware {
     extern PyTypeObject Remover_Type;
     extern PyTypeObject Branch_Type;
     extern PyTypeObject DeallocBridge_Type;
+    extern PyTypeObject TypePatchState_Type;
 
     extern PyTypeObject ThreadLocal_Type;
     extern PyTypeObject ThreadLocalContext_Type;
@@ -183,6 +184,7 @@ namespace retracesoftware {
     };
 
     bool set_on_alloc(PyTypeObject *type, PyObject * callback);
+    bool is_alloc_patched(allocfunc func);
 
     bool intercept_dict_set(PyObject * dict, PyObject * on_set);
 }

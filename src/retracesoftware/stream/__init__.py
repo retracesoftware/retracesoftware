@@ -228,6 +228,7 @@ class writer(_backend_mod.ObjectWriter):
                  return_queue_capacity=None,
                  quit_on_error=False,
                  serialize_errors=True,
+                 validate_bindings=False,
                  raw=False):
 
         self._fw = None
@@ -259,6 +260,8 @@ class writer(_backend_mod.ObjectWriter):
             kwargs['quit_on_error'] = quit_on_error
         if not serialize_errors:
             kwargs['serialize_errors'] = False
+        if validate_bindings:
+            kwargs['validate_bindings'] = True
 
         super().__init__(output, **kwargs)
 
@@ -365,32 +368,12 @@ class Control:
         self.value = value
 
 
-class Bind(Control):
-    pass
-
-
 class ThreadSwitch(Control):
     pass
 
 
 class Heartbeat(Control):
     pass
-
-
-def _resolve_binds(source):
-    """Wrap *source* so that Bind markers are resolved immediately.
-
-    The C++ reader sets ``pending_bind`` when it emits a Bind sentinel.
-    ``bind(None)`` must be called before the next read — otherwise any
-    read-ahead (e.g. by demux) will hit the pending-bind error.
-    """
-    def f():
-        obj = source()
-        while isinstance(obj, Bind):
-            obj.value(None)
-            obj = source()
-        return obj
-    return f
 
 
 def per_thread(source, thread, timeout):
@@ -404,17 +387,18 @@ def per_thread(source, thread, timeout):
         extract=lambda ts: ts.value,
         initial=thread())
 
-    demux = utils.demux(source=_resolve_binds(source), key_function=key_fn, timeout_seconds=timeout)
+    demux = utils.demux(source=source, key_function=key_fn, timeout_seconds=timeout)
     return drop(is_control, functional.sequence(thread, demux))
 
 
 class reader(_backend_mod.ObjectStreamReader):
 
     def __init__(self, path, read_timeout, verbose, start_offset=0, raw=False):
+        self.stub_factory = self._default_stub_factory
         super().__init__(
             path=str(path),
             deserialize=self.deserialize,
-            bind_singleton=Bind(self.bind),
+            stub_factory=self._call_stub_factory,
             on_thread_switch=ThreadSwitch,
             create_stack_delta=lambda to_drop, frames: None,
             read_timeout=read_timeout,
@@ -428,6 +412,15 @@ class reader(_backend_mod.ObjectStreamReader):
 
     def __exit__(self, *args):
         self.close()
+
+    def bind(self, obj):
+        return super().bind(obj)
+
+    def _default_stub_factory(self, cls):
+        return cls.__new__(cls)
+
+    def _call_stub_factory(self, cls):
+        return self.stub_factory(cls)
     
     def deserialize(self, bytes):
         obj = pickle.loads(bytes)

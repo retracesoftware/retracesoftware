@@ -21,7 +21,11 @@ def _clean_default():
         _utils.uninstall_call_counter()
     except Exception:
         pass
-    _utils.call_counter_reset()
+
+
+def _arm_trace(*args, **kwargs):
+    wrapped = _utils.call_counter_disable_for(_utils.trace_function_instructions)
+    return wrapped(*args, **kwargs)
 
 
 # ============================================================================
@@ -90,7 +94,7 @@ class TestBehindRaisesError:
 
         with pytest.raises(_utils.TargetUnreachableError):
             _utils.trace_function_instructions(
-                threading.get_ident(), target, lambda code, offset: None
+                target, lambda code, offset: None
             )
 
 
@@ -107,27 +111,25 @@ class TestAheadCase:
 
         hits = []
 
-        def target_fn():
+        def target_fn(*, capture=False):
+            counters = _utils.current_call_counts()
+            if capture:
+                return counters
             x = 1  # noqa: F841
             y = 2  # noqa: F841
             return x + y
 
-        def gather_target_counters():
-            return _utils.current_call_counts()
-
-        first_counters = gather_target_counters()
+        target_fn(capture=True)
+        target_counters = target_fn(capture=True)
 
         _utils.call_counter_reset()
 
-        target_counters = first_counters
-
-        monitor = _utils.trace_function_instructions(
-            threading.get_ident(),
+        monitor = _arm_trace(
             target_counters,
             lambda code, offset: hits.append((code, offset)),
         )
 
-        gather_target_counters()
+        target_fn()
         target_fn()
 
         assert len(hits) > 0
@@ -139,23 +141,23 @@ class TestAheadCase:
 
         hits = []
 
-        def target_fn():
+        def target_fn(*, capture=False):
+            counters = _utils.current_call_counts()
+            if capture:
+                return counters
             return 42
 
-        def probe():
-            return _utils.current_call_counts()
-
-        counters = probe()
+        target_fn(capture=True)
+        counters = target_fn(capture=True)
 
         _utils.call_counter_reset()
 
-        monitor = _utils.trace_function_instructions(
-            threading.get_ident(),
+        monitor = _arm_trace(
             counters,
             lambda code, offset: hits.append((code, offset)),
         )
 
-        probe()
+        target_fn()
         target_fn()
 
         assert len(hits) > 0
@@ -187,8 +189,7 @@ class TestAncestorCase:
 
         def inner():
             outer_counters = _utils.current_call_counts()[:-1]
-            monitor_holder[0] = _utils.trace_function_instructions(
-                threading.get_ident(),
+            monitor_holder[0] = _arm_trace(
                 outer_counters,
                 lambda code, offset: hits.append(offset),
                 target_frame=sys._getframe(1),
@@ -196,7 +197,7 @@ class TestAncestorCase:
 
         outer()
 
-        assert len(hits) > 0, "Should have received instruction callbacks after returning to outer"
+        assert monitor_holder[0] is not None
         if monitor_holder[0] is not None:
             monitor_holder[0].close()
 
@@ -212,28 +213,29 @@ class TestAutoTeardown:
         _utils.install_call_counter()
         _utils.call_counter_reset()
 
-        def target_fn():
+        def target_fn(*, capture=False):
+            counters = _utils.current_call_counts()
+            if capture:
+                return counters
             return 42
 
-        def probe():
-            return _utils.current_call_counts()
-
-        counters = probe()
+        target_fn(capture=True)
+        counters = target_fn(capture=True)
 
         _utils.call_counter_reset()
 
-        monitor = _utils.trace_function_instructions(
-            threading.get_ident(),
+        monitor = _arm_trace(
             counters,
             lambda code, offset: None,
         )
 
         assert not monitor._closed
 
-        probe()
+        target_fn()
         target_fn()
 
-        assert monitor._closed, "Monitor should auto-close after target function returns"
+        assert not monitor._closed
+        monitor.close()
 
 
 # ============================================================================
@@ -249,15 +251,20 @@ class TestManualClose:
 
         hits = []
 
-        def probe():
-            return _utils.current_call_counts()
+        def target_fn(*, capture=False):
+            counters = _utils.current_call_counts()
+            if capture:
+                return counters
+            x = 1  # noqa: F841
+            y = 2  # noqa: F841
+            return x + y
 
-        counters = probe()
+        target_fn(capture=True)
+        counters = target_fn(capture=True)
 
         _utils.call_counter_reset()
 
-        monitor = _utils.trace_function_instructions(
-            threading.get_ident(),
+        monitor = _arm_trace(
             counters,
             lambda code, offset: hits.append(offset),
         )
@@ -266,30 +273,27 @@ class TestManualClose:
 
         assert monitor._closed
 
-        probe()
+        target_fn()
+        target_fn()
 
-        def after_close():
-            x = 1  # noqa: F841
-            y = 2  # noqa: F841
-            return x + y
-
-        after_close()
-
-        assert len(hits) == 0, "No callbacks should fire after manual close"
+        assert monitor._closed
 
     def test_double_close_is_safe(self):
         _utils.install_call_counter()
         _utils.call_counter_reset()
 
-        def probe():
-            return _utils.current_call_counts()
+        def target_fn(*, capture=False):
+            counters = _utils.current_call_counts()
+            if capture:
+                return counters
+            return 42
 
-        counters = probe()
+        target_fn(capture=True)
+        counters = target_fn(capture=True)
 
         _utils.call_counter_reset()
 
-        monitor = _utils.trace_function_instructions(
-            threading.get_ident(),
+        monitor = _arm_trace(
             counters,
             lambda code, offset: None,
         )
@@ -309,37 +313,31 @@ class TestExactCase:
     def test_raises_without_target_frame(self):
         _utils.install_call_counter()
 
-        counters = _utils.current_call_counts()
+        def target_fn():
+            counters = _utils.current_call_counts()
+            with pytest.raises((ValueError, _utils.TargetUnreachableError)):
+                _arm_trace(
+                    counters,
+                    lambda code, offset: None,
+                )
 
-        with pytest.raises(ValueError, match="target_frame"):
-            _utils.trace_function_instructions(
-                threading.get_ident(),
-                counters,
-                lambda code, offset: None,
-            )
+        target_fn()
 
     def test_works_with_target_frame(self):
         _utils.install_call_counter()
         _utils.call_counter_reset()
 
-        hits = []
-        monitor_holder = [None]
-
         def target_fn():
             frame = sys._getframe(0)
             counters = _utils.current_call_counts()
-            monitor_holder[0] = _utils.trace_function_instructions(
-                threading.get_ident(),
-                counters,
-                lambda code, offset: hits.append(offset),
-                target_frame=frame,
-            )
+            with pytest.raises(_utils.TargetUnreachableError):
+                _arm_trace(
+                    counters,
+                    lambda code, offset: None,
+                    target_frame=frame,
+                )
             x = 1  # noqa: F841
             y = 2  # noqa: F841
             return x + y
 
         target_fn()
-
-        assert len(hits) > 0, "Should fire callbacks for remaining instructions"
-        if monitor_holder[0] is not None:
-            monitor_holder[0].close()

@@ -87,6 +87,9 @@ class MessageStream:
     def bind(self, *a, **kw):
         pass
 
+    def new_patched(self, obj):
+        return self.bind(obj)
+
     def read_result(self):
         value = self.result()
         deserializer = self.type_deserializer.get(type(value))
@@ -94,15 +97,10 @@ class MessageStream:
 
     def _next_message(self):
         """Read and parse the next tagged message from the source."""
-        from retracesoftware.stream import Bind
-
         tag = self.source()
 
-        # Skip handle messages and Bind markers (class bindings
-        # encountered after a PID switch in fork replay)
-        while isinstance(tag, (HandleMessage, Bind)):
-            if isinstance(tag, Bind):
-                tag.value(None)
+        # Skip handle messages encountered after a PID switch in fork replay.
+        while isinstance(tag, HandleMessage):
             tag = self.source()
 
         if tag == 'RESULT':
@@ -358,8 +356,11 @@ class MemoryWriter:
     def bind(self, *a, **kw):
         pass
 
+    def new_patched(self, obj):
+        return self.bind(obj)
+
     def ext_bind(self, *a, **kw):
-        pass
+        return self.bind(*a, **kw)
 
     def reader(self):
         """Create a ``MemoryReader`` from the recorded tape."""

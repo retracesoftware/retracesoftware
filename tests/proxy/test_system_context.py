@@ -4,15 +4,34 @@ Tests for System record_context and replay_context.
 Verifies that record_context and replay_context correctly manage
 gate lifecycle and route external calls through the pipeline.
 """
+import os
 import socket
+import subprocess
+import sys
+import textwrap
 import threading
 import time
+from pathlib import Path
 
 import pytest
 
 import retracesoftware.utils as utils
 from retracesoftware.proxy.system import System
 from retracesoftware.proxy.messagestream import MemoryWriter, MemoryReader, HandleMessage
+
+_PATCHED_TYPE_KEEPALIVE = []
+
+
+@pytest.fixture(autouse=True)
+def keep_patched_test_types_alive(monkeypatch):
+    """Prevent local patched class addresses from being reused across tests."""
+    original = System.patch_type
+
+    def patch_type_and_keepalive(self, cls):
+        _PATCHED_TYPE_KEEPALIVE.append(cls)
+        return original(self, cls)
+
+    monkeypatch.setattr(System, "patch_type", patch_type_and_keepalive)
 
 
 def test_system_record_replay_context():
@@ -39,6 +58,42 @@ def test_system_record_replay_context():
     # After replay context: gates restored
     assert not system._in_sandbox()
     assert not system._out_sandbox()
+
+
+def test_system_active_allocations_use_bind_path():
+    """External allocations bind, internal allocations report new_patched."""
+    system = System()
+
+    class Patched:
+        pass
+
+    system.patch_type(Patched)
+
+    bound = []
+    new_patched = []
+
+    def bind(obj):
+        bound.append(obj)
+
+    def on_new_patched(obj):
+        new_patched.append(obj)
+
+    with system._context(_bind=bind, _new_patched=on_new_patched, _external=utils.noop):
+        external_obj = Patched()
+
+    assert bound == [external_obj]
+    assert new_patched == []
+    assert system.is_bound(external_obj)
+
+    bound.clear()
+    new_patched.clear()
+
+    with system._context(_bind=bind, _new_patched=on_new_patched, _internal=utils.noop):
+        internal_obj = Patched()
+
+    assert bound == []
+    assert new_patched == [internal_obj]
+    assert system.is_bound(internal_obj)
 
 
 def test_system_location_property():
@@ -71,44 +126,76 @@ def _run_time_server(port: int, ready: threading.Event) -> None:
 
 def test_system_record_replay_socket_time():
     """patch_type socket, record a connection, replay returns stored result."""
-    import _socket
+    repo_root = Path(__file__).resolve().parents[2]
+    env = os.environ.copy()
+    src_path = str(repo_root / "src")
+    existing = env.get("PYTHONPATH")
+    env["PYTHONPATH"] = f"{src_path}{os.pathsep}{existing}" if existing else src_path
 
-    system = System()
-    system.immutable_types.update({float, int, str, bytes, bool, type, type(None)})
-    system.patch_type(_socket.socket)
+    code = textwrap.dedent(
+        """
+        import _socket
+        import socket
+        import threading
+        import time
 
-    writer = MemoryWriter()
+        from retracesoftware.proxy.messagestream import MemoryWriter
+        from retracesoftware.proxy.system import System
 
-    # Find a free port (outside any context — gate not set, falls through)
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as tmp:
-        tmp.bind(("127.0.0.1", 0))
-        port = tmp.getsockname()[1]
 
-    # Server runs in its own thread — gate is per-thread, so unaffected
-    ready = threading.Event()
-    server_thread = threading.Thread(target=lambda: _run_time_server(port, ready))
-    server_thread.start()
-    ready.wait(timeout=2.0)
+        def run_time_server(port, ready):
+            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+                s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+                s.bind(("127.0.0.1", port))
+                s.listen(1)
+                ready.set()
+                conn, _ = s.accept()
+                with conn:
+                    conn.sendall(str(time.time()).encode())
+                conn.close()
 
-    # Record — socket calls in main thread go through the record pipeline
-    with system.record_context(writer):
-        s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        s.connect(("127.0.0.1", port))
-        data = s.recv(64)
-        s.close()
-        recorded_time = float(data.decode())
 
-    server_thread.join(timeout=2.0)
+        system = System()
+        system.immutable_types.update({float, int, str, bytes, bool, type, type(None)})
+        system.patch_type(_socket.socket)
+        writer = MemoryWriter()
 
-    # Replay — no server needed; reader supplies stored values
-    with system.replay_context(writer.reader()):
-        s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        s.connect(("127.0.0.1", port))
-        data = s.recv(64)
-        s.close()
-        replayed_time = float(data.decode())
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as tmp:
+            tmp.bind(("127.0.0.1", 0))
+            port = tmp.getsockname()[1]
 
-    assert replayed_time == recorded_time
+        ready = threading.Event()
+        server_thread = threading.Thread(target=lambda: run_time_server(port, ready))
+        server_thread.start()
+        ready.wait(timeout=2.0)
+
+        with system.record_context(writer):
+            s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            s.connect(("127.0.0.1", port))
+            data = s.recv(64)
+            s.close()
+            recorded_time = float(data.decode())
+
+        server_thread.join(timeout=2.0)
+
+        with system.replay_context(writer.reader()):
+            s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            s.connect(("127.0.0.1", port))
+            data = s.recv(64)
+            s.close()
+            replayed_time = float(data.decode())
+
+        assert replayed_time == recorded_time
+        """
+    )
+    result = subprocess.run(
+        [sys.executable, "-c", code],
+        cwd=repo_root,
+        env=env,
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
 
 
 def test_system_ext_to_int_callback():

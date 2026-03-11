@@ -11,14 +11,9 @@ struct ThreadCallCounts : public PyObject {
     int suspend_depth;
     int check_watches_depth;
     std::vector<WatchState> watches;
-    std::vector<WatchState> pending_watches;
-
-    void *root_parent_frame;
-    int root_parent_lasti;
-    int root_repeat_count;
-    bool root_parent_valid;
 
     _PyInterpreterFrame *suspended_frame;
+    PyObject *suspended_cursor;
 
     Py_ssize_t context_depth;
 };

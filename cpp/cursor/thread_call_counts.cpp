@@ -9,20 +9,23 @@ static struct {
     ThreadCallCounts *tc = nullptr;
 } thread_local tc_cache;
 
+static void
+init_synthetic_root(ThreadCallCounts *self)
+{
+    self->cursor_stack.clear();
+    self->cursor_stack.push_back({0});
+}
+
 static ThreadCallCounts *create_thread_call_counts()
 {
     auto *obj = PyObject_New(ThreadCallCounts, &ThreadCallCounts_Type);
     if (obj) {
         new (&obj->cursor_stack) std::vector<CursorEntry>();
         new (&obj->watches) std::vector<WatchState>();
-        new (&obj->pending_watches) std::vector<WatchState>();
         obj->suspend_depth = 0;
         obj->check_watches_depth = 0;
-        obj->root_parent_frame = nullptr;
-        obj->root_parent_lasti = -1;
-        obj->root_repeat_count = 0;
-        obj->root_parent_valid = false;
         obj->suspended_frame = nullptr;
+        obj->suspended_cursor = nullptr;
         obj->context_depth = -1;
     }
     return obj;
@@ -73,7 +76,7 @@ void invalidate_tc_cache(PyObject *owner)
 
 static void ThreadCallCounts_dealloc(ThreadCallCounts *self)
 {
-    self->pending_watches.~vector();
+    Py_XDECREF(self->suspended_cursor);
     self->watches.~vector();
     self->cursor_stack.~vector();
     Py_TYPE(self)->tp_free((PyObject *)self);
@@ -87,6 +90,10 @@ static PyObject *
 tc_current(ThreadCallCounts *self, PyObject *Py_UNUSED(ignored))
 {
     tc = self;
+    if (self->suspend_depth == 0 && self->cursor_stack.size() > 1 &&
+        self->cursor_stack.back().call_count > 0) {
+        self->cursor_stack.back().call_count--;
+    }
     return build_current_cursor();
 }
 
@@ -101,6 +108,10 @@ static PyObject *
 tc_position(ThreadCallCounts *self, PyObject *Py_UNUSED(ignored))
 {
     tc = self;
+    if (self->suspend_depth == 0 && self->cursor_stack.size() > 1 &&
+        self->cursor_stack.back().call_count > 0) {
+        self->cursor_stack.back().call_count--;
+    }
     PyObject *counts = build_current_cursor();
     if (!counts) return nullptr;
     PyObject *lastis = build_frame_positions();
@@ -202,15 +213,15 @@ tc_add_watch(ThreadCallCounts *self,
     }
 
     if (tc->check_watches_depth > 0) {
-        tc->pending_watches.emplace_back(std::move(target),
-                                kw_start, kw_return, kw_unwind,
-                                kw_backjump, kw_overshoot);
-    } else {
-        tc->watches.emplace_back(std::move(target),
-                                kw_start, kw_return, kw_unwind,
-                                kw_backjump, kw_overshoot);
-        if (kw_start) check_watches(WatchSlot::start);
+        PyErr_SetString(PyExc_RuntimeError,
+            "cannot add watch while processing watch callbacks");
+        return nullptr;
     }
+
+    tc->watches.emplace_back(std::move(target),
+                            kw_start, kw_return, kw_unwind,
+                            kw_backjump, kw_overshoot);
+    if (kw_start) check_watches(WatchSlot::start);
     Py_RETURN_NONE;
 }
 
@@ -221,21 +232,13 @@ tc_discard_watches(ThreadCallCounts *self, PyObject *Py_UNUSED(ignored))
         w.detach();
     }
     self->watches.clear();
-    for (auto &w : self->pending_watches) {
-        w.detach();
-    }
-    self->pending_watches.clear();
     Py_RETURN_NONE;
 }
 
 static PyObject *
 tc_reset_stack(ThreadCallCounts *self, PyObject *Py_UNUSED(ignored))
 {
-    self->cursor_stack.clear();
-    self->root_parent_valid = false;
-    self->root_parent_frame = nullptr;
-    self->root_parent_lasti = -1;
-    self->root_repeat_count = 0;
+    init_synthetic_root(self);
     Py_RETURN_NONE;
 }
 
@@ -247,11 +250,7 @@ static PyObject *
 tc_enter(ThreadCallCounts *self, PyObject *Py_UNUSED(ignored))
 {
     self->context_depth = (Py_ssize_t)self->cursor_stack.size();
-    self->cursor_stack.clear();
-    self->root_parent_valid = false;
-    self->root_parent_frame = nullptr;
-    self->root_parent_lasti = -1;
-    self->root_repeat_count = 0;
+    init_synthetic_root(self);
     return Py_NewRef((PyObject *)self);
 }
 
@@ -261,16 +260,8 @@ tc_exit(ThreadCallCounts *self, PyObject *const *args, Py_ssize_t nargs)
     for (auto &w : self->watches) {
         w.fire_overshoot();
     }
-    for (auto &w : self->pending_watches) {
-        w.fire_overshoot();
-    }
-    self->cursor_stack.clear();
+    init_synthetic_root(self);
     self->watches.clear();
-    self->pending_watches.clear();
-    self->root_parent_valid = false;
-    self->root_parent_frame = nullptr;
-    self->root_parent_lasti = -1;
-    self->root_repeat_count = 0;
     self->context_depth = -1;
     Py_RETURN_NONE;
 }

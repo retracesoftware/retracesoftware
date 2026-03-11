@@ -20,6 +20,14 @@ namespace retracesoftware_stream {
     void PyObject_Free_Wrapper(void * obj);
     bool is_patched(freefunc func);
     void patch_free(PyTypeObject * cls);
+    inline bool is_retrace_patched_type_for_stream(PyTypeObject* tp) {
+        int status = PyObject_HasAttrString(reinterpret_cast<PyObject*>(tp), "__retrace_system__");
+        if (status < 0) {
+            PyErr_Clear();
+            return false;
+        }
+        return status == 1;
+    }
 
     class MessageStream {
         FramedWriter& writer;
@@ -412,6 +420,10 @@ namespace retracesoftware_stream {
             else if (Py_TYPE(obj) == &PyDict_Type) write_dict(obj);
 
             else if (bindings.contains(obj)) write_lookup(bindings[obj]);
+            else if (!PyType_Check(obj) && is_retrace_patched_type_for_stream(Py_TYPE(obj))) {
+                bind(obj);
+                write_lookup(bindings[obj]);
+            }
 
             else if (Py_TYPE(obj) == &PyFloat_Type) write_float_value(obj);
 
@@ -420,25 +432,26 @@ namespace retracesoftware_stream {
             else write_serialized(obj);
         }
 
-        void bind(PyObject * obj, bool ext) {
-            if (bindings.contains(obj)) {
-                PyErr_Format(PyExc_RuntimeError, "<%s object at %p> already bound", Py_TYPE(obj)->tp_name, (void *)obj);
-                throw nullptr;
-            }
+        void bind(PyObject * obj) {
+            assert(!bindings.contains(obj));
 
             bindings[obj] = binding_counter++;
 
-            if (ext) {
-                if (!bindings.contains((PyObject *)Py_TYPE(obj))) {
-                    PyErr_Format(PyExc_RuntimeError, "to externally bind <%s object at %p>, object type %s must have been bound first", Py_TYPE(obj)->tp_name, (void *)obj, Py_TYPE(obj)->tp_name);
-                    throw nullptr;
-                }
-                emit(FixedSizeTypes::EXT_BIND);
-                int ref = bindings[(PyObject *)Py_TYPE(obj)];
-                write_lookup(ref);
-            } else {
-                emit(Bind);
-            }
+            assert(bindings.contains((PyObject *)Py_TYPE(obj)));
+
+            emit(FixedSizeTypes::BIND);
+        }
+
+        void new_patched(PyObject * obj, PyObject * type) {
+            assert(!bindings.contains(obj));
+
+            bindings[obj] = binding_counter++;
+
+            assert(bindings.contains(type));
+
+            emit(FixedSizeTypes::NEW_PATCHED);
+            int ref = bindings[type];
+            write_lookup(ref);
         }
 
         bool object_freed(PyObject * obj) {

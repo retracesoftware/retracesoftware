@@ -94,7 +94,7 @@ namespace retracesoftware_stream {
         if (tp == &PyBytes_Type)
             return (int64_t)(sizeof(PyObject) + PyBytes_GET_SIZE(obj));
         if (tp == &StreamHandle_Type) return 64;
-        if (is_patched(tp->tp_free)) return 64;
+    if (is_retrace_patched_type(tp)) return 64;
         if (tp == &PyFloat_Type)  return 24;
         if (tp == &PyMemoryView_Type) {
             Py_buffer* view = PyMemoryView_GET_BUFFER(obj);
@@ -128,12 +128,14 @@ namespace retracesoftware_stream {
         
         rigtorp::SPSCQueue<QEntry>* queue = nullptr;
         rigtorp::SPSCQueue<PyObject*>* return_queue = nullptr;
+        set<PyObject*>* bindings = nullptr;
         PyObject* persister = nullptr;
 
         size_t messages_written = 0;
         int next_handle;
         int pid;
         bool verbose;
+        bool validate_bindings = false;
         bool quit_on_error;
         bool serialize_errors = true;
         bool buffer_writes = true;
@@ -249,8 +251,21 @@ namespace retracesoftware_stream {
             }
         }
         
-        void bind(PyObject * obj, bool ext) {
+        void bind(PyObject * obj) {
             if (is_disabled()) return;
+
+            if (bindings) {
+                if (bindings->contains(obj)) {
+                    PyErr_Format(PyExc_RuntimeError, "<%s object at %p> already bound", Py_TYPE(obj)->tp_name, (void *)obj);
+                    throw nullptr;
+                }
+                if (!bindings->contains((PyObject *)Py_TYPE(obj))) {
+                    PyErr_Format(PyExc_RuntimeError, "to bind <%s object at %p>, object type %s must have been bound first",
+                        Py_TYPE(obj)->tp_name, (void *)obj, Py_TYPE(obj)->tp_name);
+                    throw nullptr;
+                }
+                bindings->insert(obj);
+            }
 
             send_thread();
 
@@ -258,17 +273,51 @@ namespace retracesoftware_stream {
 
             if (verbose) {
                 debug_prefix();
-                const char * type = ext ? "EXT_BIND" : "BIND";
-                printf("%s(%s)\n", type, Py_TYPE(obj)->tp_name);
+                printf("BIND(%s)\n", Py_TYPE(obj)->tp_name);
             }
 
-            Py_INCREF(obj);
-            total_added += estimate_size(obj);
 #if SIZEOF_VOID_P >= 8
-            push(ext ? ext_bind_entry(obj) : bind_entry(obj));
+            push(bind_entry(obj));
 #else
-            push(cmd_entry(ext ? CMD_EXT_BIND : CMD_BIND));
+            push(cmd_entry(CMD_BIND));
             push(obj_entry(obj));
+#endif
+            messages_written++;
+        }
+
+        void new_patched(PyObject * obj) {
+            if (is_disabled()) return;
+
+            PyObject* type = (PyObject *)Py_TYPE(obj);
+            if (bindings) {
+                if (bindings->contains(obj)) {
+                    PyErr_Format(PyExc_RuntimeError, "<%s object at %p> already bound", Py_TYPE(obj)->tp_name, (void *)obj);
+                    throw nullptr;
+                }
+                if (!bindings->contains(type)) {
+                    PyErr_Format(PyExc_RuntimeError, "to new_patch <%s object at %p>, object type %s must have been bound first",
+                        Py_TYPE(obj)->tp_name, (void *)obj, Py_TYPE(obj)->tp_name);
+                    throw nullptr;
+                }
+                bindings->insert(obj);
+            }
+
+            send_thread();
+
+            Writing w;
+
+            if (verbose) {
+                debug_prefix();
+                printf("NEW_PATCHED(%s)\n", Py_TYPE(obj)->tp_name);
+            }
+
+#if SIZEOF_VOID_P >= 8
+            push(new_patched_entry(obj));
+            push(obj_entry(type));
+#else
+            push(cmd_entry(CMD_NEW_PATCHED));
+            push(obj_entry(obj));
+            push(obj_entry(type));
 #endif
             messages_written++;
         }
@@ -368,7 +417,7 @@ namespace retracesoftware_stream {
                     push_obj(obj, estimate_bytes_size(obj));
                 } else if (tp == &StreamHandle_Type) {
                     push_obj(obj, estimate_stream_handle_size(obj));
-                } else if (is_patched(tp->tp_free)) {
+                } else if (is_retrace_patched_type(tp)) {
                     push_obj(obj, 64);
                 } else if (tp == &PyList_Type) {
                     assert (depth < MAX_FLATTEN_DEPTH);
@@ -470,6 +519,7 @@ namespace retracesoftware_stream {
 
         void object_freed(PyObject * obj) {
             if (is_disabled()) return;
+            if (bindings) bindings->erase(obj);
             push(delete_entry(obj));
         }
 
@@ -580,15 +630,8 @@ namespace retracesoftware_stream {
             }
         }
 
-        static PyObject * py_bind(ObjectWriter * self, PyObject* obj) {
-            try {
-                self->bind(obj, false);
-                Py_RETURN_NONE;
-            } catch (...) {
-                return nullptr;
-            }
-        }
-
+        static PyObject * py_bind(ObjectWriter * self, PyObject* obj);
+        static PyObject * py_new_patched(ObjectWriter * self, PyObject* args);
         static PyObject * py_ext_bind(ObjectWriter * self, PyObject* obj);
         // defined after Deleter
 
@@ -602,6 +645,7 @@ namespace retracesoftware_stream {
             int verbose = 0;
             int quit_on_error = 0;
             int serialize_errors = 1;
+            int validate_bindings = 0;
             long long inflight_limit_arg = 128LL * 1024 * 1024;
             int stall_timeout_arg = 5;
             Py_ssize_t queue_capacity_arg = 65536;
@@ -619,17 +663,19 @@ namespace retracesoftware_stream {
                 "return_queue_capacity",
                 "quit_on_error",
                 "serialize_errors",
+                "validate_bindings",
                 nullptr};
 
-            if (!PyArg_ParseTupleAndKeywords(args, kwds, "OO|OpOLinnpp", (char **)kwlist,
+            if (!PyArg_ParseTupleAndKeywords(args, kwds, "OO|OpOLinnppp", (char **)kwlist,
                 &output, &serializer, &thread, &verbose, &normalize_path,
                 &inflight_limit_arg, &stall_timeout_arg,
                 &queue_capacity_arg, &return_queue_capacity_arg,
-                &quit_on_error, &serialize_errors)) {
+                &quit_on_error, &serialize_errors, &validate_bindings)) {
                 return -1;
             }
 
             self->verbose = verbose;
+            self->validate_bindings = validate_bindings;
             self->quit_on_error = quit_on_error;
             self->serialize_errors = serialize_errors;
             self->buffer_writes = true;
@@ -647,6 +693,7 @@ namespace retracesoftware_stream {
             self->enable_when = nullptr;
             self->queue = nullptr;
             self->return_queue = nullptr;
+            self->bindings = self->validate_bindings ? new set<PyObject*>() : nullptr;
             self->persister = nullptr;
             self->total_added = 0;
             self->total_removed.store(0, std::memory_order_relaxed);
@@ -702,6 +749,11 @@ namespace retracesoftware_stream {
             
             if (self->weakreflist != NULL) {
                 PyObject_ClearWeakRefs((PyObject *)self);
+            }
+
+            if (self->bindings) {
+                delete self->bindings;
+                self->bindings = nullptr;
             }
 
             PyObject_GC_UnTrack(self);
@@ -773,7 +825,7 @@ namespace retracesoftware_stream {
 
     // ── Deleter ──────────────────────────────────────────────────
     //
-    // Callable returned by ext_bind(). When invoked (no args) on
+    // Callable returned by bind()/new_patched()/ext_bind(). When invoked (no args) on
     // object deallocation, pushes a single delete_entry to the
     // owning ObjectWriter's SPSC queue.
 
@@ -791,7 +843,7 @@ namespace retracesoftware_stream {
             }
             auto* w = reinterpret_cast<ObjectWriter*>(self->writer);
             if (w && !w->is_disabled()) {
-                w->push(delete_entry(self->addr));
+                w->object_freed(self->addr);
             }
             Py_RETURN_NONE;
         }
@@ -826,9 +878,9 @@ namespace retracesoftware_stream {
         .tp_clear = (inquiry)Deleter::clear,
     };
 
-    PyObject* ObjectWriter::py_ext_bind(ObjectWriter* self, PyObject* obj) {
+    static PyObject * create_binding_deleter(ObjectWriter * self, PyObject * obj) {
         try {
-            self->bind(obj, true);
+            self->bind(obj);
 
             auto* d = reinterpret_cast<Deleter*>(
                 Deleter_Type.tp_alloc(&Deleter_Type, 0));
@@ -842,6 +894,36 @@ namespace retracesoftware_stream {
         } catch (...) {
             return nullptr;
         }
+    }
+
+    static PyObject * create_new_patched_deleter(ObjectWriter * self, PyObject * obj) {
+        try {
+            self->new_patched(obj);
+
+            auto* d = reinterpret_cast<Deleter*>(
+                Deleter_Type.tp_alloc(&Deleter_Type, 0));
+            if (!d) return nullptr;
+
+            d->writer = Py_NewRef((PyObject*)self);
+            d->addr = obj;
+            d->vectorcall = (vectorcallfunc)Deleter::call;
+
+            return (PyObject*)d;
+        } catch (...) {
+            return nullptr;
+        }
+    }
+
+    PyObject* ObjectWriter::py_bind(ObjectWriter* self, PyObject* obj) {
+        return create_binding_deleter(self, obj);
+    }
+
+    PyObject* ObjectWriter::py_new_patched(ObjectWriter* self, PyObject* obj) {
+        return create_new_patched_deleter(self, obj);
+    }
+
+    PyObject* ObjectWriter::py_ext_bind(ObjectWriter* self, PyObject* obj) {
+        return py_bind(self, obj);
     }
 
     static map<PyTypeObject *, freefunc> freefuncs;
@@ -924,6 +1006,7 @@ namespace retracesoftware_stream {
         {"disable", (PyCFunction)ObjectWriter::py_disable, METH_NOARGS, "Null queue pointers to prevent further writes"},
         {"heartbeat", (PyCFunction)ObjectWriter::py_heartbeat, METH_O, "Push heartbeat payload dict and flush"},
         {"bind", (PyCFunction)ObjectWriter::py_bind, METH_O, "TODO"},
+        {"new_patched", (PyCFunction)ObjectWriter::py_new_patched, METH_O, "TODO"},
         {"ext_bind", (PyCFunction)ObjectWriter::py_ext_bind, METH_O, "TODO"},
         {NULL}
     };

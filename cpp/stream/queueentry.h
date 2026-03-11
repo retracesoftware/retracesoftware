@@ -20,8 +20,9 @@ namespace retracesoftware_stream {
     //   Tag 0b010  TAG_THREAD      PyThreadState* (no incref, thread identity stamp)
     //   Tag 0b011  TAG_PICKLED     PyObject* (incref'd bytes, persister writes pre-pickled)
     //   Tag 0b100  TAG_NEW_HANDLE  PyObject* (incref'd, persister registers new handle)
-    //   Tag 0b101  TAG_BIND        PyObject* (incref'd, persister binds type)
-    //   Tag 0b110  TAG_EXT_BIND    PyObject* (incref'd, persister binds external type)
+    //   Tag 0b101  TAG_NEW_PATCHED borrowed PyObject* identity followed by
+    //                               a borrowed obj_entry(type) for serialization
+    //   Tag 0b110  TAG_BIND        borrowed PyObject* identity
     //   Tag 0b111  TAG_COMMAND     non-pointer: [len:32][cmd:29][tag:3]
     //
     // 32-bit: 2-bit tag in low bits (4-byte aligned pointers).
@@ -29,8 +30,10 @@ namespace retracesoftware_stream {
     //   Tag 0b01   TAG_DELETE      PyObject* identity
     //   Tag 0b10   TAG_THREAD      PyThreadState*
     //   Tag 0b11   TAG_COMMAND     non-pointer: [len:26][cmd:4][tag:2]
-    //   PICKLED, NEW_HANDLE, BIND, EXT_BIND are encoded as
-    //   CMD_* entries followed by an obj_entry pointer.
+    //   PICKLED and NEW_HANDLE are encoded as CMD_* followed by an incref'd
+    //   obj_entry pointer. BIND is CMD_BIND followed by a borrowed obj_entry(obj).
+    //   NEW_PATCHED is CMD_NEW_PATCHED followed by borrowed obj_entry(obj) and
+    //   borrowed obj_entry(type).
 
     using QEntry = uintptr_t;
 
@@ -39,11 +42,11 @@ namespace retracesoftware_stream {
     static constexpr QEntry TAG_OBJECT     = 0;
     static constexpr QEntry TAG_DELETE     = 1;
     static constexpr QEntry TAG_THREAD     = 2;
-    static constexpr QEntry TAG_PICKLED    = 3;
-    static constexpr QEntry TAG_NEW_HANDLE = 4;
-    static constexpr QEntry TAG_BIND       = 5;
-    static constexpr QEntry TAG_EXT_BIND   = 6;
-    static constexpr QEntry TAG_COMMAND    = 7;
+    static constexpr QEntry TAG_PICKLED     = 3;
+    static constexpr QEntry TAG_NEW_HANDLE  = 4;
+    static constexpr QEntry TAG_NEW_PATCHED = 5;
+    static constexpr QEntry TAG_BIND        = 6;
+    static constexpr QEntry TAG_COMMAND     = 7;
 
     static constexpr int CMD_SHIFT = 3;
     static constexpr int CMD_BITS  = 29;
@@ -73,8 +76,8 @@ namespace retracesoftware_stream {
 #if SIZEOF_VOID_P >= 8
     inline QEntry pickled_entry(PyObject* p)        { return (QEntry)p | TAG_PICKLED; }
     inline QEntry new_handle_entry(PyObject* p)     { return (QEntry)p | TAG_NEW_HANDLE; }
+    inline QEntry new_patched_entry(PyObject* p)    { return (QEntry)p | TAG_NEW_PATCHED; }
     inline QEntry bind_entry(PyObject* p)           { return (QEntry)p | TAG_BIND; }
-    inline QEntry ext_bind_entry(PyObject* p)       { return (QEntry)p | TAG_EXT_BIND; }
 #endif
 
     inline QEntry cmd_entry(uint32_t cmd, uint32_t len = 0) {
@@ -108,6 +111,15 @@ namespace retracesoftware_stream {
         return 64;
     }
 
+    inline bool is_retrace_patched_type(PyTypeObject* tp) {
+        int status = PyObject_HasAttrString(reinterpret_cast<PyObject*>(tp), "__retrace_system__");
+        if (status < 0) {
+            PyErr_Clear();
+            return false;
+        }
+        return status == 1;
+    }
+
     inline int64_t estimate_size(PyObject* obj) {
         if (is_immortal(obj)) return 0;
         PyTypeObject* tp = Py_TYPE(obj);
@@ -117,7 +129,7 @@ namespace retracesoftware_stream {
         if (tp == &PyBytes_Type)   return estimate_bytes_size(obj);
         if (tp == &PyMemoryView_Type) return estimate_memory_view_size(obj);
         if (tp == &StreamHandle_Type) return estimate_stream_handle_size(obj);
-        if (is_patched(tp->tp_free)) return 64;
+        if (is_retrace_patched_type(tp)) return 64;
         return -1;
     }
 
@@ -135,8 +147,8 @@ namespace retracesoftware_stream {
 
         CMD_PICKLED,
         CMD_NEW_HANDLE,
+        CMD_NEW_PATCHED,
         CMD_BIND,
-        CMD_EXT_BIND,
         CMD_SERIALIZE_ERROR,
     };
 

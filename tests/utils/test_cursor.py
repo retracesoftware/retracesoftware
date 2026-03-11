@@ -35,7 +35,6 @@ def _clean_default():
         _utils.uninstall_call_counter()
     except Exception:
         pass
-    _utils.call_counter_reset()
 
 
 # ============================================================================
@@ -212,14 +211,14 @@ class TestCallCounting:
 
         cursors = with_loop()
 
-        parent_counts = [c[0] for c in cursors]
+        loop_frame_counts = [c[1] for c in cursors]
         if sys.version_info >= (3, 12):
             # backward jumps also increment: call+backjump per iteration
-            assert parent_counts == [1, 3, 5]
+            assert loop_frame_counts == [1, 3, 5]
         else:
-            assert parent_counts == [1, 2, 3]
+            assert loop_frame_counts == [1, 2, 3]
 
-        inner_counts = [c[1] for c in cursors]
+        inner_counts = [c[2] for c in cursors]
         assert inner_counts == [0, 0, 0]
 
     def test_while_loop_counts(self, call_counter):
@@ -237,11 +236,11 @@ class TestCallCounting:
             return results
 
         cursors = with_while()
-        parent_counts = [c[0] for c in cursors]
+        loop_frame_counts = [c[1] for c in cursors]
         if sys.version_info >= (3, 12):
-            assert parent_counts == [1, 3, 5, 7]
+            assert loop_frame_counts == [1, 3, 5, 7]
         else:
-            assert parent_counts == [1, 2, 3, 4]
+            assert loop_frame_counts == [1, 2, 3, 4]
 
     def test_nested_loops(self, call_counter):
         call_counter.install()
@@ -258,12 +257,12 @@ class TestCallCounting:
 
         cursors = nested()
         assert len(cursors) == 4
-        parent_counts = [c[0] for c in cursors]
+        loop_frame_counts = [c[1] for c in cursors]
         if sys.version_info >= (3, 12):
             # inner call + inner backjump per iter, plus outer backjump
-            assert parent_counts == [1, 3, 6, 8]
+            assert loop_frame_counts == [1, 3, 6, 8]
         else:
-            assert parent_counts == [1, 2, 3, 4]
+            assert loop_frame_counts == [1, 2, 3, 4]
 
     def test_sequential_calls_increment(self, call_counter):
         call_counter.install()
@@ -533,7 +532,7 @@ class TestReset:
             return call_counter.current()
 
         cur = f()
-        assert cur == ()
+        assert cur == (1,)
 
     def test_resumes_after_reset(self, call_counter):
         call_counter.install()
@@ -565,11 +564,23 @@ class TestYieldAt:
         mark()
         return values
 
+    def _sequence_with_setup(self, cc, setup):
+        values = []
+
+        def mark():
+            values.append(cc.current())
+
+        setup()
+        mark()
+        mark()
+        mark()
+        return values
+
     def test_triggers_once_on_matching_target(self, call_counter):
         call_counter.install()
 
         call_counter.reset()
-        first_run = self._sequence(call_counter)
+        first_run = self._sequence_with_setup(call_counter, lambda: None)
         target = first_run[1]
 
         hits = []
@@ -578,8 +589,10 @@ class TestYieldAt:
             hits.append(True)
 
         call_counter.reset()
-        call_counter.yield_at(on_hit, threading.get_ident(), target)
-        self._sequence(call_counter)
+        self._sequence_with_setup(
+            call_counter,
+            lambda: call_counter.yield_at(on_hit, threading.get_ident(), target),
+        )
 
         assert hits == [True]
 
@@ -587,15 +600,19 @@ class TestYieldAt:
         call_counter.install()
 
         call_counter.reset()
-        target = self._sequence(call_counter)[0]
+        target = self._sequence_with_setup(call_counter, lambda: None)[0]
         hits = []
 
         def on_hit():
             hits.append(True)
 
         call_counter.reset()
-        call_counter.yield_at(on_hit, threading.get_ident() + 1, target)
-        self._sequence(call_counter)
+        self._sequence_with_setup(
+            call_counter,
+            lambda: call_counter.yield_at(
+                on_hit, threading.get_ident() + 1, target
+            ),
+        )
 
         assert hits == []
 
@@ -782,8 +799,10 @@ class TestDisableFor:
             return depth_before, depth_inside
 
         depth_before, depth_inside = outer()
-        assert depth_inside == depth_before, (
-            "call-count stack should not grow while tracking is disabled"
+        assert depth_inside == 2
+        assert depth_inside < depth_before, (
+            "len() during disable_for should reflect the frozen cursor depth, "
+            "not the live Python call stack"
         )
 
     def test_tracking_resumes_after_disabled_callback(self, call_counter):
@@ -840,7 +859,7 @@ class TestDisableFor:
 
         wrapped = call_counter.disable_for(callback)
         result = wrapped()
-        assert result == ()
+        assert result == (1,)
 
     def test_wrapped_passes_args_and_return(self, call_counter):
         def adder(a, b):

@@ -239,6 +239,9 @@ def on_gilswitch(callback):
 
 
 from retracesoftware.cursor import (
+    CallCounter,
+    Cursor,
+    callback_on_thread,
     install_call_counter,
     uninstall_call_counter,
     current_call_counts,
@@ -248,7 +251,15 @@ from retracesoftware.cursor import (
     call_counter_position,
     cursor_snapshot,
     yield_at_call_counts,
+    yield_at_cursor,
     watch,
+    install_cursor_hooks,
+    uninstall_cursor_hooks,
+    current_cursor,
+    cursor_frame_positions,
+    cursor_reset,
+    cursor_position,
+    cursor_disable_for,
 )
 
 from .trace import trace_function_instructions, TargetUnreachableError, InstructionMonitor
