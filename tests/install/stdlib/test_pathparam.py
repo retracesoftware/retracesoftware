@@ -87,14 +87,8 @@ def test_open_whitelisted_path_is_retraced():
         os.unlink(tmp_path)
 
 
-def test_is_bound_true_for_whitelisted_open():
+def test_is_bound_true_for_whitelisted_open(system):
     """Objects created via a whitelisted open should be bound in the writer."""
-    system = _make_system()
-    system.patch_type(_io.FileIO)
-    system.patch_type(_io.BufferedReader)
-    system.patch_type(_io.BufferedWriter)
-    system.patch_type(_io.BufferedRandom)
-    system.patch_type(_io.TextIOWrapper)
 
     def pathpredicate(arg):
         return True

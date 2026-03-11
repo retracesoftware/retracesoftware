@@ -10,8 +10,30 @@ from run_record_replay import record_then_replay_via_pipe
 
 SCRIPTS_DIR = Path(__file__).parent / "scripts"
 
-script_files = sorted(SCRIPTS_DIR.glob("*.py"))
-script_ids = [p.name for p in script_files]
+# Raw Python replay reads a single linear stream. Fork/exec/subprocess traces
+# contain multiple long per-process runs and are only replayable once the Go
+# replay pipeline has split them appropriately.
+RAW_PIPE_REPLAY_UNSUPPORTED = {
+    "exec_replacement.py",
+    "fork_child.py",
+    "fork_tree.py",
+    "multiprocess_values.py",
+    "subprocess_echo.py",
+    "subprocess_time.py",
+}
+
+script_params = []
+for path in sorted(SCRIPTS_DIR.glob("*.py")):
+    if path.name in RAW_PIPE_REPLAY_UNSUPPORTED:
+        script_params.append(pytest.param(
+            path,
+            id=path.name,
+            marks=pytest.mark.skip(
+                reason="fork/exec/subprocess replay requires the Go replay pipeline"
+            ),
+        ))
+    else:
+        script_params.append(pytest.param(path, id=path.name))
 
 
 @pytest.fixture
@@ -22,6 +44,6 @@ def pipedir():
     shutil.rmtree(d, ignore_errors=True)
 
 
-@pytest.mark.parametrize("script", script_files, ids=script_ids)
+@pytest.mark.parametrize("script", script_params)
 def test_replay(pipedir, script):
-    record_then_replay_via_pipe(pipedir, str(script))
+    record_then_replay_via_pipe(os.path.join(pipedir, "trace.bin"), str(script))

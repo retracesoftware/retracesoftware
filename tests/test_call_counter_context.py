@@ -59,28 +59,15 @@ def _target():
 def _clean_state():
     """Ensure call counter is fully reset between tests."""
     yield
-    from retracesoftware.cursor import uninstall_call_counter, call_counter_reset
+    from retracesoftware.cursor import uninstall_call_counter
     try:
         uninstall_call_counter()
     except Exception:
         pass
-    call_counter_reset()
 
 
 @requires_312
 class TestCallCounterContext:
-
-    def test_context_resets_counts(self):
-        """Entering a context gives a fresh cursor_stack."""
-        cc = CallCounter()
-        result = None
-        def capture():
-            nonlocal result
-            result = cc().current()
-
-        with cc() as ctx:
-            cc.disable_for(capture)()
-        assert result == ()
 
     def test_context_consistent_counts(self):
         """Two consecutive contexts yield the same counts at the same point."""
@@ -522,20 +509,6 @@ class TestCallCounterContext:
             count, lasti = pair
             assert isinstance(count, int)
             assert isinstance(lasti, int)
-
-    # ── reset_stack ──────────────────────────────────────────────────────
-
-    def test_reset_stack_clears_counts(self):
-        """reset_stack zeroes the cursor stack without uninstalling hooks."""
-        cc = CallCounter()
-
-        with cc() as ctx:
-            _target()
-            cc().reset_stack()
-            counts = cc().current()
-
-        assert counts == (), f"reset_stack should clear counts; got {counts}"
-        assert cc.installed, "reset_stack should not uninstall hooks"
 
     # ── breakpoint with condition ─────────────────────────────────────────
 

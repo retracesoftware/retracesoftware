@@ -1,6 +1,7 @@
 import sys
 import os
 import argparse
+import stat
 import retracesoftware.utils as utils
 import retracesoftware.functional as functional
 from pathlib import Path
@@ -17,6 +18,13 @@ from retracesoftware.exceptions import RecordingNotFoundError, VersionMismatchEr
 
 def expand_recording_path(path):
     return datetime.datetime.now().strftime(path.format(pid = os.getpid()))
+
+
+def is_fifo_path(path):
+    try:
+        return stat.S_ISFIFO(os.stat(path).st_mode)
+    except OSError:
+        return False
 
 def file_md5(path):
     return hashlib.md5(path.read_bytes()).hexdigest()
@@ -125,7 +133,11 @@ def record(system, options, args):
         trace_path = Path(expand_recording_path(options.recording))
         trace_path.parent.mkdir(parents=True, exist_ok=True)
         replay_bin = _find_replay_bin(getattr(options, 'replay_bin', None))
-        _write_shebang(trace_path, replay_bin)
+        # FIFOs must stay open for the full recording; pre-writing the shebang
+        # would close the pipe early, causing the reader to see EOF before the
+        # FramedWriter starts streaming the actual trace.
+        if not is_fifo_path(trace_path):
+            _write_shebang(trace_path, replay_bin)
 
     preamble = None
     if trace_path:
@@ -318,8 +330,11 @@ def replay(system, args):
             per_thread_source = stream.per_thread(
                 source=reader, thread = thread_id.get,
                 timeout=max(1, args.read_timeout // 1000))
-            msg_stream = MessageStream(per_thread_source,
-                                    monitor_enabled=(monitor_level > 0))
+            msg_stream = MessageStream(
+                per_thread_source,
+                monitor_enabled=(monitor_level > 0),
+                native_reader=reader,
+            )
 
             controller = None
             if control_socket_path or use_stdio:

@@ -464,9 +464,7 @@ static PyObject * set_on_alloc(PyObject * module, PyObject * args, PyObject *kwa
         return nullptr;
     }
 
-    if (!retracesoftware::set_on_alloc(cls, on_alloc)) return nullptr;
-
-    Py_RETURN_NONE;
+    return retracesoftware::set_on_alloc(cls, on_alloc);
 }
 
 static PyObject * intercept_dict_set(PyObject * module, PyObject * args, PyObject *kwargs) {

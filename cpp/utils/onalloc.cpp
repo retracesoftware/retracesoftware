@@ -1,6 +1,7 @@
 #include "utils.h"
 #include <exception>
 #include <structmember.h>
+#include <vector>
 #include "unordered_dense.h"
 using namespace ankerl::unordered_dense;
 
@@ -12,13 +13,48 @@ namespace retracesoftware {
         PyObject *type_weakref;
         allocfunc original_alloc;
         destructor original_dealloc;
+        bool alloc_patched;
+        bool dealloc_patched;
+        TypePatchState *alloc_owner;
     };
 
     static map<PyTypeObject *, TypePatchState *> type_patches;
     static map<PyObject *, PyObject *> instance_dealloc_callbacks;
 
+    static PyObject * generic_alloc(PyTypeObject *type, Py_ssize_t nitems);
+    static void generic_dealloc(PyObject * obj);
+    static void replacement_subtype_dealloc(PyObject * obj);
+
     static void clear_type_patch(TypePatchState *state) {
         bool drop_map_ref = false;
+        bool type_alive = state->type
+            && (!state->type_weakref || PyWeakref_GetObject(state->type_weakref) != Py_None);
+
+        std::vector<TypePatchState *> owned_alloc_patches;
+        for (auto const &entry : type_patches) {
+            TypePatchState *candidate = entry.second;
+            if (candidate != state && candidate->alloc_owner == state) {
+                owned_alloc_patches.push_back(candidate);
+            }
+        }
+
+        for (TypePatchState *owned : owned_alloc_patches) {
+            clear_type_patch(owned);
+        }
+
+        if (type_alive) {
+            if (state->alloc_patched && state->type->tp_alloc == generic_alloc) {
+                state->type->tp_alloc = state->original_alloc
+                    ? state->original_alloc
+                    : PyType_GenericAlloc;
+            }
+            if (state->dealloc_patched
+                && (state->type->tp_dealloc == generic_dealloc
+                    || state->type->tp_dealloc == replacement_subtype_dealloc)) {
+                state->type->tp_dealloc = state->original_dealloc;
+            }
+            PyType_Modified(state->type);
+        }
 
         if (state->type) {
             auto it = type_patches.find(state->type);
@@ -31,6 +67,9 @@ namespace retracesoftware {
         state->type = nullptr;
         state->original_alloc = nullptr;
         state->original_dealloc = nullptr;
+        state->alloc_patched = false;
+        state->dealloc_patched = false;
+        state->alloc_owner = nullptr;
         Py_CLEAR(state->alloc_callback);
         Py_CLEAR(state->type_weakref);
 
@@ -161,6 +200,9 @@ namespace retracesoftware {
         state->type_weakref = nullptr;
         state->original_alloc = nullptr;
         state->original_dealloc = nullptr;
+        state->alloc_patched = false;
+        state->dealloc_patched = false;
+        state->alloc_owner = nullptr;
 
         if (type->tp_flags & Py_TPFLAGS_HEAPTYPE) {
             PyObject *wr = PyWeakref_NewRef((PyObject *)type, (PyObject *)state);
@@ -275,12 +317,16 @@ namespace retracesoftware {
         return func == generic_alloc;
     }
 
-    static bool patch_alloc(PyTypeObject * cls) {
+    static bool patch_alloc(PyTypeObject * cls, TypePatchState *owner) {
         TypePatchState *state = ensure_type_patch(cls);
         if (!state) return false;
+        if (state->alloc_patched) return true;
 
         state->original_alloc = cls->tp_alloc == PyType_GenericAlloc ? nullptr : cls->tp_alloc;
+        state->alloc_patched = true;
+        state->alloc_owner = owner;
         cls->tp_alloc = generic_alloc;
+        PyType_Modified(cls);
         return true;
     }
 
@@ -338,18 +384,21 @@ namespace retracesoftware {
         if (!cls->tp_dealloc
             || cls->tp_dealloc == generic_dealloc
             || cls->tp_dealloc == replacement_subtype_dealloc) return true;
+        TypePatchState *state = ensure_type_patch(cls);
+        if (!state) return false;
+        if (state->dealloc_patched) return true;
+        state->original_dealloc = cls->tp_dealloc;
+        state->dealloc_patched = true;
         if (cls->tp_dealloc == get_subtype_dealloc()) {
             cls->tp_dealloc = replacement_subtype_dealloc;
         } else {
-            TypePatchState *state = ensure_type_patch(cls);
-            if (!state) return false;
-            state->original_dealloc = cls->tp_dealloc;
             cls->tp_dealloc = generic_dealloc;
         }
+        PyType_Modified(cls);
         return true;
     }
 
-    static bool patch_alloc_subclasses(PyTypeObject * type) {
+    static bool patch_alloc_subclasses(PyTypeObject * type, TypePatchState *owner) {
         PyObject * subs = PyObject_CallMethod((PyObject *)type, "__subclasses__", NULL);
         if (!subs) { PyErr_Clear(); return true; }
 
@@ -357,11 +406,11 @@ namespace retracesoftware {
         for (Py_ssize_t i = 0; i < n; i++) {
             PyTypeObject * sub = (PyTypeObject *)PyList_GetItem(subs, i);
             if (!is_alloc_patched(sub->tp_alloc))
-                if (!patch_alloc(sub)) {
+                if (!patch_alloc(sub, owner)) {
                     Py_DECREF(subs);
                     return false;
                 }
-            if (!patch_alloc_subclasses(sub)) {
+            if (!patch_alloc_subclasses(sub, owner)) {
                 Py_DECREF(subs);
                 return false;
             }
@@ -370,17 +419,17 @@ namespace retracesoftware {
         return true;
     }
 
-    bool set_on_alloc(PyTypeObject *type, PyObject * callback) {
+    PyObject * set_on_alloc(PyTypeObject *type, PyObject * callback) {
         assert(type);
         assert(callback);
         
         if (type->tp_base == NULL) {
             PyErr_Format(PyExc_TypeError,
                 "set_on_alloc cannot patch the root object type");
-            return false;
+            return nullptr;
         }
         TypePatchState *state = ensure_type_patch(type);
-        if (!state) return false;
+        if (!state) return nullptr;
 
         if (state->alloc_callback) {
             bool stale_heap_type = state->type_weakref
@@ -388,27 +437,32 @@ namespace retracesoftware {
             if (stale_heap_type) {
                 clear_type_patch(state);
                 state = ensure_type_patch(type);
-                if (!state) return false;
+                if (!state) return nullptr;
             } else {
                 PyErr_Format(PyExc_RuntimeError,
                     "set_on_alloc: type '%.200s' is already patched; "
                     "each type may only be patched once per process",
                     type->tp_name);
-                return false;
+                return nullptr;
             }
         }
         if (!is_alloc_patched(type->tp_alloc))
-            if (!patch_alloc(type))
-                return false;
-        if (!patch_alloc_subclasses(type))
-            return false;
+            if (!patch_alloc(type, state))
+                return nullptr;
+        if (!patch_alloc_subclasses(type, state)) {
+            clear_type_patch(state);
+            return nullptr;
+        }
 
         if (!((type->tp_flags & Py_TPFLAGS_HEAPTYPE) && type->tp_weaklistoffset))
-            if (!patch_dealloc(type))
-                return false;
+            if (!patch_dealloc(type)) {
+                clear_type_patch(state);
+                return nullptr;
+            }
 
         Py_INCREF(callback);
         state->alloc_callback = callback;
-        return true;
+        state->alloc_owner = state;
+        return Py_NewRef((PyObject *)state);
     }
 }

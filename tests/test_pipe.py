@@ -67,8 +67,7 @@ def test_record_writes_to_pipe(pipedir):
 
     cmd = [
         PYTHON, "-m", "retracesoftware",
-        "--recording", pipedir,
-        "--create_tracedir_cmd", "true",
+        "--recording", pipe_path,
         "--", script_file,
     ]
     rec = subprocess.run(

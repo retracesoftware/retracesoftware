@@ -1,16 +1,29 @@
-"""External reproducer for socket.makefile recursion under retrace debug."""
+"""Regression coverage for socket.makefile under retrace debug."""
 
 import os
 import subprocess
 import sys
 import textwrap
+from pathlib import Path
+
+
+_ROOT = Path(__file__).resolve().parents[3]
+_PYTHONPATH = str(_ROOT / "src")
+for _rel in (
+    "build/cp312/cpp/cursor",
+    "build/cp312/cpp/utils",
+    "build/cp312/cpp/functional",
+    "build/cp312/cpp/stream",
+    ".",
+):
+    _PYTHONPATH += f"{os.pathsep}{_ROOT / _rel}"
 
 
 def test_socket_makefile_recursion_reproducer(tmp_path):
     """Run a tiny urllib+http.server script under retrace debug config.
 
-    This reproduces the current RecursionError seen in the socket.makefile ->
-    io.BufferedReader path when retrace is auto-enabled via RETRACE_CONFIG.
+    The prior recursion regression is fixed; keep this as a subprocess
+    smoke test so it does not silently return.
     """
     script = tmp_path / "repro_socket_makefile.py"
     script.write_text(
@@ -49,6 +62,7 @@ def test_socket_makefile_recursion_reproducer(tmp_path):
     )
 
     env = os.environ.copy()
+    env["PYTHONPATH"] = _PYTHONPATH
     env["RETRACE_DEBUG"] = "1"
     env["RETRACE_CONFIG"] = "debug"
     env["RETRACE_RECORDING"] = str(tmp_path / "trace.bin")
@@ -63,5 +77,5 @@ def test_socket_makefile_recursion_reproducer(tmp_path):
     )
 
     output = (proc.stdout or "") + (proc.stderr or "")
-    assert proc.returncode != 0
-    assert "RecursionError" in output
+    assert proc.returncode == 0, output
+    assert "RecursionError" not in output

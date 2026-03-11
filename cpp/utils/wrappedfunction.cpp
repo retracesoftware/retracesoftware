@@ -26,12 +26,14 @@ namespace retracesoftware {
         }
 
         PyObject * call_with_alloca(PyObject* const * args, size_t nargs, PyObject* kwnames) {
-            size_t total_args = nargs + (kwnames ? PyTuple_GET_SIZE(kwnames) : 0) + 1;
+            size_t kwcount = kwnames ? PyTuple_GET_SIZE(kwnames) : 0;
+            size_t forwarded_args = nargs + kwcount;
+            size_t total_args = forwarded_args + 1;
 
             PyObject ** mem = (PyObject **)alloca(sizeof(PyObject *) * (total_args + 1)) + 1;
 
             mem[0] = target;
-            for (size_t i = 0; i < nargs; i++) {
+            for (size_t i = 0; i < forwarded_args; i++) {
                 mem[i + 1] = args[i];
             }
             size_t nargsf = (nargs + 1) | PY_VECTORCALL_ARGUMENTS_OFFSET;

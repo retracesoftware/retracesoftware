@@ -56,7 +56,6 @@ def _clean_call_counter():
         utils.uninstall_call_counter()
     except Exception:
         pass
-    utils.call_counter_reset()
 
 
 @requires_311
@@ -64,45 +63,37 @@ class TestRunToReturn:
     def test_basic_run_to_return_fires(self):
         """Controller._install_run_to_return should fire on_return and
         send a stop message with a valid cursor."""
-        utils.install_call_counter()
-        utils.call_counter_reset()
-
         tid = _thread.get_ident()
+        cc = utils.CallCounter()
 
         def child():
             pass
 
-        def target_fn():
+        def target_fn(probe):
+            probe()
             child()
             child()
 
-        def driver():
-            target_fn()
-
-        # First pass: record entry call counts for target_fn
         entries = []
+
         def capture_target():
             entries.append(utils.current_call_counts())
-            child()
-            child()
 
-        def capture_driver():
-            capture_target()
+        def driver(probe):
+            target_fn(probe)
 
-        capture_driver()
+        with cc:
+            driver(cc.disable_for(capture_target))
         assert len(entries) == 1
         target = entries[0]
 
-        # Second pass: feed run_to_return command into Controller
-        utils.call_counter_reset()
         sock = MockControlSocket([
             _make_run_to_return_request(tid, target),
         ])
 
-        controller = Controller(control_socket=sock)
-
-        # Now run the same function structure; on_return should fire
-        capture_driver()
+        with cc:
+            cc.disable_for(lambda: Controller(control_socket=sock))()
+            driver(cc.disable_for(lambda: None))
 
         # Verify stop message was written
         stop_msgs = [r for r in sock.responses if r.get("kind") == "stop"]
@@ -124,10 +115,8 @@ class TestRunToReturn:
     def test_run_to_return_with_subcalls(self):
         """on_return must fire even when the target function calls subcalls
         (which change the last element of function_counts)."""
-        utils.install_call_counter()
-        utils.call_counter_reset()
-
         tid = _thread.get_ident()
+        cc = utils.CallCounter()
 
         def deep_child():
             pass
@@ -135,28 +124,28 @@ class TestRunToReturn:
         def mid_child():
             deep_child()
 
-        # First pass
         entries = []
+
         def capture():
             entries.append(utils.current_call_counts())
+
+        def target_fn(probe):
+            probe()
             mid_child()
             deep_child()
             mid_child()
 
-        def driver():
-            capture()
-
-        driver()
+        with cc:
+            target_fn(cc.disable_for(capture))
         target = entries[0]
 
-        # Second pass
-        utils.call_counter_reset()
         sock = MockControlSocket([
             _make_run_to_return_request(tid, target),
         ])
 
-        controller = Controller(control_socket=sock)
-        driver()
+        with cc:
+            cc.disable_for(lambda: Controller(control_socket=sock))()
+            target_fn(cc.disable_for(lambda: None))
 
         stop_msgs = [r for r in sock.responses if r.get("kind") == "stop"]
         assert len(stop_msgs) == 1, (
@@ -167,39 +156,42 @@ class TestRunToReturn:
 
     def test_run_to_return_deeply_nested(self):
         """Verify run_to_return for a function several levels deep."""
-        utils.install_call_counter()
-        utils.call_counter_reset()
-
         tid = _thread.get_ident()
+        cc = utils.CallCounter()
 
         def leaf():
             pass
 
         entries = []
+
         def capture_level3():
             entries.append(utils.current_call_counts())
+
+        def level3(probe):
+            probe()
             leaf()
 
-        def level2():
-            capture_level3()
+        def level2(probe):
+            level3(probe)
 
-        def level1():
-            level2()
+        def level1(probe):
+            level2(probe)
 
-        def driver():
-            level1()
+        def driver(probe):
+            level1(probe)
 
-        driver()
+        with cc:
+            driver(cc.disable_for(capture_level3))
         target = entries[0]
         assert len(target) >= 3
 
-        utils.call_counter_reset()
         sock = MockControlSocket([
             _make_run_to_return_request(tid, target),
         ])
 
-        controller = Controller(control_socket=sock)
-        driver()
+        with cc:
+            cc.disable_for(lambda: Controller(control_socket=sock))()
+            driver(cc.disable_for(lambda: None))
 
         stop_msgs = [r for r in sock.responses if r.get("kind") == "stop"]
         assert len(stop_msgs) == 1, (

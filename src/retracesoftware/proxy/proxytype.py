@@ -217,7 +217,13 @@ def dynamic_proxytype(handler, cls):
     
     for name in superdict(cls).keys():
         if name not in blacklist:
-            value = getattr(cls, name)
+            try:
+                value = getattr(cls, name)
+            except AttributeError:
+                # Some metatype attributes listed in the MRO dicts are not
+                # readable on the concrete class (for example `type` exposes
+                # `__abstractmethods__` here on 3.12). Skip those slots.
+                continue
 
             if issubclass(type(value), utils.dispatch):
                 value = utils.dispatch.table(value)['disabled']

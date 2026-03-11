@@ -10,6 +10,9 @@ Provides:
 import importlib
 import importlib.resources
 
+_pytest_runner = None
+_pytest_installed_modules = set()
+
 def run_with_context(system,
                      thread_id,
                      context, argv, wrap_callback, trace_shutdown=False, on_ready=None,
@@ -122,7 +125,7 @@ def run_with_context(system,
             try:
                 run_python_command(argv)
             finally:
-                wait_for_non_daemon_threads()
+                system.disable_for(wait_for_non_daemon_threads)()
                 if trace_shutdown:
                     try:
                         atexit._run_exitfuncs()
@@ -429,6 +432,24 @@ class TestRunner:
         return self.replay(recording, fn, *args, timeout=timeout,
                            monitor=monitor, **kwargs)
 
+    def diagnose(self, fn, *args, setup=None, timeout=10, monitor=0, **kwargs):
+        """Record, optionally reset state, then replay *fn*.
+
+        This is a convenience for tests that need a hook between phases,
+        such as clearing imported modules or tearing down live resources.
+        """
+        recording = self.record(fn, *args, monitor=monitor, **kwargs)
+        if setup is not None:
+            setup()
+        return self.replay(
+            recording,
+            fn,
+            *args,
+            timeout=timeout,
+            monitor=monitor,
+            **kwargs,
+        )
+
 
 # ── Public API ────────────────────────────────────────────────
 
@@ -473,6 +494,17 @@ def install_for_pytest(modules=None):
             app_server.shutdown()
             runner.replay(recording, make_requests)
     """
+    global _pytest_runner, _pytest_installed_modules
+
+    modules = tuple(modules or ())
+
+    if _pytest_runner is not None:
+        for name in modules:
+            if name not in _pytest_installed_modules:
+                importlib.import_module(name)
+                _pytest_installed_modules.add(name)
+        return _pytest_runner
+
     from retracesoftware.proxy.system import System
     from retracesoftware.modules import ModuleConfigResolver
     from retracesoftware.install.patcher import patch, install_hash_patching
@@ -512,8 +544,10 @@ def install_for_pytest(modules=None):
     if modules:
         for name in modules:
             importlib.import_module(name)
+            _pytest_installed_modules.add(name)
 
-    return TestRunner(system)
+    _pytest_runner = TestRunner(system)
+    return _pytest_runner
 
 
 # ── stream.writer → protocol.Writer adapter ───────────────────────

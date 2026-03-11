@@ -31,7 +31,6 @@ def cc():
         raw.uninstall()
     except Exception:
         pass
-    raw.reset()
 
 
 class TestWatchOnReturnLeaf:
@@ -41,28 +40,24 @@ class TestWatchOnReturnLeaf:
     def test_on_return_fires_for_leaf_function(self, cc):
         captured = []
 
-        def capturing_leaf():
-            captured.append(cc.current())
+        def leaf(probe):
+            probe()
 
-        cc.reset()
-        capturing_leaf()
+        with cc():
+            leaf(cc.disable_for(lambda: captured.append(cc.current())))
         target = captured[0]
 
         on_return_fired = []
         on_missed_fired = []
 
-        cc.reset()
         tc = cc()
         tc.add_watch(
             target,
             on_return=cc.disable_for(lambda: on_return_fired.append(True)),
             on_overshoot=cc.disable_for(lambda: on_missed_fired.append(True)),
         )
-
-        def leaf():
-            pass
-
-        leaf()
+        with tc:
+            leaf(cc.disable_for(lambda: None))
 
         assert on_return_fired == [True], (
             f"on_return should fire for a leaf function; target={target}"
@@ -88,29 +83,27 @@ class TestWatchOnReturnNonLeaf:
 
         def nonleaf_capture():
             captured.append(cc.current())
+
+        def nonleaf(probe):
+            probe()
             child()
             child()
 
-        cc.reset()
-        nonleaf_capture()
+        with cc():
+            nonleaf(cc.disable_for(nonleaf_capture))
         target = captured[0]
 
         on_return_fired = []
         on_missed_fired = []
 
-        cc.reset()
         tc = cc()
         tc.add_watch(
             target,
             on_return=cc.disable_for(lambda: on_return_fired.append(True)),
             on_overshoot=cc.disable_for(lambda: on_missed_fired.append(True)),
         )
-
-        def nonleaf_replay():
-            child()
-            child()
-
-        nonleaf_replay()
+        with tc:
+            nonleaf(cc.disable_for(lambda: None))
 
         assert on_missed_fired == [], (
             f"on_overshoot should NOT fire for normal child calls within "
@@ -137,27 +130,25 @@ class TestWatchOnReturnNonLeaf:
 
         def nonleaf_capture():
             captured.append(cc.current())
+
+        def nonleaf(probe):
+            probe()
             child()
             child()
 
-        cc.reset()
-        nonleaf_capture()
+        with cc():
+            nonleaf(cc.disable_for(nonleaf_capture))
         target = captured[0]
 
         on_return_fired = []
 
-        cc.reset()
         tc = cc()
         tc.add_watch(
             target,
             on_return=cc.disable_for(lambda: on_return_fired.append(True)),
         )
-
-        def nonleaf_replay():
-            child()
-            child()
-
-        nonleaf_replay()
+        with tc:
+            nonleaf(cc.disable_for(lambda: None))
 
         assert on_return_fired == [True], (
             f"on_return should fire even with deeply nested child calls; "
@@ -179,18 +170,20 @@ class TestOvershootClearsOnReturn:
 
         def nonleaf_capture():
             captured.append(cc.current())
+
+        def nonleaf(probe):
+            probe()
             child()
             child()
 
-        cc.reset()
-        nonleaf_capture()
+        with cc():
+            nonleaf(cc.disable_for(nonleaf_capture))
         target = captured[0]
 
         on_start_fired = []
         on_return_fired = []
         on_overshoot_fired = []
 
-        cc.reset()
         tc = cc()
         tc.add_watch(
             target,
@@ -198,12 +191,8 @@ class TestOvershootClearsOnReturn:
             on_return=cc.disable_for(lambda: on_return_fired.append(True)),
             on_overshoot=cc.disable_for(lambda: on_overshoot_fired.append(True)),
         )
-
-        def nonleaf_replay():
-            child()
-            child()
-
-        nonleaf_replay()
+        with tc:
+            nonleaf(cc.disable_for(lambda: None))
 
         assert on_start_fired == [True], (
             f"on_start should fire at function entry; target={target}"

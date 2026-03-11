@@ -19,7 +19,7 @@ def wait_for_non_daemon_threads(timeout=None):
     import threading
     import time
 
-    start_time = time.time()
+    start_time = time.time() if timeout is not None else None
     main_thread = threading.main_thread()
 
     while True:
@@ -104,7 +104,7 @@ def run_with_retrace(system, argv, trace_shutdown = False):
     try:
         run_python_command(argv)
     finally:
-        wait_for_non_daemon_threads()
+        system.disable_for(wait_for_non_daemon_threads)()
         try:
             if trace_shutdown:
                 with system.thread_state.select('internal'):

@@ -2808,10 +2808,25 @@ class TestChain:
 
 class TestSetOnAlloc:
 
+    @pytest.fixture(autouse=True)
+    def _undo_set_on_alloc(self):
+        undos = []
+
+        def install(type_, on_alloc):
+            undo = _utils.set_on_alloc(type_, on_alloc)
+            assert callable(undo)
+            undos.append(undo)
+            return undo
+
+        self.set_on_alloc = install
+        yield
+        for undo in reversed(undos):
+            undo()
+
     def test_alloc_callback_fires_on_c_type(self):
         """set_on_alloc callback runs when a C type instance is created."""
         created = []
-        _utils.set_on_alloc(Exception, lambda obj: created.append(type(obj).__name__))
+        self.set_on_alloc(Exception, lambda obj: created.append(type(obj).__name__))
         e = Exception("test")
         assert "Exception" in created
 
@@ -2822,7 +2837,7 @@ class TestSetOnAlloc:
         class MyError(ValueError):
             pass
 
-        _utils.set_on_alloc(ValueError, lambda obj: created.append(type(obj).__name__))
+        self.set_on_alloc(ValueError, lambda obj: created.append(type(obj).__name__))
         e = MyError("test")
         assert "MyError" in created
 
@@ -2833,7 +2848,7 @@ class TestSetOnAlloc:
         def on_alloc(obj):
             return lambda: freed.append("freed")
 
-        _utils.set_on_alloc(TypeError, on_alloc)
+        self.set_on_alloc(TypeError, on_alloc)
         e = TypeError("test")
         assert freed == []
         del e
@@ -2846,7 +2861,7 @@ class TestSetOnAlloc:
         class MyError(RuntimeError):
             pass
 
-        _utils.set_on_alloc(RuntimeError, lambda obj: allocs.append(type(obj).__name__))
+        self.set_on_alloc(RuntimeError, lambda obj: allocs.append(type(obj).__name__))
         e = MyError("test")
         assert "MyError" in allocs
         del e  # must not crash
@@ -2865,7 +2880,7 @@ class TestSetOnAlloc:
             name = type(obj).__name__
             return lambda: freed.append(f"freed-{name}")
 
-        _utils.set_on_alloc(ArithmeticError, on_alloc)
+        self.set_on_alloc(ArithmeticError, on_alloc)
 
         objs = [ErrorB("test") for _ in range(5)]
         assert len(freed) == 0
@@ -2875,7 +2890,7 @@ class TestSetOnAlloc:
 
     def test_alloc_callback_returning_none_skips_dealloc(self):
         """Returning None from the alloc callback means no dealloc hook."""
-        _utils.set_on_alloc(AttributeError, lambda obj: None)
+        self.set_on_alloc(AttributeError, lambda obj: None)
         e = AttributeError("test")
         del e  # must not crash — no dealloc callback to run
 
@@ -2887,7 +2902,7 @@ class TestSetOnAlloc:
             oid = id(obj)
             return lambda: freed.append(oid)
 
-        _utils.set_on_alloc(ImportError, on_alloc)
+        self.set_on_alloc(ImportError, on_alloc)
 
         a, b = ImportError("a"), ImportError("b")
         id_a, id_b = id(a), id(b)
@@ -2910,7 +2925,7 @@ class TestSetOnAlloc:
         """
         import _io
         addrs = _utils.MemoryAddresses()
-        _utils.set_on_alloc(_io.FileIO, lambda obj: addrs.add(obj))
+        self.set_on_alloc(_io.FileIO, lambda obj: addrs.add(obj))
 
         with pytest.raises(FileNotFoundError):
             _io.open("/nonexistent/path/file.txt", "rb")
@@ -2926,7 +2941,7 @@ class TestSetOnAlloc:
             name = type(obj).__name__
             return lambda: freed.append(f"freed-{name}")
 
-        _utils.set_on_alloc(KeyError, on_alloc)
+        self.set_on_alloc(KeyError, on_alloc)
         e = MyError("test")
         assert freed == []
         del e
@@ -2940,7 +2955,7 @@ class TestSetOnAlloc:
         def on_alloc(obj):
             return lambda: freed.append("freed")
 
-        _utils.set_on_alloc(_socket.socket, on_alloc)
+        self.set_on_alloc(_socket.socket, on_alloc)
         s = _socket.socket()
         assert freed == []
         s.close()
@@ -2958,7 +2973,7 @@ class TestSetOnAlloc:
         def on_alloc(obj):
             return lambda: freed.append("freed")
 
-        _utils.set_on_alloc(select.kevent, on_alloc)
+        self.set_on_alloc(select.kevent, on_alloc)
         ev = select.kevent(1)
         assert freed == []
         del ev

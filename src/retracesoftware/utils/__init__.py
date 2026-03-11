@@ -245,7 +245,6 @@ from retracesoftware.cursor import (
     install_call_counter,
     uninstall_call_counter,
     current_call_counts,
-    call_counter_reset,
     call_counter_disable_for,
     call_counter_frame_positions,
     call_counter_position,
@@ -257,7 +256,6 @@ from retracesoftware.cursor import (
     uninstall_cursor_hooks,
     current_cursor,
     cursor_frame_positions,
-    cursor_reset,
     cursor_position,
     cursor_disable_for,
 )

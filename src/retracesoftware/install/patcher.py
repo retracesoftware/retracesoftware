@@ -151,8 +151,11 @@ def patch(module, spec, system, update_refs = False, pathpredicate = None):
                     continue
                 try:
                     patched = system.patch(value)
-                except Exception:
-                    continue
+                except Exception as exc:
+                    module_name = namespace.get('__name__', '<unknown>')
+                    raise RuntimeError(
+                        f"failed to patch {module_name}.{name}"
+                    ) from exc
                 _apply(name, value, patched)
 
         elif directive == 'patch_types':

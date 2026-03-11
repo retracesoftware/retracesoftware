@@ -45,27 +45,33 @@ class CallCounter:
     """
 
     def __init__(self):
-        object.__setattr__(self, "_cc", _get_shared_raw_cc())
+        raw_cc = _get_shared_raw_cc()
+        object.__setattr__(self, "_cc", raw_cc)
+        # Bind hot-path native methods directly so attribute access
+        # does not go through Python interception.
+        object.__setattr__(self, "current", raw_cc.current)
+        object.__setattr__(self, "frame_positions", raw_cc.frame_positions)
+        object.__setattr__(self, "disable_for", raw_cc.disable_for)
 
-    def __getattribute__(self, name):
-        if name in {
-            "current",
-            "reset",
-            "frame_positions",
-            "disable_for",
-            "installed",
-            "tool_id",
-            "depth",
-            "on_thread_switch",
-        }:
-            return getattr(object.__getattribute__(self, "_cc"), name)
-        return object.__getattribute__(self, name)
+    @property
+    def installed(self):
+        return self._cc.installed
 
-    def __setattr__(self, name, value):
-        if name == "on_thread_switch":
-            setattr(object.__getattribute__(self, "_cc"), name, value)
-            return
-        object.__setattr__(self, name, value)
+    @property
+    def tool_id(self):
+        return self._cc.tool_id
+
+    @property
+    def depth(self):
+        return self._cc.depth
+
+    @property
+    def on_thread_switch(self):
+        return self._cc.on_thread_switch
+
+    @on_thread_switch.setter
+    def on_thread_switch(self, value):
+        self._cc.on_thread_switch = value
 
     def install(self):
         """Install call-count tracking hooks via sys.monitoring (3.12+).
@@ -178,7 +184,6 @@ def uninstall_call_counter():
 
 current_call_counts = _shared_raw_cc.current
 call_counter_frame_positions = _shared_raw_cc.frame_positions
-call_counter_reset = _shared_raw_cc.reset
 
 def call_counter_position():
     """Return (call_count, f_lasti) pairs for every frame on the stack."""
@@ -332,6 +337,5 @@ install_cursor_hooks = install_call_counter
 uninstall_cursor_hooks = uninstall_call_counter
 current_cursor = current_call_counts
 cursor_frame_positions = call_counter_frame_positions
-cursor_reset = call_counter_reset
 cursor_position = call_counter_position
 cursor_disable_for = call_counter_disable_for

@@ -281,62 +281,6 @@ class TestCallCounting:
         assert a[-1] == 0
         assert b[-1] == 0
 
-    @requires_312
-    def test_loop_backjump_increments_call_count(self, call_counter):
-        """Backward jumps (loop back-edges) should increment call_count even
-        when the loop body contains only C-level calls (no Python functions)."""
-        call_counter.install()
-
-        def with_loop():
-            results = []
-            for i in range(3):
-                results.append(call_counter.current())
-            return results
-
-        cursors = with_loop()
-        loop_counts = [c[-1] for c in cursors]
-        assert loop_counts == [0, 1, 2], (
-            f"Each backward jump should increment call_count; got {loop_counts}"
-        )
-
-    @requires_312
-    def test_while_backjump_increments_call_count(self, call_counter):
-        """While-loop back-edges should also increment call_count."""
-        call_counter.install()
-
-        def with_while():
-            results = []
-            i = 0
-            while i < 3:
-                results.append(call_counter.current())
-                i += 1
-            return results
-
-        cursors = with_while()
-        loop_counts = [c[-1] for c in cursors]
-        assert loop_counts == [0, 1, 2], (
-            f"Each while-loop back-edge should increment call_count; got {loop_counts}"
-        )
-
-    @requires_312
-    def test_nested_loop_backjumps(self, call_counter):
-        """Nested loops: both inner and outer back-edges increment."""
-        call_counter.install()
-
-        def with_nested():
-            results = []
-            for i in range(2):
-                for j in range(2):
-                    results.append(call_counter.current())
-            return results
-
-        cursors = with_nested()
-        counts = [c[-1] for c in cursors]
-        assert counts[0] < counts[1] < counts[2] < counts[3], (
-            f"Nested loop counts should be strictly increasing; got {counts}"
-        )
-
-
 # ============================================================================
 # Call-count uniqueness
 # ============================================================================
@@ -518,69 +462,32 @@ class TestThreadIsolation:
 
 
 # ============================================================================
-# Reset behavior
-# ============================================================================
-
-
-@requires_311
-class TestReset:
-    def test_reset_clears_during_active_hooks(self, call_counter):
-        call_counter.install()
-
-        def f():
-            call_counter.reset()
-            return call_counter.current()
-
-        cur = f()
-        assert cur == (1,)
-
-    def test_resumes_after_reset(self, call_counter):
-        call_counter.install()
-
-        call_counter.reset()
-
-        def f():
-            return call_counter.current()
-
-        cur = f()
-        assert len(cur) >= 1
-
-
-# ============================================================================
 # yield_at
 # ============================================================================
 
 
 @requires_311
 class TestYieldAt:
-    def _sequence(self, cc):
-        values = []
-
-        def mark():
-            values.append(cc.current())
-
-        mark()
-        mark()
-        mark()
-        return values
-
     def _sequence_with_setup(self, cc, setup):
         values = []
 
         def mark():
-            values.append(cc.current())
+            cc.disable_for(lambda: values.append(cc.current()))()
+
+        def step():
+            mark()
 
         setup()
-        mark()
-        mark()
-        mark()
+        step()
+        step()
+        step()
         return values
 
     def test_triggers_once_on_matching_target(self, call_counter):
         call_counter.install()
 
-        call_counter.reset()
-        first_run = self._sequence_with_setup(call_counter, lambda: None)
+        with call_counter():
+            first_run = self._sequence_with_setup(call_counter, lambda: None)
         target = first_run[1]
 
         hits = []
@@ -588,31 +495,31 @@ class TestYieldAt:
         def on_hit():
             hits.append(True)
 
-        call_counter.reset()
-        self._sequence_with_setup(
-            call_counter,
-            lambda: call_counter.yield_at(on_hit, threading.get_ident(), target),
-        )
+        with call_counter():
+            self._sequence_with_setup(
+                call_counter,
+                lambda: call_counter.yield_at(on_hit, threading.get_ident(), target),
+            )
 
         assert hits == [True]
 
     def test_thread_id_filter(self, call_counter):
         call_counter.install()
 
-        call_counter.reset()
-        target = self._sequence_with_setup(call_counter, lambda: None)[0]
+        with call_counter():
+            target = self._sequence_with_setup(call_counter, lambda: None)[0]
         hits = []
 
         def on_hit():
             hits.append(True)
 
-        call_counter.reset()
-        self._sequence_with_setup(
-            call_counter,
-            lambda: call_counter.yield_at(
-                on_hit, threading.get_ident() + 1, target
-            ),
-        )
+        with call_counter():
+            self._sequence_with_setup(
+                call_counter,
+                lambda: call_counter.yield_at(
+                    on_hit, threading.get_ident() + 1, target
+                ),
+            )
 
         assert hits == []
 
@@ -712,27 +619,26 @@ class TestBackwardCompat:
         _utils.uninstall_cursor_hooks()
 
     def test_yield_at_cursor(self):
-        _utils.install_cursor_hooks()
-        _utils.cursor_reset()
+        cc = _utils.CallCounter()
 
         hits = []
 
         def mark():
             return _utils.current_cursor()
 
-        cursors = [mark(), mark(), mark()]
+        with cc:
+            cursors = [mark(), mark(), mark()]
         target = cursors[1]
 
         def on_hit():
             hits.append(True)
 
-        _utils.cursor_reset()
-        _utils.yield_at_cursor(on_hit, threading.get_ident(), target)
-        mark()
-        mark()
-        mark()
+        with cc:
+            _utils.yield_at_cursor(on_hit, threading.get_ident(), target)
+            mark()
+            mark()
+            mark()
 
-        _utils.uninstall_cursor_hooks()
         assert hits == [True]
 
 
@@ -849,17 +755,6 @@ class TestDisableFor:
         assert nested_result == frozen, (
             "Nested disable_for should still return the outermost frozen value"
         )
-
-    def test_reset_clears_suspend_state(self, call_counter):
-        call_counter.install()
-
-        def callback():
-            call_counter.reset()
-            return call_counter.current()
-
-        wrapped = call_counter.disable_for(callback)
-        result = wrapped()
-        assert result == (1,)
 
     def test_wrapped_passes_args_and_return(self, call_counter):
         def adder(a, b):

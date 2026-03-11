@@ -35,7 +35,9 @@ def record_then_replay(tmpdir, script_file):
 def record_then_replay_via_pipe(pipe_path, script_file):
     """Record through a FIFO, materialise the trace, then replay.
 
-    *pipe_path* must be a FIFO (e.g. created by ``os.mkfifo``).
+    *pipe_path* must be the FIFO path itself (e.g. ``/tmp/dir/trace.bin``),
+    not its parent directory. The pipe variant records ``--raw`` because the
+    Python replay entrypoint consumes raw traces directly.
     """
     drain_result = {}
     reader = threading.Thread(
@@ -45,6 +47,7 @@ def record_then_replay_via_pipe(pipe_path, script_file):
     rec = subprocess.run(
         [PYTHON, "-m", "retracesoftware",
          "--recording", pipe_path,
+         "--raw",
          "--", script_file],
         capture_output=True, text=True, timeout=TIMEOUT,
     )

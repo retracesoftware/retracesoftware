@@ -16,9 +16,9 @@ _TEST_GROUP_ORDER = {
     "utils": 1,
     "proxy": 2,
     "stream": 3,
-    "install": 4,
-    "replay": 5,
-    "scripts": 6,
+    "replay": 4,
+    "scripts": 5,
+    "install": 6,
     "__root__": 7,
 }
 

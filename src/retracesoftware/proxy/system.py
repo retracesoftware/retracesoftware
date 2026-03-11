@@ -788,9 +788,23 @@ class System:
 
         assert cls not in self.patched_types
 
-        self.patched_types.add(cls)
-        
-        def proxy_attrs(cls, dict, handler):
+        missing = object()
+        alloc_patch_undo = None
+        patched_attrs = {}
+        patched_subtypes = []
+        subtype_attrs = {}
+        original_init_subclass = cls.__dict__.get('__init_subclass__', missing)
+        original_retrace = cls.__dict__.get('__retrace__', missing)
+        original_retrace_system = cls.__dict__.get('__retrace_system__', missing)
+
+        def restore_attr(target, name, original):
+            if original is missing:
+                if name in target.__dict__:
+                    delattr(target, name)
+            else:
+                setattr(target, name, original)
+
+        def proxy_attrs(cls, dict, handler, originals):
             """Replace callables and descriptors in *dict* on *cls*.
 
             Iterates over *dict* (which may be cls.__dict__ or the
@@ -809,53 +823,80 @@ class System:
 
             for name, value in dict.items():
                 if name not in blacklist:
+                    if name not in originals:
+                        originals[name] = getattr(cls, name)
                     if type(value) in [types.MemberDescriptorType, types.GetSetDescriptorType]:
                         setattr(cls, name, proxy_member(value))
                     elif callable(value):
                         setattr(cls, name, proxy_function(value))
+        try:
+            with WithoutFlags(cls, "Py_TPFLAGS_IMMUTABLETYPE"):
 
-        with WithoutFlags(cls, "Py_TPFLAGS_IMMUTABLETYPE"):
+                # Install the alloc hook first so later failures cannot leave
+                # the type method-wrapped but missing allocation bookkeeping.
+                alloc_patch_undo = utils.set_on_alloc(cls, self._on_alloc)
+                self.patched_types.add(cls)
 
-            # Step 1: Patch cls's methods as external
-            base_methods = superdict(cls)
+                # Step 1: Patch cls's methods as external
+                base_methods = superdict(cls)
 
-            proxy_attrs(cls, dict = base_methods, handler = self._ext_handler)
+                proxy_attrs(cls, dict=base_methods, handler=self._ext_handler, originals=patched_attrs)
 
-            # Step 2: Install allocation hook
-            utils.set_on_alloc(cls, self._on_alloc)
+                cls.__retrace_system__ = self
 
-            cls.__retrace_system__ = self
+                # Step 3: Patch subclasses as internal
+                #
+                # Only wrap methods that override a name defined on the
+                # patched base type.  C extension code can only dispatch
+                # to methods it knows about — names in its own MRO.  A
+                # brand-new method on the subclass (not an override) can
+                # never be reached from C code, so wrapping it is pure
+                # overhead.
+                if utils.is_extendable(cls):
+                    base_method_names = frozenset(base_methods.keys())
 
-            # Step 3: Patch subclasses as internal
-            #
-            # Only wrap methods that override a name defined on the
-            # patched base type.  C extension code can only dispatch
-            # to methods it knows about — names in its own MRO.  A
-            # brand-new method on the subclass (not an override) can
-            # never be reached from C code, so wrapping it is pure
-            # overhead.
-            if utils.is_extendable(cls):
-                base_method_names = frozenset(base_methods.keys())
+                    def init_subclass(cls, **kwargs):
+                        self.patched_types.add(cls)
+                        patched_subtypes.append(cls)
 
-                def init_subclass(cls, **kwargs):
-                    
-                    self.patched_types.add(cls)
+                        overrides = {
+                            name: value
+                            for name, value in cls.__dict__.items()
+                            if name in base_method_names
+                        }
+                        originals = subtype_attrs.setdefault(cls, {})
+                        proxy_attrs(cls, dict=overrides, handler=self._int_handler, originals=originals)
 
-                    overrides = {name: value for name, value in cls.__dict__.items()
-                                 if name in base_method_names}
+                    cls.__init_subclass__ = classmethod(init_subclass)
 
-                    proxy_attrs(cls, dict = overrides, handler = self._int_handler)
-                    
-                cls.__init_subclass__ = classmethod(init_subclass)
+                    for subtype in get_all_subtypes(cls):
+                        with WithoutFlags(subtype, "Py_TPFLAGS_IMMUTABLETYPE"):
+                            init_subclass(subtype)
 
-                for subtype in get_all_subtypes(cls):
-                    with WithoutFlags(subtype, "Py_TPFLAGS_IMMUTABLETYPE"):
-                        init_subclass(subtype)
+                cls.__retrace__ = self
 
-            cls.__retrace__ = self
+            # Step 4: Notify the bind gate
+            self._bind(cls)
+        except Exception:
+            if alloc_patch_undo is not None:
+                alloc_patch_undo()
 
-        # Step 4: Notify the bind gate
-        self._bind(cls)
+            for subtype in reversed(patched_subtypes):
+                originals = subtype_attrs.get(subtype, {})
+                with WithoutFlags(subtype, "Py_TPFLAGS_IMMUTABLETYPE"):
+                    for name, original in reversed(list(originals.items())):
+                        restore_attr(subtype, name, original)
+                self.patched_types.discard(subtype)
+
+            with WithoutFlags(cls, "Py_TPFLAGS_IMMUTABLETYPE"):
+                for name, original in reversed(list(patched_attrs.items())):
+                    restore_attr(cls, name, original)
+                restore_attr(cls, '__init_subclass__', original_init_subclass)
+                restore_attr(cls, '__retrace_system__', original_retrace_system)
+                restore_attr(cls, '__retrace__', original_retrace)
+
+            self.patched_types.discard(cls)
+            raise
 
         return cls
 
@@ -1204,6 +1245,14 @@ class System:
 
         if hasattr(reader, 'type_deserializer'):
             reader.type_deserializer[StubRef] = _ReplayStubFactory()
+
+        native_reader = getattr(reader, '_native_reader', reader)
+        if hasattr(native_reader, 'stub_factory'):
+            # Replay-side stub materialization must not re-enter the active
+            # gates. Some C types (for example _io.BufferedReader) allocate
+            # patched objects during __new__, which would otherwise recurse
+            # back into bind/new_patched mid-materialization.
+            native_reader.stub_factory = self.disable_for(native_reader.stub_factory)
 
         return self._create_context(
             _bind = reader.bind,

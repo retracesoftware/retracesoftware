@@ -1,4 +1,6 @@
 if __name__ == "__main__":
+    import os
+    import stat
     import sysconfig
     import pathlib
     import shutil
@@ -6,6 +8,16 @@ if __name__ == "__main__":
     source = pathlib.Path(__file__).parent / 'retracesoftware_autoenable.pth'
     target = pathlib.Path(sysconfig.get_paths()["purelib"]) / 'retracesoftware_autoenable.pth'
     shutil.copy(source, target)
+
+    # On macOS/BSD, overwriting a previously hidden .pth can preserve UF_HIDDEN.
+    if hasattr(os, "chflags") and hasattr(stat, "UF_HIDDEN"):
+        try:
+            flags = os.stat(target).st_flags
+            if flags & stat.UF_HIDDEN:
+                os.chflags(target, flags & ~stat.UF_HIDDEN)
+        except OSError:
+            pass
+
     print(f'Retrace autoinstall enabled: {source} -> {target}')
 else:
     import os

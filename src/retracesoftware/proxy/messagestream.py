@@ -79,16 +79,21 @@ class MessageStream:
         traces, or ``iter(tape).__next__`` for in-memory.
     """
 
-    def __init__(self, source, monitor_enabled=False):
+    def __init__(self, source, monitor_enabled=False, native_reader=None):
         self.source = source
         self.type_deserializer = {}
         self._monitor_enabled = monitor_enabled
+        self._native_reader = native_reader
 
-    def bind(self, *a, **kw):
-        pass
+    def bind(self, obj):
+        if self._native_reader is None:
+            raise RuntimeError("MessageStream.bind() requires a native reader")
+        while not self._native_reader.pending_bind:
+            self.source()
+        return self._native_reader.bind(obj)
 
     def new_patched(self, obj):
-        return self.bind(obj)
+        raise RuntimeError("MessageStream.new_patched() should not be used during replay")
 
     def read_result(self):
         value = self.result()

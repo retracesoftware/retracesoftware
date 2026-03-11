@@ -198,7 +198,6 @@ def _clean_call_counter():
         utils.uninstall_call_counter()
     except Exception:
         pass
-    utils.call_counter_reset()
 
 
 @requires_312
@@ -208,14 +207,14 @@ class TestRunToCursor:
         Phase 1 scans for the cursor, phase 2 navigates to it using
         run_to_return + next_instruction."""
         code, path = target_code
-        utils.install_call_counter()
+        cc = utils.CallCounter()
         silent = utils.call_counter_disable_for(_init_controller)
 
         # --- Phase 1: scan ---
-        utils.call_counter_reset()
         scan = ScanSocket({"file": path, "line": 5})
-        silent(scan)
-        exec(code, {"__name__": "__target__", "__file__": path})
+        with cc:
+            silent(scan)
+            exec(code, {"__name__": "__target__", "__file__": path})
 
         bp_cursor = scan.breakpoint_cursor()
         assert bp_cursor is not None, (
@@ -227,10 +226,10 @@ class TestRunToCursor:
         )
 
         # --- Phase 2: navigate ---
-        utils.call_counter_reset()
         nav = NavigateSocket(bp_cursor)
-        silent(nav)
-        exec(code, {"__name__": "__target__", "__file__": path})
+        with cc:
+            silent(nav)
+            exec(code, {"__name__": "__target__", "__file__": path})
 
         assert nav.reached_target, (
             f"Did not reach target cursor {bp_cursor}; "
@@ -247,14 +246,14 @@ class TestRunToCursor:
         """Set breakpoint on the return statement inside foo (line 6),
         scan and navigate."""
         code, path = target_code
-        utils.install_call_counter()
+        cc = utils.CallCounter()
         silent = utils.call_counter_disable_for(_init_controller)
 
         # Phase 1
-        utils.call_counter_reset()
         scan = ScanSocket({"file": path, "line": 6})
-        silent(scan)
-        exec(code, {"__name__": "__target__", "__file__": path})
+        with cc:
+            silent(scan)
+            exec(code, {"__name__": "__target__", "__file__": path})
 
         bp_cursor = scan.breakpoint_cursor()
         assert bp_cursor is not None, (
@@ -262,10 +261,10 @@ class TestRunToCursor:
         )
 
         # Phase 2
-        utils.call_counter_reset()
         nav = NavigateSocket(bp_cursor)
-        silent(nav)
-        exec(code, {"__name__": "__target__", "__file__": path})
+        with cc:
+            silent(nav)
+            exec(code, {"__name__": "__target__", "__file__": path})
 
         assert nav.reached_target, (
             f"Did not reach target cursor {bp_cursor}; "
@@ -282,13 +281,13 @@ class TestRunToCursor:
         """Set breakpoint at module-level line 10 (x = 10) and verify
         the scan phase produces a valid cursor with correct position."""
         code, path = target_code
-        utils.install_call_counter()
+        cc = utils.CallCounter()
         silent = utils.call_counter_disable_for(_init_controller)
 
-        utils.call_counter_reset()
         scan = ScanSocket({"file": path, "line": 10})
-        silent(scan)
-        exec(code, {"__name__": "__target__", "__file__": path})
+        with cc:
+            silent(scan)
+            exec(code, {"__name__": "__target__", "__file__": path})
 
         bp_cursor = scan.breakpoint_cursor()
         assert bp_cursor is not None, (

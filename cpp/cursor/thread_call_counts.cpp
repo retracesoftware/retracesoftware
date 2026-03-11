@@ -31,6 +31,21 @@ static ThreadCallCounts *create_thread_call_counts()
     return obj;
 }
 
+static bool
+reject_active_context_call(ThreadCallCounts *self, const char *method_name)
+{
+    if (self->context_depth >= 0 && self->suspend_depth == 0) {
+        PyErr_Format(
+            PyExc_RuntimeError,
+            "%s() cannot be called inside an active CallCounter context; "
+            "wrap it with disable_for(...) first",
+            method_name
+        );
+        return true;
+    }
+    return false;
+}
+
 ThreadCallCounts *get_tc(PyObject *owner)
 {
     PyThreadState *tstate = PyThreadState_Get();
@@ -89,6 +104,7 @@ static void ThreadCallCounts_dealloc(ThreadCallCounts *self)
 static PyObject *
 tc_current(ThreadCallCounts *self, PyObject *Py_UNUSED(ignored))
 {
+    if (reject_active_context_call(self, "current")) return nullptr;
     tc = self;
     if (self->suspend_depth == 0 && self->cursor_stack.size() > 1 &&
         self->cursor_stack.back().call_count > 0) {
@@ -100,6 +116,7 @@ tc_current(ThreadCallCounts *self, PyObject *Py_UNUSED(ignored))
 static PyObject *
 tc_frame_positions(ThreadCallCounts *self, PyObject *Py_UNUSED(ignored))
 {
+    if (reject_active_context_call(self, "frame_positions")) return nullptr;
     tc = self;
     return build_frame_positions();
 }
@@ -107,6 +124,7 @@ tc_frame_positions(ThreadCallCounts *self, PyObject *Py_UNUSED(ignored))
 static PyObject *
 tc_position(ThreadCallCounts *self, PyObject *Py_UNUSED(ignored))
 {
+    if (reject_active_context_call(self, "position")) return nullptr;
     tc = self;
     if (self->suspend_depth == 0 && self->cursor_stack.size() > 1 &&
         self->cursor_stack.back().call_count > 0) {
@@ -235,13 +253,6 @@ tc_discard_watches(ThreadCallCounts *self, PyObject *Py_UNUSED(ignored))
     Py_RETURN_NONE;
 }
 
-static PyObject *
-tc_reset_stack(ThreadCallCounts *self, PyObject *Py_UNUSED(ignored))
-{
-    init_synthetic_root(self);
-    Py_RETURN_NONE;
-}
-
 // ---------------------------------------------------------------------------
 // Context manager: __enter__ / __exit__
 // ---------------------------------------------------------------------------
@@ -282,8 +293,6 @@ static PyMethodDef ThreadCallCounts_methods[] = {
                          "add_watch(call_counts, *, on_start=None, on_return=None, "
                          "on_unwind=None, on_backjump=None, on_overshoot=None)\n"
                          "Add a one-shot watch for a target call-counts position."},
-    {"reset_stack",      (PyCFunction)tc_reset_stack,      METH_NOARGS,
-     "Clear the cursor stack and reset root tracking."},
     {"discard_watches",  (PyCFunction)tc_discard_watches,  METH_NOARGS,
      "Discard all watches without firing callbacks (fork-safe)."},
     {"__enter__",        (PyCFunction)tc_enter,            METH_NOARGS,  nullptr},

@@ -644,6 +644,7 @@ namespace retracesoftware_stream {
                     if (verbose) printf("Retrace - ObjectStream[%lu, %lu] - Consumed BIND\n", messages_read, start);
                     pending_bind = true;
                     messages_read++;
+                    return control;
                 } else if (control == NewPatched) {
                     if (verbose) printf("Retrace - ObjectStream[%lu, %lu] - Consumed NEW_PATCHED\n", messages_read, start);
                     bindings[binding_counter++] = read_new_patched("NEW_PATCHED");
@@ -785,6 +786,9 @@ namespace retracesoftware_stream {
                 }
                 Py_DECREF(payload);
                 return next();
+            }
+            if (control == Bind) {
+                Py_RETURN_NONE;
             }
             else {
                 PyObject * result = read(control);

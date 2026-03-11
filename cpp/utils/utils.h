@@ -183,7 +183,7 @@ namespace retracesoftware {
         PyObject * weakreflist;
     };
 
-    bool set_on_alloc(PyTypeObject *type, PyObject * callback);
+    PyObject * set_on_alloc(PyTypeObject *type, PyObject * callback);
     bool is_alloc_patched(allocfunc func);
 
     bool intercept_dict_set(PyObject * dict, PyObject * on_set);

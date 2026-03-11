@@ -24,6 +24,21 @@ static void check_thread_switch(CallCounter *cc);
 
 static PyObject *s_monitoring_DISABLE = nullptr;
 
+static bool
+reject_active_context_call(ThreadCallCounts *self, const char *method_name)
+{
+    if (self->context_depth >= 0 && self->suspend_depth == 0) {
+        PyErr_Format(
+            PyExc_RuntimeError,
+            "%s() cannot be called inside an active CallCounter context; "
+            "wrap it with disable_for(...) first",
+            method_name
+        );
+        return true;
+    }
+    return false;
+}
+
 static void
 ensure_synthetic_root()
 {
@@ -282,16 +297,33 @@ struct DisabledCallback : public PyObject {
     static PyObject *call(DisabledCallback *self,
                           PyObject *const *args, size_t nargsf, PyObject *kwnames) {
         get_tc(self->owner);
-        if (tc->suspend_depth == 0) {
+        bool outermost_disable = tc->suspend_depth == 0;
+        std::vector<CursorEntry> saved_cursor_stack;
+        _PyInterpreterFrame *saved_suspended_frame = nullptr;
+        PyObject *saved_suspended_cursor = nullptr;
+
+        if (outermost_disable) {
+            saved_cursor_stack = tc->cursor_stack;
+            saved_suspended_frame = tc->suspended_frame;
+            saved_suspended_cursor = Py_XNewRef(tc->suspended_cursor);
+
+            PyObject *frozen_cursor = build_frozen_cursor_for_disabled_call();
+            if (!frozen_cursor) {
+                Py_XDECREF(saved_suspended_cursor);
+                return nullptr;
+            }
+            Py_XSETREF(self->frozen_cursor, frozen_cursor);
             tc->suspended_frame = PyThreadState_Get()->cframe->current_frame;
             Py_XSETREF(tc->suspended_cursor, Py_XNewRef(self->frozen_cursor));
         }
         tc->suspend_depth++;
         PyObject *result = PyObject_Vectorcall(self->fn, args, nargsf, kwnames);
         tc->suspend_depth--;
-        if (tc->suspend_depth == 0) {
-            tc->suspended_frame = nullptr;
-            Py_CLEAR(tc->suspended_cursor);
+        if (outermost_disable && tc->suspend_depth == 0) {
+            // disable_for should make the wrapped call cursor-invisible.
+            tc->cursor_stack = std::move(saved_cursor_stack);
+            tc->suspended_frame = saved_suspended_frame;
+            Py_XSETREF(tc->suspended_cursor, saved_suspended_cursor);
         }
         return result;
     }
@@ -576,17 +608,11 @@ struct CallCounter : public PyObject {
         Py_RETURN_NONE;
     }
 
-    // -- reset ------------------------------------------------------------
-
-    static PyObject *reset_impl(CallCounter *self, PyObject *Py_UNUSED(ignored)) {
-        reset_cursor_state((PyObject *)self);
-        Py_RETURN_NONE;
-    }
-
     // -- current (convenience, delegates to ThreadCallCounts) -------------
 
     static PyObject *current_impl(CallCounter *self, PyObject *Py_UNUSED(ignored)) {
         get_tc((PyObject *)self);
+        if (reject_active_context_call(tc, "current")) return nullptr;
         if (tc->suspend_depth == 0 && tc->cursor_stack.size() > 1 &&
             tc->cursor_stack.back().call_count > 0) {
             tc->cursor_stack.back().call_count--;
@@ -598,6 +624,7 @@ struct CallCounter : public PyObject {
 
     static PyObject *frame_positions_impl(CallCounter *self, PyObject *Py_UNUSED(ignored)) {
         get_tc((PyObject *)self);
+        if (reject_active_context_call(tc, "frame_positions")) return nullptr;
         return build_frame_positions();
     }
 
@@ -653,13 +680,7 @@ struct CallCounter : public PyObject {
         if (!wrapper) return nullptr;
         wrapper->fn = Py_NewRef(fn);
         wrapper->owner = Py_NewRef((PyObject *)self);
-        wrapper->frozen_cursor = build_frozen_cursor_for_disabled_call();
-        if (!wrapper->frozen_cursor) {
-            Py_DECREF(wrapper->fn);
-            Py_DECREF(wrapper->owner);
-            PyObject_Del(wrapper);
-            return nullptr;
-        }
+        wrapper->frozen_cursor = nullptr;
         wrapper->vectorcall = (vectorcallfunc)DisabledCallback::call;
         return (PyObject *)wrapper;
     }
@@ -737,7 +758,6 @@ static void check_thread_switch(CallCounter *cc) {
 static PyMethodDef CallCounter_methods[] = {
     {"install",          (PyCFunction)CallCounter::install_impl,          METH_NOARGS,   "Install call-count tracking hooks"},
     {"uninstall",        (PyCFunction)CallCounter::uninstall_impl,        METH_NOARGS,   "Remove tracking hooks and reset state"},
-    {"reset",            (PyCFunction)CallCounter::reset_impl,            METH_NOARGS,   "Clear the call-count stack"},
     {"current",          (PyCFunction)CallCounter::current_impl,          METH_NOARGS,   "Return the current call counts as a tuple of ints"},
     {"frame_positions",  (PyCFunction)CallCounter::frame_positions_impl,  METH_NOARGS,   "Return a tuple of f_lasti ints aligned to the call-count stack"},
     {"yield_at",         (PyCFunction)CallCounter::yield_at_impl,         METH_FASTCALL, "Arm a one-shot start callback (backward compat alias)"},

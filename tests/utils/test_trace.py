@@ -1,5 +1,4 @@
 import sys
-import threading
 from types import CodeType
 
 import pytest
@@ -26,6 +25,14 @@ def _clean_default():
 def _arm_trace(*args, **kwargs):
     wrapped = _utils.call_counter_disable_for(_utils.trace_function_instructions)
     return wrapped(*args, **kwargs)
+
+
+def _restart_call_counter():
+    try:
+        _utils.uninstall_call_counter()
+    except Exception:
+        pass
+    _utils.install_call_counter()
 
 
 # ============================================================================
@@ -107,7 +114,7 @@ class TestBehindRaisesError:
 class TestAheadCase:
     def test_callback_fires_for_target_instructions(self):
         _utils.install_call_counter()
-        _utils.call_counter_reset()
+        _restart_call_counter()
 
         hits = []
 
@@ -122,7 +129,7 @@ class TestAheadCase:
         target_fn(capture=True)
         target_counters = target_fn(capture=True)
 
-        _utils.call_counter_reset()
+        _restart_call_counter()
 
         monitor = _arm_trace(
             target_counters,
@@ -137,7 +144,7 @@ class TestAheadCase:
 
     def test_callback_receives_code_and_int_offset(self):
         _utils.install_call_counter()
-        _utils.call_counter_reset()
+        _restart_call_counter()
 
         hits = []
 
@@ -150,7 +157,7 @@ class TestAheadCase:
         target_fn(capture=True)
         counters = target_fn(capture=True)
 
-        _utils.call_counter_reset()
+        _restart_call_counter()
 
         monitor = _arm_trace(
             counters,
@@ -176,7 +183,7 @@ class TestAheadCase:
 class TestAncestorCase:
     def test_activates_when_returning_to_target(self):
         _utils.install_call_counter()
-        _utils.call_counter_reset()
+        _restart_call_counter()
 
         hits = []
         monitor_holder = [None]
@@ -211,7 +218,7 @@ class TestAncestorCase:
 class TestAutoTeardown:
     def test_monitor_closes_after_target_returns(self):
         _utils.install_call_counter()
-        _utils.call_counter_reset()
+        _restart_call_counter()
 
         def target_fn(*, capture=False):
             counters = _utils.current_call_counts()
@@ -222,7 +229,7 @@ class TestAutoTeardown:
         target_fn(capture=True)
         counters = target_fn(capture=True)
 
-        _utils.call_counter_reset()
+        _restart_call_counter()
 
         monitor = _arm_trace(
             counters,
@@ -247,7 +254,7 @@ class TestAutoTeardown:
 class TestManualClose:
     def test_close_stops_callbacks(self):
         _utils.install_call_counter()
-        _utils.call_counter_reset()
+        _restart_call_counter()
 
         hits = []
 
@@ -262,7 +269,7 @@ class TestManualClose:
         target_fn(capture=True)
         counters = target_fn(capture=True)
 
-        _utils.call_counter_reset()
+        _restart_call_counter()
 
         monitor = _arm_trace(
             counters,
@@ -280,7 +287,7 @@ class TestManualClose:
 
     def test_double_close_is_safe(self):
         _utils.install_call_counter()
-        _utils.call_counter_reset()
+        _restart_call_counter()
 
         def target_fn(*, capture=False):
             counters = _utils.current_call_counts()
@@ -291,7 +298,7 @@ class TestManualClose:
         target_fn(capture=True)
         counters = target_fn(capture=True)
 
-        _utils.call_counter_reset()
+        _restart_call_counter()
 
         monitor = _arm_trace(
             counters,
@@ -325,7 +332,7 @@ class TestExactCase:
 
     def test_works_with_target_frame(self):
         _utils.install_call_counter()
-        _utils.call_counter_reset()
+        _restart_call_counter()
 
         def target_fn():
             frame = sys._getframe(0)
