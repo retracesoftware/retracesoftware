@@ -1111,7 +1111,7 @@ class System:
 
     def _create_ext_spec(self, sync : Callable, on_result : Callable, on_error : Callable,
                          on_new_proxytype : Callable = None,
-                         disabled_handler : Callable = functional.apply,
+                         disabled_handler : Callable = None,
                          internal_handler : Callable = None) -> SimpleNamespace:
         """Build the external (int→ext) specification.
 
@@ -1142,6 +1142,16 @@ class System:
             on_result — result observer (or None)
             on_error  — error observer (or None)
         """
+
+        if disabled_handler is None:
+            # When an external proxy escapes the active retrace scope, route the
+            # call to the live backing object rather than calling the raw target
+            # with a proxy instance as ``self``.
+            disabled_handler = functional.mapargs(
+                starting = 1,
+                transform = utils.try_unwrap,
+                function = functional.apply,
+            )
 
         if internal_handler is None:
             internal_handler = self._external
