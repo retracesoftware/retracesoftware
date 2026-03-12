@@ -68,8 +68,9 @@ def run_with_context(system,
     def inc(x): return x + 1
 
     def next_thread_id():
-        if thread_id.get() and system._in_sandbox:
-            return thread_id.get() + (counter.update(inc),)
+        current = thread_id.get()
+        if current is not None and system._out_sandbox():
+            return current + (counter.update(inc),)
         return None
 
     utils.add_thread_middleware(lambda: thread_id.context(next_thread_id()))

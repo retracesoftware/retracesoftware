@@ -102,6 +102,10 @@ routed through the gates:
       notifies the appropriate bind gate (inside a context) or adds
       the object to _unretraced (outside any context)
 
+    - Existing live instances of the patched type family are swept into
+      _unretraced immediately after patching so pre-patch runtime state
+      stays live on both record and replay
+
 This means: if you patch_type(socket.socket), then socket.connect()
 goes through _external, and if you define MySocket(socket.socket)
 with a recv() override, that override goes through _internal.
@@ -197,6 +201,7 @@ Usage
         ...  # all calls on patched types are replayed from the stream
 """
 
+import gc
 import retracesoftware.utils as utils
 import retracesoftware.functional as functional
 from types import SimpleNamespace
@@ -472,8 +477,9 @@ class System:
         """Return True if *obj* is retraced (not in the _unretraced set).
 
         Only objects of patched types can be bound — the _on_alloc hook
-        that populates _unretraced only fires for those types.  Objects
-        whose type was never patched are always unbound.
+        that populates _unretraced only fires for those types.  Existing
+        instances are swept into _unretraced when patch_type(cls) runs.
+        Objects whose type was never patched are always unbound.
         """
         return type(obj) in self.patched_types and obj not in self._unretraced
 
@@ -748,7 +754,11 @@ class System:
            external gate can be restored for any outbound calls the
            override makes (e.g. ``super().method()``).
 
-        4. **Bind notification** — ``_bind(cls)`` is called to notify
+        4. **Existing-instance sweep** — any already-live instances of
+           the patched type family are added to ``_unretraced`` so they
+           passthrough as live runtime state.
+
+        5. **Bind notification** — ``_bind(cls)`` is called to notify
            the current bind executor (if any) that a new type has
            entered the system.
 
@@ -790,8 +800,10 @@ class System:
 
         missing = object()
         alloc_patch_undo = None
+        unretraced_undo = []
         patched_attrs = {}
         patched_subtypes = []
+        patched_family = {cls}
         subtype_attrs = {}
         original_init_subclass = cls.__dict__.get('__init_subclass__', missing)
         original_retrace = cls.__dict__.get('__retrace__', missing)
@@ -829,6 +841,13 @@ class System:
                         setattr(cls, name, proxy_member(value))
                     elif callable(value):
                         setattr(cls, name, proxy_function(value))
+
+        def mark_existing_instances_unretraced(types_to_mark):
+            for obj in gc.get_objects():
+                if type(obj) in types_to_mark:
+                    remove = self._unretraced.add(obj)
+                    if remove is not None:
+                        unretraced_undo.append(remove)
         try:
             with WithoutFlags(cls, "Py_TPFLAGS_IMMUTABLETYPE"):
 
@@ -858,6 +877,7 @@ class System:
                     def init_subclass(cls, **kwargs):
                         self.patched_types.add(cls)
                         patched_subtypes.append(cls)
+                        patched_family.add(cls)
 
                         overrides = {
                             name: value
@@ -875,9 +895,14 @@ class System:
 
                 cls.__retrace__ = self
 
+            mark_existing_instances_unretraced(patched_family)
+
             # Step 4: Notify the bind gate
             self._bind(cls)
         except Exception:
+            for undo in reversed(unretraced_undo):
+                undo()
+
             if alloc_patch_undo is not None:
                 alloc_patch_undo()
 

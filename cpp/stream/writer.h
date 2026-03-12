@@ -5,12 +5,29 @@
 #include <cstring>
 #include <chrono>
 #include <cerrno>
+#include <cstdlib>
+#include <cstdio>
 
 #ifndef _WIN32
 #include <unistd.h>
 #endif
 
 namespace retracesoftware_stream {
+
+    inline bool bind_trace_enabled() {
+        static int enabled = -1;
+        if (enabled == -1) {
+            const char* value = std::getenv("RETRACE_BIND_TRACE");
+            enabled = (value && value[0] && value[0] != '0') ? 1 : 0;
+        }
+        return enabled == 1;
+    }
+
+    inline const char* bind_label(PyObject* obj) {
+        if (!obj) return "<null>";
+        if (PyType_Check(obj)) return reinterpret_cast<PyTypeObject*>(obj)->tp_name;
+        return Py_TYPE(obj)->tp_name;
+    }
 
     int StreamHandle_index(PyObject *);
 
@@ -434,12 +451,31 @@ namespace retracesoftware_stream {
 
         void bind(PyObject * obj) {
             assert(!bindings.contains(obj));
+            if (bind_trace_enabled()) {
+                std::fprintf(stderr,
+                             "retrace-bind stream-bind-enter obj=%p label=%s counter=%d buffered=%zu\n",
+                             (void*)obj,
+                             bind_label(obj),
+                             binding_counter,
+                             writer.buffered());
+                std::fflush(stderr);
+            }
 
             bindings[obj] = binding_counter++;
 
             assert(bindings.contains((PyObject *)Py_TYPE(obj)));
 
             emit(FixedSizeTypes::BIND);
+            if (bind_trace_enabled()) {
+                std::fprintf(stderr,
+                             "retrace-bind stream-bind-emitted obj=%p label=%s counter=%d buffered=%zu bytes=%llu\n",
+                             (void*)obj,
+                             bind_label(obj),
+                             binding_counter,
+                             writer.buffered(),
+                             (unsigned long long)writer.bytes_written());
+                std::fflush(stderr);
+            }
         }
 
         void new_patched(PyObject * obj, PyObject * type) {

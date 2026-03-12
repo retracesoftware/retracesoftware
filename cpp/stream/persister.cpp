@@ -194,7 +194,27 @@ namespace retracesoftware_stream {
                         }
                         case TAG_BIND: {
                             PyObject* obj = as_ptr(e);
-                            try { self->stream->bind(obj); } catch (...) { handle_write_error(quit_on_error); }
+                            if (bind_trace_enabled()) {
+                                fprintf(stderr,
+                                        "retrace-bind persister-bind obj=%p label=%s processed=%llu\n",
+                                        (void*)obj,
+                                        bind_label(obj),
+                                        (unsigned long long)self->processed_cursor.load(std::memory_order_relaxed));
+                                fflush(stderr);
+                            }
+                            try {
+                                self->stream->bind(obj);
+                            } catch (...) {
+                                if (bind_trace_enabled()) {
+                                    fprintf(stderr,
+                                            "retrace-bind persister-bind-error obj=%p label=%s processed=%llu\n",
+                                            (void*)obj,
+                                            bind_label(obj),
+                                            (unsigned long long)self->processed_cursor.load(std::memory_order_relaxed));
+                                    fflush(stderr);
+                                }
+                                handle_write_error(quit_on_error);
+                            }
                             break;
                         }
 #endif
@@ -204,6 +224,14 @@ namespace retracesoftware_stream {
                         }
                         case TAG_THREAD: {
                             PyThreadState* tstate = as_tstate(e);
+                            if (bind_trace_enabled()) {
+                                fprintf(stderr,
+                                        "retrace-bind persister-thread-stamp tstate=%p last=%p processed=%llu\n",
+                                        (void*)tstate,
+                                        (void*)self->last_tstate,
+                                        (unsigned long long)self->processed_cursor.load(std::memory_order_relaxed));
+                                fflush(stderr);
+                            }
                             if (tstate != self->last_tstate) {
                                 self->last_tstate = tstate;
                                 auto& cache = *self->thread_cache;

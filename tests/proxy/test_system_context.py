@@ -96,6 +96,34 @@ def test_system_active_allocations_use_bind_path():
     assert system.is_bound(internal_obj)
 
 
+def test_system_preexisting_instance_stays_unretraced_in_record_and_replay():
+    """Instances created before patch_type() remain live on both paths."""
+    system = System()
+
+    class Database:
+        def __init__(self):
+            self.calls = 0
+
+        def query(self):
+            self.calls += 1
+            return self.calls
+
+    db = Database()
+    system.patch_type(Database)
+
+    writer = MemoryWriter()
+
+    assert not system.is_bound(db)
+
+    with system.record_context(writer):
+        assert db.query() == 1
+
+    assert writer.tape == []
+
+    with system.replay_context(writer.reader()):
+        assert db.query() == 2
+
+
 def test_system_location_property():
     system = System()
     writer = MemoryWriter()

@@ -7,6 +7,7 @@
 #include <cstdint>
 #include <chrono>
 #include <thread>
+#include <cstdlib>
 #include <structmember.h>
 #include "wireformat.h"
 #include <algorithm>
@@ -33,6 +34,20 @@ int pid() {
 }
 
 namespace retracesoftware_stream {
+
+    static void trace_bind_event(const char* stage, PyObject* obj, long a = -1, long b = -1) {
+        if (!bind_trace_enabled()) return;
+        fprintf(stderr,
+                "retrace-bind[%d] %s obj=%p label=%s type=%p a=%ld b=%ld\n",
+                pid(),
+                stage,
+                (void*)obj,
+                bind_label(obj),
+                obj ? (void*)Py_TYPE(obj) : nullptr,
+                a,
+                b);
+        fflush(stderr);
+    }
 
     struct ObjectWriter;
     struct AsyncFilePersister;
@@ -267,6 +282,7 @@ namespace retracesoftware_stream {
                 bindings->insert(obj);
             }
 
+            trace_bind_event("producer-bind-enter", obj, (long)messages_written);
             send_thread();
 
             Writing w;
@@ -283,6 +299,7 @@ namespace retracesoftware_stream {
             push(obj_entry(obj));
 #endif
             messages_written++;
+            trace_bind_event("producer-bind-enqueued", obj, (long)messages_written);
         }
 
         void new_patched(PyObject * obj) {
@@ -720,6 +737,14 @@ namespace retracesoftware_stream {
 
         void send_thread() {
             if (!thread) return;
+            if (bind_trace_enabled()) {
+                fprintf(stderr,
+                        "retrace-bind[%d] producer-thread-stamp tstate=%p messages=%lu\n",
+                        ::pid(),
+                        (void*)PyThreadState_Get(),
+                        messages_written);
+                fflush(stderr);
+            }
             push(thread_entry(PyThreadState_Get()));
         }
 
