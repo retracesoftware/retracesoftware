@@ -130,6 +130,14 @@ def _skip_shebang(f):
         f.seek(-len(peek), 1)
 
 
+def detect_raw_trace(path):
+    """Return True for raw traces, False for PID-framed traces."""
+    with open(str(path), 'rb') as f:
+        _skip_shebang(f)
+        first = f.read(1)
+    return first == b'{'
+
+
 def list_pids(path):
     """Scan a PID-framed trace and return the set of unique PIDs."""
     pids = set()
@@ -171,7 +179,7 @@ def read_process_info(path, raw=False):
     In both cases the preamble is a single JSON line terminated by
     ``\\n`` (no length prefix).
 
-    Returns (info_dict, byte_offset) where byte_offset is the file
+    Returns ``(info_dict, byte_offset)`` where byte_offset is the file
     position immediately after the process info, suitable for passing
     as ``start_offset`` to the C++ reader.
     """

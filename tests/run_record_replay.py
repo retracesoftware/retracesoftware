@@ -13,13 +13,14 @@ TIMEOUT = 30
 
 
 def record_then_replay(tmpdir, script_file):
-    """Record to disk, then replay from disk."""
+    """Record a raw trace to disk, then replay from disk."""
     trace_file = os.path.join(tmpdir, "trace.retrace")
 
     # --- record ---
     rec = subprocess.run(
         [PYTHON, "-m", "retracesoftware",
          "--recording", trace_file,
+         "--raw",
          "--", script_file],
         capture_output=True, text=True, timeout=TIMEOUT,
     )

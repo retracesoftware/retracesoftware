@@ -286,15 +286,25 @@ def get_all_subtypes(cls):
         subclasses.update(get_all_subtypes(subclass))
     return subclasses
 
-def _run_with_replay(ext_runner):
+def _run_with_replay(ext_runner, replay_materialize = None, materialize = None):
     """Return a callable matching apply_with's signature: (fn, *args, **kwargs).
 
     During replay, the real external function is never called.  Instead,
     ext_runner() reads the next recorded result from the stream and
     returns it directly.  fn, args, and kwargs are ignored.
     """
+    replay_materialize = replay_materialize or frozenset()
+
     def replay_fn(fn, *args, **kwargs):
-        return ext_runner()
+        recorded = ext_runner()
+
+        key = utils.unwrap(fn) if utils.is_wrapped(fn) else fn
+        if key in replay_materialize:
+            if materialize is None:
+                raise RuntimeError("replay materialization requested without materializer")
+            return materialize(key, *args, **kwargs)
+
+        return recorded
     return replay_fn
 
 def adapter(function,
@@ -575,6 +585,7 @@ class System:
         self.patched_types = set()        # types already patched in-place
         self.immutable_types = set()      # types that pass through as-is
         self.base_to_patched = {}         # base cls → user-defined Patched subclass
+        self.replay_materialize = set()   # functions safe to call for real on replay
 
         # should_proxy(value) → bool: given a value, check its type
         # and decide whether it needs a dynamic proxy wrapper.
@@ -1027,7 +1038,11 @@ class System:
             Python code, or using a depth counter.
         """
 
-        function = _run_with_replay(ext_runner) if ext_runner \
+        function = _run_with_replay(
+            ext_runner,
+            replay_materialize = self.replay_materialize,
+            materialize = lambda fn, *args, **kwargs: self.disable_for(fn)(*args, **kwargs),
+        ) if ext_runner \
             else self._external.apply_with(None)
 
         ext_executor = adapter(
@@ -1095,7 +1110,9 @@ class System:
             on_error = on_error)
 
     def _create_ext_spec(self, sync : Callable, on_result : Callable, on_error : Callable,
-                         on_new_proxytype : Callable = None) -> SimpleNamespace:
+                         on_new_proxytype : Callable = None,
+                         disabled_handler : Callable = functional.apply,
+                         internal_handler : Callable = None) -> SimpleNamespace:
         """Build the external (int→ext) specification.
 
         Parameters
@@ -1126,8 +1143,17 @@ class System:
             on_error  — error observer (or None)
         """
 
+        if internal_handler is None:
+            internal_handler = self._external
+
+        handler = self.create_gate(
+            disabled = disabled_handler,
+            external = self._external,
+            internal = internal_handler,
+        )
+
         def ext_proxytype(cls):
-            proxytype = dynamic_proxytype(handler = self._external, cls = cls)
+            proxytype = dynamic_proxytype(handler = handler, cls = cls)
             proxytype.__retrace_source__ = 'external'
 
             if issubclass(cls, Patched):
@@ -1288,5 +1314,15 @@ class System:
             ext_spec = self._create_ext_spec(
                 sync = reader.sync,
                 on_result = checkpoint,
-                on_error = checkpoint),
+                on_error = checkpoint,
+                disabled_handler = functional.mapargs(
+                    starting = 1,
+                    transform = utils.try_unwrap,
+                    function = functional.apply,
+                ),
+                internal_handler = functional.mapargs(
+                    starting = 1,
+                    transform = utils.try_unwrap,
+                    function = functional.apply,
+                )),
             ext_runner = reader.read_result)

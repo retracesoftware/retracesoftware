@@ -21,6 +21,7 @@ check_watches(WatchSlot slot)
 
 struct CallCounter;
 static void check_thread_switch(CallCounter *cc);
+static CallCounter *s_active_frame_eval_cc = nullptr;
 
 static PyObject *s_monitoring_DISABLE = nullptr;
 
@@ -262,6 +263,12 @@ eval_frame(PyThreadState *tstate,
            struct _PyInterpreterFrame *frame,
            int throw_flag)
 {
+    if (!s_active_frame_eval_cc) {
+        return real_eval(tstate, frame, throw_flag);
+    }
+
+    get_tc((PyObject *)s_active_frame_eval_cc);
+
     if (tstate->tracing || tc->suspend_depth > 0) {
         return real_eval(tstate, frame, throw_flag);
     }
@@ -520,6 +527,7 @@ struct CallCounter : public PyObject {
                 (_PyFrameEvalFunction)eval_frame);
         }
         self->tool_id = CURSOR_FRAME_EVAL;
+        s_active_frame_eval_cc = self;
 #else
         PyErr_SetString(PyExc_RuntimeError, "CallCounter tracking requires Python 3.11+");
         return nullptr;
@@ -596,15 +604,19 @@ struct CallCounter : public PyObject {
             _PyInterpreterState_SetEvalFrameFunc(interp, real_eval);
             real_eval = nullptr;
         }
+        if (s_active_frame_eval_cc == self) {
+            s_active_frame_eval_cc = nullptr;
+        }
 #endif
 
         self->tool_id = CURSOR_NOT_INSTALLED;
         clear_cursor_state((PyObject *)self);
 
-        PyObject *dict = PyThreadState_GetDict();
-        if (dict) PyDict_DelItem(dict, (PyObject *)self);
-        PyErr_Clear();
-        invalidate_tc_cache((PyObject *)self);
+        // Keep the per-thread ThreadCallCounts object alive after uninstall.
+        // On Python 3.11 the active eval-frame wrapper may still unwind
+        // through the current Python frame after uninstall() returns; dropping
+        // the thread-dict entry here can free the object while that return path
+        // still holds the thread-local tc pointer.
         Py_RETURN_NONE;
     }
 

@@ -76,8 +76,8 @@ class CallCounter:
     def install(self):
         """Install call-count tracking hooks via sys.monitoring (3.12+).
 
-        Also registers thread middleware so newly created threads
-        automatically get their own cursor context.
+        Newly created threads are tracked via thread-local ThreadCallCounts
+        in the native layer; no Python thread middleware is required here.
         """
         global _cc_tool_id
         if _cc_tool_id is not None:
@@ -85,17 +85,11 @@ class CallCounter:
         self._cc.install()
         _cc_tool_id = self._cc.tool_id
 
-        from retracesoftware.utils import add_thread_middleware
-        self._remove_thread_mw = add_thread_middleware(lambda: self())
-
     def uninstall(self):
         """Remove call-count tracking hooks and reset state."""
         global _cc_tool_id
         if _cc_tool_id is None:
             return
-        if hasattr(self, '_remove_thread_mw'):
-            self._remove_thread_mw()
-            del self._remove_thread_mw
         self._cc.uninstall()
         _cc_tool_id = None
 

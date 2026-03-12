@@ -7,6 +7,8 @@ import os
 import sys
 import tempfile
 import shutil
+import subprocess
+from pathlib import Path
 
 import pytest
 
@@ -41,3 +43,27 @@ def test_record_then_replay(tmpdir):
         f.write(HELLO_SCRIPT)
 
     record_then_replay(tmpdir, script_file)
+
+
+def test_record_then_replay_threading_single(tmpdir):
+    trace_file = os.path.join(tmpdir, "threading.retrace")
+    script_file = Path(__file__).parent / "scripts" / "threading_single.py"
+
+    record = subprocess.run(
+        [PYTHON, "-m", "retracesoftware",
+         "--recording", trace_file,
+         "--raw",
+         "--", str(script_file)],
+        capture_output=True, text=True, timeout=TIMEOUT,
+    )
+
+    assert record.returncode == 0, f"Record failed (exit {record.returncode}):\n{record.stderr}"
+
+    replay = subprocess.run(
+        [PYTHON, "-m", "retracesoftware",
+         "--recording", trace_file],
+        capture_output=True, text=True, timeout=TIMEOUT,
+    )
+
+    assert replay.returncode == 0, f"Replay failed (exit {replay.returncode}):\n{replay.stderr}"
+    assert replay.stdout == record.stdout == "worker ran\n"

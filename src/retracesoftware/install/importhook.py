@@ -40,7 +40,7 @@ def install_import_hooks(disable_for, module_patcher):
     disable_for : callable(fn) → fn
         Wraps a function so the proxy gates are temporarily cleared
         for its duration.  Typically ``system.disable_for``.
-    module_patcher : callable(namespace_dict, update_refs: bool) → None
+    module_patcher : callable(namespace_dict, update_refs: bool, module_name: str | None = None) → None
         Called after a module is loaded to apply TOML-derived patches
         to its ``__dict__``.  Typically built from
         ``patcher.patch`` + ``ModuleConfigResolver``.
@@ -75,7 +75,9 @@ def install_import_hooks(disable_for, module_patcher):
     def _exec_and_patch(source, globals=None, locals=None):
         _orig_exec(source, globals, locals)
         if globals is not None:
-            module_patcher(globals, False)
+            spec = globals.get("__spec__")
+            module_name = getattr(spec, "name", None) or globals.get("__name__")
+            module_patcher(globals, False, module_name)
 
     utils.update(_bootstrap_external._LoaderBasics, "exec_module",
                  utils.wrap_func_with_overrides,
@@ -85,7 +87,9 @@ def install_import_hooks(disable_for, module_patcher):
     def _exec_and_patch_entry(source, globals=None, locals=None):
         _orig_exec(source, globals, locals)
         if globals is not None:
-            module_patcher(globals, False)
+            spec = globals.get("__spec__")
+            module_name = getattr(spec, "name", None) or globals.get("__name__")
+            module_patcher(globals, False, module_name)
 
     utils.update(runpy, "_run_code",
                  utils.wrap_func_with_overrides,
@@ -95,7 +99,9 @@ def install_import_hooks(disable_for, module_patcher):
     def _wrap_exec(orig):
         def wrapper(module):
             orig(module)
-            module_patcher(module.__dict__, False)
+            spec = getattr(module, "__spec__", None)
+            module_name = getattr(spec, "name", None) or getattr(module, "__name__", None)
+            module_patcher(module.__dict__, False, module_name)
             return module
         return wrapper
 
@@ -119,12 +125,12 @@ def patch_already_loaded(module_patcher, module_config):
 
     Parameters
     ----------
-    module_patcher : callable(namespace_dict, update_refs: bool) → None
+    module_patcher : callable(namespace_dict, update_refs: bool, module_name: str | None = None) → None
         Same patcher as passed to ``install_import_hooks``.
     module_config : ModuleConfigResolver
         The TOML config resolver — ``module_config.keys()`` yields the
         module names that have configurations.
     """
-    for modname in module_config.keys():
+    for modname in list(module_config.keys()):
         if modname in sys.modules:
-            module_patcher(sys.modules[modname].__dict__, True)
+            module_patcher(sys.modules[modname].__dict__, True, modname)

@@ -1,14 +1,32 @@
 """Shared fixtures for retracesoftware tests."""
 import os
+from pathlib import Path
+
 os.environ["RETRACE_DEBUG"] = "1"
 
 import shutil
 import tempfile
-from pathlib import Path
 
 import pytest
 
 from tests.helpers import run_record, run_replay  # noqa: F401 — re-exported for fixtures
+
+
+def _append_mesonpy_editable_skip(path: Path) -> None:
+    if not path.exists():
+        return
+
+    current = os.environ.get("MESONPY_EDITABLE_SKIP", "")
+    parts = [entry for entry in current.split(os.pathsep) if entry]
+    value = str(path)
+    if value not in parts:
+        parts.append(value)
+        os.environ["MESONPY_EDITABLE_SKIP"] = os.pathsep.join(parts)
+
+
+_append_mesonpy_editable_skip(
+    Path(__file__).resolve().parents[2] / "utils" / "build" / "cp311d"
+)
 
 
 _TEST_GROUP_ORDER = {

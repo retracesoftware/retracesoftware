@@ -13,7 +13,7 @@ import hashlib
 
 from retracesoftware.proxy.system import System
 
-from retracesoftware.install import run_with_context, stream_writer
+from retracesoftware.install import ThreadRunContext, run_with_context, stream_writer
 from retracesoftware.exceptions import RecordingNotFoundError, VersionMismatchError
 
 def expand_recording_path(path):
@@ -286,20 +286,22 @@ def replay(system, args):
     control_socket_path = getattr(args, 'control_socket', None)
     use_stdio = getattr(args, 'stdio', False)
 
-    # Resolve path before any chdir.  Go replay has already stripped
-    # PID framing, so the recording is always a raw message stream.
+    # Resolve path before any chdir.
     path = Path(args.recording).resolve()
 
     if not path.is_file():
         raise RecordingNotFoundError(f"Recording path: {path} is not a file")
 
+    raw = stream.detect_raw_trace(path)
+    if not raw:
+        raise RuntimeError("Python replay currently requires raw recordings")
     header, data_offset = stream.read_process_info(path, raw=True)
 
     with stream.reader(path = path,
                     read_timeout = args.read_timeout,
                     verbose = args.verbose,
                     start_offset = data_offset,
-                    raw = True) as reader:
+                    raw = raw) as reader:
 
             if chunk_ms is not None:
                 from retracesoftware.search import install_timeslice_search
@@ -386,6 +388,12 @@ def replay(system, args):
                 msg_stream.sync = _sync
 
             context = system.replay_context(reader=msg_stream)
+            import threading
+
+            _thread_start = threading.Thread.start
+            _thread_join = threading.Thread.join
+            threading.Thread.start = system.disable_for(_thread_start)
+            threading.Thread.join = system.disable_for(_thread_join)
 
             if monitor_level > 0:
                 def _verify_monitor(value):
@@ -428,10 +436,13 @@ def replay(system, args):
                                 monitor_fn=monitor_fn,
                                 retrace_file_patterns=getattr(args, 'retrace_file_patterns', None),
                                 verbose=args.verbose,
-                                on_ready=on_ready)
+                                on_ready=on_ready,
+                                child_context_factory=lambda: ThreadRunContext(context))
             except Exception:
                 raise
             finally:
+                threading.Thread.start = _thread_start
+                threading.Thread.join = _thread_join
                 gc.enable()
                 if controller:
                     controller.on_replay_finished()

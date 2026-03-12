@@ -73,6 +73,9 @@ def install_hash_patching(system):
 #   bind           pre-register objects (enums expanded to members)
 #   disable        system.disable_for, replace in namespace
 #   wrap           resolve dotted path, replace in namespace
+#   replay_materialize
+#                  mark functions whose replay path may safely create
+#                  a live backing object (parsing handled elsewhere)
 #   patch_class    apply {attr: dotted_path} transforms to a class
 #   type_attributes  recurse — apply directives to a type's attributes
 #   patch_hash     handled by install_hash_patching (above)
@@ -130,6 +133,7 @@ def patch(module, spec, system, update_refs = False, pathpredicate = None):
     ns_undos = []       # (name, old_value) for namespace replacements
     originals = {}      # name → first (pre-patch) value
     added_immutables = []  # types added to system.immutable_types
+    added_replay_materialize = []  # callables added to system.replay_materialize
 
     def _apply(name, old, new):
         """Replace *name* in the namespace and optionally update refs."""
@@ -203,6 +207,15 @@ def patch(module, spec, system, update_refs = False, pathpredicate = None):
                 new = wrapper_factory(value)
                 _apply(name, value, new)
 
+        elif directive == 'replay_materialize':
+            for name in config:
+                if name not in namespace:
+                    continue
+                value = namespace[name]
+                if callable(value):
+                    system.replay_materialize.add(value)
+                    added_replay_materialize.append(value)
+
         elif directive == 'patch_class':
             for name, transforms in config.items():
                 if name not in namespace:
@@ -264,6 +277,8 @@ def patch(module, spec, system, update_refs = False, pathpredicate = None):
         # Remove types we added to the immutable set.
         for cls in added_immutables:
             system.immutable_types.discard(cls)
+        for fn in added_replay_materialize:
+            system.replay_materialize.discard(fn)
 
     return undo
 

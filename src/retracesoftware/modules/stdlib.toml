@@ -24,6 +24,7 @@ immutable = ["BaseException", "memoryview", "int", "float", "complex", "str", "b
 
 [_thread]
 proxy = ["allocate", "allocate_lock", "RLock"]
+replay_materialize = ["allocate_lock", "RLock"]
 
 [_datetime]
 immutable = ["datetime", "tzinfo", "timezone"]
@@ -257,6 +258,7 @@ proxy = ["kevent", "kqueue", "poll", "epoll", "select"]
 
 [_ssl]
 proxy = ["_SSLSocket", "MemoryBIO", "_SSLContext"]
+replay_materialize = ["MemoryBIO"]
 
 [_ssl.patch_class._SSLSocket]
 read = "retracesoftware.install.edgecases.read"
@@ -266,6 +268,7 @@ bind = ["Options"]
 
 [_random]
 proxy = ["Random"]
+replay_materialize = ["Random"]
 
 [_multiprocessing]
 proxy = ["SemLock", "sem_unlink"]
