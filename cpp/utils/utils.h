@@ -72,6 +72,8 @@ namespace retracesoftware {
     extern PyTypeObject NewWrapper_Type;
     extern PyTypeObject MethodDispatch_Type;
     extern PyTypeObject Marker_Type;
+    extern PyTypeObject Patched_Type;
+    extern PyTypeObject FastTypePredicate_Type;
     extern PyTypeObject DictIntercept_Type;
     extern PyTypeObject CollectPred_Type;
     extern PyTypeObject RunAll_Type;

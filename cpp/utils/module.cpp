@@ -712,6 +712,8 @@ PyMODINIT_FUNC CONCAT(PyInit_, MODULE_NAME)(void) {
 
     PyTypeObject * exposed_types[] = {
         &retracesoftware::Marker_Type,
+        &retracesoftware::Patched_Type,
+        &retracesoftware::FastTypePredicate_Type,
         &retracesoftware::Dispatch_Type,
         &retracesoftware::MethodDispatch_Type,
         

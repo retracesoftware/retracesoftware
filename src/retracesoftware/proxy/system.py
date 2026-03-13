@@ -307,24 +307,57 @@ def _run_with_replay(ext_runner, replay_materialize = None, materialize = None):
         return recorded
     return replay_fn
 
+def input_adapter(function, passthrough, proxy, unproxy, on_call = None):
+    if on_call:
+        function = functional.mapargs(starting = 1, transform = functional.walker(proxy), function = function)
+        function = utils.observer(on_call = on_call, function = function)
+        function = functional.mapargs(starting = 1, transform = functional.walker(unproxy), function = function)
+    else:
+        slow_path = functional.walker(functional.sequence(proxy, unproxy))
+        transform = functional.when_not(passthrough, slow_path)
+
+        function = functional.mapargs(starting = 1, transform = transform, function = function)
+
+    return function
+
+def output_transform(passthrough, proxy, unproxy, on_result = None):
+    if on_result:
+        slow_path = functional.sequence(
+            functional.walker(proxy),
+            utils.side_effect(on_result),
+            functional.walker(unproxy))
+
+        return functional.if_then_else(
+            passthrough, utils.side_effect(on_result),
+            slow_path)
+    else:
+        transform = functional.sequence(proxy, unproxy)
+        return functional.when_not(passthrough, functional.walker(transform))
+
 def adapter(function,
+            passthrough,
             proxy_input,
             proxy_output,
+            unproxy_input = functional.identity,
+            unproxy_output = functional.identity,
             on_call = None,
             on_result = None,
             on_error = None):
     """Build an adapter pipeline around *function*.
 
-    The adapter composes up to five stages into a single callable with
+    The adapter composes up to seven stages into a single callable with
     signature ``(fn, *args, **kwargs) -> result``:
 
         1. on_call   (optional) — observe the call before it happens
                                   (e.g. writer.sync or writer.write_call)
         2. proxy_input          — transform each argument (starting from
                                   position 1) from one domain to the other
-        3. function             — execute the call (or replay it)
-        4. proxy_output         — transform the result back
-        5. on_result / on_error — observe the outcome
+        3. unproxy_input        — strip directional wrappers from arguments
+                                  before the call executes
+        4. function             — execute the call (or replay it)
+        5. proxy_output         — transform the result back
+        6. unproxy_output       — strip directional wrappers from the result
+        7. on_result / on_error — observe the outcome
                                   (e.g. writer.write_result / write_error)
 
     Parameters
@@ -338,6 +371,12 @@ def adapter(function,
         function itself) to translate values crossing the boundary.
     proxy_output : callable
         Applied to the return value to translate it back.
+    unproxy_input : callable
+        Applied to each argument after proxy_input to strip wrappers
+        that should not cross into the call body.
+    unproxy_output : callable
+        Applied to the return value after proxy_output to strip wrappers
+        that should not escape to the caller.
     on_call : callable, optional
         Observer invoked before the call (receives the same args).
     on_result : callable, optional
@@ -345,18 +384,18 @@ def adapter(function,
     on_error : callable, optional
         Observer invoked on exception (receives the error).
     """
+    if on_error:
+        function = utils.observer(on_error = on_error, function = function)
 
-    if on_call:
-        function = utils.observer(on_call = on_call, function = function)
+    output_transformer = output_transform(
+        passthrough, 
+        proxy_output,
+        unproxy_output,
+        on_result)
 
-    function = functional.mapargs(starting = 1, transform = proxy_input, function = function)
+    function = functional.sequence(function, output_transformer)
 
-    function = functional.sequence(function, proxy_output)
-
-    if on_result or on_error:
-        function = utils.observer(on_result = on_result, on_error = on_error, function = function)
-
-    return function
+    return input_adapter(function, passthrough, proxy_input, unproxy_input, on_call)
 
 def proxy(proxytype):
     """Create a callable that wraps a value in a proxy type.
@@ -372,16 +411,16 @@ def proxy(proxytype):
 def maybe_proxy(proxytype):
     """Conditionally proxy a value.
 
-    If the value is already a ``Wrapped`` instance, unwrap it (avoid
-    double-wrapping).  Otherwise, create a proxy using *proxytype*
+    If the value is already a ``Wrapped`` instance, preserve it as-is
+    (avoid double-wrapping).  Otherwise, create a proxy using *proxytype*
     (memoized per type so each source class gets one proxy class).
     """
     return functional.if_then_else(
             functional.isinstanceof(utils.Wrapped),
-            utils.unwrap,
+            functional.identity,
             proxy(functional.memoize_one_arg(proxytype)))
 
-class Patched:
+class Patched(utils.Patched):
     """Marker base class for user-defined patched types.
 
     When a class inherits from Patched, the system recognises it as an
@@ -1045,18 +1084,38 @@ class System:
         ) if ext_runner \
             else self._external.apply_with(None)
 
+        unproxy_int = functional.if_then_else(
+            functional.isinstanceof(utils.InternalWrapped),
+            utils.unwrap,
+            functional.identity)
+
+        unproxy_ext = functional.if_then_else(
+            functional.isinstanceof(utils.ExternalWrapped),
+            utils.unwrap,
+            functional.identity)
+
+        passthrough = utils.FastTypePredicate(
+            lambda cls: cls in self.patched_types or issubclass(cls, tuple(self.immutable_types))
+        ).istypeof
+
         ext_executor = adapter(
             function = function,
+            passthrough = passthrough,
             proxy_input = int_spec.proxy,
+            unproxy_input = unproxy_ext,
             proxy_output = ext_spec.proxy,
+            unproxy_output = unproxy_int,
             on_call = ext_spec.on_call,
             on_result = ext_spec.on_result,
             on_error = ext_spec.on_error)
 
         int_executor = adapter(
             function = self._external.apply_with(ext_executor),
+            passthrough = passthrough,
             proxy_input = ext_spec.proxy,
+            unproxy_input = unproxy_int,
             proxy_output = int_spec.proxy,
+            unproxy_output = unproxy_ext,
             on_call = int_spec.on_call,
             on_result = int_spec.on_result,
             on_error = int_spec.on_error)
@@ -1239,13 +1298,22 @@ class System:
             if normalize else None
 
         def write_internal_call(_fn, *args, **kwargs):
+            if __import__("os").environ.get("RETRACE_CALLBACK_TRACE"):
+                import sys
+                name = getattr(_fn, "__qualname__", getattr(_fn, "__name__", repr(_fn)))
+                arg_types = tuple(type(arg).__name__ for arg in args)
+                kwarg_types = {key: type(value).__name__ for key, value in kwargs.items()}
+                sys.stderr.write(
+                    f"retrace-callback fn={name} arg_types={arg_types} kwarg_types={kwarg_types}\n"
+                )
+                sys.stderr.flush()
             writer.write_call(*args, **kwargs)
 
         if stacktraces:
             def write_stack_then(*args, **kwargs):
                 writer.stacktrace()
             ext_on_call = utils.chain(write_stack_then, writer.sync)
-            int_on_call = utils.chain(write_stack_then, write_internal_call)
+            int_on_call = write_internal_call
         else:
             ext_on_call = writer.sync
             int_on_call = write_internal_call

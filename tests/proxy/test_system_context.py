@@ -12,10 +12,12 @@ import textwrap
 import threading
 import time
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
 import retracesoftware.utils as utils
+import retracesoftware.proxy.system as system_mod
 from retracesoftware.proxy.system import System
 from retracesoftware.proxy.messagestream import MemoryWriter, MemoryReader, HandleMessage
 
@@ -137,6 +139,59 @@ def test_system_location_property():
         assert apply_external(lambda: system.location) == "external"
 
     assert system.location == "disabled"
+
+
+def test_system_context_constructs_passthrough_for_immutable_and_patched(monkeypatch):
+    system = System()
+    system.immutable_types.update({int})
+
+    class Base:
+        pass
+
+    system.patch_type(Base)
+
+    predicates = []
+    passthroughs = []
+
+    class SpyFastTypePredicate:
+        def __init__(self, predicate):
+            predicates.append(predicate)
+
+        def __call__(self, obj):
+            return False
+
+        def istypeof(self, obj):
+            return False
+
+    def spy_adapter(*, passthrough, **kwargs):
+        passthroughs.append(passthrough)
+        return utils.noop
+
+    monkeypatch.setattr(utils, "FastTypePredicate", SpyFastTypePredicate)
+    monkeypatch.setattr(system_mod, "adapter", spy_adapter)
+
+    spec = SimpleNamespace(
+        proxy = utils.noop,
+        on_call = None,
+        on_result = None,
+        on_error = None,
+    )
+
+    system._create_context(spec, spec)
+
+    assert len(predicates) == 1
+    assert len(passthroughs) == 2
+    assert passthroughs[0] is passthroughs[1]
+
+    predicate = predicates[0]
+
+    class IntSubclass(int):
+        pass
+
+    assert predicate(int)
+    assert predicate(IntSubclass)
+    assert predicate(Base)
+    assert not predicate(str)
 
 
 def _run_time_server(port: int, ready: threading.Event) -> None:

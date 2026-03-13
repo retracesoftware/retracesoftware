@@ -1377,6 +1377,86 @@ class TestWrappedUnwrap:
         assert extracted() == 'original'
 
 
+class TestPatchedMarker:
+    def test_patched_type_is_exposed_and_subclassable(self):
+        class Derived(_utils.Patched):
+            pass
+
+        inst = Derived()
+
+        assert issubclass(Derived, _utils.Patched)
+        assert isinstance(inst, _utils.Patched)
+
+
+class TestFastTypePredicate:
+    def test_does_not_expose_manual_add_api(self):
+        fast_predicate = _utils.FastTypePredicate(lambda tp: False)
+
+        assert not hasattr(fast_predicate, "add")
+        with pytest.raises(AttributeError):
+            fast_predicate.add(int)
+
+    def test_istypeof_memoizes_positive_matches(self):
+        calls = []
+
+        def predicate(tp):
+            calls.append(tp)
+            return tp is int
+
+        fast_predicate = _utils.FastTypePredicate(predicate)
+
+        assert fast_predicate.istypeof(1)
+        assert fast_predicate.istypeof(2)
+        assert calls == [int]
+
+    def test_istypeof_memoizes_negative_matches(self):
+        calls = []
+
+        def predicate(tp):
+            calls.append(tp)
+            return False
+
+        fast_predicate = _utils.FastTypePredicate(predicate)
+
+        assert not fast_predicate.istypeof(1.0)
+        assert not fast_predicate.istypeof(2.0)
+        assert calls == [float]
+
+    def test_supports_heap_types(self):
+        calls = []
+
+        def predicate(tp):
+            calls.append(tp)
+            return tp.__name__ == "HeapType"
+
+        class HeapType:
+            pass
+
+        fast_predicate = _utils.FastTypePredicate(predicate)
+
+        assert fast_predicate.istypeof(HeapType())
+        assert fast_predicate(HeapType())
+        assert calls == [HeapType]
+
+    def test_predicate_receives_exact_type(self):
+        seen = []
+
+        def predicate(tp):
+            seen.append(tp)
+            return False
+
+        class Base:
+            pass
+
+        class Child(Base):
+            pass
+
+        fast_predicate = _utils.FastTypePredicate(predicate)
+
+        assert not fast_predicate.istypeof(Child())
+        assert seen == [Child]
+
+
 # ============================================================================
 # Gate tests
 # ============================================================================

@@ -196,7 +196,7 @@ class DescriptorProxy:
 #         return self.handler(deleter, self.name)
 
 
-def dynamic_proxytype(handler, cls):
+def dynamic_proxytype(handler, cls, wrapped_base = utils.ExternalWrapped):
 
     if cls.__module__.startswith('retracesoftware'):
         print(cls)
@@ -280,7 +280,7 @@ def dynamic_proxytype(handler, cls):
     spec['__module__'] = cls.__module__
     # name = f'retrace.proxied.{cls.__module__}.{cls.__name__}'
 
-    return type(cls.__name__, (utils.Wrapped, DynamicProxy), spec)
+    return type(cls.__name__, (wrapped_base, DynamicProxy), spec)
 
 def dynamic_from_extended(cls):
     
@@ -298,7 +298,7 @@ def dynamic_from_extended(cls):
     target_type = functional.sequence(utils.unwrap, functional.typeof)
     spec['__class__'] = property(target_type)
     
-    return type(name, (utils.Wrapped, DynamicProxy), spec)
+    return type(name, (utils.ExternalWrapped, DynamicProxy), spec)
 
 
 def instantiable_dynamic_proxytype(handler, cls, thread_state, create_stub = False):
@@ -319,7 +319,7 @@ def instantiable_dynamic_proxytype(handler, cls, thread_state, create_stub = Fal
     return proxytype    
 
 def dynamic_int_proxytype(handler, cls, bind):
-    proxytype = dynamic_proxytype(handler = handler, cls = cls)
+    proxytype = dynamic_proxytype(handler = handler, cls = cls, wrapped_base = utils.InternalWrapped)
     proxytype.__new__ = functional.sequence(proxytype.__new__, functional.side_effect(bind))
     proxytype.__retrace_source__ = 'internal'
     return proxytype

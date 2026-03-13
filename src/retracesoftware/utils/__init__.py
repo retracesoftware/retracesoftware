@@ -74,6 +74,16 @@ def _export_public(mod: ModuleType) -> None:
 
 _export_public(_backend_mod)
 
+_WrappedBase = _backend_mod.Wrapped
+
+
+class InternalWrapped(_WrappedBase):
+    """Marker base for wrappers representing the internal domain."""
+
+
+class ExternalWrapped(_WrappedBase):
+    """Marker base for wrappers representing the external domain."""
+
 
 # ---------------------------------------------------------------------------
 # High-level API (convenience wrappers around C++ extension)
