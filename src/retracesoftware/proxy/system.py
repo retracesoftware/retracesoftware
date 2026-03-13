@@ -309,9 +309,9 @@ def _run_with_replay(ext_runner, replay_materialize = None, materialize = None):
 
 def input_adapter(function, passthrough, proxy, unproxy, on_call = None):
     if on_call:
-        function = functional.mapargs(starting = 1, transform = functional.walker(proxy), function = function)
-        function = utils.observer(on_call = on_call, function = function)
         function = functional.mapargs(starting = 1, transform = functional.walker(unproxy), function = function)
+        function = utils.observer(on_call = on_call, function = function)
+        function = functional.mapargs(starting = 1, transform = functional.walker(proxy), function = function)
     else:
         slow_path = functional.walker(functional.sequence(proxy, unproxy))
         transform = functional.when_not(passthrough, slow_path)
