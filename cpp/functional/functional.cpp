@@ -256,6 +256,7 @@ PyMODINIT_FUNC CONCAT(PyInit_, MODULE_NAME)(void) {
         &UseWith_Type,
         &DeepWrap_Type,
         &WhenNotNone_Type,
+        &WhenNot_Type,
         &Lazy_Type,
         &ArityDispatch_Type,
         NULL

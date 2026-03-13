@@ -116,6 +116,20 @@ def when(test, then):
     return _backend_mod.if_then_else(test, then, None)
 
 
+def when_not(test, then):
+    """when_not(test, then)(x) -> x if test(x) else then(x)."""
+    ctor = getattr(_backend_mod, "when_not", None)
+    if ctor is not None:
+        return ctor(test, then)
+
+    def _gate(*args, **kwargs):
+        if test(*args, **kwargs):
+            return args[0] if args else None
+        return then(*args, **kwargs)
+
+    return _gate
+
+
 def cond(*args):
     """
     Build a chain of if_then_else: cond(cond1, action1, cond2, action2, ..., default).

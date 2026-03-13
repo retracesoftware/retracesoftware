@@ -41,6 +41,7 @@ _func_sources = files(
   'vector.cpp',
   'walker.cpp',
   'when.cpp',
+  'whennot.cpp',
   'whennotnone.cpp',
   'whenpredicate.cpp',
 )

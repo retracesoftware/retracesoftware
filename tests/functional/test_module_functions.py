@@ -140,6 +140,7 @@ class TestModuleImports:
     def test_advanced_types(self):
         assert hasattr(fn, 'walker')
         assert hasattr(fn, 'deepwrap')
+        assert hasattr(fn, 'when_not')
         assert hasattr(fn, 'when_not_none')
         assert hasattr(fn, 'selfapply')
         assert hasattr(fn, 'either')

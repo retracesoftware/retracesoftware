@@ -75,6 +75,7 @@ extern PyTypeObject Vector_Type;
 extern PyTypeObject UseWith_Type;
 extern PyTypeObject DeepWrap_Type;
 extern PyTypeObject WhenNotNone_Type;
+extern PyTypeObject WhenNot_Type;
 extern PyTypeObject Lazy_Type;
 extern PyTypeObject ArityDispatch_Type;
 

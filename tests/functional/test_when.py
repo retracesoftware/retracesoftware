@@ -15,6 +15,24 @@ def test_when_not_none_short_circuits_on_none_arguments():
     assert calls == [(1, 2)]
 
 
+def test_when_not_returns_input_when_predicate_matches():
+    calls = []
+
+    def is_str(x):
+        calls.append(("pred", x))
+        return isinstance(x, str)
+
+    def wrap(x):
+        calls.append(("action", x))
+        return [x]
+
+    wrapper = fn.when_not(is_str, wrap)
+
+    assert wrapper("ok") == "ok"
+    assert wrapper(3) == [3]
+    assert calls == [("pred", "ok"), ("pred", 3), ("action", 3)]
+
+
 def test_if_then_else_routes_to_correct_branch():
     calls = []
 
