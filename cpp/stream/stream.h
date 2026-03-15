@@ -12,6 +12,7 @@
 
 #include "fastcall.h"
 #include "gilguard.h"
+#include "queue.h"
 
 #if defined(__GNUC__) || defined(__clang__)
 #include <alloca.h>
@@ -89,6 +90,7 @@ namespace retracesoftware_stream {
     extern PyTypeObject StreamHandle_Type;
     extern PyTypeObject ObjectStream_Type;
     extern PyTypeObject AsyncFilePersister_Type;
+    extern PyTypeObject DebugPersister_Type;
     extern PyTypeObject FramedWriter_Type;
     extern PyTypeObject Deleter_Type;
 
@@ -96,23 +98,28 @@ namespace retracesoftware_stream {
     FramedWriter* FramedWriter_get(PyObject* obj);
 
     struct SetupResult {
-        void* forward_queue;    // SPSCQueue<QEntry>*
-        void* return_queue;     // SPSCQueue<PyObject*>*
+        Queue* forward_queue;
     };
 
     // Defined in persister.cpp — called by ObjectWriter during init.
     // writer_key is the ObjectWriter* cast to PyObject*, used as a dict
     // key to look up thread handles from PyThreadState.dict.
-    // total_removed points to the ObjectWriter's atomic counter that the
-    // drain thread increments as objects are returned.
     SetupResult AsyncFilePersister_setup(PyObject* persister, PyObject* serializer,
                                          size_t queue_capacity,
                                          size_t return_queue_capacity,
-                                         std::atomic<int64_t>* total_removed,
+                                         int64_t inflight_limit,
+                                         int stall_timeout_seconds,
                                          PyObject* writer_key,
                                          bool quit_on_error);
+    SetupResult DebugPersister_setup(PyObject* persister, PyObject* serializer,
+                                     size_t queue_capacity,
+                                     size_t return_queue_capacity,
+                                     int64_t inflight_limit,
+                                     int stall_timeout_seconds,
+                                     PyObject* writer_key,
+                                     bool quit_on_error);
 
-    // extern PyTypeObject WeakRefCallback_Type;
+    extern PyTypeObject WeakRefCallback_Type;
     // extern PyTypeObject ObjectReader_Type;
 
     inline void generic_gc_dealloc(PyObject *self) {

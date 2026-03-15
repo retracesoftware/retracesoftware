@@ -52,6 +52,10 @@ class Writer(ABC):
         """Record the return value of an external call."""
 
     @abstractmethod
+    def write_passthrough_result(self, *a, **kw):
+        """Record the return value of an external call."""
+
+    @abstractmethod
     def write_error(self, *a, **kw):
         """Record an exception raised by an external call."""
 

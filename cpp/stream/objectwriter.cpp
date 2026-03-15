@@ -1,7 +1,6 @@
 #include "stream.h"
 #include "writer.h"
 #include "queueentry.h"
-#include "vendor/SPSCQueue.h"
 
 #include <cstddef>
 #include <cstdint>
@@ -55,7 +54,7 @@ namespace retracesoftware_stream {
     static std::vector<ObjectWriter *> writers;
 
     struct StreamHandle : public PyObject {
-        int index;
+        Ref handle;
         PyObject * writer;
         PyObject * object;
         vectorcallfunc vectorcall;
@@ -71,22 +70,37 @@ namespace retracesoftware_stream {
             Py_CLEAR(self->object);
             return 0;
         }
+
+        static PyObject* get_index(StreamHandle* self, void*) {
+            return PyLong_FromUnsignedLongLong(index_of_handle(self->handle));
+        }
     };
     
     struct WeakRefCallback : public PyObject {
         PyObject * handle;
         PyObject * writer;
+        bool delete_ref_only;
         vectorcallfunc vectorcall;
         
-        static int traverse(StreamHandle* self, visitproc visit, void* arg) {
-            Py_VISIT(self->writer);
-            return 0;
-        }
+        static PyObject* call(WeakRefCallback* self,
+                              PyObject* const* args, size_t nargsf,
+                              PyObject* kwnames);
+        static int traverse(WeakRefCallback* self, visitproc visit, void* arg);
+        static int clear(WeakRefCallback* self);
+        static void dealloc(WeakRefCallback* self);
+    };
 
-        static int clear(StreamHandle* self) {
-            Py_CLEAR(self->writer);
-            return 0;
-        }
+    PyTypeObject WeakRefCallback_Type = {
+        .ob_base = PyVarObject_HEAD_INIT(NULL, 0)
+        .tp_name = MODULE "WeakRefCallback",
+        .tp_basicsize = sizeof(WeakRefCallback),
+        .tp_itemsize = 0,
+        .tp_dealloc = (destructor)WeakRefCallback::dealloc,
+        .tp_vectorcall_offset = OFFSET_OF_MEMBER(WeakRefCallback, vectorcall),
+        .tp_call = PyVectorcall_Call,
+        .tp_flags = Py_TPFLAGS_DEFAULT | Py_TPFLAGS_HAVE_GC | Py_TPFLAGS_HAVE_VECTORCALL,
+        .tp_traverse = (traverseproc)WeakRefCallback::traverse,
+        .tp_clear = (inquiry)WeakRefCallback::clear,
     };
 
     static PyObject* pickle_dumps_fn() {
@@ -99,6 +113,26 @@ namespace retracesoftware_stream {
             if (!dumps) { PyErr_Clear(); return nullptr; }
         }
         return dumps;
+    }
+
+    static PyTypeObject* wrapped_type() {
+        static PyTypeObject* wrapped = nullptr;
+        if (!wrapped) {
+            PyObject* mod = PyImport_ImportModule("retracesoftware.utils");
+            if (!mod) return nullptr;
+
+            PyObject* obj = PyObject_GetAttrString(mod, "Wrapped");
+            Py_DECREF(mod);
+            if (!obj) return nullptr;
+            if (!PyType_Check(obj)) {
+                Py_DECREF(obj);
+                PyErr_SetString(PyExc_TypeError, "retracesoftware.utils.Wrapped is not a type");
+                return nullptr;
+            }
+
+            wrapped = reinterpret_cast<PyTypeObject*>(obj);
+        }
+        return wrapped;
     }
 
     static inline int64_t native_estimate(PyObject* obj) {
@@ -141,13 +175,15 @@ namespace retracesoftware_stream {
 
     struct ObjectWriter : public ReaderWriterBase {
         
-        rigtorp::SPSCQueue<QEntry>* queue = nullptr;
-        rigtorp::SPSCQueue<PyObject*>* return_queue = nullptr;
+        Queue* queue = nullptr;
         set<PyObject*>* bindings = nullptr;
+        set<PyObject*>* bound_wrapped = nullptr;
+        map<PyObject*, PyObject*>* bound_wrapped_refs = nullptr;
+        map<PyObject*, PyObject*>* bound_ref_deleters = nullptr;
         PyObject* persister = nullptr;
 
         size_t messages_written = 0;
-        int next_handle;
+        uintptr_t next_handle;
         int pid;
         bool verbose;
         bool validate_bindings = false;
@@ -160,56 +196,15 @@ namespace retracesoftware_stream {
         vectorcallfunc vectorcall;
         PyObject *weakreflist;
 
-        int64_t total_added = 0;
-        std::atomic<int64_t> total_removed{0};
-        int64_t inflight_limit = 128LL * 1024 * 1024;
-        int stall_timeout_seconds = 5;
-
         inline bool is_disabled() const { return queue == nullptr; }
 
-        int64_t inflight() const {
-            return total_added - total_removed.load(std::memory_order_relaxed);
+        void disable_push_fail() {
+            fprintf(stderr, "retrace: writer queue stalled, disabling recording\n");
+            queue = nullptr;
         }
 
-        void wait_for_inflight() {
-            if (inflight() > inflight_limit) {
-                bool ok = false;
-                Py_BEGIN_ALLOW_THREADS
-                auto deadline = std::chrono::steady_clock::now()
-                            + std::chrono::seconds(stall_timeout_seconds);
-                while (true) {
-                    if (total_added - total_removed.load(std::memory_order_relaxed) <= inflight_limit)
-                        { ok = true; break; }
-                    if (std::chrono::steady_clock::now() >= deadline) break;
-                    std::this_thread::yield();
-                }
-                Py_END_ALLOW_THREADS
-                if (!ok) {
-                    fprintf(stderr, "retrace: inflight backpressure timeout, disabling recording\n");
-                    queue = nullptr;
-                }
-            }
-        }
-
-        bool blocking_push(QEntry entry) {
-            bool ok = false;
-            Py_BEGIN_ALLOW_THREADS
-            auto deadline = std::chrono::steady_clock::now()
-                          + std::chrono::seconds(stall_timeout_seconds);
-            while (true) {
-                if (queue->try_push(entry)) { ok = true; break; }
-                if (std::chrono::steady_clock::now() >= deadline) break;
-                std::this_thread::yield();
-            }
-            Py_END_ALLOW_THREADS
-            return ok;
-        }
-
-        void push(QEntry entry) {
-            if (!queue->try_push(entry) && !blocking_push(entry)) {
-                fprintf(stderr, "retrace: writer queue full, disabling recording\n");
-                queue = nullptr;
-            }
+        void disable_if_push_failed(bool ok) {
+            if (!ok) disable_push_fail();
         }
 
         void debug_prefix(size_t bytes_written = 0) {
@@ -282,6 +277,8 @@ namespace retracesoftware_stream {
                 bindings->insert(obj);
             }
 
+            ensure_bound_ref_tracking(obj);
+
             trace_bind_event("producer-bind-enter", obj, (long)messages_written);
             send_thread();
 
@@ -292,12 +289,7 @@ namespace retracesoftware_stream {
                 printf("BIND(%s)\n", Py_TYPE(obj)->tp_name);
             }
 
-#if SIZEOF_VOID_P >= 8
-            push(bind_entry(obj));
-#else
-            push(cmd_entry(CMD_BIND));
-            push(obj_entry(obj));
-#endif
+            disable_if_push_failed(queue->push_bind(obj));
             messages_written++;
             trace_bind_event("producer-bind-enqueued", obj, (long)messages_written);
         }
@@ -328,28 +320,18 @@ namespace retracesoftware_stream {
                 printf("NEW_PATCHED(%s)\n", Py_TYPE(obj)->tp_name);
             }
 
-#if SIZEOF_VOID_P >= 8
-            push(new_patched_entry(obj));
-            push(obj_entry(type));
-#else
-            push(cmd_entry(CMD_NEW_PATCHED));
-            push(obj_entry(obj));
-            push(obj_entry(type));
-#endif
+            disable_if_push_failed(queue->push_new_patched(obj, type));
             messages_written++;
         }
 
-        void write_delete(int id) {
+        void write_delete(Ref handle) {
             if (is_disabled()) return;
 
             if (verbose) {
                 debug_prefix();
-                printf("DELETE(%i)\n", id);
+                printf("DELETE(%p)\n", handle);
             }
-            int delta = next_handle - id;
-            assert(delta > 0);
-
-            push(cmd_entry(CMD_HANDLE_DELETE, delta - 1));
+            disable_if_push_failed(queue->push_ref_delete(handle));
             messages_written++;
         }
 
@@ -358,7 +340,7 @@ namespace retracesoftware_stream {
             ObjectWriter * writer = reinterpret_cast<ObjectWriter *>(self->writer);
 
             if (writer && !writer->is_disabled() && !_Py_IsFinalizing()) {
-                writer->write_delete(self->index);
+                writer->write_delete(self->handle);
             }
 
             PyObject_GC_UnTrack(self);
@@ -366,13 +348,13 @@ namespace retracesoftware_stream {
             Py_TYPE(self)->tp_free(reinterpret_cast<PyObject*>(self));
         }
 
-        PyObject * stream_handle(int index, PyObject * obj) {
+        PyObject * stream_handle(Ref handle, PyObject * obj) {
 
             StreamHandle * self = (StreamHandle *)StreamHandle_Type.tp_alloc(&StreamHandle_Type, 0);
             if (!self) return nullptr;
 
             self->writer = Py_NewRef(this);
-            self->index = index;
+            self->handle = handle;
             self->vectorcall = (vectorcallfunc)StreamHandle_vectorcall;
             self->object = Py_XNewRef(obj);
 
@@ -380,8 +362,10 @@ namespace retracesoftware_stream {
         }
 
         PyObject * handle(PyObject * obj) {
+            Ref handle = handle_from_index(next_handle++);
+
             if (is_disabled()) {
-                return stream_handle(next_handle++, nullptr);
+                return stream_handle(handle, nullptr);
             }
 
             if (verbose) {
@@ -389,15 +373,12 @@ namespace retracesoftware_stream {
                 printf("NEW_HANDLE(%s)\n", debugstr(obj));
             }
 
-            Py_INCREF(obj); total_added += estimate_size(obj);
-#if SIZEOF_VOID_P >= 8
-            push(new_handle_entry(obj));
-#else
-            push(cmd_entry(CMD_NEW_HANDLE));
-            push(obj_entry(obj));
-#endif
+            if (!queue->push_new_handle(handle, obj, (int64_t)estimate_size(obj))) {
+                disable_push_fail();
+                return stream_handle(handle, nullptr);
+            }
             messages_written++;
-            return stream_handle(next_handle++, verbose ? obj : nullptr);
+            return stream_handle(handle, verbose ? obj : nullptr);
         }
 
         void write_root(StreamHandle * obj) {
@@ -406,53 +387,110 @@ namespace retracesoftware_stream {
                 printf("HANDLE_REF(%s)\n", debugstr(obj->object));
             }
 
-            push(cmd_entry(CMD_HANDLE_REF, obj->index));
+            disable_if_push_failed(queue->push_ref(obj->handle));
             messages_written++;
         }
 
         static constexpr int MAX_FLATTEN_DEPTH = 32;
 
-        void push_obj(PyObject* obj, int64_t size) {
-            wait_for_inflight();
-            total_added += size;
-            Py_INCREF(obj);
-            push(obj_entry(obj));
+        void push_obj(PyObject* obj, size_t estimated_size) {
+            if (!queue->push_obj(obj, (int64_t)estimated_size)) {
+                disable_push_fail();
+                return;
+            }
+        }
+
+        void ensure_wrapped_tracking(PyObject* obj) {
+            if (!bound_wrapped || !bound_wrapped_refs) return;
+            if (bound_wrapped_refs->contains(obj)) return;
+
+            auto* callback = reinterpret_cast<WeakRefCallback*>(
+                WeakRefCallback_Type.tp_alloc(&WeakRefCallback_Type, 0));
+            if (!callback) throw nullptr;
+
+            callback->handle = obj;
+            callback->writer = Py_NewRef((PyObject*)this);
+            callback->delete_ref_only = false;
+            callback->vectorcall = (vectorcallfunc)WeakRefCallback::call;
+
+            PyObject* weakref = PyWeakref_NewRef(obj, (PyObject*)callback);
+            Py_DECREF((PyObject*)callback);
+            if (!weakref) throw nullptr;
+
+            bound_wrapped->insert(obj);
+            (*bound_wrapped_refs)[obj] = weakref;
+        }
+
+        void ensure_bound_ref_tracking(PyObject* obj) {
+            if (!bound_ref_deleters) return;
+            if (bound_ref_deleters->contains(obj)) return;
+
+            auto* callback = reinterpret_cast<WeakRefCallback*>(
+                WeakRefCallback_Type.tp_alloc(&WeakRefCallback_Type, 0));
+            if (!callback) throw nullptr;
+
+            callback->handle = obj;
+            callback->writer = Py_NewRef((PyObject*)this);
+            callback->delete_ref_only = true;
+            callback->vectorcall = (vectorcallfunc)WeakRefCallback::call;
+
+            PyObject* weakref = PyWeakref_NewRef(obj, (PyObject*)callback);
+            Py_DECREF((PyObject*)callback);
+            if (!weakref) {
+                if (PyErr_ExceptionMatches(PyExc_TypeError)) {
+                    PyErr_Clear();
+                    return;
+                }
+                throw nullptr;
+            }
+
+            (*bound_ref_deleters)[obj] = weakref;
+        }
+
+        Ref ensure_auto_handle(PyObject* obj) {
+            Ref handle = reinterpret_cast<Ref>(obj);
+            PyTypeObject* wrapped = wrapped_type();
+            if (wrapped && PyObject_TypeCheck(obj, wrapped) && !is_retrace_patched_type(Py_TYPE(obj))) {
+                ensure_wrapped_tracking(obj);
+            }
+            return handle;
         }
 
         void push_value(PyObject* obj, int depth = 0) {
 
             if (is_immortal(obj)) {
-                push(obj_entry(obj));                
+                disable_if_push_failed(queue->push_obj(obj));
             } else {
                 PyTypeObject* tp = Py_TYPE(obj);
+                PyTypeObject* wrapped = wrapped_type();
 
                 if (tp == &PyLong_Type) {
-                    push_obj(obj, estimate_long_size(obj));
+                    push_obj(obj, (size_t)estimate_long_size(obj));
                 } else if (tp == &PyUnicode_Type) {
-                    push_obj(obj, estimate_unicode_size(obj));
+                    push_obj(obj, (size_t)estimate_unicode_size(obj));
                 } else if (tp == &PyBytes_Type) {
-                    push_obj(obj, estimate_bytes_size(obj));
+                    push_obj(obj, (size_t)estimate_bytes_size(obj));
                 } else if (tp == &StreamHandle_Type) {
-                    push_obj(obj, estimate_stream_handle_size(obj));
+                    disable_if_push_failed(queue->push_ref(reinterpret_cast<StreamHandle*>(obj)->handle));
                 } else if (is_retrace_patched_type(tp)) {
-                    push_obj(obj, 64);
+                    disable_if_push_failed(queue->push_ref(ensure_auto_handle(obj)));
                 } else if (tp == &PyList_Type) {
                     assert (depth < MAX_FLATTEN_DEPTH);
                     Py_ssize_t n = PyList_GET_SIZE(obj);
-                    push(cmd_entry(CMD_LIST, (uint32_t)n));
+                    disable_if_push_failed(queue->push_list_header((size_t)n));
                     for (Py_ssize_t i = 0; i < n; i++)
                         push_value(PyList_GET_ITEM(obj, i), depth + 1);
 
                 } else if (tp == &PyTuple_Type) {
                     assert (depth < MAX_FLATTEN_DEPTH);
                     Py_ssize_t n = PyTuple_GET_SIZE(obj);
-                    push(cmd_entry(CMD_TUPLE, (uint32_t)n));
+                    disable_if_push_failed(queue->push_tuple_header((size_t)n));
                     for (Py_ssize_t i = 0; i < n; i++)
                         push_value(PyTuple_GET_ITEM(obj, i), depth + 1);
                 } else if (tp == &PyDict_Type) {
                     assert (depth < MAX_FLATTEN_DEPTH);
                     Py_ssize_t n = PyDict_Size(obj);
-                    push(cmd_entry(CMD_DICT, (uint32_t)n));
+                    disable_if_push_failed(queue->push_dict_header((size_t)n));
                     Py_ssize_t pos = 0;
                     PyObject *key, *value;
                     while (PyDict_Next(obj, &pos, &key, &value)) {
@@ -460,23 +498,24 @@ namespace retracesoftware_stream {
                         push_value(value, depth + 1);
                     }
                 } else if (tp == &PyFloat_Type) {
-                    push_obj(obj, estimate_float_size(obj));
+                    push_obj(obj, (size_t)estimate_float_size(obj));
                 } else if (tp == &PyMemoryView_Type) {
-                    push_obj(obj, estimate_memory_view_size(obj));
+                    push_obj(obj, (size_t)estimate_memory_view_size(obj));
+
+                } else if (wrapped && PyObject_TypeCheck(obj, wrapped)) {
+                    disable_if_push_failed(queue->push_ref(ensure_auto_handle(obj)));
                 } else {
-                    wait_for_inflight();
                     // Try the full serializer (type_serializer + pickle fallback)
                     PyObject* res = PyObject_CallOneArg(serializer, obj);
                     if (res) {
                         if (PyBytes_Check(res)) {
                             // Serializer returned pickled bytes
-                            total_added += estimate_bytes_size(res);
-#if SIZEOF_VOID_P >= 8
-                            push(pickled_entry(res));
-#else
-                            push(cmd_entry(CMD_PICKLED));
-                            push(obj_entry(res));
-#endif
+                            bool ok = queue->push_pickled(res, estimate_bytes_size(res));
+                            Py_DECREF(res);
+                            if (!ok) {
+                                disable_push_fail();
+                                return;
+                            }
                         } else {
                             // Serializer returned a converted object (e.g. Stack → tuple)
                             push_value(res, depth + 1);
@@ -503,12 +542,12 @@ namespace retracesoftware_stream {
                                 else PyErr_Clear();
                             }
 
-                            push(cmd_entry(CMD_SERIALIZE_ERROR));
+                            disable_if_push_failed(queue->push_serialize_error());
                             push_value(error_dict, depth + 1);
                             Py_DECREF(error_dict);
                         } else {
                             PyErr_Clear();
-                            push(obj_entry(Py_None));
+                            disable_if_push_failed(queue->push_obj(Py_None));
                         }
 
                         if (!serialize_errors) {
@@ -536,8 +575,32 @@ namespace retracesoftware_stream {
 
         void object_freed(PyObject * obj) {
             if (is_disabled()) return;
+
+            PyTypeObject* wrapped = wrapped_type();
+            bool is_auto_ref =
+                is_retrace_patched_type(Py_TYPE(obj)) ||
+                (wrapped && PyObject_TypeCheck(obj, wrapped) && !is_retrace_patched_type(Py_TYPE(obj)));
+
             if (bindings) bindings->erase(obj);
-            push(delete_entry(obj));
+            if (bound_wrapped) bound_wrapped->erase(obj);
+            if (bound_wrapped_refs) {
+                auto it = bound_wrapped_refs->find(obj);
+                if (it != bound_wrapped_refs->end()) {
+                    Py_DECREF(it->second);
+                    bound_wrapped_refs->erase(it);
+                }
+            }
+            if (bound_ref_deleters) {
+                auto it = bound_ref_deleters->find(obj);
+                if (it != bound_ref_deleters->end()) {
+                    Py_DECREF(it->second);
+                    bound_ref_deleters->erase(it);
+                }
+            }
+            if (is_auto_ref) {
+                disable_if_push_failed(queue->push_ref_delete(reinterpret_cast<Ref>(obj)));
+            }
+            disable_if_push_failed(queue->push_delete(obj));
         }
 
         void write_all(StreamHandle * self, PyObject *const * args, size_t nargs) {
@@ -599,7 +662,7 @@ namespace retracesoftware_stream {
             try {
                 self->write_all(args, PyVectorcall_NARGS(nargsf));
                 if (!self->buffer_writes) {
-                    self->push(cmd_entry(CMD_FLUSH));
+                    self->disable_if_push_failed(self->queue->push_flush());
                 }
                 Py_RETURN_NONE;
             } catch (...) {
@@ -610,7 +673,7 @@ namespace retracesoftware_stream {
         static PyObject * py_flush(ObjectWriter * self, PyObject* unused) {
             if (self->is_disabled()) Py_RETURN_NONE;
             try {
-                self->push(cmd_entry(CMD_FLUSH));
+                self->disable_if_push_failed(self->queue->push_flush());
                 Py_RETURN_NONE;
             } catch (...) {
                 return nullptr;
@@ -619,7 +682,6 @@ namespace retracesoftware_stream {
 
         static PyObject* py_disable(ObjectWriter* self, PyObject* unused) {
             self->queue = nullptr;
-            self->return_queue = nullptr;
             Py_RETURN_NONE;
         }
 
@@ -630,9 +692,9 @@ namespace retracesoftware_stream {
                 return nullptr;
             }
             try {
-                self->push(cmd_entry(CMD_HEARTBEAT));
+                self->disable_if_push_failed(self->queue->push_heartbeat());
                 self->push_value(payload);
-                self->push(cmd_entry(CMD_FLUSH));
+                self->disable_if_push_failed(self->queue->push_flush());
                 Py_RETURN_NONE;
             } catch (...) {
                 return nullptr;
@@ -646,6 +708,8 @@ namespace retracesoftware_stream {
                 return nullptr;
             }
         }
+
+        static PyObject * py_deleter(ObjectWriter * self, PyObject* obj);
 
         static PyObject * py_bind(ObjectWriter * self, PyObject* obj);
         static PyObject * py_new_patched(ObjectWriter * self, PyObject* args);
@@ -709,24 +773,32 @@ namespace retracesoftware_stream {
             self->normalize_path = Py_XNewRef(normalize_path);
             self->enable_when = nullptr;
             self->queue = nullptr;
-            self->return_queue = nullptr;
             self->bindings = self->validate_bindings ? new set<PyObject*>() : nullptr;
+            self->bound_wrapped = new set<PyObject*>();
+            self->bound_wrapped_refs = new map<PyObject*, PyObject*>();
+            self->bound_ref_deleters = new map<PyObject*, PyObject*>();
             self->persister = nullptr;
-            self->total_added = 0;
-            self->total_removed.store(0, std::memory_order_relaxed);
-            self->inflight_limit = inflight_limit_arg;
-            self->stall_timeout_seconds = stall_timeout_arg;
 
-            if (output != Py_None && Py_TYPE(output) == &AsyncFilePersister_Type) {
-                SetupResult r = AsyncFilePersister_setup(output, serializer,
-                                                         (size_t)queue_capacity_arg,
-                                                         (size_t)return_queue_capacity_arg,
-                                                         &self->total_removed,
-                                                         self->thread,
-                                                         self->quit_on_error);
+            if (output != Py_None &&
+                    (Py_TYPE(output) == &AsyncFilePersister_Type ||
+                     Py_TYPE(output) == &DebugPersister_Type)) {
+                SetupResult r = Py_TYPE(output) == &AsyncFilePersister_Type
+                    ? AsyncFilePersister_setup(output, serializer,
+                                               (size_t)queue_capacity_arg,
+                                               (size_t)return_queue_capacity_arg,
+                                               inflight_limit_arg,
+                                               stall_timeout_arg,
+                                               self->thread,
+                                               self->quit_on_error)
+                    : DebugPersister_setup(output, serializer,
+                                           (size_t)queue_capacity_arg,
+                                           (size_t)return_queue_capacity_arg,
+                                           inflight_limit_arg,
+                                           stall_timeout_arg,
+                                           self->thread,
+                                           self->quit_on_error);
                 if (!r.forward_queue) return -1;
-                self->queue = (rigtorp::SPSCQueue<QEntry>*)r.forward_queue;
-                self->return_queue = (rigtorp::SPSCQueue<PyObject*>*)r.return_queue;
+                self->queue = r.forward_queue;
                 self->persister = Py_NewRef(output);
             }
 
@@ -745,7 +817,7 @@ namespace retracesoftware_stream {
                         messages_written);
                 fflush(stderr);
             }
-            push(thread_entry(PyThreadState_Get()));
+            disable_if_push_failed(queue->push_thread(PyThreadState_Get()));
         }
 
         static int traverse(ObjectWriter* self, visitproc visit, void* arg) {
@@ -754,6 +826,16 @@ namespace retracesoftware_stream {
             Py_VISIT(self->thread);
             Py_VISIT(self->path);
             Py_VISIT(self->normalize_path);
+            if (self->bound_wrapped_refs) {
+                for (auto& [_, weakref] : *self->bound_wrapped_refs) {
+                    Py_VISIT(weakref);
+                }
+            }
+            if (self->bound_ref_deleters) {
+                for (auto& [_, weakref] : *self->bound_ref_deleters) {
+                    Py_VISIT(weakref);
+                }
+            }
             return 0;
         }
 
@@ -763,12 +845,24 @@ namespace retracesoftware_stream {
             Py_CLEAR(self->thread);
             Py_CLEAR(self->path);
             Py_CLEAR(self->normalize_path);
+            if (self->bound_wrapped_refs) {
+                for (auto& [_, weakref] : *self->bound_wrapped_refs) {
+                    Py_CLEAR(weakref);
+                }
+                self->bound_wrapped_refs->clear();
+            }
+            if (self->bound_ref_deleters) {
+                for (auto& [_, weakref] : *self->bound_ref_deleters) {
+                    Py_CLEAR(weakref);
+                }
+                self->bound_ref_deleters->clear();
+            }
             return 0;
         }
 
         static void dealloc(ObjectWriter* self) {
             if (self->queue) {
-                self->push(cmd_entry(CMD_SHUTDOWN));
+                self->disable_if_push_failed(self->queue->push_shutdown());
                 self->queue = nullptr;
             }
             
@@ -776,13 +870,25 @@ namespace retracesoftware_stream {
                 PyObject_ClearWeakRefs((PyObject *)self);
             }
 
+            PyObject_GC_UnTrack(self);
+            clear(self);
+
             if (self->bindings) {
                 delete self->bindings;
                 self->bindings = nullptr;
             }
-
-            PyObject_GC_UnTrack(self);
-            clear(self);
+            if (self->bound_wrapped) {
+                delete self->bound_wrapped;
+                self->bound_wrapped = nullptr;
+            }
+            if (self->bound_wrapped_refs) {
+                delete self->bound_wrapped_refs;
+                self->bound_wrapped_refs = nullptr;
+            }
+            if (self->bound_ref_deleters) {
+                delete self->bound_ref_deleters;
+                self->bound_ref_deleters = nullptr;
+            }
 
             Py_TYPE(self)->tp_free(reinterpret_cast<PyObject*>(self));
 
@@ -829,7 +935,7 @@ namespace retracesoftware_stream {
         }
 
         static PyObject * inflight_limit_getter(ObjectWriter *self, void *closure) {
-            return PyLong_FromLongLong(self->inflight_limit);
+            return PyLong_FromLongLong(self->queue ? self->queue->inflight_limit() : 0);
         }
 
         static int inflight_limit_setter(ObjectWriter *self, PyObject *value, void *closure) {
@@ -839,24 +945,63 @@ namespace retracesoftware_stream {
             }
             long long v = PyLong_AsLongLong(value);
             if (v == -1 && PyErr_Occurred()) return -1;
-            self->inflight_limit = (int64_t)v;
+            if (self->queue) self->queue->set_inflight_limit((int64_t)v);
             return 0;
         }
 
         static PyObject * inflight_bytes_getter(ObjectWriter *self, void *closure) {
-            return PyLong_FromLongLong(self->inflight());
+            return PyLong_FromLongLong(self->queue ? self->queue->inflight() : 0);
         }
     };
 
+    PyObject* WeakRefCallback::call(WeakRefCallback* self,
+                                    PyObject* const* args, size_t nargsf,
+                                    PyObject* kwnames) {
+        if (PyVectorcall_NARGS(nargsf) != 1 || kwnames) {
+            PyErr_SetString(PyExc_TypeError, "WeakRefCallback takes one positional argument");
+            return nullptr;
+        }
+
+        auto* w = reinterpret_cast<ObjectWriter*>(self->writer);
+        if (w && !w->is_disabled()) {
+            if (self->delete_ref_only) {
+                w->send_thread();
+                Writing writing;
+                w->write_delete(reinterpret_cast<Ref>(self->handle));
+            } else {
+                w->object_freed(self->handle);
+            }
+        }
+        Py_RETURN_NONE;
+    }
+
+    int WeakRefCallback::traverse(WeakRefCallback* self, visitproc visit, void* arg) {
+        Py_VISIT(self->writer);
+        return 0;
+    }
+
+    int WeakRefCallback::clear(WeakRefCallback* self) {
+        Py_CLEAR(self->writer);
+        return 0;
+    }
+
+    void WeakRefCallback::dealloc(WeakRefCallback* self) {
+        PyObject_GC_UnTrack(self);
+        clear(self);
+        Py_TYPE(self)->tp_free((PyObject*)self);
+    }
+
     // ── Deleter ──────────────────────────────────────────────────
     //
-    // Callable returned by bind()/new_patched()/ext_bind(). When invoked (no args) on
-    // object deallocation, pushes a single delete_entry to the
-    // owning ObjectWriter's SPSC queue.
+    // Callable returned by deleter()/new_patched(). When invoked (no args)
+    // on object deallocation, pushes a delete onto the owning
+    // ObjectWriter's SPSC queue.
 
     struct Deleter : public PyObject {
         PyObject* writer;      // strong ref to ObjectWriter (for GC)
-        PyObject* addr;        // raw identity pointer (no refcount)
+        PyObject* addr;        // raw identity pointer for object_freed path (no refcount)
+        Ref ref;              // stored ref token for ref-delete path
+        bool delete_ref_only;
         vectorcallfunc vectorcall;
 
         static PyObject* call(Deleter* self,
@@ -868,7 +1013,13 @@ namespace retracesoftware_stream {
             }
             auto* w = reinterpret_cast<ObjectWriter*>(self->writer);
             if (w && !w->is_disabled()) {
-                w->object_freed(self->addr);
+                if (self->delete_ref_only) {
+                    w->send_thread();
+                    Writing writing;
+                    w->write_delete(self->ref);
+                } else {
+                    w->object_freed(self->addr);
+                }
             }
             Py_RETURN_NONE;
         }
@@ -903,24 +1054,6 @@ namespace retracesoftware_stream {
         .tp_clear = (inquiry)Deleter::clear,
     };
 
-    static PyObject * create_binding_deleter(ObjectWriter * self, PyObject * obj) {
-        try {
-            self->bind(obj);
-
-            auto* d = reinterpret_cast<Deleter*>(
-                Deleter_Type.tp_alloc(&Deleter_Type, 0));
-            if (!d) return nullptr;
-
-            d->writer = Py_NewRef((PyObject*)self);
-            d->addr = obj;
-            d->vectorcall = (vectorcallfunc)Deleter::call;
-
-            return (PyObject*)d;
-        } catch (...) {
-            return nullptr;
-        }
-    }
-
     static PyObject * create_new_patched_deleter(ObjectWriter * self, PyObject * obj) {
         try {
             self->new_patched(obj);
@@ -931,6 +1064,8 @@ namespace retracesoftware_stream {
 
             d->writer = Py_NewRef((PyObject*)self);
             d->addr = obj;
+            d->ref = nullptr;
+            d->delete_ref_only = false;
             d->vectorcall = (vectorcallfunc)Deleter::call;
 
             return (PyObject*)d;
@@ -940,7 +1075,22 @@ namespace retracesoftware_stream {
     }
 
     PyObject* ObjectWriter::py_bind(ObjectWriter* self, PyObject* obj) {
-        return create_binding_deleter(self, obj);
+        try {
+            PyTypeObject* wrapped = wrapped_type();
+            if (!wrapped) return nullptr;
+
+            bool is_wrapped = PyObject_TypeCheck(obj, wrapped);
+            bool is_patched = is_retrace_patched_type(Py_TYPE(obj));
+
+            if (is_wrapped && !is_patched) {
+                self->ensure_wrapped_tracking(obj);
+            }
+
+            self->bind(obj);
+            Py_RETURN_NONE;
+        } catch (...) {
+            return nullptr;
+        }
     }
 
     PyObject* ObjectWriter::py_new_patched(ObjectWriter* self, PyObject* obj) {
@@ -949,6 +1099,25 @@ namespace retracesoftware_stream {
 
     PyObject* ObjectWriter::py_ext_bind(ObjectWriter* self, PyObject* obj) {
         return py_bind(self, obj);
+    }
+
+    static PyObject * create_ref_deleter(ObjectWriter * self, PyObject * obj) {
+        auto* d = reinterpret_cast<Deleter*>(
+            Deleter_Type.tp_alloc(&Deleter_Type, 0));
+        if (!d) return nullptr;
+
+        d->writer = Py_NewRef((PyObject*)self);
+        d->addr = nullptr;
+        d->ref = Py_TYPE(obj) == &StreamHandle_Type
+            ? reinterpret_cast<StreamHandle*>(obj)->handle
+            : reinterpret_cast<Ref>(obj);
+        d->delete_ref_only = true;
+        d->vectorcall = (vectorcallfunc)Deleter::call;
+        return (PyObject*)d;
+    }
+
+    PyObject* ObjectWriter::py_deleter(ObjectWriter* self, PyObject* obj) {
+        return create_ref_deleter(self, obj);
     }
 
     static map<PyTypeObject *, freefunc> freefuncs;
@@ -997,13 +1166,13 @@ namespace retracesoftware_stream {
         }
     }
 
-    PyMemberDef StreamHandle_members[] = {
-        {"index", T_ULONGLONG, OFFSET_OF_MEMBER(StreamHandle, index), READONLY, "TODO"},
+    PyGetSetDef StreamHandle_getset[] = {
+        {"index", (getter)StreamHandle::get_index, nullptr, "Wire-format handle index", nullptr},
         {NULL}
     };
 
-    int StreamHandle_index(PyObject * streamhandle) {
-        return reinterpret_cast<StreamHandle *>(streamhandle)->index;
+    uint64_t StreamHandle_index(PyObject * streamhandle) {
+        return index_of_handle(reinterpret_cast<StreamHandle *>(streamhandle)->handle);
     }
 
     // --- StreamHandle type ---
@@ -1020,13 +1189,14 @@ namespace retracesoftware_stream {
         .tp_doc = "TODO",
         .tp_traverse = (traverseproc)StreamHandle::traverse,
         .tp_clear = (inquiry)StreamHandle::clear,
-        .tp_members = StreamHandle_members,
+        .tp_getset = StreamHandle_getset,
     };
 
     // --- ObjectWriter type ---
 
     static PyMethodDef methods[] = {
         {"handle", (PyCFunction)ObjectWriter::py_handle, METH_O, "Creates handle"},
+        {"deleter", (PyCFunction)ObjectWriter::py_deleter, METH_O, "Returns a callable that deletes a ref"},
         {"flush", (PyCFunction)ObjectWriter::py_flush, METH_NOARGS, "Flush buffered data to the output callback"},
         {"disable", (PyCFunction)ObjectWriter::py_disable, METH_NOARGS, "Null queue pointers to prevent further writes"},
         {"heartbeat", (PyCFunction)ObjectWriter::py_heartbeat, METH_O, "Push heartbeat payload dict and flush"},

@@ -190,7 +190,7 @@ def test_record_context_external_method_body_sees_wrapped_argument():
                 "is_internal_wrapped": isinstance(obj, utils.InternalWrapped),
                 "unwraps_to_payload": utils.is_wrapped(obj) and utils.unwrap(obj) is payload,
             })
-            return super().bind(obj)
+            super().bind(obj)
 
         def write_result(self, value):
             seen["written_is_wrapped"] = utils.is_wrapped(value)

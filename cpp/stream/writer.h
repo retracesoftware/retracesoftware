@@ -29,7 +29,7 @@ namespace retracesoftware_stream {
         return Py_TYPE(obj)->tp_name;
     }
 
-    int StreamHandle_index(PyObject *);
+    uint64_t StreamHandle_index(PyObject *);
 
     void on_free(void * obj);
     void generic_free(void * obj);
@@ -146,7 +146,7 @@ namespace retracesoftware_stream {
             }
         }
 
-        void write_handle_ref(int handle) {
+        void write_handle_ref(uint64_t handle) {
             write_unsigned_number(SizedTypes::HANDLE, handle);
         }
 
@@ -388,11 +388,11 @@ namespace retracesoftware_stream {
             emit(c);
         }
 
-        void write_handle_delete(int delta) {
+        void write_handle_delete(uint64_t delta) {
             write_unsigned_number(SizedTypes::DELETE, delta);
         }
 
-        void write_handle_ref_by_index(int index) {
+        void write_handle_ref_by_index(uint64_t index) {
             write_handle_ref(index);
         }
 

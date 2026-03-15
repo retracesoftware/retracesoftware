@@ -14,6 +14,7 @@ from types import ModuleType
 from typing import Any
 
 import retracesoftware.functional as functional
+import retracesoftware.utils as utils
 
 
 def _is_truthy_env(v):
@@ -252,6 +253,8 @@ class writer(_backend_mod.ObjectWriter):
 
         self._output = output
         self._disable_retrace = disable_retrace
+        self._heartbeat_enabled = True
+        self._heartbeat_lock = threading.Lock()
 
         kwargs = dict(thread=thread, serializer=self.serialize,
                       verbose=verbose,
@@ -296,28 +299,42 @@ class writer(_backend_mod.ObjectWriter):
     def __enter__(self): return self
 
     def __exit__(self, *args):
-        self.flush()
-        self.disable()
-        if hasattr(self, '_output') and self._output and hasattr(self._output, 'close'):
-            self._output.close()
-        if hasattr(self, '_fw') and self._fw and hasattr(self._fw, 'close'):
-            self._fw.close()
-        self._output = None
-        self._fw = None
+        with self._heartbeat_lock:
+            self._heartbeat_enabled = False
+            self.flush()
+            self.disable()
+            if hasattr(self, '_output') and self._output and hasattr(self._output, 'close'):
+                self._output.close()
+            if hasattr(self, '_fw') and self._fw and hasattr(self._fw, 'close'):
+                self._fw.close()
+            self._output = None
+            self._fw = None
 
     def serialize(self, obj):
-        return self.type_serializer.get(type(obj), pickle.dumps)(obj)
+        serializer = self.type_serializer.get(type(obj))
+        if serializer is not None:
+            return serializer(obj)
+
+        if utils.is_wrapped(obj):
+            from retracesoftware.proxy.stubfactory import StubRef
+
+            return StubRef(type(utils.unwrap(obj)))
+
+        return pickle.dumps(obj)
 
     def heartbeat(self):
-        import resource
-        payload = {
-            'ts': time.time(),
-            'inflight': self.inflight_bytes,
-            'messages': self.messages_written,
-            'rss': resource.getrusage(resource.RUSAGE_SELF).ru_maxrss,
-            'threads': threading.active_count(),
-        }
-        super().heartbeat(payload)
+        with self._heartbeat_lock:
+            if not getattr(self, "_heartbeat_enabled", False):
+                return
+            import resource
+            payload = {
+                'ts': time.time(),
+                'inflight': self.inflight_bytes,
+                'messages': self.messages_written,
+                'rss': resource.getrusage(resource.RUSAGE_SELF).ru_maxrss,
+                'threads': threading.active_count(),
+            }
+            super().heartbeat(payload)
 
     # -- Fork safety ----------------------------------------------------------
     # PID-framed writes (each <= PIPE_BUF) let parent and child share the
@@ -422,7 +439,7 @@ class reader(_backend_mod.ObjectStreamReader):
         self.close()
 
     def bind(self, obj):
-        return super().bind(obj)
+        super().bind(obj)
 
     def _default_stub_factory(self, cls):
         return cls.__new__(cls)

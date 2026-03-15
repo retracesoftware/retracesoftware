@@ -320,19 +320,25 @@ def input_adapter(function, passthrough, proxy, unproxy, on_call = None):
 
     return function
 
-def output_transform(passthrough, proxy, unproxy, on_result = None):
+def output_transform(passthrough, proxy, unproxy, on_result = None, on_passthrough_result = None):
     if on_result:
         slow_path = functional.sequence(
             functional.walker(proxy),
-            utils.side_effect(on_result),
+            functional.side_effect(on_result),
             functional.walker(unproxy))
 
+        passthrough_result = on_passthrough_result or on_result
         return functional.if_then_else(
-            passthrough, utils.side_effect(on_result),
+            passthrough, functional.side_effect(passthrough_result),
             slow_path)
     else:
         transform = functional.sequence(proxy, unproxy)
-        return functional.when_not(passthrough, functional.walker(transform))
+        slow_path = functional.walker(transform)
+        if on_passthrough_result:
+            return functional.if_then_else(
+                passthrough, functional.side_effect(on_passthrough_result),
+                slow_path)
+        return functional.when_not(passthrough, slow_path)
 
 def adapter(function,
             passthrough,
@@ -342,6 +348,7 @@ def adapter(function,
             unproxy_output = functional.identity,
             on_call = None,
             on_result = None,
+            on_passthrough_result = None,
             on_error = None):
     """Build an adapter pipeline around *function*.
 
@@ -381,6 +388,9 @@ def adapter(function,
         Observer invoked before the call (receives the same args).
     on_result : callable, optional
         Observer invoked on success (receives the result).
+    on_passthrough_result : callable, optional
+        Observer invoked when the passthrough fast-path returns a value
+        without proxying.
     on_error : callable, optional
         Observer invoked on exception (receives the error).
     """
@@ -391,7 +401,8 @@ def adapter(function,
         passthrough, 
         proxy_output,
         unproxy_output,
-        on_result)
+        on_result,
+        on_passthrough_result)
 
     function = functional.sequence(function, output_transformer)
 
@@ -1107,6 +1118,7 @@ class System:
             unproxy_output = unproxy_int,
             on_call = ext_spec.on_call,
             on_result = ext_spec.on_result,
+            on_passthrough_result = getattr(ext_spec, "on_passthrough_result", None),
             on_error = ext_spec.on_error)
 
         int_executor = adapter(
@@ -1169,6 +1181,7 @@ class System:
             on_error = on_error)
 
     def _create_ext_spec(self, sync : Callable, on_result : Callable, on_error : Callable,
+                         on_passthrough_result : Callable = None,
                          on_new_proxytype : Callable = None,
                          disabled_handler : Callable = None,
                          internal_handler : Callable = None) -> SimpleNamespace:
@@ -1186,6 +1199,9 @@ class System:
         on_error : callable or None
             Observer called on exception.  During record this is
             ``writer.write_error``; during replay this is None.
+        on_passthrough_result : callable or None
+            Observer called when the adapter fast-path returns a value
+            without crossing the proxy boundary.
         on_new_proxytype : callable or None
             Called as ``on_new_proxytype(proxytype, cls)`` whenever
             ``ext_proxytype`` creates a new DynamicProxy class.  During
@@ -1248,6 +1264,7 @@ class System:
             proxy = self._proxyfactory(self.disable_for(ext_proxytype)),
             on_call = functional.lazy(sync),
             on_result = on_result,
+            on_passthrough_result = on_passthrough_result,
             on_error = on_error)
 
     def record_context(self, writer, normalize = None, stacktraces = False):
