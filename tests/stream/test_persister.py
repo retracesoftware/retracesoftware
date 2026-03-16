@@ -20,10 +20,11 @@ AsyncFilePersister = _mod.AsyncFilePersister
 
 
 def _make_persister(path):
-    """Create a FramedWriter + AsyncFilePersister pair."""
+    """Create a FramedWriter + AsyncFilePersister sink + Queue."""
     fw = FramedWriter(str(path))
-    p = AsyncFilePersister(fw)
-    return fw, p
+    p = AsyncFilePersister(fw, thread=_thread_id)
+    q = _mod.Queue(p)
+    return fw, p, q
 
 _thread_id = lambda: threading.current_thread().ident
 
@@ -47,25 +48,26 @@ def _unframe(data: bytes) -> bytes:
 def test_construct_and_close(tmp_path):
     """Persister opens a file; close joins any threads."""
     path = tmp_path / "out.bin"
-    fw, p = _make_persister(path)
+    fw, p, q = _make_persister(path)
     assert path.exists()
-    p.close()
+    q.close()
     fw.close()
 
 
 def test_close_is_idempotent(tmp_path):
     """Calling close() multiple times must not crash."""
-    fw, p = _make_persister(tmp_path / "out.bin")
-    p.close()
-    p.close()
-    p.close()
+    fw, p, q = _make_persister(tmp_path / "out.bin")
+    q.close()
+    q.close()
+    q.close()
     fw.close()
 
 
 def test_dealloc_without_close(tmp_path):
     """Dropping all references should cleanly shut down."""
     path = tmp_path / "out.bin"
-    fw, p = _make_persister(path)
+    fw, p, q = _make_persister(path)
+    del q
     del p
     del fw
     gc.collect()
@@ -146,8 +148,8 @@ def test_open_preserves_existing_file(tmp_path):
     old = b"old content that should remain"
     path.write_bytes(old)
 
-    fw, p = _make_persister(path)
-    p.close()
+    fw, p, q = _make_persister(path)
+    q.close()
     fw.close()
 
     assert path.read_bytes() == old
@@ -174,10 +176,10 @@ def test_append_mode(tmp_path):
 def test_drain_and_resume(tmp_path):
     """Drain stops the writer thread; resume restarts it."""
     path = tmp_path / "out.bin"
-    fw, p = _make_persister(path)
-    p.drain()
-    p.resume()
-    p.close()
+    fw, p, q = _make_persister(path)
+    q.drain()
+    q.resume()
+    q.close()
     fw.close()
 
 

@@ -97,7 +97,7 @@ class RecordProxySystem(ProxySystem):
 
         patched = super().patch_type(cls)
 
-        self.writer.type_serializer[patched] = functional.side_effect(self.writer.ext_bind)
+        self.writer.type_serializer[patched] = functional.side_effect(self.writer.bind)
 
         return patched
 
@@ -196,7 +196,7 @@ class RecordProxySystem(ProxySystem):
 
         self.bind = self.writer.bind
 
-        self.create_from_external = self.writer.ext_bind
+        self.create_from_external = self.writer.bind
 
         self.write_trace = self.writer.handle('TRACER')
 

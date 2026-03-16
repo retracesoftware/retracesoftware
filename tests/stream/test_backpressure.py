@@ -156,16 +156,16 @@ def test_inflight_limit_default(tmp_path):
     """Default inflight_limit is 128 MB."""
     path = tmp_path / "trace.bin"
     with stream.writer(path, thread=_thread_id, raw=True) as w:
-        assert w.inflight_limit == 128 * 1024 * 1024
+        assert w.queue.inflight_limit == 128 * 1024 * 1024
 
 
 def test_inflight_limit_configurable(tmp_path):
     """inflight_limit can be set via constructor and property."""
     path = tmp_path / "trace.bin"
     with stream.writer(path, thread=_thread_id, inflight_limit=1024, raw=True) as w:
-        assert w.inflight_limit == 1024
-        w.inflight_limit = 2048
-        assert w.inflight_limit == 2048
+        assert w.queue.inflight_limit == 1024
+        w.queue.inflight_limit = 2048
+        assert w.queue.inflight_limit == 2048
 
 
 def test_inflight_bytes_tracks_data(tmp_path):
@@ -173,13 +173,13 @@ def test_inflight_bytes_tracks_data(tmp_path):
     import time
     path = tmp_path / "trace.bin"
     with stream.writer(path, thread=_thread_id, raw=True) as w:
-        baseline = w.inflight_bytes
+        baseline = w.queue.inflight_bytes
         big = b"X" * 10000
         w(big)
-        assert w.inflight_bytes > baseline
+        assert w.queue.inflight_bytes > baseline
         w.flush()
         time.sleep(0.2)
-        assert w.inflight_bytes < 1000
+        assert w.queue.inflight_bytes < 1000
 
 
 def test_inflight_no_data_loss_under_pressure(tmp_path):

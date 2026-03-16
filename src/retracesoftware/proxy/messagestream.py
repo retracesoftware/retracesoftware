@@ -364,9 +364,6 @@ class MemoryWriter:
     def new_patched(self, obj):
         return self.bind(obj)
 
-    def ext_bind(self, *a, **kw):
-        return self.bind(*a, **kw)
-
     def reader(self):
         """Create a ``MemoryReader`` from the recorded tape."""
         return MemoryReader(self.tape)

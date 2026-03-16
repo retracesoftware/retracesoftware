@@ -12,56 +12,121 @@ namespace retracesoftware_stream {
 
     // Tagged word-sized queue protocol.
     //
-    // Each queue entry is one machine word (uintptr_t) with a uniform 2-bit
-    // tag layout on both 32-bit and 64-bit builds:
+    //   Inline pointer entry (8-byte aligned pointer only)
     //
-    //   Tag 0b00  TAG_OBJECT         PyObject* payload (or command payload word)
-    //   Tag 0b01  TAG_HANDLE_REF     tagged Ref
-    //   Tag 0b10  TAG_HANDLE_DELETE  tagged Ref
-    //   Tag 0b11  TAG_COMMAND        non-pointer: [len/payload][cmd:4][tag:2]
+    //     63                         3 2       0
+    //    +----------------------------+---------+
+    //    |        pointer bits        |  kind   |
+    //    +----------------------------+---------+
     //
-    // Commands that need extra data use TAG_COMMAND followed by one or more
-    // payload words. Pointer payloads are emitted as TAG_OBJECT words and are
-    // only interpreted according to the active command.
-
+    //     kind is a 3-bit PointerKind in the range 0x0..0x6.
+    //
+    //   Extended entry
+    //
+    //     63                    6 5       3 2       0
+    //    +-----------------------+---------+---------+
+    //    |    len / metadata     | extkind |   111   |
+    //    +-----------------------+---------+---------+
+    //
+    //     low 3 bits  : 0x7 means "extended entry"
+    //     next 3 bits : extended kind
+    //     upper bits  : length / metadata
+    //
+    //   Command header
+    //
+    //     63                   10 9      6 5       3 2       0
+    //    +-----------------------+--------+---------+---------+
+    //    |    len / metadata     |  cmd   |   111   |   111   |
+    //    +-----------------------+--------+---------+---------+
+    //
+    //     The command family is itself an extended kind:
+    //       tag     = 0x7
+    //       extkind = 0x7
+    //       cmd     = command id
+    //
+    //   Escaped pointer sequence
+    //
+    //     entry 0:
+    //       extended header with extkind = PointerKind
+    //
+    //     entry 1:
+    //       payload_ptr_entry(raw_pointer)
+    //
     using QEntry = uintptr_t;
     using Ref = void*;
 
-    static constexpr QEntry TAG_MASK          = 0x3;
-    static constexpr QEntry TAG_OBJECT        = 0;
-    static constexpr QEntry TAG_HANDLE_REF    = 1;
-    static constexpr QEntry TAG_HANDLE_DELETE = 2;
-    static constexpr QEntry TAG_COMMAND       = 3;
+    static constexpr QEntry TAG_MASK = 0x7;
+    static constexpr QEntry TAG_EXTENDED = 0x7;
+    static constexpr QEntry POINTER_KIND_MASK = 0x7;
+    static constexpr QEntry EXT_KIND_MASK = 0x7;
 
-    static constexpr int CMD_SHIFT = 2;
+    enum PointerKind : uint32_t {
+        PTR_OWNED_OBJECT       = 0x0,
+        PTR_HANDLE_REF         = 0x1,
+        PTR_BIND               = 0x2,
+        PTR_IMMORTAL           = 0x3,
+        PTR_BOUND_REF          = 0x4,
+        PTR_BOUND_REF_DELETE   = 0x5,
+        PTR_NEW_EXT_WRAPPED    = 0x6,
+    };
+
+    static constexpr int EXT_KIND_SHIFT = 3;
+    static constexpr uint32_t EXT_KIND_COMMAND = 0x7;
+    static constexpr int CMD_SHIFT = 6;
     static constexpr int CMD_BITS  = 4;
-    static constexpr int LEN_SHIFT = 6;
+    static constexpr int LEN_SHIFT = 10;
 
-    inline QEntry tag_of(QEntry e)              { return e & TAG_MASK; }
-    inline PyObject* as_ptr(QEntry e)           { return (PyObject*)(e & ~TAG_MASK); }
-    inline void* as_raw_ptr(QEntry e)           { return (void*)(e & ~TAG_MASK); }
-    inline PyThreadState* as_tstate(QEntry e)   { return (PyThreadState*)(e & ~TAG_MASK); }
+    inline QEntry tag_of(QEntry e) { return e & TAG_MASK; }
+    inline bool is_extended_entry(QEntry e) { return tag_of(e) == TAG_EXTENDED; }
+    inline uint32_t ext_kind_of(QEntry e) { return (uint32_t)((e >> EXT_KIND_SHIFT) & EXT_KIND_MASK); }
+    inline bool is_command_entry(QEntry e) {
+        return is_extended_entry(e) && ext_kind_of(e) == EXT_KIND_COMMAND;
+    }
+    inline bool is_escaped_pointer_entry(QEntry e) {
+        return is_extended_entry(e) && ext_kind_of(e) != EXT_KIND_COMMAND;
+    }
+    inline PointerKind pointer_kind_of(QEntry e) { return (PointerKind)(e & POINTER_KIND_MASK); }
+    inline PointerKind escaped_pointer_kind_of(QEntry e) { return (PointerKind)ext_kind_of(e); }
 
-    inline QEntry obj_entry(PyObject* p)            { return (QEntry)p; }
-    inline QEntry raw_ptr_entry(void* p)            { return (QEntry)p; }
-    inline QEntry handle_ref_entry(Ref handle)   { return (QEntry)handle | TAG_HANDLE_REF; }
-    inline QEntry handle_delete_entry(Ref handle) { return (QEntry)handle | TAG_HANDLE_DELETE; }
+    inline bool supports_inline_pointer_kind(const void* ptr) {
+        return ((((uintptr_t)ptr) & 0x4) == 0);
+    }
+
+    inline PyObject* as_owned_obj(QEntry e) { return (PyObject*)(e & ~POINTER_KIND_MASK); }
+    inline Ref as_handle_ref(QEntry e) { return (Ref)(e & ~POINTER_KIND_MASK); }
+    inline PyObject* as_bind_obj(QEntry e) { return (PyObject*)(e & ~POINTER_KIND_MASK); }
+    inline Ref as_bound_ref(QEntry e) { return (Ref)(e & ~POINTER_KIND_MASK); }
+    inline Ref as_bound_ref_delete(QEntry e) { return (Ref)(e & ~POINTER_KIND_MASK); }
+
+    inline PyObject* as_payload_obj(QEntry e) { return reinterpret_cast<PyObject*>(e); }
+    inline void* as_payload_raw_ptr(QEntry e) { return reinterpret_cast<void*>(e); }
+    inline PyThreadState* as_payload_tstate(QEntry e) { return reinterpret_cast<PyThreadState*>(e); }
+
+    inline QEntry owned_obj_entry(PyObject* p) { return (QEntry)p | PTR_OWNED_OBJECT; }
+    inline QEntry handle_ref_entry(Ref handle) { return (QEntry)handle | PTR_HANDLE_REF; }
+    inline QEntry bind_entry(PyObject* p) { return (QEntry)p | PTR_BIND; }
+    inline QEntry bound_ref_entry(Ref ref) { return (QEntry)ref | PTR_BOUND_REF; }
+    inline QEntry bound_ref_delete_entry(Ref ref) { return (QEntry)ref | PTR_BOUND_REF_DELETE; }
+    inline QEntry payload_ptr_entry(void* p) { return (QEntry)p; }
+    inline QEntry escaped_ptr_entry(PointerKind kind) {
+        return ((QEntry)kind << EXT_KIND_SHIFT) | TAG_EXTENDED;
+    }
 
     inline QEntry cmd_entry(uint32_t cmd, uint32_t len = 0) {
-        return ((QEntry)len << LEN_SHIFT) | ((QEntry)cmd << CMD_SHIFT) | TAG_COMMAND;
+        return ((QEntry)len << LEN_SHIFT)
+             | ((QEntry)cmd << CMD_SHIFT)
+             | ((QEntry)EXT_KIND_COMMAND << EXT_KIND_SHIFT)
+             | TAG_EXTENDED;
     }
 
     inline uint32_t cmd_of(QEntry e) { return (uint32_t)((e >> CMD_SHIFT) & ((1U << CMD_BITS) - 1)); }
     inline uint32_t len_of(QEntry e) { return (uint32_t)(e >> LEN_SHIFT); }
-    inline Ref handle_ref_of(QEntry e) { return (Ref)(e & ~TAG_MASK); }
-    inline Ref handle_delete_of(QEntry e) { return (Ref)(e & ~TAG_MASK); }
-
     inline Ref handle_from_index(uintptr_t index) {
-        return (Ref)((index + 1) << CMD_SHIFT);
+        return (Ref)((index + 1) << 3);
     }
 
     inline uintptr_t index_of_handle(Ref handle) {
-        return (((uintptr_t)handle) >> CMD_SHIFT) - 1;
+        return (((uintptr_t)handle) >> 3) - 1;
     }
 
     inline int64_t estimate_long_size(PyObject* obj) {
@@ -119,14 +184,13 @@ namespace retracesoftware_stream {
         CMD_DICT,
         CMD_HEARTBEAT,
 
-        CMD_EXTERNAL_WRAPPED,
+        CMD_HANDLE_DELETE,
         
         CMD_DELETE,
         CMD_THREAD,
         CMD_PICKLED,
         CMD_NEW_HANDLE,
         CMD_NEW_PATCHED,
-        CMD_BIND,
         CMD_SERIALIZE_ERROR,
     };
 

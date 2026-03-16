@@ -396,6 +396,10 @@ namespace retracesoftware_stream {
             write_handle_ref(index);
         }
 
+        void write_bound_ref_by_index(int index) {
+            write_lookup(index);
+        }
+
         void write_new_handle(PyObject * obj) {
             emit(NewHandle);
             write(obj);
@@ -498,6 +502,22 @@ namespace retracesoftware_stream {
                 return true;
             }
             return false;
+        }
+
+        bool delete_bound_ref_by_index(int index) {
+            for (auto it = bindings.begin(); it != bindings.end(); ++it) {
+                if (it->second == index) {
+                    write_unsigned_number(SizedTypes::BINDING_DELETE, index);
+                    bindings.erase(it);
+                    return true;
+                }
+            }
+            return false;
+        }
+
+        int binding_index(PyObject* obj) const {
+            auto it = bindings.find(obj);
+            return it == bindings.end() ? -1 : it->second;
         }
 
         void write_thread_switch(PyObject * thread_handle) {

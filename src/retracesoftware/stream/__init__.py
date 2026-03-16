@@ -9,7 +9,6 @@ import threading
 import time
 import weakref
 import sys
-import re
 from types import ModuleType
 from typing import Any
 
@@ -52,6 +51,131 @@ def _export_public(mod: ModuleType) -> None:
 
 _export_public(_backend_mod)
 
+_NATIVE_PERSISTER_TYPES = tuple(
+    t for t in (
+        getattr(_backend_mod, "AsyncFilePersister", None),
+    )
+    if t is not None
+)
+
+
+def _dispatch_debug_handler(handler, event):
+    if callable(handler):
+        return handler(event)
+    return handler.handle_event(event)
+
+
+def _debug_event(tag, payload):
+    return (tag, payload)
+
+
+def _debug_object_event(obj):
+    return _debug_event("object", obj)
+
+
+def _debug_command_event(name, args=()):
+    return _debug_event("command", (name, args))
+
+
+class DebugPersister:
+    def __init__(self, handler, quit_on_error=False):
+        if not callable(handler) and not hasattr(handler, "handle_event"):
+            raise TypeError(
+                "DebugPersister handler must be callable or define handle_event(event)"
+            )
+        self.handler = handler
+        self.quit_on_error = bool(quit_on_error)
+
+    def _dispatch_event(self, event):
+        try:
+            return _dispatch_debug_handler(self.handler, event)
+        except Exception:
+            import traceback
+
+            if self.quit_on_error:
+                print("retrace: python persister callback error (quit_on_error is set)", file=sys.stderr)
+                traceback.print_exc()
+                os._exit(1)
+            traceback.print_exc()
+            return None
+
+    def _consume_index(self, name, value):
+        return self._dispatch_event(_debug_event(name, value))
+
+    def _command0(self, name):
+        return self._dispatch_event(_debug_command_event(name))
+
+    def _command1(self, name, value):
+        return self._dispatch_event(_debug_command_event(name, (value,)))
+
+    def consume_object(self, obj):
+        return self._dispatch_event(_debug_object_event(obj))
+
+    def consume_handle_ref(self, index):
+        return self._consume_index("handle_ref", index)
+
+    def consume_handle_delete(self, delta):
+        return self._consume_index("handle_delete", delta)
+
+    def consume_bound_ref(self, index):
+        return self._consume_index("bound_ref", index)
+
+    def consume_bound_ref_delete(self, index):
+        return self._consume_index("bound_ref_delete", index)
+
+    def consume_flush(self):
+        return self._command0("flush")
+
+    def consume_shutdown(self):
+        return self._command0("shutdown")
+
+    def consume_list(self, length):
+        return self._command1("list", length)
+
+    def consume_tuple(self, length):
+        return self._command1("tuple", length)
+
+    def consume_dict(self, length):
+        return self._command1("dict", length)
+
+    def consume_heartbeat(self):
+        return self._command0("heartbeat")
+
+    def consume_new_ext_wrapped(self, typ):
+        return self._dispatch_event(
+            _debug_command_event("new_ext_wrapped", (_debug_object_event(typ),))
+        )
+
+    def consume_delete(self, ref_id):
+        return self._command1("delete", ref_id)
+
+    def consume_thread(self, thread_id):
+        return self._command1("thread", thread_id)
+
+    def consume_pickled(self, obj):
+        return self._dispatch_event(
+            _debug_command_event("pickled", (_debug_object_event(obj),))
+        )
+
+    def consume_new_handle(self, index, obj):
+        return self._dispatch_event(
+            _debug_command_event("new_handle", (index, _debug_object_event(obj)))
+        )
+
+    def consume_new_patched(self, obj, typ):
+        return self._dispatch_event(
+            _debug_command_event(
+                "new_patched",
+                (_debug_object_event(type(obj)), _debug_object_event(typ)),
+            )
+        )
+
+    def consume_bind(self, index):
+        return self._command1("bind", index)
+
+    def consume_serialize_error(self):
+        return self._command0("serialize_error")
+
 # ---------------------------------------------------------------------------
 # High-level API (convenience wrappers around C++ extension)
 # ---------------------------------------------------------------------------
@@ -70,33 +194,6 @@ def call_periodically(interval, func):
             sleep(interval)
 
     threading.Thread(target=run, args=(), name="Retrace flush tracefile", daemon=True).start()
-
-def extract_frozen_name(filename):
-    match = re.match(r"<frozen (.+)>", filename)
-    return match.group(1) if match else None
-
-
-def normalize_path(path):
-    """
-    Normalize a path to an absolute path for recording.
-    
-    Recording stores absolute paths. Replay uses path_info from settings.json
-    to map paths appropriately.
-    """
-    # Handle frozen modules - get their actual file path
-    frozen_name = extract_frozen_name(path)
-    if frozen_name:
-        mod = sys.modules.get(frozen_name)
-        if mod and hasattr(mod, '__file__') and mod.__file__:
-            return os.path.realpath(mod.__file__)
-        return path  # fallback to original if module not found
-    
-    # Return canonical absolute path
-    try:
-        return os.path.realpath(path)
-    except (OSError, TypeError):
-        return path
-
 
 def get_path_info():
     """Get current path info for recording in settings.json."""
@@ -226,7 +323,7 @@ def read_process_info(path, raw=False):
 
 class writer(_backend_mod.ObjectWriter):
 
-    def __init__(self, path=None, thread=None, output=None,
+    def __init__(self, path=None, thread=None, output=None, queue=None,
                  flush_interval=0.1,
                  verbose=False,
                  disable_retrace=None,
@@ -241,15 +338,39 @@ class writer(_backend_mod.ObjectWriter):
                  raw=False):
 
         self._fw = None
+        self._queue = queue
 
-        if output is None and path is not None:
+        queue_kwargs = {}
+        if inflight_limit is not None:
+            queue_kwargs["inflight_limit"] = inflight_limit
+        if stall_timeout is not None:
+            queue_kwargs["stall_timeout"] = stall_timeout
+        if queue_capacity is not None:
+            queue_kwargs["queue_capacity"] = queue_capacity
+        if return_queue_capacity is not None:
+            queue_kwargs["return_queue_capacity"] = return_queue_capacity
+
+        if self._queue is None and path is not None:
             fw = _backend_mod.FramedWriter(str(path), raw=raw)
             self._fw = fw
 
             if preamble is not None:
                 _write_process_info(fw, preamble)
 
-            output = _backend_mod.AsyncFilePersister(fw)
+            output = _backend_mod.AsyncFilePersister(
+                fw,
+                serializer=self.serialize,
+                thread=thread,
+                quit_on_error=quit_on_error,
+            )
+
+        if self._queue is None and output is not None:
+            self._queue = _backend_mod.Queue(output, **queue_kwargs)
+
+        if self._queue is None:
+            raise ValueError("writer requires a queue, output, or path")
+        if inflight_limit is not None and self._queue is not None:
+            self._queue.inflight_limit = inflight_limit
 
         self._output = output
         self._disable_retrace = disable_retrace
@@ -257,24 +378,13 @@ class writer(_backend_mod.ObjectWriter):
         self._heartbeat_lock = threading.Lock()
 
         kwargs = dict(thread=thread, serializer=self.serialize,
-                      verbose=verbose,
-                      normalize_path=normalize_path)
-        if inflight_limit is not None:
-            kwargs['inflight_limit'] = inflight_limit
-        if stall_timeout is not None:
-            kwargs['stall_timeout'] = stall_timeout
-        if queue_capacity is not None:
-            kwargs['queue_capacity'] = queue_capacity
-        if return_queue_capacity is not None:
-            kwargs['return_queue_capacity'] = return_queue_capacity
+                      verbose=verbose)
         if quit_on_error:
             kwargs['quit_on_error'] = quit_on_error
         if not serialize_errors:
             kwargs['serialize_errors'] = False
-        if validate_bindings:
-            kwargs['validate_bindings'] = True
 
-        super().__init__(output, **kwargs)
+        super().__init__(self._queue, **kwargs)
 
         if path is not None:
             self.path = path
@@ -303,11 +413,12 @@ class writer(_backend_mod.ObjectWriter):
             self._heartbeat_enabled = False
             self.flush()
             self.disable()
-            if hasattr(self, '_output') and self._output and hasattr(self._output, 'close'):
-                self._output.close()
+            if hasattr(self, '_queue') and self._queue and hasattr(self._queue, 'close'):
+                self._queue.close()
             if hasattr(self, '_fw') and self._fw and hasattr(self._fw, 'close'):
                 self._fw.close()
             self._output = None
+            self._queue = None
             self._fw = None
 
     def serialize(self, obj):
@@ -329,7 +440,7 @@ class writer(_backend_mod.ObjectWriter):
             import resource
             payload = {
                 'ts': time.time(),
-                'inflight': self.inflight_bytes,
+                'inflight': self.queue.inflight_bytes,
                 'messages': self.messages_written,
                 'rss': resource.getrusage(resource.RUSAGE_SELF).ru_maxrss,
                 'threads': threading.active_count(),
@@ -346,14 +457,14 @@ class writer(_backend_mod.ObjectWriter):
         self._pre_fork_pid = os.getpid()
         self._fork_count = getattr(self, '_fork_count', 0)
         self.flush()
-        if hasattr(self._output, 'drain'):
-            self._output.drain()
+        if hasattr(self._queue, 'drain'):
+            self._queue.drain()
         self._pre_fork_offset = self._fw.bytes_written
 
     def _after_fork_parent(self):
         self._fork_count += 1
-        if hasattr(self._output, 'resume'):
-            self._output.resume()
+        if hasattr(self._queue, 'resume'):
+            self._queue.resume()
 
     def _after_fork_child(self):
         if self._fw:
@@ -364,8 +475,8 @@ class writer(_backend_mod.ObjectWriter):
                 'fork_index': self._fork_count,
                 'parent_offset': self._pre_fork_offset,
             })
-        if hasattr(self._output, 'resume'):
-            self._output.resume()
+        if hasattr(self._queue, 'resume'):
+            self._queue.resume()
         self._fork_count = 0
 
 

@@ -637,7 +637,6 @@ def stream_writer(writer, stackfactory = None, on_write_error = None):
         type_serializer = writer.type_serializer,
         bind         = bind_write_error(writer.bind),
         new_patched  = bind_write_error(getattr(writer, 'new_patched', writer.bind)),
-        ext_bind     = bind_write_error(writer.ext_bind),
         sync         = bind_write_error(writer.handle('SYNC')),
         write_call   = bind_write_error(writer.handle('CALL')),
         write_result = bind_write_error(writer.handle('RESULT')),

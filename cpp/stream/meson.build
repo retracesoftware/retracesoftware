@@ -1,10 +1,12 @@
 _stream_name = '_retracesoftware_stream'
 _stream_sources = files(
+  'consumer.cpp',
   'framed_writer.cpp',
   'module.cpp',
   'objectstream.cpp',
   'objectwriter.cpp',
   'persister.cpp',
+  'queue.cpp',
   'search.cpp',
 )
 _stream_includes = include_directories('.', '../common/include', 'vendor')

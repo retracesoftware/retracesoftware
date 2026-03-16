@@ -341,7 +341,7 @@ class TestReplayStatResult:
 class TestTextIOWrapperNew:
     """TextIOWrapper.__new__ alone fails under recording.
 
-    The _on_alloc hook fires ext_bind on the freshly allocated (but
+    The _on_alloc hook binds the freshly allocated (but
     uninitialized) instance.  The C++ writer calls PyObject_Str on
     it, which hits CHECK_INITIALIZED → ValueError.
     """

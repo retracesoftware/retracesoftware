@@ -11,7 +11,7 @@ The recording is an ordered sequence of events:
     error       — exception raised by an external call
     checkpoint  — normalised value for divergence detection
 
-Additional hooks (bind, ext_bind, write_call, sync) let the writer
+Additional hooks (bind, write_call, sync) let the writer
 track object identity and synchronise with the underlying transport.
 """
 from abc import ABC, abstractmethod
@@ -28,10 +28,6 @@ class Writer(ABC):
     @abstractmethod
     def bind(self, *a, **kw):
         """Notify that a patched object has entered the sandbox."""
-
-    @abstractmethod
-    def ext_bind(self, *a, **kw):
-        """Notify that a new object was allocated by external code."""
 
     @abstractmethod
     def write_call(self, *a, **kw):

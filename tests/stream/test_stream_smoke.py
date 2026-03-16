@@ -220,7 +220,8 @@ def test_async_file_persister_explicit(tmp_path):
 
     path = tmp_path / "async_trace.bin"
     fw = st._backend_mod.FramedWriter(str(path), raw=True)
-    persister = st._backend_mod.AsyncFilePersister(fw)
+    persister = st._backend_mod.AsyncFilePersister(fw, thread=_thread_id)
+    queue = st._backend_mod.Queue(persister)
 
     with stream.writer(output=persister, thread=_thread_id, flush_interval=0.01) as w:
         w("async", "persister", 42)
