@@ -48,6 +48,8 @@ namespace retracesoftware {
     extern PyTypeObject StableSetIterator_Type;
 
     extern PyTypeObject FastSet_Type;
+    extern PyTypeObject WeakSet_Type;
+    extern PyTypeObject WeakSetCallback_Type;
     extern PyTypeObject InstanceCheck_Type;
     extern PyTypeObject Visitor_Type;
     extern PyTypeObject Wrapped_Type;

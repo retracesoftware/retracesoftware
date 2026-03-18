@@ -82,8 +82,11 @@ def test_writer_wraps_plain_python_persister():
         def consume_handle_delete(self, delta):
             self.events.append(("handle_delete", delta))
 
-        def consume_bound_ref(self, index):
+        def consume_ref(self, index):
             self.events.append(("bound_ref", index))
+
+        def consume_intern(self, obj):
+            self.events.append(("intern", obj))
 
         def consume_bound_ref_delete(self, index):
             self.events.append(("bound_ref_delete", index))
@@ -112,8 +115,8 @@ def test_writer_wraps_plain_python_persister():
         def consume_delete(self, ref_id):
             self.events.append(("delete", ref_id))
 
-        def consume_thread(self, thread_id):
-            self.events.append(("thread", thread_id))
+        def consume_thread_switch(self, thread_handle):
+            self.events.append(("thread_switch", thread_handle))
 
         def consume_pickled(self, obj):
             self.events.append(("pickled", obj))
@@ -126,7 +129,7 @@ def test_writer_wraps_plain_python_persister():
 
         def consume_bind(self, index):
             self.events.append(("bind", index))
-
+    
         def consume_serialize_error(self):
             self.events.append(("serialize_error",))
 
@@ -157,6 +160,21 @@ def test_debug_persister_emits_bound_ref_for_bound_patched_object():
     assert ("command", ("bind", (0,))) in events
     assert ("command", ("bind", (1,))) in events
     assert ("bound_ref", 1) in events
+
+
+def test_debug_persister_emits_intern_then_ref():
+    events = []
+    persister = stream.DebugPersister(events.append)
+
+    payload = "interned payload"
+
+    with stream.writer(output=persister, flush_interval=999) as writer:
+        writer.intern(payload)
+        writer(payload)
+        writer.flush()
+
+    assert ("command", ("intern", (0, ("object", payload)))) in events
+    assert ("bound_ref", 0) in events
 
 
 def test_new_patched_uses_bind_lifecycle_tracking():

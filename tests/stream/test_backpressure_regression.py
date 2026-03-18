@@ -55,7 +55,6 @@ def _writer_worker(path: str, status_q):
             inflight_limit=1,
             stall_timeout=1,
             queue_capacity=2,
-            return_queue_capacity=2,
             verbose=False,
         ) as w:
             key = "k" * 4096
@@ -83,7 +82,7 @@ def test_extreme_backpressure_dict_recording_does_not_hang(tmp_path):
     for required in ("inflight_limit", "stall_timeout", "queue_capacity"):
         if required not in stream.writer.__init__.__code__.co_varnames:
             pytest.fail(f"local stream.writer missing expected argument: {required}")
-    for required_api in ("FramedWriter", "AsyncFilePersister"):
+    for required_api in ("FramedWriter", "Persister"):
         if not hasattr(stream._backend_mod, required_api):
             pytest.fail(
                 f"stream backend missing required API for recording path: {required_api}"

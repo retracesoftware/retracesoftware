@@ -33,6 +33,7 @@ _utils_sources = files(
   'wrapped.cpp',
   'wrappedfunction.cpp',
   'wrappedmember.cpp',
+  'weakset.cpp',
 )
 
 _utils_extra_c = files('generation.c', 'gilwatch_activate.c')

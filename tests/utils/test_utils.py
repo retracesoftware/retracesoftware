@@ -63,6 +63,20 @@ def test_runall_invokes_all_functions_in_order():
     ]
 
 
+def test_runall_single_callable_returns_none():
+    calls = []
+
+    def only(*args, **kwargs):
+        calls.append(("only", args, kwargs))
+        return "ignored"
+
+    runner = _utils.runall(only)
+    assert runner(1, named="x") is None
+    assert calls == [
+        ("only", (1,), {"named": "x"}),
+    ]
+
+
 # def test_striptraceback_removes_traceback_and_context():
 #     def boom():
 #         raise ValueError("boom")

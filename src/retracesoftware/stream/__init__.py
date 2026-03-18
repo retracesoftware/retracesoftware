@@ -53,7 +53,7 @@ _export_public(_backend_mod)
 
 _NATIVE_PERSISTER_TYPES = tuple(
     t for t in (
-        getattr(_backend_mod, "AsyncFilePersister", None),
+        getattr(_backend_mod, "Persister", None),
     )
     if t is not None
 )
@@ -85,6 +85,7 @@ class DebugPersister:
             )
         self.handler = handler
         self.quit_on_error = bool(quit_on_error)
+        self.reset_state()
 
     def _dispatch_event(self, event):
         try:
@@ -108,19 +109,62 @@ class DebugPersister:
     def _command1(self, name, value):
         return self._dispatch_event(_debug_command_event(name, (value,)))
 
+    def _handle_index(self, ref_id):
+        index = self._handle_indices.get(ref_id)
+        if index is not None:
+            return index
+        index = self._next_handle_index
+        self._handle_indices[ref_id] = index
+        self._next_handle_index += 1
+        return index
+
+    def _handle_delete_delta(self, ref_id):
+        index = self._handle_indices.pop(ref_id, None)
+        if index is None:
+            return None
+        return self._next_handle_index - index - 1
+
+    def _bind_index(self, ref_id):
+        return self._bindings.get(ref_id, self._next_binding_index)
+
+    def _remember_binding(self, ref_id, index):
+        self._bindings[ref_id] = index
+        self._next_binding_index = max(self._next_binding_index, index + 1)
+
+    def reset_state(self):
+        self._handle_indices = {}
+        self._next_handle_index = 0
+        self._bindings = {}
+        self._next_binding_index = 0
+
     def consume_object(self, obj):
         return self._dispatch_event(_debug_object_event(obj))
 
-    def consume_handle_ref(self, index):
-        return self._consume_index("handle_ref", index)
+    def consume_handle_ref(self, ref_id):
+        return self._consume_index("handle_ref", self._handle_index(ref_id))
 
-    def consume_handle_delete(self, delta):
+    def consume_handle_delete(self, ref_id):
+        delta = self._handle_delete_delta(ref_id)
+        if delta is None:
+            return None
         return self._consume_index("handle_delete", delta)
 
-    def consume_bound_ref(self, index):
+    def consume_ref(self, ref_id):
+        index = self._bindings[ref_id]
         return self._consume_index("bound_ref", index)
 
-    def consume_bound_ref_delete(self, index):
+    def consume_intern(self, obj):
+        ref_id = id(obj)
+        index = self._bind_index(ref_id)
+        self._remember_binding(ref_id, index)
+        return self._dispatch_event(
+            _debug_command_event("intern", (index, _debug_object_event(obj)))
+        )
+
+    def consume_bound_ref_delete(self, ref_id):
+        index = self._bindings.pop(ref_id, None)
+        if index is None:
+            return None
         return self._consume_index("bound_ref_delete", index)
 
     def consume_flush(self):
@@ -149,20 +193,23 @@ class DebugPersister:
     def consume_delete(self, ref_id):
         return self._command1("delete", ref_id)
 
-    def consume_thread(self, thread_id):
-        return self._command1("thread", thread_id)
+    def consume_thread_switch(self, thread_handle):
+        return self._command1("thread_switch", thread_handle)
 
     def consume_pickled(self, obj):
         return self._dispatch_event(
             _debug_command_event("pickled", (_debug_object_event(obj),))
         )
 
-    def consume_new_handle(self, index, obj):
+    def consume_new_handle(self, ref_id, obj):
+        index = self._handle_index(ref_id)
         return self._dispatch_event(
             _debug_command_event("new_handle", (index, _debug_object_event(obj)))
         )
 
     def consume_new_patched(self, obj, typ):
+        ref_id = id(obj)
+        self._remember_binding(ref_id, self._bind_index(ref_id))
         return self._dispatch_event(
             _debug_command_event(
                 "new_patched",
@@ -170,7 +217,9 @@ class DebugPersister:
             )
         )
 
-    def consume_bind(self, index):
+    def consume_bind(self, ref_id):
+        index = self._bind_index(ref_id)
+        self._remember_binding(ref_id, index)
         return self._command1("bind", index)
 
     def consume_serialize_error(self):
@@ -328,10 +377,10 @@ class writer(_backend_mod.ObjectWriter):
                  verbose=False,
                  disable_retrace=None,
                  preamble=None,
+                 push_fail_callback=None,
                  inflight_limit=None,
-                 stall_timeout=None,
+                 consumer_wait_timeout_ms=None,
                  queue_capacity=None,
-                 return_queue_capacity=None,
                  quit_on_error=False,
                  serialize_errors=True,
                  validate_bindings=False,
@@ -343,12 +392,14 @@ class writer(_backend_mod.ObjectWriter):
         queue_kwargs = {}
         if inflight_limit is not None:
             queue_kwargs["inflight_limit"] = inflight_limit
-        if stall_timeout is not None:
-            queue_kwargs["stall_timeout"] = stall_timeout
+        if consumer_wait_timeout_ms is not None:
+            queue_kwargs["consumer_wait_timeout_ms"] = consumer_wait_timeout_ms
         if queue_capacity is not None:
             queue_kwargs["queue_capacity"] = queue_capacity
-        if return_queue_capacity is not None:
-            queue_kwargs["return_queue_capacity"] = return_queue_capacity
+        if thread is not None:
+            queue_kwargs["thread"] = thread
+        if push_fail_callback is not None:
+            queue_kwargs["push_fail_callback"] = push_fail_callback
 
         if self._queue is None and path is not None:
             fw = _backend_mod.FramedWriter(str(path), raw=raw)
@@ -357,11 +408,9 @@ class writer(_backend_mod.ObjectWriter):
             if preamble is not None:
                 _write_process_info(fw, preamble)
 
-            output = _backend_mod.AsyncFilePersister(
+            output = _backend_mod.Persister(
                 fw,
                 serializer=self.serialize,
-                thread=thread,
-                quit_on_error=quit_on_error,
             )
 
         if self._queue is None and output is not None:
@@ -377,14 +426,11 @@ class writer(_backend_mod.ObjectWriter):
         self._heartbeat_enabled = True
         self._heartbeat_lock = threading.Lock()
 
-        kwargs = dict(thread=thread, serializer=self.serialize,
-                      verbose=verbose)
+        kwargs = dict(verbose=verbose)
         if quit_on_error:
             kwargs['quit_on_error'] = quit_on_error
-        if not serialize_errors:
-            kwargs['serialize_errors'] = False
 
-        super().__init__(self._queue, **kwargs)
+        super().__init__(self._queue, utils.ExternalWrapped, **kwargs)
 
         if path is not None:
             self.path = path

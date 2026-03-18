@@ -54,9 +54,9 @@ _ENV_OVERRIDES = {
     "RETRACE_RECORDING":      ("record", "recording", str),
     "RETRACE_WORKSPACE_PATH": ("record", "workspace", str),
     "RETRACE_FILE_PATTERNS":  ("record", "retrace_file_patterns", str),
-    "RETRACE_STALL_TIMEOUT":  ("writer", "stall_timeout", str),
     "RETRACE_INFLIGHT_LIMIT": ("writer", "inflight_limit", str),
     "RETRACE_QUEUE_CAPACITY": ("writer", "queue_capacity", str),
+    "RETRACE_CONSUMER_WAIT_TIMEOUT_MS": ("writer", "consumer_wait_timeout_ms", str),
     "RETRACE_FLUSH_INTERVAL": ("writer", "flush_interval", str),
     "RETRACE_QUIT_ON_ERROR": ("record", "quit_on_error", bool),
 }
@@ -121,8 +121,8 @@ def config_to_argv(config):
     if "monitor" in record:
         argv.extend(["--monitor", str(record["monitor"])])
 
-    _SIZE_KEYS = ("inflight_limit", "queue_capacity", "return_queue_capacity")
-    _DURATION_KEYS = ("stall_timeout", "flush_interval")
+    _SIZE_KEYS = ("inflight_limit", "queue_capacity")
+    _DURATION_KEYS = ("flush_interval",)
 
     for key in _SIZE_KEYS:
         if key in writer:
@@ -131,5 +131,9 @@ def config_to_argv(config):
     for key in _DURATION_KEYS:
         if key in writer:
             argv.extend([f"--{key}", str(parse_duration(writer[key]))])
+
+    if "consumer_wait_timeout_ms" in writer:
+        timeout_ms = int(parse_duration(writer["consumer_wait_timeout_ms"]) * 1000)
+        argv.extend(["--consumer_wait_timeout_ms", str(timeout_ms)])
 
     return argv

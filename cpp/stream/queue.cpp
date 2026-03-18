@@ -1,11 +1,20 @@
 #include "queue.h"
+#include "consumer.h"
+#include "queueentry.h"
 
+#include <algorithm>
 #include <chrono>
 #include <new>
 #include <thread>
 
 namespace retracesoftware_stream {
+
+
     namespace {
+        inline int64_t queue_estimate_size(PyObject* obj) {
+            return queue_is_immortal(obj) ? 0 : (int64_t)approximate_size_bytes(obj);
+        }
+
         PyObject* Queue_inflight_bytes_getter(Queue* self, void*) {
             return PyLong_FromLongLong(self->inflight());
         }
@@ -27,6 +36,19 @@ namespace retracesoftware_stream {
 
         PyObject* Queue_persister_getter(Queue* self, void*) {
             return Py_NewRef(self->persister());
+        }
+
+        PyObject* Queue_push_fail_callback_getter(Queue* self, void*) {
+            return Py_NewRef(self->push_fail_handler());
+        }
+
+        int Queue_push_fail_callback_setter(Queue* self, PyObject* value, void*) {
+            if (value == nullptr) {
+                PyErr_SetString(PyExc_AttributeError, "deletion of 'push_fail_callback' is not allowed");
+                return -1;
+            }
+            self->set_push_fail_handler(value);
+            return PyErr_Occurred() ? -1 : 0;
         }
 
         PyObject* Queue_py_close(Queue* self, PyObject*) {
@@ -51,58 +73,6 @@ namespace retracesoftware_stream {
             return reinterpret_cast<PyObject*>(self);
         }
 
-        int Queue_init(Queue* self, PyObject* args, PyObject* kwds) {
-            PyObject* persister = Py_None;
-            Py_ssize_t queue_capacity = 65536;
-            Py_ssize_t return_queue_capacity = 131072;
-            long long inflight_limit = 128LL * 1024 * 1024;
-            int stall_timeout = 5;
-
-            static const char* kwlist[] = {
-                "persister",
-                "queue_capacity",
-                "return_queue_capacity",
-                "inflight_limit",
-                "stall_timeout",
-                nullptr
-            };
-
-            if (!PyArg_ParseTupleAndKeywords(args, kwds, "|OnnLi", (char**)kwlist,
-                                             &persister,
-                                             &queue_capacity,
-                                             &return_queue_capacity,
-                                             &inflight_limit,
-                                             &stall_timeout)) {
-                return -1;
-            }
-
-            if (queue_capacity <= 0 || return_queue_capacity <= 0) {
-                PyErr_SetString(PyExc_ValueError, "queue capacities must be positive");
-                return -1;
-            }
-            if (stall_timeout < 0) {
-                PyErr_SetString(PyExc_ValueError, "stall_timeout must be non-negative");
-                return -1;
-            }
-
-            self->~Queue();
-            new (self) Queue((size_t)queue_capacity,
-                             (size_t)return_queue_capacity,
-                             (int64_t)inflight_limit,
-                             stall_timeout);
-            if (persister != Py_None) {
-                self->persister_obj = Py_NewRef(persister);
-                try {
-                    self->consumer = new Consumer(*self, self->persister_obj);
-                } catch (...) {
-                    Py_CLEAR(self->persister_obj);
-                    PyErr_SetString(PyExc_RuntimeError, "failed to create queue consumer");
-                    return -1;
-                }
-            }
-            return 0;
-        }
-
         void Queue_dealloc(Queue* self) {
             self->~Queue();
             Py_TYPE(self)->tp_free(reinterpret_cast<PyObject*>(self));
@@ -119,10 +89,69 @@ namespace retracesoftware_stream {
             {"inflight_bytes", (getter)Queue_inflight_bytes_getter, nullptr, (char*)"Current estimated bytes in flight", nullptr},
             {"inflight_limit", (getter)Queue_inflight_limit_getter, (setter)Queue_inflight_limit_setter, (char*)"Maximum bytes allowed in flight", nullptr},
             {"persister", (getter)Queue_persister_getter, nullptr, (char*)"Attached persister sink", nullptr},
+            {"push_fail_callback", (getter)Queue_push_fail_callback_getter, (setter)Queue_push_fail_callback_setter, (char*)"Retry callback used when a logical push stalls", nullptr},
             {nullptr}
         };
     }
 
+    int Queue_init(Queue* self, PyObject* args, PyObject* kwds) {
+        PyObject* persister = Py_None;
+        PyObject* thread = Py_None;
+        PyObject* push_fail_callback = Py_None;
+        Py_ssize_t queue_capacity = 65536;
+        long long inflight_limit = 128LL * 1024 * 1024;
+        int consumer_wait_timeout_ms = 100;
+
+        static const char* kwlist[] = {
+            "persister",
+            "thread",
+            "push_fail_callback",
+            "queue_capacity",
+            "inflight_limit",
+            "consumer_wait_timeout_ms",
+            nullptr
+        };
+
+        if (!PyArg_ParseTupleAndKeywords(args, kwds, "|OOOnLi", (char**)kwlist,
+                                         &persister,
+                                         &thread,
+                                         &push_fail_callback,
+                                         &queue_capacity,
+                                         &inflight_limit,
+                                         &consumer_wait_timeout_ms)) {
+            return -1;
+        }
+
+        if (queue_capacity <= 0) {
+            PyErr_SetString(PyExc_ValueError, "queue_capacity must be positive");
+            return -1;
+        }
+        if (consumer_wait_timeout_ms < 0) {
+            PyErr_SetString(PyExc_ValueError, "consumer_wait_timeout_ms must be non-negative");
+            return -1;
+        }
+        if (thread != Py_None && !PyCallable_Check(thread)) {
+            PyErr_SetString(PyExc_TypeError, "thread must be callable");
+            return -1;
+        }
+        if (push_fail_callback != Py_None && !PyCallable_Check(push_fail_callback)) {
+            PyErr_SetString(PyExc_TypeError, "push_fail_callback must be callable or None");
+            return -1;
+        }
+
+        self->~Queue();
+        new (self) Queue((size_t)queue_capacity,
+                         (int64_t)inflight_limit,
+                         consumer_wait_timeout_ms);
+        if (thread != Py_None) self->thread_id_callback = Py_NewRef(thread);
+        if (push_fail_callback != Py_None) self->push_fail_callback = Py_NewRef(push_fail_callback);
+        if (persister != Py_None) {
+            self->consumer = make_consumer(persister);
+            self->resume();
+        }
+        return 0;
+    }
+    
     PyTypeObject Queue_Type = {
         .ob_base = PyVarObject_HEAD_INIT(NULL, 0)
         .tp_name = "retracesoftware_stream.Queue",
@@ -149,149 +178,172 @@ namespace retracesoftware_stream {
         : entries(1),
           returned(1),
           inflight_limit_bytes(0),
-          stall_timeout_seconds_value(0) {}
+          return_notify_threshold_bytes(1),
+          consumer_wait_timeout_ms_value(100),
+          notify_threshold_entries(1) {}
 
-    Queue::Queue(size_t capacity, size_t return_capacity,
-                 int64_t inflight_limit, int stall_timeout_seconds)
+    Queue::Queue(size_t capacity, int64_t inflight_limit, int consumer_wait_timeout_ms)
         : entries(capacity),
-          returned(return_capacity),
+          returned(capacity),
           inflight_limit_bytes(inflight_limit),
-          stall_timeout_seconds_value(stall_timeout_seconds) {}
+          return_notify_threshold_bytes(
+              inflight_limit > 0 ? std::max<int64_t>(1, inflight_limit / 4) : 1),
+          consumer_wait_timeout_ms_value(consumer_wait_timeout_ms),
+          notify_threshold_entries(std::max<size_t>(1, capacity / 2)) {}
 
     Queue::~Queue() {
         close();
-
-        while (auto* ep = returned.front()) {
-            PyObject* obj = *ep;
-            returned.pop();
-            note_removed(estimate_size(obj));
-            Py_DECREF(obj);
-        }
-
-        release_entries();
-
-        Py_CLEAR(persister_obj);
-        delete this->consumer;
-        this->consumer = nullptr;
+        Py_CLEAR(thread_id_callback);
+        Py_CLEAR(push_fail_callback);
+        delete consumer;
     }
 
     bool Queue::push_command(Cmd cmd, uint32_t len) {
-        return push_entry(cmd_entry(cmd, len));
+        return push(cmd_entry(cmd, len));
     }
 
-    bool Queue::push_flush() {
-        return push_command(CMD_FLUSH);
+    void Queue::prepare_consumer_resume() {
+        if (consumer) consumer->prepare_resume();
     }
 
-    bool Queue::push_shutdown() {
-        return push_command(CMD_SHUTDOWN);
+    void Queue::reset_consumer_state() {
+        if (consumer) consumer->reset_state();
     }
 
-    bool Queue::push_immortal(PyObject* obj) {
-        return push_pointer_entry(obj, PTR_IMMORTAL);
+    void Queue::flush_consumer() {
+        if (consumer) consumer->flush_background();
     }
 
-    bool Queue::push_bind(Ref ref) {
-        return push_pointer_entry(ref, PTR_BIND);
+    bool Queue::has_entry_slots(size_t needed) const {
+        return entries.capacity() - entries.size() >= needed;
     }
 
-    bool Queue::push_delete(Ref ref) {
-        return push_command(CMD_DELETE) &&
-               push_raw_ptr_payload(ref);
+    bool Queue::wait_for_slots(size_t needed) {
+        while (!has_entry_slots(needed)) {
+            if (!wait_with_push_backoff()) return false;
+        }
+        return true;
     }
 
-    bool Queue::push_thread(PyThreadState* tstate) {
-        return push_command(CMD_THREAD) &&
-               push_raw_ptr_payload(tstate);
+    bool Queue::wait_for_inflight() {
+        while (inflight() >= inflight_limit_bytes) {
+            drain_returned_with_gil(0);
+            if (inflight() < inflight_limit_bytes) return true;
+            maybe_notify_return_thread(false);
+            if (!wait_with_push_backoff()) return false;
+        }
+        return true;
     }
 
-    bool Queue::push_new_patched(PyObject* obj, PyTypeObject* type) {
-        return push_command(CMD_NEW_PATCHED) &&
-               push_owned_payload(obj, estimate_size(obj)) &&
-               push_raw_ptr_payload(type);
+    bool Queue::try_pop_returned(PyObject*& obj) {
+        PyObject** slot = returned.front();
+        if (!slot) return false;
+        obj = *slot;
+        returned.pop();
+        return true;
     }
 
-    bool Queue::push_ext_wrapped(PyTypeObject* type) {
-        return push_pointer_entry(type, PTR_NEW_EXT_WRAPPED);
+    bool Queue::has_returned_entries() const {
+        return !returned.empty();
     }
 
-    bool Queue::push_new_handle(Ref handle, PyObject* obj) {
-        return push_command(CMD_NEW_HANDLE) &&
-               push_raw_ptr_payload(handle) &&
-               push_owned_payload(obj, estimate_size(obj));
+    void Queue::maybe_notify_return_thread(bool force) {
+        if (!return_thread_started) return;
+        if (!return_thread_waiting.load(std::memory_order_acquire)) return;
+        if (!force && inflight_limit_bytes > 0 && inflight() < return_notify_threshold_bytes) return;
+        return_wake_cv.notify_one();
     }
 
-    bool Queue::push_heartbeat() {
-        return push_command(CMD_HEARTBEAT);
+    void Queue::drain_returned_all_with_gil() {
+        PyObject* obj = nullptr;
+        while (try_pop_returned(obj)) {
+            note_removed(queue_estimate_size(obj));
+            Py_DECREF(obj);
+        }
     }
 
-    bool Queue::push_serialize_error() {
-        return push_command(CMD_SERIALIZE_ERROR);
+    bool Queue::drain_returned_with_gil(int64_t needed_size) {
+        if (!PyGILState_Check()) return false;
+        if (inflight_limit_bytes <= 0) return true;
+
+        PyObject* obj = nullptr;
+        while (inflight() + needed_size >= inflight_limit_bytes && try_pop_returned(obj)) {
+            note_removed(queue_estimate_size(obj));
+            Py_DECREF(obj);
+        }
+        return inflight() + needed_size < inflight_limit_bytes;
     }
 
-    bool Queue::push_pickled(PyObject* bytes_obj) {
-        return push_command(CMD_PICKLED) &&
-               push_owned_payload(bytes_obj, estimate_size(bytes_obj));
+    bool Queue::wait_with_push_backoff() {
+        if (!push_fail_callback) return false;
+
+        PyGILState_STATE gstate = PyGILState_Ensure();
+        PyObject* result = PyObject_CallNoArgs(push_fail_callback);
+        if (!result) {
+            PyErr_Clear();
+            PyGILState_Release(gstate);
+            return false;
+        }
+
+        if (result == Py_None) {
+            Py_DECREF(result);
+            PyGILState_Release(gstate);
+            return false;
+        }
+
+        double delay = PyFloat_AsDouble(result);
+        Py_DECREF(result);
+        if (delay < 0.0 && PyErr_Occurred()) {
+            PyErr_Clear();
+            PyGILState_Release(gstate);
+            return false;
+        }
+
+        if (delay < 0.0) delay = 0.0;
+        Py_BEGIN_ALLOW_THREADS
+        std::this_thread::sleep_for(std::chrono::duration<double>(delay));
+        Py_END_ALLOW_THREADS
+        PyGILState_Release(gstate);
+        return true;
     }
 
-    bool Queue::push_list_header(size_t len) {
-        return push_command(CMD_LIST, (uint32_t)len);
+    void Queue::return_loop() {
+        while (true) {
+            if (!has_returned_entries()) {
+                if (shutdown_flag.load(std::memory_order_acquire)) return;
+                std::unique_lock<std::mutex> lock(return_wake_mutex);
+                return_thread_waiting.store(true, std::memory_order_release);
+                return_wake_cv.wait_for(lock,
+                                        std::chrono::milliseconds(consumer_wait_timeout_ms_value),
+                                        [this] {
+                                            return shutdown_flag.load(std::memory_order_acquire)
+                                                || has_returned_entries();
+                                        });
+                return_thread_waiting.store(false, std::memory_order_release);
+                if (shutdown_flag.load(std::memory_order_acquire) && !has_returned_entries()) return;
+                continue;
+            }
+
+            PyGILState_STATE gstate = PyGILState_Ensure();
+            drain_returned_all_with_gil();
+            PyGILState_Release(gstate);
+        }
     }
 
-    bool Queue::push_tuple_header(size_t len) {
-        return push_command(CMD_TUPLE, (uint32_t)len);
-    }
-
-    bool Queue::push_dict_header(size_t len) {
-        return push_command(CMD_DICT, (uint32_t)len);
-    }
-
-    bool Queue::push_handle_ref(Ref ref) {
-        return push_pointer_entry(ref, PTR_HANDLE_REF);
-    }
-
-    bool Queue::push_handle_delete(Ref ref) {
-        return push_command(CMD_HANDLE_DELETE) &&
-               push_raw_ptr_payload(ref);
-    }
-
-    bool Queue::push_bound_ref(Ref ref) {
-        return push_pointer_entry(ref, PTR_BOUND_REF);
-    }
-
-    bool Queue::push_bound_ref_delete(Ref ref) {
-        return push_pointer_entry(ref, PTR_BOUND_REF_DELETE);
-    }
 
     bool Queue::has_entries() {
         return entries.front() != nullptr;
     }
 
-    bool Queue::try_consume(Consumer& consumer) {
+    bool Queue::try_consume() {
         QEntry entry;
         if (!try_pop_entry(entry)) return false;
-        dispatch_entry(consumer, entry);
+        dispatch_entry(entry);
         return true;
     }
 
-    void Queue::consume(Consumer& consumer) {
-        dispatch_entry(consumer, pop_entry());
-    }
-
-    bool Queue::try_push_return(PyObject* obj) {
-        return returned.try_push(obj);
-    }
-
-    PyObject** Queue::return_front() {
-        return returned.front();
-    }
-
-    void Queue::return_pop() {
-        returned.pop();
-    }
-
-    bool Queue::push_obj(PyObject* obj) {
-        return push_owned_payload(obj, estimate_size(obj));
+    void Queue::consume() {
+        dispatch_entry(pop_entry());
     }
 
     void Queue::note_removed(int64_t size) {
@@ -308,79 +360,90 @@ namespace retracesoftware_stream {
 
     void Queue::set_inflight_limit(int64_t value) {
         inflight_limit_bytes = value;
+        return_notify_threshold_bytes =
+            value > 0 ? std::max<int64_t>(1, value / 4) : 1;
     }
 
     void Queue::close() {
-        if (consumer) consumer->close();
+        if (closed) return;
+        closed = true;
+
+        shutdown_flag.store(true, std::memory_order_release);
+        wake_cv.notify_one();
+        return_wake_cv.notify_one();
+        if (writer_thread.joinable()) {
+            Py_BEGIN_ALLOW_THREADS
+            writer_thread.join();
+            Py_END_ALLOW_THREADS
+        }
+        if (return_thread.joinable()) {
+            Py_BEGIN_ALLOW_THREADS
+            return_thread.join();
+            Py_END_ALLOW_THREADS
+        }
+
+        thread_started = false;
+        return_thread_started = false;
+        drain_returned();
+        release_entries();
+        drain_returned();
+        clear_thread_state();
+        reset_consumer_state();
     }
 
     void Queue::drain() {
-        if (consumer) consumer->drain();
+        if (closed || !thread_started) return;
+
+        shutdown_flag.store(true, std::memory_order_release);
+        wake_cv.notify_one();
+        return_wake_cv.notify_one();
+        if (writer_thread.joinable()) {
+            Py_BEGIN_ALLOW_THREADS
+            writer_thread.join();
+            Py_END_ALLOW_THREADS
+        }
+        if (return_thread.joinable()) {
+            Py_BEGIN_ALLOW_THREADS
+            return_thread.join();
+            Py_END_ALLOW_THREADS
+        }
+
+        drain_returned();
+        thread_started = false;
+        return_thread_started = false;
+        shutdown_flag.store(false, std::memory_order_release);
+        clear_thread_state();
     }
 
     void Queue::resume() {
-        if (consumer) consumer->resume();
+        if (closed || thread_started || !consumer) return;
+        clear_thread_state();
+        prepare_consumer_resume();
+        saw_shutdown = false;
+        shutdown_flag.store(false, std::memory_order_release);
+        consumer_waiting.store(false, std::memory_order_release);
+        return_thread_waiting.store(false, std::memory_order_release);
+        return_thread_started = true;
+        thread_started = true;
+        return_thread = std::thread(&Queue::return_loop, this);
+        writer_thread = std::thread(&Queue::worker_loop, this);
     }
 
     PyObject* Queue::persister() const {
-        return persister_obj ? persister_obj : Py_None;
+        return consumer ? consumer->target() : Py_None;
     }
 
-    bool Queue::push_pointer_entry(void* ptr, PointerKind kind) {
-        if (supports_inline_pointer_kind(ptr)) {
-            switch (kind) {
-                case PTR_OWNED_OBJECT:
-                    return push_entry(owned_obj_entry(reinterpret_cast<PyObject*>(ptr)));
-                case PTR_HANDLE_REF:
-                    return push_entry(handle_ref_entry(reinterpret_cast<Ref>(ptr)));
-                case PTR_BIND:
-                    return push_entry(bind_entry(reinterpret_cast<PyObject*>(ptr)));
-                case PTR_IMMORTAL:
-                    break;
-                case PTR_BOUND_REF:
-                    return push_entry(bound_ref_entry(reinterpret_cast<Ref>(ptr)));
-                case PTR_BOUND_REF_DELETE:
-                    return push_entry(bound_ref_delete_entry(reinterpret_cast<Ref>(ptr)));
-                case PTR_NEW_EXT_WRAPPED:
-                    return push_entry(reinterpret_cast<QEntry>(ptr) | PTR_NEW_EXT_WRAPPED);
-            }
+    PyObject* Queue::push_fail_handler() const {
+        return push_fail_callback ? push_fail_callback : Py_None;
+    }
+
+    void Queue::set_push_fail_handler(PyObject* callback) {
+        if (callback != Py_None && !PyCallable_Check(callback)) {
+            PyErr_SetString(PyExc_TypeError, "push_fail_callback must be callable or None");
+            return;
         }
-
-        return push_entry(escaped_ptr_entry(kind)) &&
-               push_entry(payload_ptr_entry(ptr));
-    }
-
-    bool Queue::push_owned_payload(PyObject* obj, int64_t estimated_size) {
-        if (!reserve_inflight(estimated_size)) return false;
-        Py_INCREF(obj);
-        if (push_pointer_entry(obj, PTR_OWNED_OBJECT)) return true;
-        Py_DECREF(obj);
-        release_reserved_inflight(estimated_size);
-        return false;
-    }
-
-    bool Queue::push_raw_ptr_payload(void* ptr) {
-        return push_entry(payload_ptr_entry(ptr));
-    }
-
-    bool Queue::try_push_entry(QEntry entry) {
-        return entries.try_push(entry);
-    }
-
-    bool Queue::push_entry(QEntry entry) {
-        if (try_push_entry(entry)) return true;
-
-        bool ok = false;
-        Py_BEGIN_ALLOW_THREADS
-        auto deadline = std::chrono::steady_clock::now()
-                      + std::chrono::seconds(stall_timeout_seconds_value);
-        while (true) {
-            if (try_push_entry(entry)) { ok = true; break; }
-            if (std::chrono::steady_clock::now() >= deadline) break;
-            std::this_thread::yield();
-        }
-        Py_END_ALLOW_THREADS
-        return ok;
+        PyObject* value = callback == Py_None ? nullptr : Py_NewRef(callback);
+        Py_XSETREF(push_fail_callback, value);
     }
 
     bool Queue::try_pop_entry(QEntry& entry) {
@@ -397,39 +460,33 @@ namespace retracesoftware_stream {
 
         // Queue empty while mid-compound-value: release the GIL so the
         // return thread can drain its queue and update total_removed,
-        // which in turn unblocks the producer's wait_for_inflight().
-        PyThreadState* _save = PyEval_SaveThread();
-        while (!try_pop_entry(entry)) std::this_thread::yield();
-        PyEval_RestoreThread(_save);
+        // which in turn unblocks the producer's inflight wait.
+        if (PyGILState_Check()) {
+            PyThreadState* _save = PyEval_SaveThread();
+            while (!try_pop_entry(entry)) std::this_thread::yield();
+            PyEval_RestoreThread(_save);
+        } else {
+            while (!try_pop_entry(entry)) std::this_thread::yield();
+        }
         return entry;
     }
 
     void* Queue::consume_raw_ptr_payload() {
-        return as_payload_raw_ptr(pop_entry());
+        QEntry entry = pop_entry();
+        if (is_command_entry(entry)) {
+            PyErr_SetString(PyExc_RuntimeError, "expected raw pointer payload");
+            throw nullptr;
+        }
+        return as_payload_raw_ptr(entry);
     }
 
     PyObject* Queue::consume_owned_payload() {
         QEntry entry = pop_entry();
-        if (is_escaped_pointer_entry(entry)) {
-            if (escaped_pointer_kind_of(entry) != PTR_OWNED_OBJECT) {
-                PyErr_SetString(PyExc_RuntimeError, "expected owned object payload");
-                throw nullptr;
-            }
-            return as_payload_obj(pop_entry());
-        }
         if (is_command_entry(entry)) {
             PyErr_SetString(PyExc_RuntimeError, "expected owned object payload");
             throw nullptr;
         }
-        if (pointer_kind_of(entry) != PTR_OWNED_OBJECT) {
-            PyErr_SetString(PyExc_RuntimeError, "expected inline owned object payload");
-            throw nullptr;
-        }
-        return as_owned_obj(entry);
-    }
-
-    PyThreadState* Queue::consume_tstate() {
-        return reinterpret_cast<PyThreadState*>(consume_raw_ptr_payload());
+        return as_payload_obj(entry);
     }
 
     Ref Queue::consume_ref() {
@@ -437,180 +494,136 @@ namespace retracesoftware_stream {
     }
 
     void Queue::release_consumed_obj(PyObject* obj) {
-        if (is_immortal(obj)) return;
-        note_removed(estimate_size(obj));
+        if (queue_is_immortal(obj)) return;
+        note_removed(queue_estimate_size(obj));
         Py_DECREF(obj);
     }
 
-    void Queue::finish_consumed_obj(Consumer& consumer, PyObject* obj) {
-        if (!consumer.return_consumed_objects()) {
-            release_consumed_obj(obj);
-            return;
+    void Queue::clear_thread_state() {
+        last_thread_tstate = nullptr;
+        Py_CLEAR(last_thread_id);
+    }
+
+    void Queue::finish_consumed_obj(PyObject* obj) {
+        if (queue_is_immortal(obj)) return;
+        while (!returned.try_push(obj)) {
+            maybe_notify_return_thread(true);
+            std::this_thread::yield();
         }
-        if (is_immortal(obj)) return;
-        if (!returned.try_push(obj)) {
-            release_consumed_obj(obj);
+        maybe_notify_return_thread(false);
+    }
+
+    void Queue::dispatch_command(QEntry entry) {
+        switch (cmd_of(entry)) {
+            case CMD_BIND:
+                consumer->consume_bind(reinterpret_cast<Ref>(consume_raw_ptr_payload()));
+                break;
+            case CMD_INTERN: {
+                PyObject* obj = consume_owned_payload();
+                consumer->consume_intern(obj);
+                finish_consumed_obj(obj);
+                break;
+            }
+            case CMD_DELETE:
+                consumer->consume_delete(reinterpret_cast<Ref>(consume_raw_ptr_payload()));
+                break;
+            case CMD_NEW_EXT_WRAPPED:
+                consumer->consume_new_ext_wrapped(reinterpret_cast<PyTypeObject*>(consume_raw_ptr_payload()));
+                break;
+            case CMD_NEW_PATCHED: {
+                PyObject* obj = consume_owned_payload();
+                consumer->consume_new_patched(obj, Py_TYPE(obj));
+                finish_consumed_obj(obj);
+                break;
+            }
+            case CMD_THREAD_SWITCH: {
+                PyObject* obj = consume_owned_payload();
+                consumer->consume_thread_switch(obj);
+                finish_consumed_obj(obj);
+                break;
+            }
+            case CMD_FLUSH:
+                consumer->consume_flush();
+                break;
+            case CMD_SHUTDOWN:
+                saw_shutdown = true;
+                consumer->consume_shutdown();
+                break;
+            case CMD_LIST:
+                consumer->consume_list(len_of(entry));
+                for (uint32_t i = 0; i < len_of(entry); i++) consume();
+                break;
+            case CMD_TUPLE:
+                consumer->consume_tuple(len_of(entry));
+                for (uint32_t i = 0; i < len_of(entry); i++) consume();
+                break;
+            case CMD_DICT:
+                consumer->consume_dict(len_of(entry));
+                for (uint32_t i = 0; i < len_of(entry); i++) {
+                    consume();
+                    consume();
+                }
+                break;
+            case CMD_HEARTBEAT:
+                consumer->consume_heartbeat();
+                break;
+            default:
+                PyErr_SetString(PyExc_RuntimeError, "unexpected command entry");
+                throw nullptr;
         }
     }
 
-    void Queue::dispatch_entry(Consumer& consumer, QEntry entry) {
-        if (!is_extended_entry(entry)) {
-            switch (pointer_kind_of(entry)) {
-                case PTR_OWNED_OBJECT: {
-                    PyObject* obj = as_owned_obj(entry);
-                    consumer.consume_object(obj);
-                    finish_consumed_obj(consumer, obj);
-                    break;
-                }
-                case PTR_HANDLE_REF:
-                    consumer.consume_handle_ref(as_handle_ref(entry));
-                    break;
-                case PTR_BIND: {
-                    consumer.consume_bind(reinterpret_cast<Ref>(as_bind_obj(entry)));
-                    break;
-                }
-                case PTR_IMMORTAL:
-                    PyErr_SetString(PyExc_RuntimeError, "unexpected inline immortal payload");
-                    throw nullptr;
-                case PTR_BOUND_REF:
-                    consumer.consume_bound_ref(as_bound_ref(entry));
-                    break;
-                case PTR_BOUND_REF_DELETE:
-                    consumer.consume_bound_ref_delete(as_bound_ref_delete(entry));
-                    break;
-                case PTR_NEW_EXT_WRAPPED:
-                    consumer.consume_new_ext_wrapped(reinterpret_cast<PyTypeObject*>(entry & ~POINTER_KIND_MASK));
-                    break;
-            }
-            return;
-        }
-
+    void Queue::dispatch_entry(QEntry entry) {
         if (!is_command_entry(entry)) {
-            PointerKind kind = escaped_pointer_kind_of(entry);
-            void* ptr = as_payload_raw_ptr(pop_entry());
-            switch (kind) {
-                case PTR_OWNED_OBJECT: {
-                    PyObject* obj = reinterpret_cast<PyObject*>(ptr);
-                    consumer.consume_object(obj);
-                    finish_consumed_obj(consumer, obj);
+            switch (pointer_kind_of(entry)) {
+                case PTR_OBJECT: {
+                    PyObject* obj = as_object(entry);
+                    consumer->consume_object(obj);
+                    finish_consumed_obj(obj);
                     break;
                 }
-                case PTR_HANDLE_REF:
-                    consumer.consume_handle_ref(reinterpret_cast<Ref>(ptr));
+                case PTR_REF:
+                    consumer->consume_ref(as_ref(entry));
                     break;
-                case PTR_BIND: {
-                    consumer.consume_bind(reinterpret_cast<Ref>(ptr));
-                    break;
-                }
                 case PTR_IMMORTAL:
-                    consumer.consume_object(reinterpret_cast<PyObject*>(ptr));
+                    consumer->consume_object(as_object(entry));
                     break;
-                case PTR_BOUND_REF:
-                    consumer.consume_bound_ref(reinterpret_cast<Ref>(ptr));
-                    break;
-                case PTR_BOUND_REF_DELETE:
-                    consumer.consume_bound_ref_delete(reinterpret_cast<Ref>(ptr));
-                    break;
-                case PTR_NEW_EXT_WRAPPED:
-                    consumer.consume_new_ext_wrapped(reinterpret_cast<PyTypeObject*>(ptr));
-                    break;
+                case PTR_ESCAPED:
+                    PyErr_SetString(PyExc_RuntimeError, "unexpected escaped pointer entry");
+                    throw nullptr;
             }
             return;
         }
-
-        switch (cmd_of(entry)) {
-            case CMD_FLUSH:
-                consumer.consume_flush();
-                break;
-            case CMD_SHUTDOWN:
-                consumer.consume_shutdown();
-                break;
-            case CMD_LIST:
-                consumer.consume_list(*this, len_of(entry));
-                break;
-            case CMD_TUPLE:
-                consumer.consume_tuple(*this, len_of(entry));
-                break;
-            case CMD_DICT:
-                consumer.consume_dict(*this, len_of(entry));
-                break;
-            case CMD_HEARTBEAT:
-                consumer.consume_heartbeat(*this);
-                break;
-            case CMD_HANDLE_DELETE:
-                consumer.consume_handle_delete(consume_ref());
-                break;
-            case CMD_DELETE: {
-                consumer.consume_delete(consume_ref());
-                break;
-            }
-            case CMD_THREAD:
-                consumer.consume_thread(consume_tstate());
-                break;
-            case CMD_PICKLED: {
-                PyObject* obj = consume_owned_payload();
-                consumer.consume_pickled(obj);
-                finish_consumed_obj(consumer, obj);
-                break;
-            }
-            case CMD_NEW_HANDLE: {
-                Ref ref = consume_ref();
-                PyObject* obj = consume_owned_payload();
-                consumer.consume_new_handle(ref, obj);
-                finish_consumed_obj(consumer, obj);
-                break;
-            }
-            case CMD_NEW_PATCHED: {
-                PyObject* obj = consume_owned_payload();
-                PyObject* type = reinterpret_cast<PyObject*>(consume_raw_ptr_payload());
-                consumer.consume_new_patched(obj, type);
-                finish_consumed_obj(consumer, obj);
-                break;
-            }
-            case CMD_SERIALIZE_ERROR:
-                consumer.consume_serialize_error(*this);
-                break;
-        }
+        dispatch_command(entry);
     }
 
     void Queue::dispatch_release(QEntry entry) {
-        if (!is_extended_entry(entry)) {
+        if (!is_command_entry(entry)) {
             switch (pointer_kind_of(entry)) {
-                case PTR_OWNED_OBJECT:
-                    release_consumed_obj(as_owned_obj(entry));
+                case PTR_OBJECT:
+                    release_consumed_obj(as_object(entry));
                     break;
-                case PTR_HANDLE_REF:
-                case PTR_BIND:
-                case PTR_BOUND_REF:
-                case PTR_BOUND_REF_DELETE:
-                case PTR_NEW_EXT_WRAPPED:
-                    break;
+                case PTR_REF:
                 case PTR_IMMORTAL:
-                    PyErr_SetString(PyExc_RuntimeError, "unexpected inline immortal payload");
+                    break;
+                case PTR_ESCAPED:
+                    PyErr_SetString(PyExc_RuntimeError, "unexpected escaped pointer entry");
                     throw nullptr;
             }
             return;
         }
 
-        if (!is_command_entry(entry)) {
-            PointerKind kind = escaped_pointer_kind_of(entry);
-            void* ptr = as_payload_raw_ptr(pop_entry());
-            switch (kind) {
-                case PTR_OWNED_OBJECT:
-                    release_consumed_obj(reinterpret_cast<PyObject*>(ptr));
-                    break;
-                case PTR_IMMORTAL:
-                case PTR_HANDLE_REF:
-                case PTR_BIND:
-                case PTR_BOUND_REF:
-                case PTR_BOUND_REF_DELETE:
-                case PTR_NEW_EXT_WRAPPED:
-                    break;
-            }
-            return;
-        }
-
         switch (cmd_of(entry)) {
+            case CMD_BIND:
+            case CMD_DELETE:
+            case CMD_NEW_EXT_WRAPPED:
+                (void)consume_raw_ptr_payload();
+                break;
+            case CMD_INTERN:
+            case CMD_NEW_PATCHED:
+            case CMD_THREAD_SWITCH:
+                release_consumed_obj(consume_owned_payload());
+                break;
             case CMD_FLUSH:
             case CMD_SHUTDOWN:
                 break;
@@ -627,30 +640,44 @@ namespace retracesoftware_stream {
                 }
                 break;
             case CMD_HEARTBEAT:
-                dispatch_release(pop_entry());
                 break;
-            case CMD_HANDLE_DELETE:
-            case CMD_DELETE:
-                consume_ref();
-                break;
-            case CMD_THREAD:
-                consume_tstate();
-                break;
-            case CMD_PICKLED:
-                release_consumed_obj(consume_owned_payload());
-                break;
-            case CMD_NEW_HANDLE:
-                consume_ref();
-                release_consumed_obj(consume_owned_payload());
-                break;
-            case CMD_NEW_PATCHED:
-                release_consumed_obj(consume_owned_payload());
-                consume_raw_ptr_payload();
-                break;
-            case CMD_SERIALIZE_ERROR:
-                dispatch_release(pop_entry());
-                break;
+            default:
+                PyErr_SetString(PyExc_RuntimeError, "unexpected command entry");
+                throw nullptr;
         }
+    }
+
+    void Queue::worker_loop() {
+        while (true) {
+            if (!has_entries()) {
+                if (shutdown_flag.load(std::memory_order_acquire)) return;
+                std::unique_lock<std::mutex> lock(wake_mutex);
+                consumer_waiting.store(true, std::memory_order_release);
+                wake_cv.wait_for(lock,
+                                 std::chrono::milliseconds(consumer_wait_timeout_ms_value),
+                                 [this] {
+                                     return shutdown_flag.load(std::memory_order_acquire) || has_entries();
+                                 });
+                consumer_waiting.store(false, std::memory_order_release);
+                if (shutdown_flag.load(std::memory_order_acquire) && !has_entries()) return;
+                continue;
+            }
+
+            while (try_consume()) {
+                if (saw_shutdown) {
+                    maybe_notify_return_thread(true);
+                    return;
+                }
+            }
+            flush_consumer();
+            maybe_notify_return_thread(false);
+        }
+    }
+
+    void Queue::drain_returned() {
+        PyGILState_STATE gstate = PyGILState_Ensure();
+        drain_returned_all_with_gil();
+        PyGILState_Release(gstate);
     }
 
     void Queue::release_entries() {
@@ -660,30 +687,4 @@ namespace retracesoftware_stream {
         }
     }
 
-    bool Queue::reserve_inflight(int64_t size) {
-        if (!wait_for_inflight()) return false;
-        total_added += size;
-        return true;
-    }
-
-    void Queue::release_reserved_inflight(int64_t size) {
-        total_added -= size;
-    }
-
-    bool Queue::wait_for_inflight() {
-        if (inflight() <= inflight_limit_bytes) return true;
-
-        bool ok = false;
-        Py_BEGIN_ALLOW_THREADS
-        auto deadline = std::chrono::steady_clock::now()
-                    + std::chrono::seconds(stall_timeout_seconds_value);
-        while (true) {
-            if (total_added - total_removed.load(std::memory_order_relaxed) <= inflight_limit_bytes)
-                { ok = true; break; }
-            if (std::chrono::steady_clock::now() >= deadline) break;
-            std::this_thread::yield();
-        }
-        Py_END_ALLOW_THREADS
-        return ok;
-    }
 }

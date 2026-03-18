@@ -36,6 +36,21 @@ using namespace ankerl::unordered_dense;
 
 namespace retracesoftware_stream {
 
+#if PY_VERSION_HEX >= 0x030C0000
+    inline bool is_immortal(PyObject* obj) { return _Py_IsImmortal(obj); }
+#else
+    inline bool is_immortal(PyObject* obj) { return obj == Py_None || obj == Py_True || obj == Py_False; }
+#endif
+
+    inline bool is_interned_unicode(PyObject* obj) {
+#if PY_VERSION_HEX >= 0x030C0000
+        return PyUnicode_CHECK_INTERNED(obj) != SSTATE_NOT_INTERNED;
+#else
+        return PyUnicode_IsInterned(obj);
+#endif
+    }
+
+
     struct PyDeleter {
         void operator()(PyObject* p) const { Py_XDECREF(p); }
     };
@@ -87,9 +102,8 @@ namespace retracesoftware_stream {
 
     extern PyTypeObject ObjectWriter_Type;
     extern PyTypeObject ObjectReader_Type;
-    extern PyTypeObject StreamHandle_Type;
     extern PyTypeObject ObjectStream_Type;
-    extern PyTypeObject AsyncFilePersister_Type;
+    extern PyTypeObject Persister_Type;
     extern PyTypeObject FramedWriter_Type;
 
     class FramedWriter;

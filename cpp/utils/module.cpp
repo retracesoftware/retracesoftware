@@ -703,6 +703,7 @@ PyMODINIT_FUNC CONCAT(PyInit_, MODULE_NAME)(void) {
         &retracesoftware::CacheSentinel_Type,
         &retracesoftware::Remover_Type,
         &retracesoftware::Branch_Type,
+        &retracesoftware::WeakSetCallback_Type,
         &retracesoftware::DeallocBridge_Type,
         &retracesoftware::TypePatchState_Type,
         &retracesoftware::ThreadContextWrapper_Type,
@@ -731,6 +732,7 @@ PyMODINIT_FUNC CONCAT(PyInit_, MODULE_NAME)(void) {
         &retracesoftware::StableFrozenSet_Type,
 
         &retracesoftware::FastSet_Type,
+        &retracesoftware::WeakSet_Type,
         &retracesoftware::InstanceCheck_Type,
         &retracesoftware::Visitor_Type,
         &retracesoftware::Wrapped_Type,

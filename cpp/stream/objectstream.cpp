@@ -27,7 +27,6 @@ namespace retracesoftware_stream {
         size_t messages_read = 0;
         int read_timeout = 0;
         vectorcallfunc vectorcall;
-        std::vector<PyObject *> handles;
         std::vector<PyObject *> filenames;
         std::vector<PyObject *> interned_strings;
 
@@ -83,7 +82,6 @@ namespace retracesoftware_stream {
                 return -1;
             }
 
-            new (&self->handles) std::vector<PyObject *>();
             new (&self->filenames) std::vector<PyObject *>();
             new (&self->interned_strings) std::vector<PyObject *>();
             new (&self->bindings) map<int, PyObject *>();
@@ -123,7 +121,6 @@ namespace retracesoftware_stream {
             PyObject_GC_UnTrack(self);
             clear(self);
 
-            self->handles.std::vector<PyObject *>::~vector();
             self->filenames.std::vector<PyObject *>::~vector();
             self->interned_strings.std::vector<PyObject *>::~vector();
             self->bindings.~map<int, PyObject *>();
@@ -144,11 +141,6 @@ namespace retracesoftware_stream {
         }
 
         static int clear(ObjectStream* self) {
-
-            for (auto elem : self->handles) {
-                Py_XDECREF(elem);
-            }
-            self->handles.clear();
 
             for (auto elem : self->filenames) {
                 Py_XDECREF(elem);
@@ -423,8 +415,6 @@ namespace retracesoftware_stream {
                     if (!result) throw nullptr;
                     return result;
                 }
-                case SizedTypes::HANDLE:
-                    return Py_NewRef(handles[size]);
                 case SizedTypes::BINDING:
                     return Py_NewRef(bindings[size]);
                 case SizedTypes::BYTES: return read_bytes(size);
@@ -510,6 +500,20 @@ namespace retracesoftware_stream {
                     return PyFloat_FromDouble(read<double>());
                 case FixedSizeTypes::INT64:
                     return PyLong_FromLongLong(read<int64_t>());
+
+                case FixedSizeTypes::THREAD_SWITCH: {
+                    PyObject* thread = read();
+                    if (!thread) {
+                        return nullptr;
+                    }
+                    PyObject* result = PyObject_CallOneArg(create_thread_switch, thread);
+                    Py_DECREF(thread);
+                    return result;
+                }
+
+                case FixedSizeTypes::HEARTBEAT:
+                    return create_heartbeat ? PyObject_CallNoArgs(create_heartbeat)
+                                            : Py_NewRef(Py_None);
 
                 case FixedSizeTypes::SERIALIZE_ERROR:
                     return read();
@@ -617,22 +621,10 @@ namespace retracesoftware_stream {
                     printf("  consume: control 0x%02X at byte %zu\n", control.raw, start);
                 }
                 
-                if (control == NewHandle) {
-                    if (verbose) printf("Retrace - ObjectStream[%lu, %lu] - Consumed NEW_HANDLE", messages_read, start);
-                    handles.push_back(read());
-                    if (verbose) printf(" -> read %zu bytes, now at %zu\n", bytes_read - start, bytes_read);
-                    messages_read++;
-                } else if (control == AddFilename) {
+                if (control == AddFilename) {
                     if (verbose) printf("Retrace - ObjectStream[%lu, %lu] - Consumed ADD_FILENAME", messages_read, start);
                     filenames.push_back(read());
                     if (verbose) printf(" -> read %zu bytes, now at %zu\n", bytes_read - start, bytes_read);
-                    messages_read++;
-                } else if (control.Sized.type == SizedTypes::DELETE) {
-                    if (verbose) printf("Retrace - ObjectStream[%lu, %lu] - Consumed DELETE\n", messages_read, start);
-                    size_t size = read_unsigned_number(control);
-                    int index = handles.size() - 1 - size;
-                    Py_DECREF(handles[index]);
-                    handles[index] = nullptr;
                     messages_read++;
                 } else if (control.Sized.type == SizedTypes::BINDING_DELETE) {
                     if (verbose) printf("Retrace - ObjectStream[%lu, %lu] - Consumed BINDING_DELETE\n", messages_read, start);
@@ -645,6 +637,10 @@ namespace retracesoftware_stream {
                     pending_bind = true;
                     messages_read++;
                     return control;
+                } else if (control == Intern) {
+                    if (verbose) printf("Retrace - ObjectStream[%lu, %lu] - Consumed INTERN\n", messages_read, start);
+                    bindings[binding_counter++] = read();
+                    messages_read++;
                 } else if (control == NewPatched) {
                     if (verbose) printf("Retrace - ObjectStream[%lu, %lu] - Consumed NEW_PATCHED\n", messages_read, start);
                     bindings[binding_counter++] = read_new_patched("NEW_PATCHED");

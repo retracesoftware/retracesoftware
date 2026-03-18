@@ -1,13 +1,15 @@
-"""Tests for AsyncFilePersister via the writer pipeline.
+"""Tests for Persister via the writer pipeline.
 
 The persister is no longer directly callable -- it processes QueueEntry
 items from ObjectWriter via the SPSC queue. These tests exercise the
 persister's file handling and data integrity through the writer.
 """
 import gc
-import os
+import pickle
+import socket
 import struct
 import threading
+import time
 
 import pytest
 
@@ -16,17 +18,32 @@ import retracesoftware.stream as stream
 
 _mod = stream._backend_mod
 FramedWriter = _mod.FramedWriter
-AsyncFilePersister = _mod.AsyncFilePersister
+Persister = _mod.Persister
+ObjectStreamReader = _mod.ObjectStreamReader
 
 
 def _make_persister(path):
-    """Create a FramedWriter + AsyncFilePersister sink + Queue."""
+    """Create a FramedWriter + Persister sink + Queue."""
     fw = FramedWriter(str(path))
-    p = AsyncFilePersister(fw, thread=_thread_id)
-    q = _mod.Queue(p)
+    p = Persister(fw, serializer=pickle.dumps)
+    q = _mod.Queue(p, thread=_thread_id)
     return fw, p, q
 
-_thread_id = lambda: threading.current_thread().ident
+
+def _make_raw_native_reader(path, *, deserialize=pickle.loads, on_thread_switch=None, on_heartbeat=None):
+    return ObjectStreamReader(
+        path=str(path),
+        deserialize=deserialize,
+        stub_factory=lambda cls: cls.__new__(cls),
+        create_stack_delta=lambda to_drop, frames: None,
+        on_thread_switch=(lambda thread: thread) if on_thread_switch is None else on_thread_switch,
+        read_timeout=1,
+        verbose=False,
+        on_heartbeat=on_heartbeat,
+    )
+
+def _thread_id():
+    return threading.current_thread().ident
 
 
 def _unframe(data: bytes) -> bytes:
@@ -211,3 +228,184 @@ def test_path_getter(tmp_path):
     fw = FramedWriter(str(path))
     assert fw.path == str(path)
     fw.close()
+
+
+def test_raw_persister_roundtrip_with_native_reader(tmp_path):
+    """Persister + raw FramedWriter roundtrips through ObjectStreamReader."""
+    path = tmp_path / "raw_roundtrip.bin"
+    fw = FramedWriter(str(path), raw=True)
+    persister = Persister(fw, serializer=pickle.dumps)
+
+    try:
+        persister.write_object("hello")
+        persister.write_object({"answer": 42})
+        persister.flush()
+    finally:
+        fw.close()
+
+    reader = _make_raw_native_reader(path)
+    try:
+        assert reader() == "hello"
+        assert reader() == {"answer": 42}
+    finally:
+        reader.close()
+
+
+def test_raw_persister_pickled_float_roundtrip_with_native_reader(tmp_path):
+    """Fallback-serialized floats roundtrip through pickle deserialize."""
+    path = tmp_path / "raw_pickled_float_roundtrip.bin"
+    fw = FramedWriter(str(path), raw=True)
+    persister = Persister(fw, serializer=pickle.dumps)
+    value = time.time()
+
+    try:
+        persister.write_object(value)
+        persister.flush()
+    finally:
+        fw.close()
+
+    reader = _make_raw_native_reader(path)
+    try:
+        assert reader() == value
+    finally:
+        reader.close()
+
+
+def test_raw_persister_write_pickled_roundtrip_with_native_reader(tmp_path):
+    """Pre-pickled payloads roundtrip through the native deserialize hook."""
+    path = tmp_path / "raw_write_pickled_roundtrip.bin"
+    fw = FramedWriter(str(path), raw=True)
+    persister = Persister(fw, serializer=pickle.dumps)
+    payload = {"pickled": [1, 2, 3]}
+
+    try:
+        persister.write_pickled(pickle.dumps(payload))
+        persister.flush()
+    finally:
+        fw.close()
+
+    reader = _make_raw_native_reader(path)
+    try:
+        assert reader() == payload
+    finally:
+        reader.close()
+
+
+def test_raw_persister_container_headers_roundtrip_with_native_reader(tmp_path):
+    """Manual container headers reconstruct list/tuple/dict values."""
+    path = tmp_path / "raw_container_headers_roundtrip.bin"
+    fw = FramedWriter(str(path), raw=True)
+    persister = Persister(fw, serializer=pickle.dumps)
+
+    try:
+        persister.start_list(3)
+        persister.write_object("a")
+        persister.write_object(1)
+        persister.write_object({"nested": True})
+
+        persister.start_tuple(2)
+        persister.write_object("x")
+        persister.write_object(2)
+
+        persister.start_dict(2)
+        persister.write_object("k1")
+        persister.write_object("v1")
+        persister.write_object("k2")
+        persister.write_object(2)
+
+        persister.flush()
+    finally:
+        fw.close()
+
+    reader = _make_raw_native_reader(path)
+    try:
+        assert reader() == ["a", 1, {"nested": True}]
+        assert reader() == ("x", 2)
+        assert reader() == {"k1": "v1", "k2": 2}
+    finally:
+        reader.close()
+
+
+def test_raw_persister_thread_switch_uses_native_callback(tmp_path):
+    """Thread switch payloads are wrapped by the reader callback."""
+    path = tmp_path / "raw_thread_switch_roundtrip.bin"
+    fw = FramedWriter(str(path), raw=True)
+    persister = Persister(fw, serializer=pickle.dumps)
+
+    try:
+        assert persister.write_thread_switch({"thread": 7}) is None
+        persister.flush()
+    finally:
+        fw.close()
+
+    reader = _make_raw_native_reader(
+        path,
+        on_thread_switch=lambda thread: ("thread_switch", thread),
+    )
+    try:
+        assert reader() == ("thread_switch", {"thread": 7})
+    finally:
+        reader.close()
+
+
+def test_raw_persister_non_bytes_serializer_emits_serialize_error(tmp_path):
+    """Non-bytes serializer results are emitted under SERIALIZE_ERROR."""
+    path = tmp_path / "raw_serialize_error_roundtrip.bin"
+    fw = FramedWriter(str(path), raw=True)
+    persister = Persister(fw, serializer=lambda obj: "socket-error")
+
+    sock = socket.socket()
+    try:
+        persister.write_object(sock)
+        persister.flush()
+    finally:
+        sock.close()
+        fw.close()
+
+    raw = path.read_bytes()
+    assert raw[0] == 0xFD
+
+    reader = _make_raw_native_reader(path)
+    try:
+        assert reader() == "socket-error"
+    finally:
+        reader.close()
+
+
+def test_raw_persister_serializer_exception_raises_and_writes_nothing(tmp_path):
+    """Serializer exceptions return NULL to Python and emit no bytes."""
+    path = tmp_path / "raw_serialize_exception.bin"
+    fw = FramedWriter(str(path), raw=True)
+    persister = Persister(fw, serializer=pickle.dumps)
+
+    sock = socket.socket()
+    try:
+        with pytest.raises(TypeError):
+            persister.write_object(sock)
+        persister.flush()
+    finally:
+        sock.close()
+        fw.close()
+
+    assert path.read_bytes() == b""
+
+
+def test_raw_persister_intern_roundtrip_with_native_reader(tmp_path):
+    """Interned values stay readable via the native binding lookup path."""
+    path = tmp_path / "raw_intern_roundtrip.bin"
+    fw = FramedWriter(str(path), raw=True)
+    persister = Persister(fw, serializer=pickle.dumps)
+    value = "interned-value"
+
+    try:
+        persister.intern(value)
+        persister.write_ref(value)
+        persister.flush()
+    finally:
+        fw.close()
+
+    reader = _make_raw_native_reader(path)
+    try:
+        assert reader() == value
+    finally:
+        reader.close()

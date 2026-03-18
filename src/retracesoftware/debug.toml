@@ -6,13 +6,11 @@
 # buffer-related issues easier to reproduce.
 inflight_limit = "16MB"
 
-# Longer stall timeout gives the persister more time to drain under
-# a debugger or heavy logging.
-stall_timeout = "10s"
-
 # Smaller queues surface full-queue conditions earlier.
 queue_capacity = 4096
-return_queue_capacity = 8192
+
+# How long the consumer thread sleeps between wakeups when traffic is light.
+consumer_wait_timeout_ms = "10ms"
 
 # Aggressive flush interval so trace data hits disk almost immediately,
 # useful when tailing the output or debugging crashes.

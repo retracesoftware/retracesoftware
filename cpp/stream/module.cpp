@@ -1,9 +1,7 @@
 #include "stream.h"
 #include "wireformat.h"
 
-static PyTypeObject * hidden_types[] = {
-    &retracesoftware_stream::StreamHandle_Type,
-    &retracesoftware_stream::WeakRefCallback_Type,
+static PyTypeObject * hidden_types[] = {    &retracesoftware_stream::WeakRefCallback_Type,
     nullptr
 };
 
@@ -12,7 +10,7 @@ static PyTypeObject * exposed_types[] = {
     &retracesoftware_stream::FramedWriter_Type,
     &retracesoftware_stream::ObjectWriter_Type,
     &retracesoftware_stream::ObjectStream_Type,
-    &retracesoftware_stream::AsyncFilePersister_Type,
+    &retracesoftware_stream::Persister_Type,
     nullptr
 };
 

@@ -23,9 +23,6 @@ namespace retracesoftware_stream {
         STR,
         PICKLED,
         UINT,
-        DELETE,
-        
-        HANDLE,
         BIGINT,
         SET,
         FROZENSET,
@@ -70,9 +67,9 @@ namespace retracesoftware_stream {
         NEG1,
         INT64,
         BIND,
+        INTERN,
         THREAD_SWITCH,
         
-        NEW_HANDLE,
         NEW_PATCHED,
         STACK,
         ADD_FILENAME,
@@ -87,7 +84,6 @@ namespace retracesoftware_stream {
 
     // enum RootOnlyTypes : uint8_t {
     //     THREAD_SWITCH = FixedSizeTypes::FixedSizeTypes__LAST__,
-    //     NEW_HANDLE,
     //     BIND,
     //     Stack,
     //     ADD_FILENAME,
@@ -133,7 +129,6 @@ namespace retracesoftware_stream {
         return Control(SizedTypes::FIXED_SIZE, type);
     }
     
-    constexpr Control NewHandle = create_fixed_size(FixedSizeTypes::NEW_HANDLE);
     constexpr Control Stack = create_fixed_size(FixedSizeTypes::STACK);
     constexpr Control ThreadSwitch = create_fixed_size(FixedSizeTypes::THREAD_SWITCH);
     constexpr Control AddFilename = create_fixed_size(FixedSizeTypes::ADD_FILENAME);
@@ -144,15 +139,12 @@ namespace retracesoftware_stream {
     constexpr Control Heartbeat = create_fixed_size(FixedSizeTypes::HEARTBEAT);
     constexpr Control SerializeError = create_fixed_size(FixedSizeTypes::SERIALIZE_ERROR);
     constexpr Control Bind = create_fixed_size(FixedSizeTypes::BIND);
+    constexpr Control Intern = create_fixed_size(FixedSizeTypes::INTERN);
     constexpr Control NewPatched = create_fixed_size(FixedSizeTypes::NEW_PATCHED);
     // constexpr Control BindingDelete = create_fixed_size(FixedSizeTypes::);
 
     constexpr bool is_binding_delete(Control control) {
         return control.Sized.type == SizedTypes::BINDING_DELETE;
-    }
-
-    constexpr bool is_delete(Control control) {
-        return control.Sized.type == SizedTypes::DELETE;
     }
 
     // static FixedSizeTypes fixed_size_type(Control control) {
@@ -220,8 +212,8 @@ namespace retracesoftware_stream {
             case FixedSizeTypes::NEG1: return "NEG1";
             case FixedSizeTypes::INT64: return "INT64";
             case FixedSizeTypes::BIND: return "BIND";
+            case FixedSizeTypes::INTERN: return "INTERN";
             case FixedSizeTypes::THREAD_SWITCH: return "THREAD_SWITCH";
-            case FixedSizeTypes::NEW_HANDLE: return "NEW_HANDLE";
             case FixedSizeTypes::NEW_PATCHED: return "NEW_PATCHED";
             case FixedSizeTypes::STACK: return "STACK";
             case FixedSizeTypes::ADD_FILENAME: return "ADD_FILENAME";
@@ -245,9 +237,6 @@ namespace retracesoftware_stream {
             case SizedTypes::STR: return "STR";
             case SizedTypes::PICKLED: return "PICKLED";
             case SizedTypes::UINT: return "UINT";
-            case SizedTypes::DELETE: return "DELETE";
-            
-            case SizedTypes::HANDLE: return "HANDLE";
             case SizedTypes::BIGINT: return "BIGINT";
             case SizedTypes::SET: return "SET";
             case SizedTypes::FROZENSET: return "FROZENSET";

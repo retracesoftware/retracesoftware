@@ -62,6 +62,32 @@ def test_system_record_replay_context():
     assert not system._out_sandbox()
 
 
+def test_system_register_thread_id_uses_intern_once():
+    system = System()
+
+    class TrackingWriter(MemoryWriter):
+        def __init__(self):
+            super().__init__()
+            self.interned = []
+            self.bound = []
+
+        def intern(self, obj):
+            self.interned.append(obj)
+
+        def bind(self, obj):
+            self.bound.append(obj)
+
+    writer = TrackingWriter()
+    thread_id = ()
+
+    with system.record_context(writer):
+        assert system.register_thread_id(thread_id) is None
+        assert system.register_thread_id(thread_id) is None
+
+    assert writer.interned == [thread_id]
+    assert writer.bound == []
+
+
 def test_system_active_allocations_use_bind_path():
     """External allocations bind, internal allocations report new_patched."""
     system = System()

@@ -104,6 +104,20 @@ class SystemRecordHarness:
         self.calls.append(("stacktrace",))
 
 
+class QueueBackedDebugHarness(SystemRecordHarness):
+    """System-record harness using the real native Queue worker path."""
+
+    def __init__(self):
+        self.events = []
+        self.persister = stream.DebugPersister(self.events.append)
+        self.native_queue = stream._backend_mod.Queue(self.persister)
+        super().__init__(self.native_queue)
+
+    def close(self):
+        self.native_queue.drain()
+        self.native_queue.close()
+
+
 def test_objectwriter_bind_uses_python_queue_fallback():
     """``ObjectWriter.bind`` should use the Python queue slow path.
 
@@ -220,3 +234,48 @@ def test_system_record_passthroughs_unretraced_instances():
         assert obj.ping() == "pong"
 
     assert queue.calls == []
+
+
+def test_system_record_bind_reaches_python_persister_via_native_queue():
+    """Sandbox binds should survive native Queue -> Python persister dispatch."""
+
+    system = proxy_system.System()
+    writer = QueueBackedDebugHarness()
+
+    class Patched:
+        pass
+
+    system.patch_type(Patched)
+
+    try:
+        with system.record_context(writer):
+            obj = Patched()
+            assert system.is_bound(obj)
+    finally:
+        writer.close()
+
+    assert ("command", ("bind", (0,))) in writer.events
+
+
+def test_system_record_new_patched_reaches_python_persister_via_native_queue():
+    """External-phase allocations should survive native Queue -> Python persister dispatch."""
+
+    system = proxy_system.System()
+    writer = QueueBackedDebugHarness()
+
+    class Patched:
+        def make_peer(self):
+            return type(self)()
+
+    system.patch_type(Patched)
+
+    try:
+        with system.record_context(writer):
+            root = Patched()
+            writer.events.clear()
+            peer = root.make_peer()
+            assert peer is not None
+    finally:
+        writer.close()
+
+    assert any(event[0] == "command" and event[1][0] == "new_patched" for event in writer.events)

@@ -102,7 +102,9 @@ def run_with_context(system,
     def next_thread_id():
         current = thread_id.get()
         if current is not None and system._out_sandbox():
-            return current + (counter.update(inc),)
+            new_id = current + (counter.update(inc),)
+            system.register_thread_id(new_id)
+            return new_id
         return None
 
     utils.add_thread_middleware(lambda: thread_id.context(next_thread_id()))
@@ -155,6 +157,7 @@ def run_with_context(system,
 
     try:
         with context:
+            system.register_thread_id(thread_id.get())
             for cls in sorted(system.patched_types, key=lambda c: c.__qualname__):
                 system._bind(cls)
             try:

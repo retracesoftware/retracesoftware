@@ -168,9 +168,8 @@ def record(system, options, args):
                        verbose = options.verbose,
                        preamble = preamble,
                        inflight_limit = options.inflight_limit,
-                       stall_timeout = options.stall_timeout,
+                       consumer_wait_timeout_ms = options.consumer_wait_timeout_ms,
                        queue_capacity = options.queue_capacity,
-                       return_queue_capacity = options.return_queue_capacity,
                        flush_interval = options.flush_interval,
                        quit_on_error = options.quit_on_error,
                        serialize_errors = not options.quit_on_error,
@@ -537,10 +536,6 @@ def main():
         )
 
         parser.add_argument(
-            '--stall_timeout', type=lambda v: int(float(v)), default=5,
-            help='Seconds to wait when writer queue is full or inflight limit exceeded (default: 5)')
-
-        parser.add_argument(
             '--inflight_limit', type=int, default=128 * 1024 * 1024,
             help='Maximum bytes in-flight between writer and persister (default: 128MB)')
 
@@ -549,8 +544,8 @@ def main():
             help='Forward SPSC queue capacity (default: 65536)')
 
         parser.add_argument(
-            '--return_queue_capacity', type=int, default=131072,
-            help='Return SPSC queue capacity (default: 131072)')
+            '--consumer_wait_timeout_ms', type=int, default=10,
+            help='Consumer wait timeout in milliseconds when the queue is below the notify threshold (default: 10)')
 
         parser.add_argument(
             '--flush_interval', type=float, default=0.1,

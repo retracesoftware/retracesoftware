@@ -507,6 +507,12 @@ class System:
             return self.patch_function(obj)
         raise TypeError(f"cannot patch {type(obj).__name__!r} object")
 
+    def register_thread_id(self, thread_id):
+        """Register a thread id with the active backend when retrace is live."""
+        if thread_id is None or not self._out_sandbox() or self.is_bound(thread_id):
+            return None
+        return self._register_thread_id(thread_id)
+
     def disable_for(self, function):
         """Return a callable that runs *function* with both gates disabled.
 
@@ -533,19 +539,6 @@ class System:
 
         # return wrapper
 
-    def is_bound(self, obj):
-        """Return True if *obj* is retraced (not in the _unretraced set).
-
-        Only objects of patched types can be bound — the _on_alloc hook
-        that populates _unretraced only fires for those types.  Existing
-        instances are swept into _unretraced when patch_type(cls) runs.
-        Objects whose type was never patched are always unbound.
-        """
-        return type(obj) in self.patched_types and obj not in self._unretraced
-
-    def is_retraced(self, obj):
-        """Return True if *obj* is bound or is a dynamic proxy wrapper."""
-        return self.is_bound(obj) or utils.is_wrapped(obj)
 
     def create_dispatch(self, disabled, external, internal):
         return functional.cond(
@@ -614,21 +607,24 @@ class System:
         #               the concrete type from the live object.
         # _bind:        generic binding hook kept separate from
         #               allocation-origin semantics.
+        # _register_thread_id:
+        #               optional hook used to memoize thread ids before
+        #               they first appear on the wire.
         self._new_patched = utils.Gate(default = utils.noop)
         self._bind = utils.Gate(default = utils.noop)
+        self._register_thread_id = utils.Gate(default = utils.noop)
 
-        # ── Unretraced set ────────────────────────────────────────
+        # ── Bound / unretraced sets ───────────────────────────────
         #
-        # Tracks instances of patched types that were created OUTSIDE
-        # any record/replay context.  Since the vast majority of
-        # instances are created inside a context (and thus retraced),
-        # this set stays small.  is_bound(obj) is simply:
-        #   obj not in _unretraced
+        # _bound tracks every object/type that was seen by bind/new_patched.
+        # It uses a native hybrid weak set: weakrefable objects auto-evict,
+        # others are held strongly for the lifetime of the System.
         #
-        # Uses MemoryAddresses (C-level raw-pointer set) — no id()
-        # boxing, O(1) contains, and add() returns a remover callable
-        # that integrates with the on_alloc dealloc hook for automatic
-        # cleanup when the object is freed.
+        # _unretraced tracks patched instances that were created OUTSIDE
+        # any record/replay context so method dispatch can passthrough.
+        # It stays small because most patched instances are allocated
+        # while retrace is active.
+        self.is_bound = utils.WeakSet()
         self._unretraced = utils.MemoryAddresses()
 
         # ── Type tracking ──────────────────────────────────────────
@@ -643,6 +639,9 @@ class System:
         self.should_proxy = functional.sequence(
             functional.typeof, 
             functional.memoize_one_arg(self._should_proxy_type))
+
+        # Return True if *obj* is bound or is a dynamic proxy wrapper
+        self.is_retraced = functional.or_predicate(self.is_bound, utils.is_wrapped)
 
         # ── Sandbox predicates ─────────────────────────────────────
         #
@@ -682,9 +681,9 @@ class System:
         # no _unretraced check is needed — the gate dispatches to
         # the executor when active, or passes through when disabled.
         self._ext_handler = functional.if_then_else(
-            functional.sequence(functional.positional_param(1), self._unretraced.contains),
-            functional.apply,
-            self._external)
+            functional.sequence(functional.positional_param(1), self.is_retraced),
+            self._external,
+            functional.apply)
 
         # Internal overrides always route through the internal gate while
         # retrace is active. When retrace is disabled, ``self._internal``
@@ -1105,9 +1104,10 @@ class System:
             utils.unwrap,
             functional.identity)
 
-        passthrough = utils.FastTypePredicate(
-            lambda cls: cls in self.patched_types or issubclass(cls, tuple(self.immutable_types))
-        ).istypeof
+        passthrough = functional.or_predicate(utils.FastTypePredicate(
+                lambda cls: cls in self.patched_types or issubclass(cls, tuple(self.immutable_types))
+            ).istypeof,
+            self.is_bound)
 
         ext_executor = adapter(
             function = function,
@@ -1278,7 +1278,7 @@ class System:
         Parameters
         ----------
         writer : object
-            Must provide: ``bind(obj)``, ``new_patched(obj)``,
+            Must provide: ``bind(obj)``, ``intern(obj)``, ``new_patched(obj)``,
             ``write_call(*a, **kw)``, ``sync()``,
             ``write_result(*a, **kw)``, ``write_error(*a, **kw)``.
             If *normalize* is set, must also provide
@@ -1338,12 +1338,24 @@ class System:
         def register_type_serializer(proxytype, cls):
             stub_ref = StubRef(cls)
             writer.type_serializer[proxytype] = lambda value: stub_ref
+        
+        remember_bind = utils.runall(writer.bind, self.is_bound.add)
+
+        intern = utils.runall(writer.intern, self.is_bound.add)
+        # register_thread_id = intern
+        # register_thread_id = getattr(writer, 'intern', writer.bind)
+        # remember_thread_id = utils.runall(register_thread_id, self.is_bound.add)
+
+        def remember_new_patched(obj):
+            writer.new_patched(obj)
+            self.is_bound.add(obj)
 
         return self._create_context(
-            _new_patched = writer.new_patched,
-            _bind = writer.bind,
+            _new_patched = remember_new_patched,
+            _bind = remember_bind,
+            _register_thread_id = intern,
             int_spec = self._create_int_spec(
-                bind = writer.bind,
+                bind = remember_bind,
                 on_call = int_on_call,
                 on_result = checkpoint,
                 on_error = checkpoint),
@@ -1400,10 +1412,15 @@ class System:
             # back into bind/new_patched mid-materialization.
             native_reader.stub_factory = self.disable_for(native_reader.stub_factory)
 
+        def remember_bind(obj):
+            self.is_bound.add(obj)
+            return reader.bind(obj)
+
         return self._create_context(
-            _bind = reader.bind,
+            _bind = remember_bind,
+            _register_thread_id = self.is_bound.add,
             int_spec = self._create_int_spec(
-                bind = reader.bind,
+                bind = remember_bind,
                 on_result = checkpoint,
                 on_error = checkpoint),
             ext_spec = self._create_ext_spec(

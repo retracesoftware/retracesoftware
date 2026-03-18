@@ -224,14 +224,14 @@ drifted past the end of the trace due to misalignment.
 **Symptoms:**
 
 ```
-AsyncFilePersister: PID mismatch! frame stamped 12345 but process is 12346
+Persister: PID mismatch! frame stamped 12345 but process is 12346
 ```
 
 followed by an assertion failure / abort.
 
 **What this means:**
 
-The `AsyncFilePersister` stamps each frame with the process PID via
+The `Persister` stamps each frame with the process PID via
 `stamp_pid()` at `init()` and `resume()` time.  If a frame is being
 written with a stale PID (from before a fork), the assert fires.
 
@@ -521,7 +521,7 @@ The recording also stores `python_version` and `executable` path.
 | `RuntimeError: Could not read: N bytes from tracefile` | `objectstream.cpp` | Trace ended or timeout — recording truncated or misaligned |
 | `RuntimeError: Trying to bind when no pending bind` | `objectstream.cpp` | `reader.bind()` called but no `Bind` tag was pending |
 | `RuntimeError: object: X already bound` | `writer.h` | Writer tried to bind an object that was already bound |
-| `AsyncFilePersister: PID mismatch!` | `persister.cpp` | Frame stamped with wrong PID (fork lifecycle bug) |
+| `Persister: PID mismatch!` | `persister.cpp` | Frame stamped with wrong PID (fork lifecycle bug) |
 | `VersionMismatchError` | `__main__.py` | Module checksums differ between record and replay |
 | `ReplayDivergence: replay demux timed out` | `messagestream.py` | Thread couldn't acquire its turn on the tape |
 | `ReplayDivergence: monitor divergence: expected X, got Y` | `messagestream.py` | MONITOR checkpoint mismatch — function call/return differs between record and replay |

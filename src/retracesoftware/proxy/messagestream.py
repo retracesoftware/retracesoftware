@@ -361,6 +361,9 @@ class MemoryWriter:
     def bind(self, *a, **kw):
         pass
 
+    def intern(self, obj):
+        return self.bind(obj)
+
     def new_patched(self, obj):
         return self.bind(obj)
 

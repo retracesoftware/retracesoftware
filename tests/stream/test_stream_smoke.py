@@ -1,3 +1,5 @@
+import pickle
+
 import pytest
 
 # 1. Check if the top-level package even exists
@@ -214,14 +216,14 @@ def test_custom_output_roundtrip(tmp_path):
         assert _read_value(r) == "output"
 
 
-def test_async_file_persister_explicit(tmp_path):
-    """Test explicit construction of FramedWriter + AsyncFilePersister and roundtrip."""
+def test_persister_explicit(tmp_path):
+    """Test explicit construction of FramedWriter + Persister and roundtrip."""
     import retracesoftware.stream as st
 
     path = tmp_path / "async_trace.bin"
     fw = st._backend_mod.FramedWriter(str(path), raw=True)
-    persister = st._backend_mod.AsyncFilePersister(fw, thread=_thread_id)
-    queue = st._backend_mod.Queue(persister)
+    persister = st._backend_mod.Persister(fw, serializer=pickle.dumps)
+    st._backend_mod.Queue(persister, thread=_thread_id)
 
     with stream.writer(output=persister, thread=_thread_id, flush_interval=0.01) as w:
         w("async", "persister", 42)
@@ -239,7 +241,7 @@ def test_async_file_persister_explicit(tmp_path):
 
 
 def test_async_persister_large_data(tmp_path):
-    """Test AsyncFilePersister with enough data to exercise double buffering."""
+    """Test Persister with enough data to exercise double buffering."""
     path = tmp_path / "large_trace.bin"
 
     num_values = 5000
