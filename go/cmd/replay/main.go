@@ -81,7 +81,7 @@ Options:
 	}
 
 	if *recording != "" {
-		runRecordingMode(*recording, *pid, *dap, *index, *extract, *workspace, dapWriter)
+		runRecordingMode(*recording, *pid, *dap, *index, *extract, *workspace, *verbose, dapWriter)
 		return
 	}
 
@@ -109,7 +109,7 @@ Options:
 	}
 }
 
-func runRecordingMode(recording string, pid int, dap, index, extract, workspace bool, dapWriter *replay.Writer) {
+func runRecordingMode(recording string, pid int, dap, index, extract, workspace, verbose bool, dapWriter *replay.Writer) {
 	if index {
 		idx, err := replay.IndexTrace(recording)
 		if err != nil {
@@ -155,8 +155,25 @@ func runRecordingMode(recording string, pid int, dap, index, extract, workspace 
 		return
 	}
 
-	flag.Usage()
-	os.Exit(1)
+	extraArgs := make([]string, 0, 1)
+	if verbose {
+		extraArgs = append(extraArgs, "--verbose")
+	}
+
+	if pid > 0 {
+		pidFile, err := ensureExtracted(recording, pid)
+		if err != nil {
+			log.Fatalf("replay pid %d: %v", pid, err)
+		}
+		if err := replay.RunReplay(pidFile, os.Stdout, os.Stderr, 0, extraArgs...); err != nil {
+			log.Fatalf("replay pid %d: %v", pid, err)
+		}
+		return
+	}
+
+	if err := replayAllExtracted(recording, extraArgs...); err != nil {
+		log.Fatalf("replay all: %v", err)
+	}
 }
 
 func extractDir(recording string) string {
@@ -226,4 +243,44 @@ func ensureExtracted(recording string, pid int) (string, error) {
 		return "", fmt.Errorf("PidFile not found for pid %d: %s", pid, pidFile)
 	}
 	return pidFile, nil
+}
+
+func replayAllExtracted(recording string, extraArgs ...string) error {
+	outDir := extractDir(recording)
+	if _, err := ensureExtracted(recording, 0); err != nil {
+		return err
+	}
+
+	idx, err := replay.IndexTrace(recording)
+	if err != nil {
+		return err
+	}
+
+	leafPIDs := make([]uint32, 0)
+	collectLeafPIDs(idx.Root, &leafPIDs)
+	if len(leafPIDs) == 0 {
+		return fmt.Errorf("no leaf processes found for recording %s", recording)
+	}
+
+	for i, leafPID := range leafPIDs {
+		pidFile := filepath.Join(outDir, fmt.Sprintf("%d.bin", leafPID))
+		log.Printf("[%d/%d] replaying PID %d from %s", i+1, len(leafPIDs), leafPID, pidFile)
+		if err := replay.RunReplay(pidFile, os.Stdout, os.Stderr, 0, extraArgs...); err != nil {
+			return fmt.Errorf("pid %d: %w", leafPID, err)
+		}
+	}
+	return nil
+}
+
+func collectLeafPIDs(p *replay.Process, out *[]uint32) {
+	if p == nil {
+		return
+	}
+	if len(p.Children) == 0 {
+		*out = append(*out, p.PID)
+		return
+	}
+	for _, c := range p.Children {
+		collectLeafPIDs(c, out)
+	}
 }
