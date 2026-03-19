@@ -43,7 +43,7 @@ namespace retracesoftware_stream {
 #endif
 
     inline bool is_interned_unicode(PyObject* obj) {
-#if PY_VERSION_HEX >= 0x030C0000
+#if PY_VERSION_HEX >= 0x030B0000
         return PyUnicode_CHECK_INTERNED(obj) != SSTATE_NOT_INTERNED;
 #else
         return PyUnicode_IsInterned(obj);

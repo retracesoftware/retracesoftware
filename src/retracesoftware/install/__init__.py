@@ -626,7 +626,7 @@ def stream_writer(writer, stackfactory = None, on_write_error = None):
 
     _write_error = writer.handle('ERROR')
     def write_error(exc_type, exc_value, exc_tb):
-        _write_error(exc_type, exc_value)
+        _write_error(exc_value)
 
     def bind_write_error(func):
         from retracesoftware import utils
@@ -638,11 +638,11 @@ def stream_writer(writer, stackfactory = None, on_write_error = None):
         
     return SimpleNamespace(
         type_serializer = writer.type_serializer,
-        bind         = bind_write_error(writer.bind),
-        new_patched  = bind_write_error(getattr(writer, 'new_patched', writer.bind)),
         sync         = bind_write_error(writer.handle('SYNC')),
-        write_call   = bind_write_error(writer.handle('CALL')),
         write_result = bind_write_error(writer.handle('RESULT')),
         write_error  = bind_write_error(write_error),
+        bind         = bind_write_error(writer.bind),
+        new_patched  = bind_write_error(getattr(writer, 'new_patched', writer.bind)),
+        write_call   = bind_write_error(writer.handle('CALL')),
         checkpoint   = bind_write_error(writer.handle('CHECKPOINT')),
         stacktrace   = bind_write_error(stacktrace))
