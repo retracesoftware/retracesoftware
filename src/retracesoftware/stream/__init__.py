@@ -77,6 +77,30 @@ def _debug_command_event(name, args=()):
     return _debug_event("command", (name, args))
 
 
+class _StallTimeoutBackoff:
+    def __init__(self, stall_timeout, retry_delay=0.001, reset_window=0.05):
+        self.stall_timeout = float(stall_timeout)
+        self.retry_delay = float(retry_delay)
+        self.reset_window = float(reset_window)
+        self._started_at = None
+        self._last_called_at = None
+
+    def __call__(self):
+        now = time.monotonic()
+        if self._last_called_at is None or now - self._last_called_at > self.reset_window:
+            self._started_at = now
+        self._last_called_at = now
+
+        if self.stall_timeout <= 0:
+            return None
+
+        elapsed = now - self._started_at
+        remaining = self.stall_timeout - elapsed
+        if remaining <= 0:
+            return None
+        return min(self.retry_delay, remaining)
+
+
 class DebugPersister:
     def __init__(self, handler, quit_on_error=False):
         if not callable(handler) and not hasattr(handler, "handle_event"):
@@ -372,12 +396,18 @@ def read_process_info(path, raw=False):
 
 class writer(_backend_mod.ObjectWriter):
 
+    def handle(self, obj):
+        self.intern(obj)
+        return functional.partial(self, obj)
+
     def __init__(self, path=None, thread=None, output=None, queue=None,
                  flush_interval=0.1,
                  verbose=False,
                  disable_retrace=None,
                  preamble=None,
                  push_fail_callback=None,
+                 on_consumer_error=None,
+                 stall_timeout=None,
                  inflight_limit=None,
                  consumer_wait_timeout_ms=None,
                  queue_capacity=None,
@@ -388,6 +418,9 @@ class writer(_backend_mod.ObjectWriter):
 
         self._fw = None
         self._queue = queue
+        effective_push_fail_callback = push_fail_callback
+        if effective_push_fail_callback is None and stall_timeout is not None:
+            effective_push_fail_callback = _StallTimeoutBackoff(stall_timeout)
 
         queue_kwargs = {}
         if inflight_limit is not None:
@@ -398,8 +431,10 @@ class writer(_backend_mod.ObjectWriter):
             queue_kwargs["queue_capacity"] = queue_capacity
         if thread is not None:
             queue_kwargs["thread"] = thread
-        if push_fail_callback is not None:
-            queue_kwargs["push_fail_callback"] = push_fail_callback
+        if effective_push_fail_callback is not None:
+            queue_kwargs["push_fail_callback"] = effective_push_fail_callback
+        if on_consumer_error is not None:
+            queue_kwargs["on_consumer_error"] = on_consumer_error
 
         if self._queue is None and path is not None:
             fw = _backend_mod.FramedWriter(str(path), raw=raw)
@@ -420,6 +455,10 @@ class writer(_backend_mod.ObjectWriter):
             raise ValueError("writer requires a queue, output, or path")
         if inflight_limit is not None and self._queue is not None:
             self._queue.inflight_limit = inflight_limit
+        if effective_push_fail_callback is not None and self._queue is not None:
+            self._queue.push_fail_callback = effective_push_fail_callback
+        if on_consumer_error is not None and self._queue is not None:
+            self._queue.on_consumer_error = on_consumer_error
 
         self._output = output
         self._disable_retrace = disable_retrace

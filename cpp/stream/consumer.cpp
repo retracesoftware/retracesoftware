@@ -4,47 +4,86 @@
 #include "stream.h"
 
 namespace retracesoftware_stream {
-    void Consumer::handle_error() const {
-        handle_debug_error(quit_on_error());
+    namespace {
+        std::string format_current_error_message_preserving_exception() {
+            if (!PyErr_Occurred()) return "consumer error";
+
+            PyObject* exc_type = nullptr;
+            PyObject* exc_value = nullptr;
+            PyObject* exc_tb = nullptr;
+            PyErr_Fetch(&exc_type, &exc_value, &exc_tb);
+            PyErr_NormalizeException(&exc_type, &exc_value, &exc_tb);
+
+            std::string message = "consumer error";
+            PyObject* type_name = exc_type ? PyObject_GetAttrString(exc_type, "__name__") : nullptr;
+            PyObject* value_str = exc_value ? PyObject_Str(exc_value) : nullptr;
+            const char* type_cstr = type_name ? PyUnicode_AsUTF8(type_name) : nullptr;
+            const char* value_cstr = value_str ? PyUnicode_AsUTF8(value_str) : nullptr;
+
+            if (type_cstr && value_cstr && value_cstr[0]) {
+                message = std::string(type_cstr) + ": " + value_cstr;
+            } else if (type_cstr) {
+                message = type_cstr;
+            } else if (value_cstr && value_cstr[0]) {
+                message = value_cstr;
+            }
+
+            if (PyErr_Occurred()) {
+                PyErr_Clear();
+            }
+
+            Py_XDECREF(type_name);
+            Py_XDECREF(value_str);
+            PyErr_Restore(exc_type, exc_value, exc_tb);
+            return message;
+        }
     }
 
-    void Consumer::call0(const char* name) {
+    void Consumer::capture_current_error() {
+        has_error_message = true;
+        last_error_message = format_current_error_message_preserving_exception();
+    }
+
+    bool Consumer::call0(const char* name) {
         PyGILState_STATE gil = PyGILState_Ensure();
         PyObject* result = PyObject_CallMethod(target_obj, name, nullptr);
         if (!result) {
-            handle_error();
+            capture_current_error();
             PyGILState_Release(gil);
-            return;
+            return false;
         }
         Py_DECREF(result);
         PyGILState_Release(gil);
+        return true;
     }
 
-    void Consumer::call_obj(const char* name, PyObject* obj) {
+    bool Consumer::call_obj(const char* name, PyObject* obj) {
         PyGILState_STATE gil = PyGILState_Ensure();
         PyObject* result = PyObject_CallMethod(target_obj, name, "O", obj);
         if (!result) {
-            handle_error();
+            capture_current_error();
             PyGILState_Release(gil);
-            return;
+            return false;
         }
         Py_DECREF(result);
         PyGILState_Release(gil);
+        return true;
     }
 
-    void Consumer::call_obj_obj(const char* name, PyObject* a, PyObject* b) {
+    bool Consumer::call_obj_obj(const char* name, PyObject* a, PyObject* b) {
         PyGILState_STATE gil = PyGILState_Ensure();
         PyObject* result = PyObject_CallMethod(target_obj, name, "OO", a, b);
         if (!result) {
-            handle_error();
+            capture_current_error();
             PyGILState_Release(gil);
-            return;
+            return false;
         }
         Py_DECREF(result);
         PyGILState_Release(gil);
+        return true;
     }
 
-    void Consumer::call_u64(const char* name, uint64_t value) {
+    bool Consumer::call_u64(const char* name, uint64_t value) {
         PyGILState_STATE gil = PyGILState_Ensure();
         PyObject* result = PyObject_CallMethod(
             target_obj,
@@ -52,31 +91,32 @@ namespace retracesoftware_stream {
             "K",
             (unsigned long long)value);
         if (!result) {
-            handle_error();
+            capture_current_error();
             PyGILState_Release(gil);
-            return;
+            return false;
         }
         Py_DECREF(result);
         PyGILState_Release(gil);
+        return true;
     }
 
-    void Consumer::call_optional0(const char* name) {
+    bool Consumer::call_optional0(const char* name) {
         PyGILState_STATE gil = PyGILState_Ensure();
         PyObject* method = PyObject_GetAttrString(target_obj, name);
         if (!method) {
             PyErr_Clear();
             PyGILState_Release(gil);
-            return;
+            return true;
         }
         PyObject* result = PyObject_CallNoArgs(method);
         Py_DECREF(method);
         if (!result) {
-            handle_error();
             PyGILState_Release(gil);
-            return;
+            return false;
         }
         Py_DECREF(result);
         PyGILState_Release(gil);
+        return true;
     }
 
     Consumer::Consumer(PyObject* target)
@@ -92,93 +132,117 @@ namespace retracesoftware_stream {
         return target_obj;
     }
 
+    bool Consumer::has_error() const {
+        return has_error_message;
+    }
+
+    std::string Consumer::take_error_message() {
+        has_error_message = false;
+        std::string message = last_error_message.empty() ? "consumer error" : last_error_message;
+        last_error_message.clear();
+        return message;
+    }
+
     void Consumer::prepare_resume() {}
 
-    void Consumer::flush_background() {}
+    bool Consumer::flush_background() { return true; }
 
     void Consumer::reset_state() {
-        call_optional0("reset_state");
+        if (!call_optional0("reset_state")) {
+            PyErr_Clear();
+        }
     }
 
-    void Consumer::consume_object(PyObject* obj) {
-        call_obj("consume_object", obj);
+    bool Consumer::consume_object(PyObject* obj) {
+        return call_obj("consume_object", obj);
     }
 
-    void Consumer::consume_ref(Ref ref) {
-        call_u64("consume_ref", (uint64_t)(uintptr_t)ref);
+    bool Consumer::consume_ref(Ref ref) {
+        return call_u64("consume_ref", (uint64_t)(uintptr_t)ref);
     }
 
-    void Consumer::consume_intern(PyObject* obj) {
-        consume_object(obj);
-        consume_bind(reinterpret_cast<Ref>(obj));
+    bool Consumer::consume_intern(PyObject* obj) {
+        return consume_object(obj) && consume_bind(reinterpret_cast<Ref>(obj));
     }
 
-    void Consumer::consume_flush() {
-        call0("consume_flush");
+    bool Consumer::consume_flush() {
+        return call0("consume_flush");
     }
 
-    void Consumer::consume_shutdown() {
-        call0("consume_shutdown");
+    bool Consumer::consume_shutdown() {
+        return call0("consume_shutdown");
     }
 
-    void Consumer::consume_list(uint32_t len) {
-        call_u64("consume_list", len);
+    bool Consumer::consume_list(uint32_t len) {
+        return call_u64("consume_list", len);
     }
 
-    void Consumer::consume_tuple(uint32_t len) {
-        call_u64("consume_tuple", len);
+    bool Consumer::consume_tuple(uint32_t len) {
+        return call_u64("consume_tuple", len);
     }
 
-    void Consumer::consume_dict(uint32_t len) {
-        call_u64("consume_dict", len);
+    bool Consumer::consume_dict(uint32_t len) {
+        return call_u64("consume_dict", len);
     }
 
-    void Consumer::consume_heartbeat() {
-        call0("consume_heartbeat");
+    bool Consumer::consume_heartbeat() {
+        return call0("consume_heartbeat");
     }
 
-    void Consumer::consume_bind(Ref ref) {
-        call_u64("consume_bind", (uint64_t)(uintptr_t)ref);
+    bool Consumer::consume_bind(Ref ref) {
+        return call_u64("consume_bind", (uint64_t)(uintptr_t)ref);
     }
 
-    void Consumer::consume_delete(Ref ref) {
-        call_u64("consume_delete", (uint64_t)(uintptr_t)ref);
+    bool Consumer::consume_delete(Ref ref) {
+        return call_u64("consume_delete", (uint64_t)(uintptr_t)ref);
     }
 
-    void Consumer::consume_thread_switch(PyObject* obj) {
-        call_obj("consume_thread_switch", obj);
+    bool Consumer::consume_thread_switch(PyObject* obj) {
+        return call_obj("consume_thread_switch", obj);
     }
 
-    void Consumer::consume_new_patched(PyObject* obj, PyTypeObject* type) {
-        call_obj_obj("consume_new_patched", obj, reinterpret_cast<PyObject*>(type));
+    bool Consumer::consume_new_patched(PyObject* obj, PyTypeObject* type) {
+        return call_obj_obj("consume_new_patched", obj, reinterpret_cast<PyObject*>(type));
     }
 
-    void Consumer::consume_new_ext_wrapped(PyTypeObject* type) {
-        call_obj("consume_new_ext_wrapped", reinterpret_cast<PyObject*>(type));
+    bool Consumer::consume_new_ext_wrapped(PyTypeObject* type) {
+        return call_obj("consume_new_ext_wrapped", reinterpret_cast<PyObject*>(type));
     }
 
     class NativeConsumer : public Consumer {
         template <typename Fn>
-        void run(Fn&& fn) {
+        bool run(Fn&& fn) {
             try {
                 fn();
+                return true;
             } catch (...) {
                 PyGILState_STATE gil = PyGILState_Ensure();
-                handle_write_error();
+                set_python_error_from_current_exception();
+                capture_current_error();
                 PyGILState_Release(gil);
+                return false;
             }
         }
 
         template <typename Fn>
-        void run_bool(Fn&& fn) {
+        bool run_bool(Fn&& fn) {
             try {
                 if (!fn()) {
-                    throw nullptr;
+                    PyGILState_STATE gil = PyGILState_Ensure();
+                    if (!PyErr_Occurred()) {
+                        PyErr_SetString(PyExc_RuntimeError, "Persister operation failed");
+                    }
+                    capture_current_error();
+                    PyGILState_Release(gil);
+                    return false;
                 }
+                return true;
             } catch (...) {
                 PyGILState_STATE gil = PyGILState_Ensure();
-                handle_write_error();
+                set_python_error_from_current_exception();
+                capture_current_error();
                 PyGILState_Release(gil);
+                return false;
             }
         }
 
@@ -200,64 +264,64 @@ namespace retracesoftware_stream {
             persister()->reset_state();
         }
 
-        void flush_background() override {
-            run([&] { persister()->flush(); });
+        bool flush_background() override {
+            return run([&] { persister()->flush(); });
         }
 
-        void consume_object(PyObject* obj) override {
-            run_bool([&] { return persister()->write_object(obj); });
+        bool consume_object(PyObject* obj) override {
+            return run_bool([&] { return persister()->write_object(obj); });
         }
 
-        void consume_ref(Ref ref) override {
-            run([&] { persister()->write_ref(ref); });
+        bool consume_ref(Ref ref) override {
+            return run([&] { persister()->write_ref(ref); });
         }
 
-        void consume_intern(PyObject* obj) override {
-            run_bool([&] { return persister()->intern(obj); });
+        bool consume_intern(PyObject* obj) override {
+            return run_bool([&] { return persister()->intern(obj); });
         }
 
-        void consume_flush() override {
-            run([&] { persister()->flush(); });
+        bool consume_flush() override {
+            return run([&] { persister()->flush(); });
         }
 
-        void consume_shutdown() override {
-            run([&] { persister()->shutdown(); });
+        bool consume_shutdown() override {
+            return run([&] { persister()->shutdown(); });
         }
 
-        void consume_list(uint32_t len) override {
-            run([&] { persister()->start_list(len); });
+        bool consume_list(uint32_t len) override {
+            return run([&] { persister()->start_list(len); });
         }
 
-        void consume_tuple(uint32_t len) override {
-            run([&] { persister()->start_tuple(len); });
+        bool consume_tuple(uint32_t len) override {
+            return run([&] { persister()->start_tuple(len); });
         }
 
-        void consume_dict(uint32_t len) override {
-            run([&] { persister()->start_dict(len); });
+        bool consume_dict(uint32_t len) override {
+            return run([&] { persister()->start_dict(len); });
         }
 
-        void consume_heartbeat() override {
-            run([&] { persister()->write_heartbeat(); });
+        bool consume_heartbeat() override {
+            return run([&] { persister()->write_heartbeat(); });
         }
 
-        void consume_bind(Ref ref) override {
-            run([&] { persister()->bind(ref); });
+        bool consume_bind(Ref ref) override {
+            return run([&] { persister()->bind(ref); });
         }
 
-        void consume_delete(Ref ref) override {
-            run([&] { persister()->write_delete(ref); });
+        bool consume_delete(Ref ref) override {
+            return run([&] { persister()->write_delete(ref); });
         }
 
-        void consume_thread_switch(PyObject* obj) override {
-            run_bool([&] { return persister()->write_thread_switch(obj); });
+        bool consume_thread_switch(PyObject* obj) override {
+            return run_bool([&] { return persister()->write_thread_switch(obj); });
         }
 
-        void consume_new_patched(PyObject* obj, PyTypeObject* type) override {
-            run([&] { persister()->write_new_patched(obj, reinterpret_cast<PyObject*>(type)); });
+        bool consume_new_patched(PyObject* obj, PyTypeObject* type) override {
+            return run([&] { persister()->write_new_patched(obj, reinterpret_cast<PyObject*>(type)); });
         }
 
-        void consume_new_ext_wrapped(PyTypeObject* type) override {
-            run_bool([&] { return persister()->write_new_ext_wrapped(type); });
+        bool consume_new_ext_wrapped(PyTypeObject* type) override {
+            return run_bool([&] { return persister()->write_new_ext_wrapped(type); });
         }
     };
 
@@ -284,21 +348,21 @@ namespace retracesoftware_stream {
             return quit_on_error_value;
         }
 
-        void consume_intern(PyObject* obj) override {
+        bool consume_intern(PyObject* obj) override {
             PyObject* method = PyObject_GetAttrString(target_obj, "consume_intern");
             if (!method) {
                 PyErr_Clear();
-                Consumer::consume_intern(obj);
-                return;
+                return Consumer::consume_intern(obj);
             }
 
             PyObject* result = PyObject_CallOneArg(method, obj);
             Py_DECREF(method);
             if (!result) {
-                handle_error();
-                return;
+                capture_current_error();
+                return false;
             }
             Py_DECREF(result);
+            return true;
         }
     };
 

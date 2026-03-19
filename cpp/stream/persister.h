@@ -8,6 +8,7 @@
 namespace retracesoftware_stream {
     void handle_write_error();
     void handle_debug_error(bool quit_on_error);
+    void set_python_error_from_current_exception();
     
     class Persister : public PyObject {
         PyObject* framed_writer_obj = nullptr;

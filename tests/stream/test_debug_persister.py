@@ -1,4 +1,5 @@
 import gc
+import time
 import pytest
 
 pytest.importorskip("retracesoftware.stream")
@@ -141,6 +142,44 @@ def test_writer_wraps_plain_python_persister():
 
     assert ("object", "wrapped-output") in handler.events
     assert ("flush",) in handler.events
+
+
+def test_consumer_error_callback_shuts_queue_down():
+    errors = []
+
+    class FailingPersister:
+        def __init__(self):
+            self.events = []
+
+        def consume_object(self, obj):
+            self.events.append(("object", obj))
+            raise RuntimeError("boom")
+
+        def consume_shutdown(self):
+            self.events.append(("shutdown",))
+
+    handler = FailingPersister()
+    queue = stream._backend_mod.Queue(
+        handler,
+        on_consumer_error=errors.append,
+    )
+    writer = stream._backend_mod.ObjectWriter(queue, object)
+
+    try:
+        writer("before-error")
+
+        deadline = time.time() + 2
+        while not errors and time.time() < deadline:
+            time.sleep(0.01)
+
+        assert errors
+        assert "boom" in errors[0]
+        assert handler.events.count(("shutdown",)) == 1
+
+        writer("after-error")
+        assert handler.events == [("object", "before-error"), ("shutdown",)]
+    finally:
+        queue.close()
 
 
 def test_debug_persister_emits_bound_ref_for_bound_patched_object():

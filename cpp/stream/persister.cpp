@@ -28,7 +28,7 @@ namespace retracesoftware_stream {
             }
         }
 
-        void set_python_error_from_current_exception() {
+        void set_python_error_from_current_exception_impl() {
             try {
                 throw;
             } catch (const std::invalid_argument& exc) {
@@ -49,7 +49,7 @@ namespace retracesoftware_stream {
             try {
                 run_persister_without_gil(std::forward<Fn>(fn));
             } catch (...) {
-                set_python_error_from_current_exception();
+                set_python_error_from_current_exception_impl();
                 return nullptr;
             }
             Py_RETURN_NONE;
@@ -67,7 +67,7 @@ namespace retracesoftware_stream {
                     return nullptr;
                 }
             } catch (...) {
-                set_python_error_from_current_exception();
+                set_python_error_from_current_exception_impl();
                 return nullptr;
             }
             Py_RETURN_NONE;
@@ -211,6 +211,10 @@ namespace retracesoftware_stream {
     void handle_write_error() {
         PyErr_Print();
         PyErr_Clear();
+    }
+
+    void set_python_error_from_current_exception() {
+        set_python_error_from_current_exception_impl();
     }
 
     void handle_debug_error(bool quit_on_error) {

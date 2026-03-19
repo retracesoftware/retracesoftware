@@ -6,6 +6,7 @@
 #include <condition_variable>
 #include <cstdint>
 #include <mutex>
+#include <string>
 #include <thread>
 #include <vector>
 
@@ -21,6 +22,12 @@ namespace retracesoftware_stream {
     class Queue;
     class Persister;
     class Consumer;
+    enum class QueueState {
+        ACTIVE,
+        PAUSED,
+        DRAINING,
+        STOPPED,
+    };
     Queue* Queue_get(PyObject* obj);
     int Queue_init(Queue* self, PyObject* args, PyObject* kwds);
 
@@ -36,8 +43,10 @@ namespace retracesoftware_stream {
         Consumer* consumer = nullptr;
         PyObject* thread_id_callback = nullptr;
         PyObject* push_fail_callback = nullptr;
+        PyObject* on_consumer_error = nullptr;
         PyThreadState* last_thread_tstate = nullptr;
         PyObject* last_thread_id = nullptr;
+        QueueState state = QueueState::ACTIVE;
         int64_t total_added = 0;
         std::atomic<int64_t> total_removed{0};
         int64_t inflight_limit_bytes;
@@ -61,7 +70,7 @@ namespace retracesoftware_stream {
         bool push_command(Cmd cmd, uint32_t len = 0);
         void prepare_consumer_resume();
         void reset_consumer_state();
-        void flush_consumer();
+        bool flush_consumer();
 
         bool try_pop_entry(QEntry& entry);
         QEntry pop_entry();
@@ -80,17 +89,24 @@ namespace retracesoftware_stream {
         void drain_returned_all_with_gil();
         bool drain_returned_with_gil(int64_t needed_size);
         bool wait_with_push_backoff();
-        void dispatch_command(QEntry entry);
-        void dispatch_entry(QEntry entry);
+        bool dispatch_command(QEntry entry);
+        bool dispatch_entry(QEntry entry);
         void dispatch_release(QEntry entry);
         void worker_loop();
         void return_loop();
         void drain_returned();
         void release_entries();
+        void poison_returned_queue();
+        void push_shutdown_sentinel();
+        void discard_pending_error();
+        std::string take_pending_error_message();
+        void notify_consumer_error(const std::string& message);
+        void handle_consumer_failure(const std::string& message);
+        bool reject_push() const;
 
         bool has_entries();
         bool try_consume();
-        void consume();
+        bool consume();
 
         void note_removed(int64_t size);
     public:
@@ -103,6 +119,8 @@ namespace retracesoftware_stream {
         PyObject* persister() const;
         PyObject* push_fail_handler() const;
         void set_push_fail_handler(PyObject* callback);
+        PyObject* consumer_error_handler() const;
+        void set_consumer_error_handler(PyObject* callback);
 
     private:
         friend int Queue_init(Queue* self, PyObject* args, PyObject* kwds);
@@ -146,6 +164,7 @@ namespace retracesoftware_stream {
         bool wait_for_inflight();
 
         inline bool push(QEntry entry, size_t estimated_size = 0) {
+            if (reject_push()) return false;
 
             if (estimated_size > 0) {
                 reserve_inflight(estimated_size);
@@ -161,6 +180,7 @@ namespace retracesoftware_stream {
         }
 
         inline bool push_command_with_ptr(Cmd cmd, QEntry ptr, size_t estimated_size = 0) {
+            if (reject_push()) return false;
             if (estimated_size > 0) {
                 reserve_inflight(estimated_size);
             }
@@ -173,6 +193,7 @@ namespace retracesoftware_stream {
         }
 
         inline bool push_immortal(PyObject * obj) {
+            if (reject_push()) return false;
             push_entry_unchecked(immortal_entry(obj));
             return wait_for_slots(4);
         }
@@ -231,6 +252,7 @@ namespace retracesoftware_stream {
         }
 
         inline bool push_ref(Ref ref) {
+            if (reject_push()) return false;
             push_entry_unchecked(ref_entry(ref));
             return wait_for_slots(4);
         }
