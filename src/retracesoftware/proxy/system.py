@@ -88,8 +88,8 @@ patch_type(cls) modifies a type in-place so that all its methods are
 routed through the gates:
 
     - cls's own methods (from superdict) → wrapped as external
-      (through _ext_handler, which checks _unretraced before routing
-      through the _external gate)
+      (through _ext_handler, which checks whether the instance is
+      already retraced before routing through the _external gate)
 
     - Existing Python subclasses of cls → methods that *override* a
       name from the base type's MRO are wrapped as internal (through
@@ -99,12 +99,8 @@ routed through the gates:
       new subclasses are automatically patched as internal
 
     - tp_alloc → set_on_alloc installs _on_alloc, which either
-      notifies the appropriate bind gate (inside a context) or adds
-      the object to _unretraced (outside any context)
-
-    - Existing live instances of the patched type family are swept into
-      _unretraced immediately after patching so pre-patch runtime state
-      stays live on both record and replay
+      notifies the appropriate bind gate (inside a context) or leaves
+      the object unbound (outside any context)
 
 This means: if you patch_type(socket.socket), then socket.connect()
 goes through _external, and if you define MySocket(socket.socket)
@@ -201,7 +197,6 @@ Usage
         ...  # all calls on patched types are replayed from the stream
 """
 
-import gc
 import retracesoftware.utils as utils
 import retracesoftware.functional as functional
 from types import SimpleNamespace
@@ -619,13 +614,7 @@ class System:
         # _bound tracks every object/type that was seen by bind/new_patched.
         # It uses a native hybrid weak set: weakrefable objects auto-evict,
         # others are held strongly for the lifetime of the System.
-        #
-        # _unretraced tracks patched instances that were created OUTSIDE
-        # any record/replay context so method dispatch can passthrough.
-        # It stays small because most patched instances are allocated
-        # while retrace is active.
         self.is_bound = utils.WeakSet()
-        self._unretraced = utils.MemoryAddresses()
 
         # ── Type tracking ──────────────────────────────────────────
         self.patched_types = set()        # types already patched in-place
@@ -640,7 +629,7 @@ class System:
             functional.typeof, 
             functional.memoize_one_arg(self._should_proxy_type))
 
-        # Return True if *obj* is bound or is a dynamic proxy wrapper
+        # Return True if *obj* is bound or is a dynamic proxy wrapper.
         self.is_retraced = functional.or_predicate(self.is_bound, utils.is_wrapped)
 
         # ── Sandbox predicates ─────────────────────────────────────
@@ -666,20 +655,13 @@ class System:
         #     when disabled (passthrough).
         #
         # _ext_handler is used by patch_type for methods on patched
-        # base types (int→ext calls).  It checks _unretraced before
-        # dispatching:
-        #   1. positional_param(1) extracts the instance (args[1],
-        #      since WrappedFunction prepends the target at args[0]).
-        #   2. _unretraced.contains checks if the instance was
-        #      created outside any record/replay context.
-        #   3. If unretraced → functional.apply passes through to
-        #      the original target (no interception).
-        #      If retraced → route through _external gate.
+        # base types (int→ext calls). It routes through the external gate
+        # only for bound or wrapped instances; unbound patched instances
+        # pass through to the original target.
         #
         # _int_handler is the raw _internal gate.  Subclass methods
-        # (ext→int callbacks) are always on retraced instances, so
-        # no _unretraced check is needed — the gate dispatches to
-        # the executor when active, or passes through when disabled.
+        # (ext→int callbacks) dispatch to the executor when active, or
+        # pass through when disabled.
         self._ext_handler = functional.if_then_else(
             functional.sequence(functional.positional_param(1), self.is_retraced),
             self._external,
@@ -692,10 +674,8 @@ class System:
 
         # ── Allocation hook ────────────────────────────────────────
         #
-        # _on_alloc is installed on every patched type via
-        # utils.set_on_alloc.  It is called from tp_alloc whenever a
-        # new instance of the patched type (or any of its subclasses)
-        # is created.
+        # _on_alloc is installed on the patched type family.
+        # Objects created outside any context remain live/unbound.
         #
         # The allocation gate (_new_patched) is called directly —
         # gate(obj) dispatches to the executor when set, or to the
@@ -707,12 +687,12 @@ class System:
         #     identity.
         #   - When the internal gate is active: _new_patched(obj)
         #     so replay can materialize patched objects by type.
-        #   - Otherwise: _unretraced.add(obj) → mark as unbound so
-        #     _ext_handler will passthrough calls on this instance.
+        #   - Otherwise: utils.noop keeps the object unbound, so later
+        #     patched method calls passthrough.
         self._on_alloc = functional.cond(
-            self._external.is_set, self._bind,
-            self._internal.is_set, self._new_patched,
-            self._unretraced.add)
+            self._external.is_set, utils.runall(self._bind, self.is_bound.add),
+            self._internal.is_set, utils.runall(self._new_patched, self.is_bound.add),
+            utils.noop)
 
     @property
     def enabled(self):
@@ -814,11 +794,7 @@ class System:
            external gate can be restored for any outbound calls the
            override makes (e.g. ``super().method()``).
 
-        4. **Existing-instance sweep** — any already-live instances of
-           the patched type family are added to ``_unretraced`` so they
-           passthrough as live runtime state.
-
-        5. **Bind notification** — ``_bind(cls)`` is called to notify
+        4. **Bind notification** — ``_bind(cls)`` is called to notify
            the current bind executor (if any) that a new type has
            entered the system.
 
@@ -860,10 +836,9 @@ class System:
 
         missing = object()
         alloc_patch_undo = None
-        unretraced_undo = []
         patched_attrs = {}
         patched_subtypes = []
-        patched_family = {cls}
+        subtype_alloc_undos = []
         subtype_attrs = {}
         original_init_subclass = cls.__dict__.get('__init_subclass__', missing)
         original_retrace = cls.__dict__.get('__retrace__', missing)
@@ -902,12 +877,6 @@ class System:
                     elif callable(value):
                         setattr(cls, name, proxy_function(value))
 
-        def mark_existing_instances_unretraced(types_to_mark):
-            for obj in gc.get_objects():
-                if type(obj) in types_to_mark:
-                    remove = self._unretraced.add(obj)
-                    if remove is not None:
-                        unretraced_undo.append(remove)
         try:
             with WithoutFlags(cls, "Py_TPFLAGS_IMMUTABLETYPE"):
 
@@ -934,10 +903,13 @@ class System:
                 if utils.is_extendable(cls):
                     base_method_names = frozenset(base_methods.keys())
 
-                    def init_subclass(cls, **kwargs):
+                    def init_subclass(cls, patch_alloc = True, **kwargs):
                         self.patched_types.add(cls)
                         patched_subtypes.append(cls)
-                        patched_family.add(cls)
+
+                        if patch_alloc:
+                            alloc_undo = utils.set_on_alloc(cls, self._on_alloc)
+                            subtype_alloc_undos.append(alloc_undo)
 
                         overrides = {
                             name: value
@@ -951,16 +923,14 @@ class System:
 
                     for subtype in get_all_subtypes(cls):
                         with WithoutFlags(subtype, "Py_TPFLAGS_IMMUTABLETYPE"):
-                            init_subclass(subtype)
+                            init_subclass(subtype, patch_alloc = False)
 
                 cls.__retrace__ = self
-
-            mark_existing_instances_unretraced(patched_family)
 
             # Step 4: Notify the bind gate
             self._bind(cls)
         except Exception:
-            for undo in reversed(unretraced_undo):
+            for undo in reversed(subtype_alloc_undos):
                 undo()
 
             if alloc_patch_undo is not None:

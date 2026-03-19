@@ -124,8 +124,8 @@ def test_system_active_allocations_use_bind_path():
     assert system.is_bound(internal_obj)
 
 
-def test_system_preexisting_instance_stays_unretraced_in_record_and_replay():
-    """Instances created before patch_type() remain live on both paths."""
+def test_system_preexisting_instance_stays_live_in_record_and_replay():
+    """Instances created before patch_type() remain unbound on both paths."""
     system = System()
 
     class Database:
@@ -404,9 +404,8 @@ def test_system_ext_int_ext_callback():
             recorded_results.append(a[0] if a else kw.get('result'))
             super().write_result(*a, **kw)
 
-    obj = Sub()
-
     with system.record_context(TrackingWriter()):
+        obj = Sub()
         result = obj.process()
 
     # process() → compute() → fetch() returns 100 → compute returns 200
@@ -461,8 +460,8 @@ def test_system_ext_int_ext_callback_should_record_nested_external():
             recorded_results.append(a[0] if a else kw.get("result"))
             super().write_result(*a, **kw)
 
-    obj = Sub()
     with system.record_context(TrackingWriter()):
+        obj = Sub()
         result = obj.process()
 
     assert result == 200
@@ -575,9 +574,8 @@ def test_system_proxied_return_value():
     the wrapped object and proxy_output unwraps it (Wrapped → unwrap),
     giving back the original list contents.
 
-    Uses a subclass (Repo) of the patched base (Database) to avoid
-    the pre-existing set_on_alloc issue with direct instantiation of
-    the patched type outside a context.
+    Uses a subclass (Repo) allocated inside each context so the object
+    is bound before external calls are routed through retrace.
     """
 
     class Database:
@@ -594,16 +592,16 @@ def test_system_proxied_return_value():
         pass
 
     writer = MemoryWriter()
-    db = Repo()
 
     with system.record_context(writer):
+        db = Repo()
         result = db.query()
 
     assert result == [1, 2, 3]
     assert len(writer.tape) > 0, "query() result should be recorded"
 
-    db = Repo()
     with system.replay_context(writer.reader()):
+        db = Repo()
         result2 = db.query()
 
     assert result2 == [1, 2, 3], f"replay should return [1, 2, 3], got {result2}"
@@ -632,9 +630,9 @@ def test_system_error_replay():
         pass
 
     writer = MemoryWriter()
-    svc = MyService()
 
     with system.record_context(writer):
+        svc = MyService()
         try:
             svc.fail()
             assert False, "should have raised"
@@ -644,8 +642,8 @@ def test_system_error_replay():
     assert recorded_msg == "service down"
     assert 'ERROR' in writer.tape, "exception should be recorded"
 
-    svc = MyService()
     with system.replay_context(writer.reader()):
+        svc = MyService()
         try:
             svc.fail()
             assert False, "should have raised on replay"
@@ -681,9 +679,9 @@ def test_system_error_then_success():
         pass
 
     writer = MemoryWriter()
-    obj = MyFlaky()
 
     with system.record_context(writer):
+        obj = MyFlaky()
         try:
             obj.attempt()
         except ConnectionError:
@@ -694,8 +692,8 @@ def test_system_error_then_success():
 
     # Replay — counter does NOT advance, values come from stream
     call_count = 0
-    obj = MyFlaky()
     with system.replay_context(writer.reader()):
+        obj = MyFlaky()
         try:
             obj.attempt()
         except ConnectionError:
@@ -977,9 +975,9 @@ def test_system_disable_for():
     disabled_log = system.disable_for(lambda msg: MyLogger().log(msg))
 
     writer = MemoryWriter()
-    obj = MyLogger()
 
     with system.record_context(writer):
+        obj = MyLogger()
         # Normal patched call — goes through adapter, recorded
         r1 = obj.log("recorded")
 
@@ -1370,16 +1368,16 @@ def test_system_callback_raises():
             raise ValueError("callback error")
 
     writer = MemoryWriter()
-    obj = Sub()
 
     with system.record_context(writer):
+        obj = Sub()
         result = obj.api()
 
     assert result == 99  # -1 + 100
 
-    obj = Sub()
     error_log.clear()
     with system.replay_context(writer.reader()):
+        obj = Sub()
         replayed = obj.api()
 
     assert replayed == 99
@@ -1425,9 +1423,9 @@ def test_system_different_result_types():
         pass
 
     writer = MemoryWriter()
-    shop = MyShop()
 
     with system.record_context(writer):
+        shop = MyShop()
         d = shop.adopt("dog")
         dog_speak = d.speak()
         c = shop.adopt("cat")
@@ -1437,8 +1435,8 @@ def test_system_different_result_types():
     assert cat_speak == "meow from cat-2"
 
     call_count = 0
-    shop = MyShop()
     with system.replay_context(writer.reader()):
+        shop = MyShop()
         d_r = shop.adopt("dog")
         dog_speak_r = d_r.speak()
         c_r = shop.adopt("cat")

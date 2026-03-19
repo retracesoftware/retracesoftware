@@ -204,12 +204,12 @@ def test_system_record_uses_new_patched_during_external_phase_allocation():
     assert not queue.named("push_bind")
 
 
-def test_system_record_passthroughs_unretraced_instances():
+def test_system_record_passthroughs_unbound_instances():
     """Objects created outside retrace should stay on the passthrough path.
 
-    ``System`` tracks patched objects created outside any active record/replay
-    context in ``_unretraced``.  Calls on those objects should bypass the
-    recording pipeline even when a later ``record_context`` is active.
+    ``System`` leaves patched objects created outside any active
+    record/replay context unbound. Calls on those objects should bypass
+    the recording pipeline even when a later ``record_context`` is active.
 
     This test documents that invariant by asserting both:
     - the object is reported as not bound
