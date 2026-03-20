@@ -809,10 +809,25 @@ namespace retracesoftware_stream {
         // which in turn unblocks the producer's inflight wait.
         if (PyGILState_Check()) {
             PyThreadState* _save = PyEval_SaveThread();
-            while (!try_pop_entry(entry)) std::this_thread::yield();
+            while (!try_pop_entry(entry)) {
+                if (shutdown_flag.load(std::memory_order_acquire)) {
+                    PyEval_RestoreThread(_save);
+                    retracesoftware::GILGuard gstate;
+                    PyErr_SetString(PyExc_RuntimeError, "queue shutdown while awaiting payload");
+                    throw nullptr;
+                }
+                std::this_thread::yield();
+            }
             PyEval_RestoreThread(_save);
         } else {
-            while (!try_pop_entry(entry)) std::this_thread::yield();
+            while (!try_pop_entry(entry)) {
+                if (shutdown_flag.load(std::memory_order_acquire)) {
+                    retracesoftware::GILGuard gstate;
+                    PyErr_SetString(PyExc_RuntimeError, "queue shutdown while awaiting payload");
+                    throw nullptr;
+                }
+                std::this_thread::yield();
+            }
         }
         return entry;
     }
