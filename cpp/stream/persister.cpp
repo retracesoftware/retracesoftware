@@ -1,7 +1,8 @@
-#include "persister.h"
+#include "writer.h"
 
 #include <cassert>
 #include <cerrno>
+#include <new>
 #include <stdexcept>
 
 #ifndef _WIN32
@@ -15,7 +16,157 @@
 #endif
 
 namespace retracesoftware_stream {
+    class Persister : public PyObject {
+        PyObject* framed_writer_obj = nullptr;
+        FramedWriter* fw = nullptr;
+        PyObject* serializer = nullptr;
+        map<PyObject*, int> bindings;
+        int binding_counter = 0;
+        size_t bytes_written = 0;
+        bool verbose = false;
+        map<PyObject*, uint16_t> interned_index;
+        uint16_t interned_counter = 0;
+
+        inline void emit(uint8_t v) { fw->write_byte(v); bytes_written++; }
+        inline void emit(int8_t v) { emit((uint8_t)v); }
+        inline void emit(uint16_t v) { fw->write_uint16(v); bytes_written += 2; }
+        inline void emit(int16_t v) { emit((uint16_t)v); }
+        inline void emit(uint32_t v) { fw->write_uint32(v); bytes_written += 4; }
+        inline void emit(int32_t v) { emit((uint32_t)v); }
+        inline void emit(uint64_t v) { fw->write_uint64(v); bytes_written += 8; }
+        inline void emit(int64_t v) { emit((uint64_t)v); }
+        inline void emit(double d) { fw->write_float64(d); bytes_written += 8; }
+        inline void emit_bytes(const uint8_t* data, Py_ssize_t size) {
+            fw->write_bytes(data, size);
+            bytes_written += size;
+        }
+        inline void emit_control(Control value) { emit(value.raw); }
+        inline void emit(Control control) { emit(control.raw); }
+        inline void emit(FixedSizeTypes obj) {
+            if (verbose) {
+                printf("%s ", FixedSizeTypes_Name(obj));
+            }
+            emit(create_fixed_size(obj));
+        }
+
+        bool write(PyObject* obj);
+        bool write_fallback(PyObject* value);
+        bool write_long(PyObject* value);
+        void write_string(PyObject* obj);
+        void write_memory_view(PyObject* obj);
+        void write_size(SizedTypes type, Py_ssize_t size);
+        void write_unsigned_number(SizedTypes type, uint64_t value);
+        void write_lookup(int ref);
+        void write_str_value(PyObject* obj);
+        void write_bytes_header(PyObject* obj);
+        void write_bytes_data(PyObject* obj);
+        void write_bytes_value(PyObject* obj);
+        void write_pickled_value(PyObject* bytes);
+        void write_bool_value(PyObject* obj);
+        void write_sized_int(int64_t value);
+        bool object_freed(PyObject* obj);
+        void remember_binding(PyObject* key, int index);
+        void forget_binding(PyObject* key);
+
+    public:
+        Persister() {}
+        ~Persister() = default;
+
+        PyObject* writer_object() const { return framed_writer_obj; }
+        FramedWriter* native_writer() const { return fw; }
+        void reset_state();
+
+        bool intern(PyObject* obj, Ref ref);
+        void flush();
+        void shutdown();
+        void prepare_resume();
+        void flush_background();
+
+        void start_collection(PyObject* type, size_t len);
+        bool write_object(PyObject* obj);
+        void write_delete(Ref ref);
+        bool write_thread_switch(PyObject* thread_handle);
+        void bind(Ref ref);
+
+        void write_heartbeat();
+        void write_pickled(PyObject* obj);
+        void write_new_patched(Ref type_ref, Ref ref);
+
+        static PyObject* tp_new(PyTypeObject* type, PyObject*, PyObject*) {
+            Persister* self = reinterpret_cast<Persister*>(type->tp_alloc(type, 0));
+            if (!self) return nullptr;
+            new (self) Persister();
+            return reinterpret_cast<PyObject*>(self);
+        }
+
+        static int init(Persister* self, PyObject* args, PyObject* kwds) {
+            PyObject* writer_obj;
+            PyObject* serializer;
+            PyObject* thread_key = nullptr;
+
+            static const char* kwlist[] = {"writer", "serializer", "thread", nullptr};
+            if (!PyArg_ParseTupleAndKeywords(
+                    args, kwds, "OO|O", (char**)kwlist,
+                    &writer_obj, &serializer, &thread_key)) {
+                return -1;
+            }
+            (void)thread_key;
+
+            FramedWriter* fw_ptr = FramedWriter_get(writer_obj);
+            if (!fw_ptr) return -1;
+
+            self->framed_writer_obj = Py_NewRef(writer_obj);
+            self->fw = fw_ptr;
+            self->serializer = Py_NewRef(serializer);
+            return 0;
+        }
+
+        static int traverse(Persister* self, visitproc visit, void* arg) {
+            Py_VISIT(self->framed_writer_obj);
+            Py_VISIT(self->serializer);
+            for (auto& [key, value] : self->interned_index) {
+                visit(key, arg);
+            }
+            return 0;
+        }
+
+        static int clear(Persister* self) {
+            Py_CLEAR(self->serializer);
+            for (auto& [key, value] : self->interned_index) {
+                Py_DECREF(key);
+            }
+            self->interned_index.clear();
+            self->bindings.clear();
+            Py_CLEAR(self->framed_writer_obj);
+            self->fw = nullptr;
+            self->binding_counter = 0;
+            self->bytes_written = 0;
+            self->interned_counter = 0;
+            return 0;
+        }
+
+        static void dealloc(Persister* self) {
+            PyObject_GC_UnTrack(self);
+            clear(self);
+            self->~Persister();
+            Py_TYPE(self)->tp_free((PyObject*)self);
+        }
+    };
+
     namespace {
+        PyObject* collection_type_object(Cmd cmd) {
+            switch (cmd) {
+                case CMD_LIST:
+                    return reinterpret_cast<PyObject*>(&PyList_Type);
+                case CMD_TUPLE:
+                    return reinterpret_cast<PyObject*>(&PyTuple_Type);
+                case CMD_DICT:
+                    return reinterpret_cast<PyObject*>(&PyDict_Type);
+                default:
+                    return nullptr;
+            }
+        }
+
         template <typename Fn>
         void run_persister_without_gil(Fn&& fn) {
             PyThreadState* save = PyEval_SaveThread();
@@ -80,19 +231,15 @@ namespace retracesoftware_stream {
             return result;
         }
 
-        PyObject* Persister_py_write_ref(Persister* self, PyObject* obj) {
-            PyObject* owned = Py_NewRef(obj);
-            PyObject* result = call_persister_method([&] {
-                self->write_ref(reinterpret_cast<Ref>(owned));
-            });
-            Py_DECREF(owned);
-            return result;
-        }
-
-        PyObject* Persister_py_intern(Persister* self, PyObject* obj) {
-            PyObject* owned = Py_NewRef(obj);
-            PyObject* result = call_persister_bool_method([&] { return self->intern(owned); });
-            Py_DECREF(owned);
+        PyObject* Persister_py_intern(Persister* self, PyObject* args) {
+            PyObject* obj;
+            PyObject* ref = nullptr;
+            if (!PyArg_ParseTuple(args, "O|O", &obj, &ref)) return nullptr;
+            PyObject* owned_obj = Py_NewRef(obj);
+            PyObject* owned_ref = ref ? Py_NewRef(ref) : Py_NewRef(owned_obj);
+            PyObject* result = call_persister_bool_method([&] { return self->intern(owned_obj, owned_ref); });
+            Py_DECREF(owned_obj);
+            Py_DECREF(owned_ref);
             return result;
         }
 
@@ -121,38 +268,43 @@ namespace retracesoftware_stream {
         }
 
         PyObject* Persister_py_start_list(Persister* self, PyObject* arg) {
+            PyObject* type = collection_type_object(CMD_LIST);
+            if (!type) return nullptr;
             unsigned long value = PyLong_AsUnsignedLong(arg);
             if (PyErr_Occurred()) return nullptr;
-            return call_persister_method([&] { self->start_list((uint32_t)value); });
+            return call_persister_method([&] { self->start_collection(type, static_cast<size_t>(value)); });
         }
 
         PyObject* Persister_py_start_tuple(Persister* self, PyObject* arg) {
+            PyObject* type = collection_type_object(CMD_TUPLE);
+            if (!type) return nullptr;
             unsigned long value = PyLong_AsUnsignedLong(arg);
             if (PyErr_Occurred()) return nullptr;
-            return call_persister_method([&] { self->start_tuple((uint32_t)value); });
+            return call_persister_method([&] { self->start_collection(type, static_cast<size_t>(value)); });
         }
 
         PyObject* Persister_py_start_dict(Persister* self, PyObject* arg) {
+            PyObject* type = collection_type_object(CMD_DICT);
+            if (!type) return nullptr;
             unsigned long value = PyLong_AsUnsignedLong(arg);
             if (PyErr_Occurred()) return nullptr;
-            return call_persister_method([&] { self->start_dict((uint32_t)value); });
+            return call_persister_method([&] { self->start_collection(type, static_cast<size_t>(value)); });
+        }
+
+        PyObject* Persister_py_start_collection(Persister* self, PyObject* args) {
+            PyObject* type;
+            PyObject* len;
+            if (!PyArg_ParseTuple(args, "OO", &type, &len)) return nullptr;
+            unsigned long value = PyLong_AsUnsignedLong(len);
+            if (PyErr_Occurred()) return nullptr;
+            PyObject* owned_type = Py_NewRef(type);
+            PyObject* result = call_persister_method([&] { self->start_collection(owned_type, static_cast<size_t>(value)); });
+            Py_DECREF(owned_type);
+            return result;
         }
 
         PyObject* Persister_py_write_heartbeat(Persister* self, PyObject*) {
             return call_persister_method([&] { self->write_heartbeat(); });
-        }
-
-        PyObject* Persister_py_write_new_ext_wrapped(Persister* self, PyObject* obj) {
-            if (!PyType_Check(obj)) {
-                PyErr_SetString(PyExc_TypeError, "expected type object");
-                return nullptr;
-            }
-            PyObject* owned = Py_NewRef(obj);
-            PyObject* result = call_persister_bool_method([&] {
-                return self->write_new_ext_wrapped(reinterpret_cast<PyTypeObject*>(owned));
-            });
-            Py_DECREF(owned);
-            return result;
         }
 
         PyObject* Persister_py_write_thread_switch(Persister* self, PyObject* obj) {
@@ -170,16 +322,16 @@ namespace retracesoftware_stream {
         }
 
         PyObject* Persister_py_write_new_patched(Persister* self, PyObject* args) {
-            PyObject* obj;
-            PyObject* type;
-            if (!PyArg_ParseTuple(args, "OO", &obj, &type)) return nullptr;
-            PyObject* owned_obj = Py_NewRef(obj);
-            PyObject* owned_type = Py_NewRef(type);
+            PyObject* type_ref;
+            PyObject* ref = nullptr;
+            if (!PyArg_ParseTuple(args, "O|O", &type_ref, &ref)) return nullptr;
+            PyObject* owned_type_ref = Py_NewRef(type_ref);
+            PyObject* owned_ref = ref ? Py_NewRef(ref) : Py_NewRef(owned_type_ref);
             PyObject* result = call_persister_method([&] {
-                self->write_new_patched(owned_obj, owned_type);
+                self->write_new_patched(owned_type_ref, owned_ref);
             });
-            Py_DECREF(owned_obj);
-            Py_DECREF(owned_type);
+            Py_DECREF(owned_type_ref);
+            Py_DECREF(owned_ref);
             return result;
         }
 
@@ -187,20 +339,34 @@ namespace retracesoftware_stream {
             return call_persister_method([&] { self->reset_state(); });
         }
 
+        PyObject* Persister_py_prepare_resume(Persister* self, PyObject*) {
+            return call_persister_method([&] { self->prepare_resume(); });
+        }
+
+        PyObject* Persister_py_flush_background(Persister* self, PyObject*) {
+            return call_persister_method([&] { self->flush_background(); });
+        }
+
         PyMethodDef Persister_methods[] = {
             {"write_object", (PyCFunction)Persister_py_write_object, METH_O, "Write an object while mimicking consumer threading"},
-            {"write_ref", (PyCFunction)Persister_py_write_ref, METH_O, "Write a bound reference while mimicking consumer threading"},
-            {"intern", (PyCFunction)Persister_py_intern, METH_O, "Write and bind an object while mimicking consumer threading"},
+            {"nogil_write_object", (PyCFunction)Persister_py_write_object, METH_O, "Native fast-path alias for write_object"},
+            {"intern", (PyCFunction)Persister_py_intern, METH_VARARGS, "Write and bind an object while mimicking consumer threading"},
             {"bind", (PyCFunction)Persister_py_bind, METH_O, "Register a bound object while mimicking consumer threading"},
+            {"nogil_bind", (PyCFunction)Persister_py_bind, METH_O, "Native fast-path alias for bind"},
             {"write_delete", (PyCFunction)Persister_py_write_delete, METH_O, "Write a delete event while mimicking consumer threading"},
+            {"nogil_write_delete", (PyCFunction)Persister_py_write_delete, METH_O, "Native fast-path alias for write_delete"},
             {"flush", (PyCFunction)Persister_py_flush, METH_NOARGS, "Flush the writer while mimicking consumer threading"},
+            {"flush_background", (PyCFunction)Persister_py_flush_background, METH_NOARGS, "Flush buffered output after a worker batch"},
             {"shutdown", (PyCFunction)Persister_py_shutdown, METH_NOARGS, "Write shutdown while mimicking consumer threading"},
+            {"prepare_resume", (PyCFunction)Persister_py_prepare_resume, METH_NOARGS, "Restamp the writer before resuming queue workers"},
             {"start_list", (PyCFunction)Persister_py_start_list, METH_O, "Write a list header while mimicking consumer threading"},
             {"start_tuple", (PyCFunction)Persister_py_start_tuple, METH_O, "Write a tuple header while mimicking consumer threading"},
             {"start_dict", (PyCFunction)Persister_py_start_dict, METH_O, "Write a dict header while mimicking consumer threading"},
+            {"start_collection", (PyCFunction)Persister_py_start_collection, METH_VARARGS, "Write a collection header while mimicking consumer threading"},
+            {"nogil_start_collection", (PyCFunction)Persister_py_start_collection, METH_VARARGS, "Native fast-path alias for start_collection"},
             {"write_heartbeat", (PyCFunction)Persister_py_write_heartbeat, METH_NOARGS, "Write a heartbeat while mimicking consumer threading"},
-            {"write_new_ext_wrapped", (PyCFunction)Persister_py_write_new_ext_wrapped, METH_O, "Write an ext-wrapped type while mimicking consumer threading"},
             {"write_thread_switch", (PyCFunction)Persister_py_write_thread_switch, METH_O, "Write a thread switch while mimicking consumer threading"},
+            {"nogil_write_thread_switch", (PyCFunction)Persister_py_write_thread_switch, METH_O, "Native fast-path alias for write_thread_switch"},
             {"write_pickled", (PyCFunction)Persister_py_write_pickled, METH_O, "Write a pre-pickled payload while mimicking consumer threading"},
             {"write_new_patched", (PyCFunction)Persister_py_write_new_patched, METH_VARARGS, "Write a new patched object while mimicking consumer threading"},
             {"reset_state", (PyCFunction)Persister_py_reset_state, METH_NOARGS, "Reset persister state while mimicking consumer threading"},
@@ -408,10 +574,19 @@ namespace retracesoftware_stream {
         return true;
     }
 
+    void Persister::remember_binding(PyObject* key, int index) {
+        bindings[key] = index;
+    }
+
+    void Persister::forget_binding(PyObject* key) {
+        bindings.erase(key);
+    }
+
     void Persister::bind(Ref ref) {
-        PyObject* obj = reinterpret_cast<PyObject*>(ref);
-        assert(!bindings.contains(obj));
-        bindings[obj] = binding_counter++;
+        PyObject* key = reinterpret_cast<PyObject*>(ref);
+        assert(!bindings.contains(key));
+        emit_control(Bind);
+        remember_binding(key, binding_counter++);
     }
 
     bool Persister::object_freed(PyObject* obj) {
@@ -421,7 +596,7 @@ namespace retracesoftware_stream {
         }
 
         write_unsigned_number(SizedTypes::BINDING_DELETE, it->second);
-        bindings.erase(it);
+        forget_binding(obj);
         return true;
     }
 
@@ -429,15 +604,10 @@ namespace retracesoftware_stream {
         return write(obj);
     }
 
-    void Persister::write_ref(Ref ref) {
-        auto it = bindings.find(reinterpret_cast<PyObject*>(ref));
-        if (it == bindings.end()) throw std::out_of_range("unknown bound ref");
-        write_lookup(it->second);
-    }
-
-    bool Persister::intern(PyObject* obj) {
-        if (bindings.contains(obj)) {
-            write_lookup(bindings[obj]);
+    bool Persister::intern(PyObject* obj, Ref ref) {
+        PyObject* key = reinterpret_cast<PyObject*>(ref);
+        if (bindings.contains(key)) {
+            write_lookup(bindings[key]);
             return true;
         }
 
@@ -445,7 +615,7 @@ namespace retracesoftware_stream {
         if (!write(obj)) {
             return false;
         }
-        bindings[obj] = binding_counter++;
+        remember_binding(key, binding_counter++);
         return true;
     }
 
@@ -453,28 +623,35 @@ namespace retracesoftware_stream {
         fw->flush();
     }
 
+    void Persister::flush_background() {
+        flush();
+    }
+
     void Persister::shutdown() {
         flush();
     }
 
-    void Persister::start_list(uint32_t len) {
-        write_size(SizedTypes::LIST, len);
+    void Persister::prepare_resume() {
+        if (fw) fw->stamp_pid();
     }
 
-    void Persister::start_tuple(uint32_t len) {
-        write_size(SizedTypes::TUPLE, len);
-    }
-
-    void Persister::start_dict(uint32_t len) {
-        write_size(SizedTypes::DICT, len);
+    void Persister::start_collection(PyObject* type, size_t len) {
+        if (type == reinterpret_cast<PyObject*>(&PyList_Type)) {
+            write_size(SizedTypes::LIST, static_cast<Py_ssize_t>(len));
+        } else if (type == reinterpret_cast<PyObject*>(&PyTuple_Type)) {
+            write_size(SizedTypes::TUPLE, static_cast<Py_ssize_t>(len));
+        } else if (type == reinterpret_cast<PyObject*>(&PyDict_Type)) {
+            write_size(SizedTypes::DICT, static_cast<Py_ssize_t>(len));
+        } else {
+            PyGILState_STATE error_gil = PyGILState_Ensure();
+            PyErr_SetString(PyExc_ValueError, "unknown collection type");
+            PyGILState_Release(error_gil);
+            throw nullptr;
+        }
     }
 
     void Persister::write_heartbeat() {
         emit_control(Heartbeat);
-    }
-
-    bool Persister::write_new_ext_wrapped(PyTypeObject* type) {
-        return write(reinterpret_cast<PyObject*>(type));
     }
 
     void Persister::write_delete(Ref ref) {
@@ -492,14 +669,16 @@ namespace retracesoftware_stream {
         PyGILState_Release(gil);
     }
 
-    void Persister::write_new_patched(PyObject* obj, PyObject* type) {
+    void Persister::write_new_patched(Ref type_ref, Ref ref) {
         PyGILState_STATE gil = PyGILState_Ensure();
-        assert(!bindings.contains(obj));
-        bindings[obj] = binding_counter++;
-        assert(bindings.contains(type));
+        PyObject* type_key = reinterpret_cast<PyObject*>(type_ref);
+        PyObject* key = reinterpret_cast<PyObject*>(ref);
+        assert(!bindings.contains(key));
+        assert(bindings.contains(type_key));
+        remember_binding(key, binding_counter++);
 
         emit(FixedSizeTypes::NEW_PATCHED);
-        write_lookup(bindings[type]);
+        write_lookup(bindings[type_key]);
         PyGILState_Release(gil);
     }
 
@@ -547,4 +726,48 @@ namespace retracesoftware_stream {
         .tp_init = (initproc)Persister::init,
         .tp_new = Persister::tp_new,
     };
+
+    bool Persister_write_heartbeat(Persister * persister) {
+        retracesoftware::GILGuard gstate;
+        persister->write_heartbeat();
+        return true;
+    }
+    
+    bool Persister_write_delete(Persister * persister, Ref ref) {
+        // retracesoftware::GILGuard gstate;
+        persister->write_delete(ref);
+        return true;
+    }
+    
+    bool Persister_write_thread_switch(Persister * persister, PyObject * thread_handle) {
+        // retracesoftware::GILGuard gstate;
+        return persister->write_thread_switch(thread_handle);
+    }
+
+    bool Persister_start_collection(Persister * persister, PyObject* type, size_t len) {
+        // retracesoftware::GILGuard gstate;
+        persister->start_collection(type, len);
+        return true;
+    }
+
+    bool Persister_write_object(Persister * persister, PyObject * obj) {
+        // retracesoftware::GILGuard gstate;
+        return persister->write_object(obj);
+    }
+
+    bool Persister_intern(Persister * persister, PyObject * obj, Ref ref) {
+        retracesoftware::GILGuard gstate;
+        return persister->intern(obj, ref);
+    }
+
+    bool Persister_bind(Persister * persister, Ref ref) {
+        retracesoftware::GILGuard gstate;
+        persister->bind(ref);
+        return true;
+    }
+
+    bool Persister_write_new_patched(Persister* persister, Ref type_ref, Ref ref) {
+        persister->write_new_patched(type_ref, ref);
+        return true;
+    }
 }

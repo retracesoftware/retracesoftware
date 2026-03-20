@@ -124,7 +124,7 @@ class DebugPersister:
             traceback.print_exc()
             return None
 
-    def _consume_index(self, name, value):
+    def _index_event(self, name, value):
         return self._dispatch_event(_debug_event(name, value))
 
     def _command0(self, name):
@@ -151,103 +151,164 @@ class DebugPersister:
     def _bind_index(self, ref_id):
         return self._bindings.get(ref_id, self._next_binding_index)
 
-    def _remember_binding(self, ref_id, index):
+    def _remember_binding(self, ref_id, index, obj=None):
         self._bindings[ref_id] = index
+        if obj is not None:
+            self._binding_values[index] = obj
         self._next_binding_index = max(self._next_binding_index, index + 1)
+
+    def _bound_ref_index(self, obj):
+        return self._bindings.get(id(obj))
 
     def reset_state(self):
         self._handle_indices = {}
         self._next_handle_index = 0
         self._bindings = {}
+        self._binding_values = {}
         self._next_binding_index = 0
 
-    def consume_object(self, obj):
+    @staticmethod
+    def _ref_key(ref):
+        return id(ref)
+
+    def write_object(self, obj):
+        index = self._bound_ref_index(obj)
+        if index is not None:
+            return self._index_event("bound_ref", index)
         return self._dispatch_event(_debug_object_event(obj))
 
-    def consume_handle_ref(self, ref_id):
-        return self._consume_index("handle_ref", self._handle_index(ref_id))
+    def write_handle_ref(self, ref):
+        return self._index_event("handle_ref", self._handle_index(self._ref_key(ref)))
 
-    def consume_handle_delete(self, ref_id):
-        delta = self._handle_delete_delta(ref_id)
+    def write_handle_delete(self, ref):
+        delta = self._handle_delete_delta(self._ref_key(ref))
         if delta is None:
             return None
-        return self._consume_index("handle_delete", delta)
+        return self._index_event("handle_delete", delta)
 
-    def consume_ref(self, ref_id):
-        index = self._bindings[ref_id]
-        return self._consume_index("bound_ref", index)
-
-    def consume_intern(self, obj):
-        ref_id = id(obj)
-        index = self._bind_index(ref_id)
-        self._remember_binding(ref_id, index)
+    def intern(self, obj, ref):
+        ref_key = self._ref_key(ref)
+        index = self._bind_index(ref_key)
+        self._remember_binding(ref_key, index, obj)
         return self._dispatch_event(
             _debug_command_event("intern", (index, _debug_object_event(obj)))
         )
 
-    def consume_bound_ref_delete(self, ref_id):
-        index = self._bindings.pop(ref_id, None)
+    def write_bound_ref_delete(self, ref):
+        index = self._bindings.pop(self._ref_key(ref), None)
         if index is None:
             return None
-        return self._consume_index("bound_ref_delete", index)
+        self._binding_values.pop(index, None)
+        return self._index_event("bound_ref_delete", index)
 
-    def consume_flush(self):
+    def flush(self):
         return self._command0("flush")
 
-    def consume_shutdown(self):
+    def shutdown(self):
         return self._command0("shutdown")
 
-    def consume_list(self, length):
-        return self._command1("list", length)
+    def start_collection(self, typ, length):
+        if typ is list:
+            return self._command1("list", length)
+        if typ is tuple:
+            return self._command1("tuple", length)
+        if typ is dict:
+            return self._command1("dict", length)
+        raise ValueError(f"unknown collection type: {typ!r}")
 
-    def consume_tuple(self, length):
-        return self._command1("tuple", length)
-
-    def consume_dict(self, length):
-        return self._command1("dict", length)
-
-    def consume_heartbeat(self):
+    def write_heartbeat(self):
         return self._command0("heartbeat")
 
-    def consume_new_ext_wrapped(self, typ):
-        return self._dispatch_event(
-            _debug_command_event("new_ext_wrapped", (_debug_object_event(typ),))
-        )
+    def write_delete(self, ref):
+        return self._command1("delete", self._ref_key(ref))
 
-    def consume_delete(self, ref_id):
-        return self._command1("delete", ref_id)
-
-    def consume_thread_switch(self, thread_handle):
+    def write_thread_switch(self, thread_handle):
         return self._command1("thread_switch", thread_handle)
 
-    def consume_pickled(self, obj):
+    def write_pickled(self, obj):
         return self._dispatch_event(
             _debug_command_event("pickled", (_debug_object_event(obj),))
         )
 
-    def consume_new_handle(self, ref_id, obj):
-        index = self._handle_index(ref_id)
+    def write_new_handle(self, ref, obj):
+        index = self._handle_index(self._ref_key(ref))
         return self._dispatch_event(
             _debug_command_event("new_handle", (index, _debug_object_event(obj)))
         )
 
-    def consume_new_patched(self, obj, typ):
-        ref_id = id(obj)
-        self._remember_binding(ref_id, self._bind_index(ref_id))
+    def write_new_patched(self, typ_ref, ref):
+        type_index = self._bindings[self._ref_key(typ_ref)]
+        typ = self._binding_values.get(type_index, typ_ref)
+        ref_key = self._ref_key(ref)
+        self._remember_binding(ref_key, self._bind_index(ref_key))
         return self._dispatch_event(
             _debug_command_event(
                 "new_patched",
-                (_debug_object_event(type(obj)), _debug_object_event(typ)),
+                (_debug_object_event(typ),),
             )
         )
 
-    def consume_bind(self, ref_id):
-        index = self._bind_index(ref_id)
-        self._remember_binding(ref_id, index)
+    def bind(self, ref):
+        ref_key = self._ref_key(ref)
+        index = self._bind_index(ref_key)
+        self._remember_binding(ref_key, index)
         return self._command1("bind", index)
 
-    def consume_serialize_error(self):
+    def write_serialize_error(self):
         return self._command0("serialize_error")
+
+
+class ObjectWriter:
+    def __init__(self, queue, serializer=None, verbose=False, quit_on_error=False):
+        self.type_serializer = {}
+        self._queue = queue
+        self._serializer = serializer
+        self._bound = {}
+        self._native = None
+
+        if isinstance(queue, getattr(_backend_mod, "Queue")):
+            self._native = _backend_mod.ObjectWriter(
+                queue,
+                utils.ExternalWrapped,
+                verbose=verbose,
+                quit_on_error=quit_on_error,
+            )
+
+    def __getattr__(self, name):
+        if self._native is None:
+            raise AttributeError(name)
+        return getattr(self._native, name)
+
+    def _bind_token(self, obj):
+        token = self._bound.get(obj)
+        if token is None:
+            token = id(obj)
+            self._bound[obj] = token
+        return token
+
+    def bind(self, obj):
+        if self._native is not None:
+            return self._native.bind(obj)
+        self._queue.push_bind(self._bind_token(obj))
+        return None
+
+    def intern(self, obj):
+        if self._native is not None:
+            return self._native.intern(obj)
+        token = self._bind_token(obj)
+        self._queue.push_intern(obj, token)
+        return None
+
+    def new_patched(self, obj):
+        if self._native is not None:
+            return self._native.new_patched(obj)
+        typ = type(obj)
+        if typ not in self._bound:
+            self.intern(typ)
+        token = self._bind_token(obj)
+        type_token = self._bind_token(typ)
+        self._queue.push_new_patched(type_token, token)
+        return None
 
 # ---------------------------------------------------------------------------
 # High-level API (convenience wrappers around C++ extension)
@@ -426,15 +487,17 @@ class writer(_backend_mod.ObjectWriter):
         if inflight_limit is not None:
             queue_kwargs["inflight_limit"] = inflight_limit
         if consumer_wait_timeout_ms is not None:
-            queue_kwargs["consumer_wait_timeout_ms"] = consumer_wait_timeout_ms
+            queue_kwargs["worker_wait_timeout_ms"] = consumer_wait_timeout_ms
         if queue_capacity is not None:
             queue_kwargs["queue_capacity"] = queue_capacity
         if thread is not None:
+            if not callable(thread) and hasattr(thread, "get"):
+                thread = thread.get
             queue_kwargs["thread"] = thread
         if effective_push_fail_callback is not None:
             queue_kwargs["push_fail_callback"] = effective_push_fail_callback
         if on_consumer_error is not None:
-            queue_kwargs["on_consumer_error"] = on_consumer_error
+            queue_kwargs["on_target_error"] = on_consumer_error
 
         if self._queue is None and path is not None:
             fw = _backend_mod.FramedWriter(str(path), raw=raw)
@@ -458,7 +521,7 @@ class writer(_backend_mod.ObjectWriter):
         if effective_push_fail_callback is not None and self._queue is not None:
             self._queue.push_fail_callback = effective_push_fail_callback
         if on_consumer_error is not None and self._queue is not None:
-            self._queue.on_consumer_error = on_consumer_error
+            self._queue.on_target_error = on_consumer_error
 
         self._output = output
         self._disable_retrace = disable_retrace
@@ -522,10 +585,18 @@ class writer(_backend_mod.ObjectWriter):
         with self._heartbeat_lock:
             if not getattr(self, "_heartbeat_enabled", False):
                 return
+            queue = getattr(self, "_queue", None)
+            if queue is None:
+                return
+            # Heartbeats are best-effort diagnostics; skip them while the
+            # writer is already under load to avoid competing with the main
+            # producer thread during backpressure.
+            if getattr(queue, "inflight_bytes", 0) > 0:
+                return
             import resource
             payload = {
                 'ts': time.time(),
-                'inflight': self.queue.inflight_bytes,
+                'inflight': queue.inflight_bytes,
                 'messages': self.messages_written,
                 'rss': resource.getrusage(resource.RUSAGE_SELF).ru_maxrss,
                 'threads': threading.active_count(),
@@ -603,9 +674,16 @@ def per_thread(source, thread, timeout):
     is_control = functional.isinstanceof(Control)
     is_thread_switch = functional.isinstanceof(ThreadSwitch)
 
+    key_fn = None
+
+    def extract_thread_key(ts):
+        if ts.value is None:
+            return key_fn.value
+        return ts.value
+
     key_fn = StickyPred(
         pred=is_thread_switch,
-        extract=lambda ts: ts.value,
+        extract=extract_thread_key,
         initial=thread())
 
     demux = utils.demux(source=source, key_function=key_fn, timeout_seconds=timeout)

@@ -1,15 +1,25 @@
 #include "queue.h"
-#include "consumer.h"
-#include "persister.h"
+#include "gilguard.h"
 #include "queueentry.h"
 
 #include <algorithm>
 #include <chrono>
 #include <new>
+#include <optional>
 #include <thread>
 
 namespace retracesoftware_stream {
 
+    class Persister;
+
+    extern bool Persister_write_heartbeat(Persister* persister);
+    extern bool Persister_write_delete(Persister* persister, Ref ref);
+    extern bool Persister_write_thread_switch(Persister* persister, PyObject* thread_handle);
+    extern bool Persister_start_collection(Persister* persister, PyObject* type, size_t len);
+    extern bool Persister_write_object(Persister* persister, PyObject* obj);
+    extern bool Persister_intern(Persister* persister, PyObject* obj, Ref ref);
+    extern bool Persister_bind(Persister* persister, Ref ref);
+    extern bool Persister_write_new_patched(Persister* persister, Ref type_ref, Ref ref);
 
     namespace {
         constexpr size_t kMinQueueCapacity = 4;
@@ -20,6 +30,31 @@ namespace retracesoftware_stream {
 
         inline int64_t queue_estimate_size(PyObject* obj) {
             return queue_is_immortal(obj) ? 0 : (int64_t)approximate_size_bytes(obj);
+        }
+
+        PyObject* collection_type_object(Cmd cmd) {
+            switch (cmd) {
+                case CMD_LIST:
+                    return reinterpret_cast<PyObject*>(&PyList_Type);
+                case CMD_TUPLE:
+                    return reinterpret_cast<PyObject*>(&PyTuple_Type);
+                case CMD_DICT:
+                    return reinterpret_cast<PyObject*>(&PyDict_Type);
+                default:
+                    return nullptr;
+            }
+        }
+
+        PyObject* size_to_pyobject(size_t len) {
+            return PyLong_FromUnsignedLongLong(static_cast<unsigned long long>(len));
+        }
+
+        inline bool ref_token_needs_release(Ref ref) {
+            return queue_is_weakref_token(ref);
+        }
+
+        inline Persister* native_persister(PyObject* target) {
+            return reinterpret_cast<Persister*>(target);
         }
 
         PyObject* Queue_inflight_bytes_getter(Queue* self, void*) {
@@ -58,16 +93,16 @@ namespace retracesoftware_stream {
             return PyErr_Occurred() ? -1 : 0;
         }
 
-        PyObject* Queue_on_consumer_error_getter(Queue* self, void*) {
-            return Py_NewRef(self->consumer_error_handler());
+        PyObject* Queue_on_target_error_getter(Queue* self, void*) {
+            return Py_NewRef(self->target_error_handler());
         }
 
-        int Queue_on_consumer_error_setter(Queue* self, PyObject* value, void*) {
+        int Queue_on_target_error_setter(Queue* self, PyObject* value, void*) {
             if (value == nullptr) {
-                PyErr_SetString(PyExc_AttributeError, "deletion of 'on_consumer_error' is not allowed");
+                PyErr_SetString(PyExc_AttributeError, "deletion of 'on_target_error' is not allowed");
                 return -1;
             }
-            self->set_consumer_error_handler(value);
+            self->set_target_error_handler(value);
             return PyErr_Occurred() ? -1 : 0;
         }
 
@@ -110,7 +145,7 @@ namespace retracesoftware_stream {
             {"inflight_limit", (getter)Queue_inflight_limit_getter, (setter)Queue_inflight_limit_setter, (char*)"Maximum bytes allowed in flight", nullptr},
             {"persister", (getter)Queue_persister_getter, nullptr, (char*)"Attached persister sink", nullptr},
             {"push_fail_callback", (getter)Queue_push_fail_callback_getter, (setter)Queue_push_fail_callback_setter, (char*)"Retry callback used when a logical push stalls", nullptr},
-            {"on_consumer_error", (getter)Queue_on_consumer_error_getter, (setter)Queue_on_consumer_error_setter, (char*)"Callback invoked when a consumer failure shuts the queue down", nullptr},
+            {"on_target_error", (getter)Queue_on_target_error_getter, (setter)Queue_on_target_error_setter, (char*)"Callback invoked when a target failure shuts the queue down", nullptr},
             {nullptr}
         };
     }
@@ -119,19 +154,19 @@ namespace retracesoftware_stream {
         PyObject* persister = Py_None;
         PyObject* thread = Py_None;
         PyObject* push_fail_callback = Py_None;
-        PyObject* on_consumer_error = Py_None;
+        PyObject* on_target_error = Py_None;
         Py_ssize_t queue_capacity = 65536;
         long long inflight_limit = 128LL * 1024 * 1024;
-        int consumer_wait_timeout_ms = 100;
+        int worker_wait_timeout_ms = 100;
 
         static const char* kwlist[] = {
             "persister",
             "thread",
             "push_fail_callback",
-            "on_consumer_error",
+            "on_target_error",
             "queue_capacity",
             "inflight_limit",
-            "consumer_wait_timeout_ms",
+            "worker_wait_timeout_ms",
             nullptr
         };
 
@@ -139,10 +174,10 @@ namespace retracesoftware_stream {
                                          &persister,
                                          &thread,
                                          &push_fail_callback,
-                                         &on_consumer_error,
+                                         &on_target_error,
                                          &queue_capacity,
                                          &inflight_limit,
-                                         &consumer_wait_timeout_ms)) {
+                                         &worker_wait_timeout_ms)) {
             return -1;
         }
 
@@ -150,8 +185,8 @@ namespace retracesoftware_stream {
             PyErr_SetString(PyExc_ValueError, "queue_capacity must be positive");
             return -1;
         }
-        if (consumer_wait_timeout_ms < 0) {
-            PyErr_SetString(PyExc_ValueError, "consumer_wait_timeout_ms must be non-negative");
+        if (worker_wait_timeout_ms < 0) {
+            PyErr_SetString(PyExc_ValueError, "worker_wait_timeout_ms must be non-negative");
             return -1;
         }
         if (thread != Py_None && !PyCallable_Check(thread)) {
@@ -162,20 +197,22 @@ namespace retracesoftware_stream {
             PyErr_SetString(PyExc_TypeError, "push_fail_callback must be callable or None");
             return -1;
         }
-        if (on_consumer_error != Py_None && !PyCallable_Check(on_consumer_error)) {
-            PyErr_SetString(PyExc_TypeError, "on_consumer_error must be callable or None");
+        if (on_target_error != Py_None && !PyCallable_Check(on_target_error)) {
+            PyErr_SetString(PyExc_TypeError, "on_target_error must be callable or None");
             return -1;
         }
 
         self->~Queue();
         new (self) Queue((size_t)queue_capacity,
                          (int64_t)inflight_limit,
-                         consumer_wait_timeout_ms);
+                         worker_wait_timeout_ms);
         if (thread != Py_None) self->thread_id_callback = Py_NewRef(thread);
         if (push_fail_callback != Py_None) self->push_fail_callback = Py_NewRef(push_fail_callback);
-        if (on_consumer_error != Py_None) self->on_consumer_error = Py_NewRef(on_consumer_error);
+        if (on_target_error != Py_None) self->on_target_error = Py_NewRef(on_target_error);
         if (persister != Py_None) {
-            self->consumer = make_consumer(persister);
+            if (!self->bind_target(persister)) {
+                return -1;
+            }
             self->resume();
         }
         return 0;
@@ -206,37 +243,267 @@ namespace retracesoftware_stream {
     Queue::Queue()
         : Queue(kMinQueueCapacity, 0, 100) {}
 
-    Queue::Queue(size_t capacity, int64_t inflight_limit, int consumer_wait_timeout_ms)
+    Queue::Queue(size_t capacity, int64_t inflight_limit, int worker_wait_timeout_ms)
         : entries(clamp_queue_capacity(capacity)),
           returned(clamp_queue_capacity(capacity)),
           inflight_limit_bytes(inflight_limit),
           return_notify_threshold_bytes(
               inflight_limit > 0 ? std::max<int64_t>(1, inflight_limit / 4) : 1),
-          consumer_wait_timeout_ms_value(consumer_wait_timeout_ms),
+          worker_wait_timeout_ms_value(worker_wait_timeout_ms),
           notify_threshold_entries(std::max<size_t>(1, clamp_queue_capacity(capacity) / 2)) {}
+
+    bool Queue::is_persister() const {
+        return target_obj && PyObject_TypeCheck(target_obj, &Persister_Type);
+    }
 
     Queue::~Queue() {
         close();
         Py_CLEAR(thread_id_callback);
         Py_CLEAR(push_fail_callback);
-        Py_CLEAR(on_consumer_error);
-        delete consumer;
+        Py_CLEAR(on_target_error);
+        clear_target();
     }
 
     bool Queue::push_command(Cmd cmd, uint32_t len) {
         return push(cmd_entry(cmd, len));
     }
 
-    void Queue::prepare_consumer_resume() {
-        if (consumer) consumer->prepare_resume();
+    bool Queue::bind_target(PyObject* target) {
+        clear_target();
+        if (!target || target == Py_None) return true;
+
+        target_obj = Py_NewRef(target);
+        return true;
     }
 
-    void Queue::reset_consumer_state() {
-        if (consumer) consumer->reset_state();
+    void Queue::clear_target() {
+        Py_CLEAR(target_obj);
+        has_target_error_message = false;
+        last_target_error_message.clear();
     }
 
-    bool Queue::flush_consumer() {
-        return consumer ? consumer->flush_background() : true;
+    void Queue::capture_current_target_error() {
+        has_target_error_message = true;
+        last_target_error_message = take_pending_error_message();
+    }
+
+    std::string Queue::take_target_error_message() {
+        has_target_error_message = false;
+        std::string message = last_target_error_message.empty() ? "target error" : last_target_error_message;
+        last_target_error_message.clear();
+        return message;
+    }
+
+    bool Queue::has_target_error() const {
+        return has_target_error_message;
+    }
+
+    namespace {
+        PyObject* lookup_target_method(PyObject* target, const char* name) {
+            PyObject* method = PyObject_GetAttrString(target, name);
+            if (!method) {
+                PyErr_Clear();
+                return nullptr;
+            }
+            return method;
+        }
+    }
+
+    bool Queue::call_target_bind(Ref obj) {
+        if (is_persister()) {
+            return Persister_bind(native_persister(target_obj), obj);
+        }
+        retracesoftware::GILGuard gstate;
+        PyObject* method = lookup_target_method(target_obj, "bind");
+        if (!method) {
+            PyErr_SetString(PyExc_AttributeError, "target is missing 'bind'");
+            capture_current_target_error();
+            return false;
+        }
+        PyObject* result = PyObject_CallFunctionObjArgs(method, obj, nullptr);
+        Py_DECREF(method);
+        if (!result) {
+            capture_current_target_error();
+            return false;
+        }
+        Py_DECREF(result);
+        return true;
+    }
+
+    bool Queue::call_target_delete(Ref ref) {
+        if (is_persister()) {
+            return Persister_write_delete(native_persister(target_obj), ref);
+        }
+        retracesoftware::GILGuard gstate;
+        PyObject* method = lookup_target_method(target_obj, "write_delete");
+        if (!method) {
+            PyErr_SetString(PyExc_AttributeError, "target is missing 'write_delete'");
+            capture_current_target_error();
+            return false;
+        }
+        PyObject* result = PyObject_CallFunctionObjArgs(method, ref, nullptr);
+        Py_DECREF(method);
+        if (!result) {
+            capture_current_target_error();
+            return false;
+        }
+        Py_DECREF(result);
+        return true;
+    }
+
+    bool Queue::call_target_intern(PyObject* obj, Ref ref) {
+        if (is_persister()) {
+            return Persister_intern(native_persister(target_obj), obj, ref);
+        }
+        retracesoftware::GILGuard gstate;
+        PyObject* method = lookup_target_method(target_obj, "intern");
+        if (!method) {
+            PyErr_SetString(PyExc_AttributeError, "target is missing 'intern'");
+            capture_current_target_error();
+            return false;
+        }
+        PyObject* result = PyObject_CallFunctionObjArgs(method, obj, ref, nullptr);
+        Py_DECREF(method);
+        if (!result) {
+            capture_current_target_error();
+            return false;
+        }
+        Py_DECREF(result);
+        return true;
+    }
+
+    bool Queue::call_target_new_patched(PyObject* type_ref, Ref ref) {
+        if (is_persister()) {
+            return Persister_write_new_patched(native_persister(target_obj), type_ref, ref);
+        }
+        retracesoftware::GILGuard gstate;
+        PyObject* method = lookup_target_method(target_obj, "write_new_patched");
+        if (!method) {
+            PyErr_SetString(PyExc_AttributeError, "target is missing 'write_new_patched'");
+            capture_current_target_error();
+            return false;
+        }
+        PyObject* result = PyObject_CallFunctionObjArgs(method, type_ref, ref, nullptr);
+        Py_DECREF(method);
+        if (!result) {
+            capture_current_target_error();
+            return false;
+        }
+        Py_DECREF(result);
+        return true;
+    }
+
+    bool Queue::call_target_collection(PyObject* type, size_t len) {
+        if (is_persister()) {
+            return Persister_start_collection(native_persister(target_obj), type, len);
+        }
+        retracesoftware::GILGuard gstate;
+        PyObject* len_obj = size_to_pyobject(len);
+        if (!len_obj) {
+            capture_current_target_error();
+            return false;
+        }
+        PyObject* method = lookup_target_method(target_obj, "start_collection");
+        if (!method) {
+            Py_DECREF(len_obj);
+            PyErr_SetString(PyExc_AttributeError, "target is missing 'start_collection'");
+            capture_current_target_error();
+            return false;
+        }
+        PyObject* result = PyObject_CallFunctionObjArgs(method, type, len_obj, nullptr);
+        Py_DECREF(len_obj);
+        Py_DECREF(method);
+        if (!result) {
+            capture_current_target_error();
+            return false;
+        }
+        Py_DECREF(result);
+        return true;
+    }
+
+    bool Queue::call_target_write_object(PyObject* obj) {
+        if (is_persister()) {
+            return Persister_write_object(native_persister(target_obj), obj);
+        }
+        retracesoftware::GILGuard gstate;
+        PyObject* method = lookup_target_method(target_obj, "write_object");
+        if (!method) {
+            PyErr_SetString(PyExc_AttributeError, "target is missing 'write_object'");
+            capture_current_target_error();
+            return false;
+        }
+        PyObject* result = PyObject_CallFunctionObjArgs(method, obj, nullptr);
+        Py_DECREF(method);
+        if (!result) {
+            capture_current_target_error();
+            return false;
+        }
+        Py_DECREF(result);
+        return true;
+    }
+
+    void Queue::prepare_target_resume() {
+        if (!target_obj) return;
+        retracesoftware::GILGuard gstate;
+        PyObject* method = lookup_target_method(target_obj, "prepare_resume");
+        if (!method) {
+            discard_pending_error();
+            return;
+        }
+        PyObject* result = PyObject_CallNoArgs(method);
+        Py_DECREF(method);
+        if (!result) {
+            discard_pending_error();
+            return;
+        }
+        Py_DECREF(result);
+    }
+
+    void Queue::reset_target_state() {
+        if (!target_obj) return;
+        retracesoftware::GILGuard gstate;
+        PyObject* method = lookup_target_method(target_obj, "reset_state");
+        if (!method) {
+            discard_pending_error();
+            return;
+        }
+        PyObject* result = PyObject_CallNoArgs(method);
+        Py_DECREF(method);
+        if (!result) {
+            discard_pending_error();
+            return;
+        }
+        Py_DECREF(result);
+    }
+
+    bool Queue::flush_target_background() {
+        if (!target_obj) return true;
+        retracesoftware::GILGuard gstate;
+        PyObject* method = lookup_target_method(target_obj, "flush_background");
+        if (!method) return true;
+        PyObject* result = PyObject_CallNoArgs(method);
+        Py_DECREF(method);
+        if (!result) {
+            capture_current_target_error();
+            return false;
+        }
+        Py_DECREF(result);
+        return true;
+    }
+
+    bool Queue::target_shutdown() {
+        if (!target_obj) return true;
+        retracesoftware::GILGuard gstate;
+        PyObject* method = lookup_target_method(target_obj, "shutdown");
+        if (!method) return true;
+        PyObject* result = PyObject_CallNoArgs(method);
+        Py_DECREF(method);
+        if (!result) {
+            capture_current_target_error();
+            return false;
+        }
+        Py_DECREF(result);
+        return true;
     }
 
     bool Queue::has_entry_slots(size_t needed) const {
@@ -305,19 +572,27 @@ namespace retracesoftware_stream {
 
     bool Queue::wait_with_push_backoff() {
         if (reject_push()) return false;
-        if (!push_fail_callback) return false;
+        if (!push_fail_callback) {
+            maybe_notify_worker();
+            maybe_notify_return_thread(true);
+            if (PyGILState_Check()) {
+                retracesoftware::GILReleaseGuard release_gil;
+                std::this_thread::sleep_for(std::chrono::milliseconds(1));
+            } else {
+                std::this_thread::sleep_for(std::chrono::milliseconds(1));
+            }
+            return true;
+        }
 
-        PyGILState_STATE gstate = PyGILState_Ensure();
+        retracesoftware::GILGuard gstate;
         PyObject* result = PyObject_CallNoArgs(push_fail_callback);
         if (!result) {
             PyErr_Clear();
-            PyGILState_Release(gstate);
             return false;
         }
 
         if (result == Py_None) {
             Py_DECREF(result);
-            PyGILState_Release(gstate);
             return false;
         }
 
@@ -325,7 +600,6 @@ namespace retracesoftware_stream {
         Py_DECREF(result);
         if (delay < 0.0 && PyErr_Occurred()) {
             PyErr_Clear();
-            PyGILState_Release(gstate);
             return false;
         }
 
@@ -333,7 +607,6 @@ namespace retracesoftware_stream {
         Py_BEGIN_ALLOW_THREADS
         std::this_thread::sleep_for(std::chrono::duration<double>(delay));
         Py_END_ALLOW_THREADS
-        PyGILState_Release(gstate);
         return true;
     }
 
@@ -344,7 +617,7 @@ namespace retracesoftware_stream {
                 std::unique_lock<std::mutex> lock(return_wake_mutex);
                 return_thread_waiting.store(true, std::memory_order_release);
                 return_wake_cv.wait_for(lock,
-                                        std::chrono::milliseconds(consumer_wait_timeout_ms_value),
+                                        std::chrono::milliseconds(worker_wait_timeout_ms_value),
                                         [this] {
                                             return shutdown_flag.load(std::memory_order_acquire)
                                                 || has_returned_entries();
@@ -354,17 +627,15 @@ namespace retracesoftware_stream {
                 continue;
             }
 
-            PyGILState_STATE gstate = PyGILState_Ensure();
+            retracesoftware::GILGuard gstate;
             PyObject* obj = nullptr;
             while (try_pop_returned(obj)) {
                 if (obj == nullptr) {
-                    PyGILState_Release(gstate);
                     return;
                 }
                 note_removed(queue_estimate_size(obj));
                 Py_DECREF(obj);
             }
-            PyGILState_Release(gstate);
         }
     }
 
@@ -426,7 +697,7 @@ namespace retracesoftware_stream {
         release_entries();
         drain_returned();
         clear_thread_state();
-        reset_consumer_state();
+        reset_target_state();
     }
 
     void Queue::drain() {
@@ -457,13 +728,13 @@ namespace retracesoftware_stream {
     }
 
     void Queue::resume() {
-        if (closed || thread_started || !consumer || state == QueueState::STOPPED) return;
+        if (closed || thread_started || !target_obj || state == QueueState::STOPPED) return;
         clear_thread_state();
-        prepare_consumer_resume();
+        prepare_target_resume();
         state = QueueState::ACTIVE;
         saw_shutdown = false;
         shutdown_flag.store(false, std::memory_order_release);
-        consumer_waiting.store(false, std::memory_order_release);
+        worker_waiting.store(false, std::memory_order_release);
         return_thread_waiting.store(false, std::memory_order_release);
         return_thread_started = true;
         thread_started = true;
@@ -472,11 +743,11 @@ namespace retracesoftware_stream {
     }
 
     PyObject* Queue::persister() const {
-        return consumer ? consumer->target() : Py_None;
+        return target_obj ? target_obj : Py_None;
     }
 
-    PyObject* Queue::consumer_error_handler() const {
-        return on_consumer_error ? on_consumer_error : Py_None;
+    PyObject* Queue::target_error_handler() const {
+        return on_target_error ? on_target_error : Py_None;
     }
 
     PyObject* Queue::push_fail_handler() const {
@@ -496,13 +767,13 @@ namespace retracesoftware_stream {
         Py_XSETREF(push_fail_callback, value);
     }
 
-    void Queue::set_consumer_error_handler(PyObject* callback) {
+    void Queue::set_target_error_handler(PyObject* callback) {
         if (callback != Py_None && !PyCallable_Check(callback)) {
-            PyErr_SetString(PyExc_TypeError, "on_consumer_error must be callable or None");
+            PyErr_SetString(PyExc_TypeError, "on_target_error must be callable or None");
             return;
         }
         PyObject* value = callback == Py_None ? nullptr : Py_NewRef(callback);
-        Py_XSETREF(on_consumer_error, value);
+        Py_XSETREF(on_target_error, value);
     }
 
     bool Queue::try_pop_entry(QEntry& entry) {
@@ -533,6 +804,7 @@ namespace retracesoftware_stream {
     void* Queue::consume_raw_ptr_payload() {
         QEntry entry = pop_entry();
         if (is_command_entry(entry)) {
+            retracesoftware::GILGuard gstate;
             PyErr_SetString(PyExc_RuntimeError, "expected raw pointer payload");
             throw nullptr;
         }
@@ -542,6 +814,7 @@ namespace retracesoftware_stream {
     PyObject* Queue::consume_owned_payload() {
         QEntry entry = pop_entry();
         if (is_command_entry(entry)) {
+            retracesoftware::GILGuard gstate;
             PyErr_SetString(PyExc_RuntimeError, "expected owned object payload");
             throw nullptr;
         }
@@ -555,15 +828,12 @@ namespace retracesoftware_stream {
     void Queue::release_consumed_obj(PyObject* obj) {
         if (queue_is_immortal(obj)) return;
         const bool had_gil = PyGILState_Check();
-        PyGILState_STATE gstate;
+        std::optional<retracesoftware::GILGuard> gstate;
         if (!had_gil) {
-            gstate = PyGILState_Ensure();
+            gstate.emplace();
         }
         note_removed(queue_estimate_size(obj));
         Py_DECREF(obj);
-        if (!had_gil) {
-            PyGILState_Release(gstate);
-        }
     }
 
     void Queue::clear_thread_state() {
@@ -577,7 +847,17 @@ namespace retracesoftware_stream {
             maybe_notify_return_thread(true);
             std::this_thread::yield();
         }
-        maybe_notify_return_thread(false);
+        maybe_notify_return_thread(true);
+    }
+
+    void Queue::release_consumed_ref(Ref ref) {
+        if (!ref_token_needs_release(ref)) return;
+        release_consumed_obj(ref);
+    }
+
+    void Queue::finish_consumed_ref(Ref ref) {
+        if (!ref_token_needs_release(ref)) return;
+        finish_consumed_obj(ref);
     }
 
     void Queue::poison_returned_queue() {
@@ -593,7 +873,7 @@ namespace retracesoftware_stream {
         const bool pushed = try_push_entry(cmd_entry(CMD_SHUTDOWN, 0));
         assert(pushed);
         (void)pushed;
-        maybe_notify_consumer();
+        maybe_notify_worker();
     }
 
     void Queue::discard_pending_error() {
@@ -602,7 +882,7 @@ namespace retracesoftware_stream {
     }
 
     std::string Queue::take_pending_error_message() {
-        if (!PyErr_Occurred()) return "consumer error";
+        if (!PyErr_Occurred()) return "target error";
 
         PyObject* exc_type = nullptr;
         PyObject* exc_value = nullptr;
@@ -610,7 +890,7 @@ namespace retracesoftware_stream {
         PyErr_Fetch(&exc_type, &exc_value, &exc_tb);
         PyErr_NormalizeException(&exc_type, &exc_value, &exc_tb);
 
-        std::string message = "consumer error";
+        std::string message = "target error";
         PyObject* type_name = exc_type ? PyObject_GetAttrString(exc_type, "__name__") : nullptr;
         PyObject* value_str = exc_value ? PyObject_Str(exc_value) : nullptr;
         const char* type_cstr = type_name ? PyUnicode_AsUTF8(type_name) : nullptr;
@@ -636,8 +916,8 @@ namespace retracesoftware_stream {
         return message;
     }
 
-    void Queue::notify_consumer_error(const std::string& message) {
-        if (!on_consumer_error) return;
+    void Queue::notify_target_error(const std::string& message) {
+        if (!on_target_error) return;
 
         PyObject* arg = PyUnicode_FromString(message.c_str());
         if (!arg) {
@@ -645,7 +925,7 @@ namespace retracesoftware_stream {
             return;
         }
 
-        PyObject* result = PyObject_CallOneArg(on_consumer_error, arg);
+        PyObject* result = PyObject_CallOneArg(on_target_error, arg);
         Py_DECREF(arg);
         if (!result) {
             PyErr_Clear();
@@ -654,11 +934,11 @@ namespace retracesoftware_stream {
         Py_DECREF(result);
     }
 
-    void Queue::handle_consumer_failure(const std::string& message) {
+    void Queue::handle_target_failure(const std::string& message) {
         state = QueueState::DRAINING;
         shutdown_flag.store(true, std::memory_order_release);
-        notify_consumer_error(message);
-        if (consumer && !consumer->consume_shutdown()) {
+        notify_target_error(message);
+        if (target_obj && !target_shutdown()) {
             discard_pending_error();
         }
         poison_returned_queue();
@@ -673,87 +953,145 @@ namespace retracesoftware_stream {
 
     bool Queue::dispatch_command(QEntry entry) {
         switch (cmd_of(entry)) {
-            case CMD_BIND:
-                return consumer->consume_bind(reinterpret_cast<Ref>(consume_raw_ptr_payload()));
-            case CMD_INTERN: {
-                PyObject* obj = consume_owned_payload();
-                if (!consumer->consume_intern(obj)) {
-                    release_consumed_obj(obj);
+            case CMD_BIND: {
+                Ref ref = consume_ref();
+                if (!call_target_bind(ref)) {
+                    release_consumed_ref(ref);
                     return false;
                 }
-                finish_consumed_obj(obj);
+                finish_consumed_ref(ref);
                 return true;
             }
-            case CMD_DELETE:
-                return consumer->consume_delete(reinterpret_cast<Ref>(consume_raw_ptr_payload()));
-            case CMD_NEW_EXT_WRAPPED:
-                return consumer->consume_new_ext_wrapped(reinterpret_cast<PyTypeObject*>(consume_raw_ptr_payload()));
-            case CMD_NEW_PATCHED: {
+            case CMD_INTERN: {
                 PyObject* obj = consume_owned_payload();
-                if (!consumer->consume_new_patched(obj, Py_TYPE(obj))) {
+                Ref ref = consume_ref();
+                if (!call_target_intern(obj, ref)) {
                     release_consumed_obj(obj);
+                    release_consumed_ref(ref);
                     return false;
                 }
                 finish_consumed_obj(obj);
+                finish_consumed_ref(ref);
+                return true;
+            }
+            case CMD_DELETE: {
+                Ref ref = consume_ref();
+                if (!call_target_delete(ref)) {
+                    release_consumed_ref(ref);
+                    return false;
+                }
+                finish_consumed_ref(ref);
+                return true;
+            }
+            case CMD_NEW_PATCHED: {
+                Ref type_ref = consume_ref();
+                Ref ref = consume_ref();
+                if (!call_target_new_patched(type_ref, ref)) {
+                    release_consumed_ref(type_ref);
+                    release_consumed_ref(ref);
+                    return false;
+                }
+                finish_consumed_ref(type_ref);
+                finish_consumed_ref(ref);
                 return true;
             }
             case CMD_THREAD_SWITCH: {
                 PyObject* obj = consume_owned_payload();
-                if (!consumer->consume_thread_switch(obj)) {
-                    release_consumed_obj(obj);
-                    return false;
+                if (is_persister()) {
+                    if (!Persister_write_thread_switch(native_persister(target_obj), obj)) {
+                        release_consumed_obj(obj);
+                        return false;
+                    }
+                } else {
+                    retracesoftware::GILGuard gstate;
+                    PyObject* method = lookup_target_method(target_obj, "write_thread_switch");
+                    if (!method) {
+                        finish_consumed_obj(obj);
+                        return true;
+                    }
+                    PyObject* result = PyObject_CallOneArg(method, obj);
+                    Py_DECREF(method);
+                    if (!result) {
+                        capture_current_target_error();
+                        release_consumed_obj(obj);
+                        return false;
+                    }
+                    Py_DECREF(result);
                 }
                 finish_consumed_obj(obj);
                 return true;
             }
             case CMD_FLUSH:
-                return consumer->consume_flush();
+            {
+                retracesoftware::GILGuard gstate;
+                PyObject* method = lookup_target_method(target_obj, "flush");
+                if (!method) return true;
+                PyObject* result = PyObject_CallNoArgs(method);
+                Py_DECREF(method);
+                if (!result) {
+                    capture_current_target_error();
+                    return false;
+                }
+                Py_DECREF(result);
+                return true;
+            }
             case CMD_SHUTDOWN:
                 saw_shutdown = true;
-                return consumer->consume_shutdown();
-            case CMD_LIST:
-                if (!consumer->consume_list(len_of(entry))) {
-                    for (uint32_t i = 0; i < len_of(entry); i++) dispatch_release(pop_entry());
+                return target_shutdown();
+            case CMD_LIST: {
+                PyObject* type = collection_type_object(CMD_LIST);
+                if (!type) return false;
+                const uint32_t count = len_of(entry);
+                if (!call_target_collection(type, count)) {
+                    for (uint32_t i = 0; i < count; i++) dispatch_release(pop_entry());
                     return false;
                 }
-                for (uint32_t i = 0; i < len_of(entry); i++) {
+                for (uint32_t i = 0; i < count; i++) {
                     if (!consume()) {
-                        for (uint32_t j = i + 1; j < len_of(entry); j++) dispatch_release(pop_entry());
+                        for (uint32_t j = i + 1; j < count; j++) dispatch_release(pop_entry());
                         return false;
                     }
                 }
                 return true;
-            case CMD_TUPLE:
-                if (!consumer->consume_tuple(len_of(entry))) {
-                    for (uint32_t i = 0; i < len_of(entry); i++) dispatch_release(pop_entry());
+            }
+            case CMD_TUPLE: {
+                PyObject* type = collection_type_object(CMD_TUPLE);
+                if (!type) return false;
+                const uint32_t count = len_of(entry);
+                if (!call_target_collection(type, count)) {
+                    for (uint32_t i = 0; i < count; i++) dispatch_release(pop_entry());
                     return false;
                 }
-                for (uint32_t i = 0; i < len_of(entry); i++) {
+                for (uint32_t i = 0; i < count; i++) {
                     if (!consume()) {
-                        for (uint32_t j = i + 1; j < len_of(entry); j++) dispatch_release(pop_entry());
+                        for (uint32_t j = i + 1; j < count; j++) dispatch_release(pop_entry());
                         return false;
                     }
                 }
                 return true;
-            case CMD_DICT:
-                if (!consumer->consume_dict(len_of(entry))) {
-                    for (uint32_t i = 0; i < len_of(entry); i++) {
+            }
+            case CMD_DICT: {
+                PyObject* type = collection_type_object(CMD_DICT);
+                if (!type) return false;
+                const uint32_t count = len_of(entry);
+                if (!call_target_collection(type, count)) {
+                    for (uint32_t i = 0; i < count; i++) {
                         dispatch_release(pop_entry());
                         dispatch_release(pop_entry());
                     }
                     return false;
                 }
-                for (uint32_t i = 0; i < len_of(entry); i++) {
+                for (uint32_t i = 0; i < count; i++) {
                     if (!consume()) {
                         dispatch_release(pop_entry());
-                        for (uint32_t j = i + 1; j < len_of(entry); j++) {
+                        for (uint32_t j = i + 1; j < count; j++) {
                             dispatch_release(pop_entry());
                             dispatch_release(pop_entry());
                         }
                         return false;
                     }
                     if (!consume()) {
-                        for (uint32_t j = i + 1; j < len_of(entry); j++) {
+                        for (uint32_t j = i + 1; j < count; j++) {
                             dispatch_release(pop_entry());
                             dispatch_release(pop_entry());
                         }
@@ -761,9 +1099,26 @@ namespace retracesoftware_stream {
                     }
                 }
                 return true;
+            }
             case CMD_HEARTBEAT:
-                return consumer->consume_heartbeat();
+            {
+                if (is_persister()) {
+                    return Persister_write_heartbeat(native_persister(target_obj));
+                }
+                retracesoftware::GILGuard gstate;
+                PyObject* method = lookup_target_method(target_obj, "write_heartbeat");
+                if (!method) return true;
+                PyObject* result = PyObject_CallNoArgs(method);
+                Py_DECREF(method);
+                if (!result) {
+                    capture_current_target_error();
+                    return false;
+                }
+                Py_DECREF(result);
+                return true;
+            }
             default:
+                retracesoftware::GILGuard gstate;
                 PyErr_SetString(PyExc_RuntimeError, "unexpected command entry");
                 throw nullptr;
         }
@@ -771,23 +1126,15 @@ namespace retracesoftware_stream {
 
     bool Queue::dispatch_entry(QEntry entry) {
         if (!is_command_entry(entry)) {
-            switch (pointer_kind_of(entry)) {
-                case PTR_OBJECT: {
-                    PyObject* obj = as_object(entry);
-                    if (!consumer->consume_object(obj)) {
-                        release_consumed_obj(obj);
-                        return false;
-                    }
-                    finish_consumed_obj(obj);
-                    return true;
+            PyObject* obj = as_object(entry);
+            if (!call_target_write_object(obj)) {
+                if (!is_unowned_entry(entry)) {
+                    release_consumed_obj(obj);
                 }
-                case PTR_REF:
-                    return consumer->consume_ref(as_ref(entry));
-                case PTR_IMMORTAL:
-                    return consumer->consume_object(as_object(entry));
-                case PTR_ESCAPED:
-                    PyErr_SetString(PyExc_RuntimeError, "unexpected escaped pointer entry");
-                    throw nullptr;
+                return false;
+            }
+            if (!is_unowned_entry(entry)) {
+                finish_consumed_obj(obj);
             }
             return true;
         }
@@ -796,16 +1143,8 @@ namespace retracesoftware_stream {
 
     void Queue::dispatch_release(QEntry entry) {
         if (!is_command_entry(entry)) {
-            switch (pointer_kind_of(entry)) {
-                case PTR_OBJECT:
-                    release_consumed_obj(as_object(entry));
-                    break;
-                case PTR_REF:
-                case PTR_IMMORTAL:
-                    break;
-                case PTR_ESCAPED:
-                    PyErr_SetString(PyExc_RuntimeError, "unexpected escaped pointer entry");
-                    throw nullptr;
+            if (!is_unowned_entry(entry)) {
+                release_consumed_obj(as_object(entry));
             }
             return;
         }
@@ -813,32 +1152,44 @@ namespace retracesoftware_stream {
         switch (cmd_of(entry)) {
             case CMD_BIND:
             case CMD_DELETE:
-            case CMD_NEW_EXT_WRAPPED:
-                (void)consume_raw_ptr_payload();
+                release_consumed_ref(consume_ref());
                 break;
             case CMD_INTERN:
+                release_consumed_obj(consume_owned_payload());
+                release_consumed_ref(consume_ref());
+                break;
             case CMD_NEW_PATCHED:
+                release_consumed_ref(consume_ref());
+                release_consumed_ref(consume_ref());
+                break;
             case CMD_THREAD_SWITCH:
                 release_consumed_obj(consume_owned_payload());
                 break;
             case CMD_FLUSH:
             case CMD_SHUTDOWN:
                 break;
-            case CMD_LIST:
-                for (uint32_t i = 0; i < len_of(entry); i++) dispatch_release(pop_entry());
+            case CMD_LIST: {
+                const uint32_t count = len_of(entry);
+                for (uint32_t i = 0; i < count; i++) dispatch_release(pop_entry());
                 break;
-            case CMD_TUPLE:
-                for (uint32_t i = 0; i < len_of(entry); i++) dispatch_release(pop_entry());
+            }
+            case CMD_TUPLE: {
+                const uint32_t count = len_of(entry);
+                for (uint32_t i = 0; i < count; i++) dispatch_release(pop_entry());
                 break;
-            case CMD_DICT:
-                for (uint32_t i = 0; i < len_of(entry); i++) {
+            }
+            case CMD_DICT: {
+                const uint32_t count = len_of(entry);
+                for (uint32_t i = 0; i < count; i++) {
                     dispatch_release(pop_entry());
                     dispatch_release(pop_entry());
                 }
                 break;
+            }
             case CMD_HEARTBEAT:
                 break;
             default:
+                retracesoftware::GILGuard gstate;
                 PyErr_SetString(PyExc_RuntimeError, "unexpected command entry");
                 throw nullptr;
         }
@@ -849,13 +1200,13 @@ namespace retracesoftware_stream {
             if (!has_entries()) {
                 if (shutdown_flag.load(std::memory_order_acquire)) return;
                 std::unique_lock<std::mutex> lock(wake_mutex);
-                consumer_waiting.store(true, std::memory_order_release);
+                worker_waiting.store(true, std::memory_order_release);
                 wake_cv.wait_for(lock,
-                                 std::chrono::milliseconds(consumer_wait_timeout_ms_value),
+                                 std::chrono::milliseconds(worker_wait_timeout_ms_value),
                                  [this] {
                                      return shutdown_flag.load(std::memory_order_acquire) || has_entries();
                                  });
-                consumer_waiting.store(false, std::memory_order_release);
+                worker_waiting.store(false, std::memory_order_release);
                 if (shutdown_flag.load(std::memory_order_acquire) && !has_entries()) return;
                 continue;
             }
@@ -863,40 +1214,36 @@ namespace retracesoftware_stream {
             while (true) {
                 try {
                     if (!try_consume()) {
-                        if (consumer && consumer->has_error()) {
-                            PyGILState_STATE gstate = PyGILState_Ensure();
-                            handle_consumer_failure(consumer->take_error_message());
-                            PyGILState_Release(gstate);
+                        if (has_target_error()) {
+                            retracesoftware::GILGuard gstate;
+                            handle_target_failure(take_target_error_message());
                             maybe_notify_return_thread(true);
                             return;
                         }
                         break;
                     }
                     if (saw_shutdown) {
-                        PyGILState_STATE gstate = PyGILState_Ensure();
+                        retracesoftware::GILGuard gstate;
                         state = QueueState::STOPPED;
-                        PyGILState_Release(gstate);
                         maybe_notify_return_thread(true);
                         return;
                     }
                 } catch (...) {
-                    PyGILState_STATE gstate = PyGILState_Ensure();
+                    retracesoftware::GILGuard gstate;
                     if (!PyErr_Occurred()) {
                         set_python_error_from_current_exception();
                     }
-                    handle_consumer_failure(take_pending_error_message());
-                    PyGILState_Release(gstate);
+                    handle_target_failure(take_pending_error_message());
                     maybe_notify_return_thread(true);
                     return;
                 }
             }
-            if (!flush_consumer()) {
-                PyGILState_STATE gstate = PyGILState_Ensure();
-                const std::string message = consumer && consumer->has_error()
-                    ? consumer->take_error_message()
+            if (!flush_target_background()) {
+                retracesoftware::GILGuard gstate;
+                const std::string message = has_target_error()
+                    ? take_target_error_message()
                     : take_pending_error_message();
-                handle_consumer_failure(message);
-                PyGILState_Release(gstate);
+                handle_target_failure(message);
                 maybe_notify_return_thread(true);
                 return;
             }
@@ -905,9 +1252,8 @@ namespace retracesoftware_stream {
     }
 
     void Queue::drain_returned() {
-        PyGILState_STATE gstate = PyGILState_Ensure();
+        retracesoftware::GILGuard gstate;
         drain_returned_all_with_gil();
-        PyGILState_Release(gstate);
     }
 
     void Queue::release_entries() {

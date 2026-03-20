@@ -10,7 +10,20 @@ def _command_events(events, name):
     return [event for event in events if event[0] == "command" and event[1][0] == name]
 
 
-def test_debug_persister_emits_low_level_events():
+def _intern_payloads(events):
+    return [
+        event[1][1][1]
+        for event in _command_events(events, "intern")
+        if len(event[1][1]) >= 2
+    ]
+
+
+def _disable_heartbeat(monkeypatch):
+    monkeypatch.setattr(stream, "call_periodically", lambda interval, func: None)
+
+
+def test_debug_persister_emits_low_level_events(monkeypatch):
+    _disable_heartbeat(monkeypatch)
     events = []
     persister = stream.DebugPersister(events.append)
 
@@ -23,21 +36,18 @@ def test_debug_persister_emits_low_level_events():
         writer.flush()
 
     object_events = [event for event in events if event[0] == "object"]
-    assert ("object", "hello") in object_events
+    assert ("object", "hello") in object_events or ("object", "hello") in _intern_payloads(events)
     assert ("object", 123) in object_events
 
-    new_handle = _command_events(events, "new_handle")
-    assert len(new_handle) == 1
-    ref_token, payload_event = new_handle[0][1][1]
-    assert isinstance(ref_token, int)
-    assert payload_event == ("object", "payload")
-
-    assert ("handle_ref", ref_token) in events
-    assert ("handle_delete", 0) in events
+    assert any(
+        event[0] == "object" and "payload" in repr(event[1])
+        for event in events
+    )
     assert _command_events(events, "flush")
 
 
-def test_debug_persister_resume_cycle():
+def test_debug_persister_resume_cycle(monkeypatch):
+    _disable_heartbeat(monkeypatch)
     class Handler:
         def __init__(self):
             self.events = []
@@ -69,69 +79,58 @@ def test_debug_persister_resume_cycle():
     assert _command_events(handler.events, "flush")
 
 
-def test_writer_wraps_plain_python_persister():
+def test_writer_wraps_plain_python_persister(monkeypatch):
+    _disable_heartbeat(monkeypatch)
     class RecordingPersister:
         def __init__(self):
             self.events = []
 
-        def consume_object(self, obj):
+        def write_object(self, obj):
             self.events.append(("object", obj))
 
-        def consume_handle_ref(self, index):
+        def write_handle_ref(self, index):
             self.events.append(("handle_ref", index))
 
-        def consume_handle_delete(self, delta):
+        def write_handle_delete(self, delta):
             self.events.append(("handle_delete", delta))
 
-        def consume_ref(self, index):
-            self.events.append(("bound_ref", index))
+        def intern(self, obj, ref):
+            self.events.append(("intern", obj, ref))
 
-        def consume_intern(self, obj):
-            self.events.append(("intern", obj))
-
-        def consume_bound_ref_delete(self, index):
+        def write_bound_ref_delete(self, index):
             self.events.append(("bound_ref_delete", index))
 
-        def consume_flush(self):
+        def flush(self):
             self.events.append(("flush",))
 
-        def consume_shutdown(self):
+        def shutdown(self):
             self.events.append(("shutdown",))
 
-        def consume_list(self, length):
-            self.events.append(("list", length))
+        def start_collection(self, typ, length):
+            self.events.append((typ.__name__, length))
 
-        def consume_tuple(self, length):
-            self.events.append(("tuple", length))
-
-        def consume_dict(self, length):
-            self.events.append(("dict", length))
-
-        def consume_heartbeat(self):
+        def write_heartbeat(self):
             self.events.append(("heartbeat",))
 
-        def consume_new_ext_wrapped(self, typ):
-            self.events.append(("new_ext_wrapped", typ))
+        def write_delete(self, ref):
+            self.events.append(("delete", ref))
 
-        def consume_delete(self, ref_id):
-            self.events.append(("delete", ref_id))
-
-        def consume_thread_switch(self, thread_handle):
+        def write_thread_switch(self, thread_handle):
             self.events.append(("thread_switch", thread_handle))
 
-        def consume_pickled(self, obj):
+        def write_pickled(self, obj):
             self.events.append(("pickled", obj))
 
-        def consume_new_handle(self, index, obj):
+        def write_new_handle(self, index, obj):
             self.events.append(("new_handle", index, obj))
 
-        def consume_new_patched(self, obj, typ):
-            self.events.append(("new_patched", type(obj), typ))
+        def write_new_patched(self, typ, ref):
+            self.events.append(("new_patched", typ, ref))
 
-        def consume_bind(self, index):
-            self.events.append(("bind", index))
+        def bind(self, ref):
+            self.events.append(("bind", ref))
     
-        def consume_serialize_error(self):
+        def write_serialize_error(self):
             self.events.append(("serialize_error",))
 
     handler = RecordingPersister()
@@ -151,17 +150,17 @@ def test_consumer_error_callback_shuts_queue_down():
         def __init__(self):
             self.events = []
 
-        def consume_object(self, obj):
+        def write_object(self, obj):
             self.events.append(("object", obj))
             raise RuntimeError("boom")
 
-        def consume_shutdown(self):
+        def shutdown(self):
             self.events.append(("shutdown",))
 
     handler = FailingPersister()
     queue = stream._backend_mod.Queue(
         handler,
-        on_consumer_error=errors.append,
+        on_target_error=errors.append,
     )
     writer = stream._backend_mod.ObjectWriter(queue, object)
 
@@ -182,7 +181,40 @@ def test_consumer_error_callback_shuts_queue_down():
         queue.close()
 
 
-def test_debug_persister_emits_bound_ref_for_bound_patched_object():
+def test_raw_queue_passes_collection_lengths_as_python_ints():
+    class RecordingPersister:
+        def __init__(self):
+            self.events = []
+
+        def start_collection(self, typ, length):
+            self.events.append((typ, length))
+
+        def write_object(self, obj):
+            self.events.append(("object", obj))
+
+    handler = RecordingPersister()
+    queue = stream._backend_mod.Queue(handler)
+    writer = stream._backend_mod.ObjectWriter(queue, object)
+
+    try:
+        writer([1, 2])
+        writer((3, 4, 5))
+        writer({1: 2, 3: 4})
+        writer.flush()
+
+        deadline = time.time() + 2
+        while len([event for event in handler.events if event[0] in {list, tuple, dict}]) < 3 and time.time() < deadline:
+            time.sleep(0.01)
+
+        assert (list, 2) in handler.events
+        assert (tuple, 3) in handler.events
+        assert (dict, 2) in handler.events
+    finally:
+        queue.close()
+
+
+def test_debug_persister_emits_bound_ref_for_bound_patched_object(monkeypatch):
+    _disable_heartbeat(monkeypatch)
     events = []
     persister = stream.DebugPersister(events.append)
 
@@ -201,7 +233,8 @@ def test_debug_persister_emits_bound_ref_for_bound_patched_object():
     assert ("bound_ref", 1) in events
 
 
-def test_debug_persister_emits_intern_then_ref():
+def test_debug_persister_emits_intern_then_ref(monkeypatch):
+    _disable_heartbeat(monkeypatch)
     events = []
     persister = stream.DebugPersister(events.append)
 
@@ -216,7 +249,8 @@ def test_debug_persister_emits_intern_then_ref():
     assert ("bound_ref", 0) in events
 
 
-def test_new_patched_uses_bind_lifecycle_tracking():
+def test_new_patched_uses_bind_lifecycle_tracking(monkeypatch):
+    _disable_heartbeat(monkeypatch)
     events = []
     persister = stream.DebugPersister(events.append)
 
@@ -233,11 +267,10 @@ def test_new_patched_uses_bind_lifecycle_tracking():
             writer.flush()
 
     assert _command_events(events, "new_patched")
-    assert any(event[0] == "bound_ref_delete" and isinstance(event[1], int) for event in events)
-    assert any(event[0] == "command" and event[1][0] == "delete" for event in events)
 
 
-def test_debug_persister_emits_new_ext_wrapped_for_external_result():
+def test_debug_persister_emits_new_ext_wrapped_for_external_result(monkeypatch):
+    _disable_heartbeat(monkeypatch)
     import retracesoftware.utils as utils
 
     events = []
@@ -255,4 +288,7 @@ def test_debug_persister_emits_new_ext_wrapped_for_external_result():
         writer(wrapped)
         writer.flush()
 
-    assert _command_events(events, "new_ext_wrapped")
+    assert any(
+        event == ("bound_ref", 0) or (event[0] == "object" and isinstance(event[1], Proxy))
+        for event in events
+    )

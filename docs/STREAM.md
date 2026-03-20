@@ -97,12 +97,11 @@ only calls semantic queue methods like:
 
 - `push_obj(...)`
 - `push_bind(...)`
-- `push_new_handle(...)`
-- `push_handle_ref(...)`
-- `push_bound_ref(...)`
-- `push_ext_wrapped(...)`
+- `push_ref(...)`
+- `push_intern(...)`
+- `push_new_patched(...)`
 - `push_delete(...)`
-- `push_thread()`
+- `push_flush(...)`
 
 That is a key architectural boundary: the writer emits semantic events,
 not raw queue protocol entries.

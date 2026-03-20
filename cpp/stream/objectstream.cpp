@@ -535,11 +535,66 @@ namespace retracesoftware_stream {
         }
 
         PyObject * read() {
-            Control control = read_control();
-            if (verbose > 1) {
-                printf("    read control: 0x%02X at byte %zu\n", control.raw, bytes_read - 1);
+            while (true) {
+                size_t start = bytes_read;
+                Control control = read_control();
+                if (verbose > 1) {
+                    printf("    read control: 0x%02X at byte %zu\n", control.raw, bytes_read - 1);
+                }
+
+                if (control == AddFilename) {
+                    if (verbose) {
+                        printf("Retrace - ObjectStream[%lu, %zu] - Inline ADD_FILENAME", messages_read, start);
+                    }
+                    filenames.push_back(read());
+                    if (verbose) {
+                        printf(" -> read %zu bytes, now at %zu\n", bytes_read - start, bytes_read);
+                    }
+                    messages_read++;
+                    continue;
+                }
+
+                if (control.Sized.type == SizedTypes::BINDING_DELETE) {
+                    if (verbose) {
+                        printf("Retrace - ObjectStream[%lu, %zu] - Inline BINDING_DELETE\n", messages_read, start);
+                    }
+                    size_t size = read_unsigned_number(control);
+                    Py_DECREF(bindings[size]);
+                    bindings.erase(size);
+                    messages_read++;
+                    continue;
+                }
+
+                if (control == Intern) {
+                    if (verbose) {
+                        printf("Retrace - ObjectStream[%lu, %zu] - Inline INTERN\n", messages_read, start);
+                    }
+                    bindings[binding_counter++] = read();
+                    messages_read++;
+                    continue;
+                }
+
+                if (control == NewPatched) {
+                    if (verbose) {
+                        printf("Retrace - ObjectStream[%lu, %zu] - Inline NEW_PATCHED\n", messages_read, start);
+                    }
+                    bindings[binding_counter++] = read_new_patched("NEW_PATCHED");
+                    messages_read++;
+                    continue;
+                }
+
+                if (control == Bind) {
+                    PyErr_Format(
+                        PyExc_RuntimeError,
+                        "unexpected inline BIND at byte %zu, message %zu",
+                        start,
+                        messages_read
+                    );
+                    throw nullptr;
+                }
+
+                return read(control);
             }
-            return read(control);
         }
 
         PyObject * read(Control control) {

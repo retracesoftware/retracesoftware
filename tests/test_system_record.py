@@ -81,6 +81,10 @@ class SystemRecordHarness:
         self.calls.append(("bind", obj))
         return self.object_writer.bind(obj)
 
+    def intern(self, obj):
+        self.calls.append(("intern", obj))
+        return self.object_writer.intern(obj)
+
     def new_patched(self, obj):
         self.calls.append(("new_patched", obj))
         return self.object_writer.new_patched(obj)

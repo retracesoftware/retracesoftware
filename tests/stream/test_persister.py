@@ -399,7 +399,7 @@ def test_raw_persister_intern_roundtrip_with_native_reader(tmp_path):
 
     try:
         persister.intern(value)
-        persister.write_ref(value)
+        persister.write_object(value)
         persister.flush()
     finally:
         fw.close()

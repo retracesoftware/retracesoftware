@@ -1,6 +1,5 @@
 _stream_name = '_retracesoftware_stream'
 _stream_sources = files(
-  'consumer.cpp',
   'framed_writer.cpp',
   'module.cpp',
   'objectstream.cpp',

@@ -1,5 +1,6 @@
 #pragma once
 
+#include "stream.h"
 #include <Python.h>
 #include <atomic>
 #include <cassert>
@@ -20,8 +21,6 @@ namespace retracesoftware_stream {
 
 namespace retracesoftware_stream {
     class Queue;
-    class Persister;
-    class Consumer;
     enum class QueueState {
         ACTIVE,
         PAUSED,
@@ -37,13 +36,15 @@ namespace retracesoftware_stream {
     inline bool queue_is_immortal(PyObject* obj) { return obj == Py_None || obj == Py_True || obj == Py_False; }
 #endif
 
+    inline bool queue_is_weakref_token(PyObject* obj) { return PyWeakref_CheckRef(obj); }
+
     class Queue : public PyObject {
         rigtorp::SPSCQueue<QEntry> entries;
         rigtorp::SPSCQueue<PyObject*> returned;
-        Consumer* consumer = nullptr;
+        PyObject* target_obj = nullptr;
         PyObject* thread_id_callback = nullptr;
         PyObject* push_fail_callback = nullptr;
-        PyObject* on_consumer_error = nullptr;
+        PyObject* on_target_error = nullptr;
         PyThreadState* last_thread_tstate = nullptr;
         PyObject* last_thread_id = nullptr;
         QueueState state = QueueState::ACTIVE;
@@ -51,7 +52,7 @@ namespace retracesoftware_stream {
         std::atomic<int64_t> total_removed{0};
         int64_t inflight_limit_bytes;
         int64_t return_notify_threshold_bytes;
-        int consumer_wait_timeout_ms_value;
+        int worker_wait_timeout_ms_value;
         size_t notify_threshold_entries;
         std::thread writer_thread;
         std::thread return_thread;
@@ -60,17 +61,33 @@ namespace retracesoftware_stream {
         std::mutex return_wake_mutex;
         std::condition_variable return_wake_cv;
         std::atomic<bool> shutdown_flag{false};
-        std::atomic<bool> consumer_waiting{false};
+        std::atomic<bool> worker_waiting{false};
         std::atomic<bool> return_thread_waiting{false};
         bool closed = false;
         bool thread_started = false;
         bool return_thread_started = false;
         bool saw_shutdown = false;
+        bool has_target_error_message = false;
+        std::string last_target_error_message;
+
+        bool is_persister() const;
 
         bool push_command(Cmd cmd, uint32_t len = 0);
-        void prepare_consumer_resume();
-        void reset_consumer_state();
-        bool flush_consumer();
+        bool bind_target(PyObject* target);
+        void clear_target();
+        void capture_current_target_error();
+        std::string take_target_error_message();
+        bool has_target_error() const;
+        void prepare_target_resume();
+        void reset_target_state();
+        bool flush_target_background();
+        bool target_shutdown();
+        bool call_target_bind(Ref ref);
+        bool call_target_delete(Ref ref);
+        bool call_target_intern(PyObject* obj, Ref ref);
+        bool call_target_new_patched(PyObject* type, Ref ref);
+        bool call_target_collection(PyObject* type, size_t len);
+        bool call_target_write_object(PyObject* obj);
 
         bool try_pop_entry(QEntry& entry);
         QEntry pop_entry();
@@ -79,6 +96,8 @@ namespace retracesoftware_stream {
         Ref consume_ref();
         void release_consumed_obj(PyObject* obj);
         void finish_consumed_obj(PyObject* obj);
+        void release_consumed_ref(Ref ref);
+        void finish_consumed_ref(Ref ref);
         void clear_thread_state();
         bool has_entry_slots(size_t needed) const;
         bool wait_for_slots(size_t needed);
@@ -100,8 +119,8 @@ namespace retracesoftware_stream {
         void push_shutdown_sentinel();
         void discard_pending_error();
         std::string take_pending_error_message();
-        void notify_consumer_error(const std::string& message);
-        void handle_consumer_failure(const std::string& message);
+        void notify_target_error(const std::string& message);
+        void handle_target_failure(const std::string& message);
         bool reject_push() const;
 
         bool has_entries();
@@ -119,8 +138,8 @@ namespace retracesoftware_stream {
         PyObject* persister() const;
         PyObject* push_fail_handler() const;
         void set_push_fail_handler(PyObject* callback);
-        PyObject* consumer_error_handler() const;
-        void set_consumer_error_handler(PyObject* callback);
+        PyObject* target_error_handler() const;
+        void set_target_error_handler(PyObject* callback);
 
     private:
         friend int Queue_init(Queue* self, PyObject* args, PyObject* kwds);
@@ -147,11 +166,11 @@ namespace retracesoftware_stream {
             const bool pushed = try_push_entry(entry);
             assert(pushed);
             (void)pushed;
-            maybe_notify_consumer();
+            maybe_notify_worker();
         }
     
-        inline void maybe_notify_consumer() {
-            if (!consumer_waiting.load(std::memory_order_acquire)) return;
+        inline void maybe_notify_worker() {
+            if (!worker_waiting.load(std::memory_order_acquire)) return;
             if (entries.size() < notify_threshold_entries) return;
             wake_cv.notify_one();
         }
@@ -194,7 +213,7 @@ namespace retracesoftware_stream {
 
         inline bool push_immortal(PyObject * obj) {
             if (reject_push()) return false;
-            push_entry_unchecked(immortal_entry(obj));
+            push_entry_unchecked(unowned_entry(obj));
             return wait_for_slots(4);
         }
 
@@ -202,7 +221,7 @@ namespace retracesoftware_stream {
 
     public:
         Queue();
-        Queue(size_t capacity, int64_t inflight_limit, int consumer_wait_timeout_ms);
+        Queue(size_t capacity, int64_t inflight_limit, int worker_wait_timeout_ms);
         ~Queue();
 
         bool push_flush() {
@@ -214,46 +233,116 @@ namespace retracesoftware_stream {
         }
     
         bool push_new_patched(PyObject* obj) {
-            const size_t estimated_size = queue_is_immortal(obj) ? 0 : approximate_size_bytes(obj);
-            return push_command_with_ptr(CMD_NEW_PATCHED, reinterpret_cast<QEntry>(Py_NewRef(obj)), estimated_size);
+            return push_new_patched(reinterpret_cast<PyObject*>(Py_TYPE(obj)), obj);
         }
 
-        bool push_ext_wrapped(PyTypeObject* type) {
-            return push_command_with_ptr(CMD_NEW_EXT_WRAPPED, reinterpret_cast<QEntry>(type));
+        bool push_new_patched(Ref type_ref, Ref ref) {
+            PyObject* type_token = type_ref;
+            PyObject* token = ref;
+            const bool own_type_token = queue_is_weakref_token(type_token);
+            const bool own_token = queue_is_weakref_token(token);
+            if (reject_push()) {
+                return false;
+            }
+            if (own_type_token) Py_INCREF(type_token);
+            if (own_token) Py_INCREF(token);
+            try {
+                push_entry_unchecked(cmd_entry(CMD_NEW_PATCHED));
+                push_entry_unchecked(own_type_token ? object_entry(type_ref) : unowned_entry(type_ref));
+                push_entry_unchecked(own_token ? object_entry(ref) : unowned_entry(ref));
+                return wait_for_slots(6);
+            } catch (...) {
+                if (own_type_token) Py_DECREF(type_token);
+                if (own_token) Py_DECREF(token);
+                throw;
+            }
         }
-    
+
         bool push_heartbeat() {
             return push_command(CMD_HEARTBEAT);
         }
             
         bool push_list_header(size_t len) {
-            return push_command(CMD_LIST, (uint32_t)len);
+            return push_command(CMD_LIST, static_cast<uint32_t>(len));
         }
     
         bool push_tuple_header(size_t len) {
-            return push_command(CMD_TUPLE, (uint32_t)len);
+            return push_command(CMD_TUPLE, static_cast<uint32_t>(len));
         }
     
         bool push_dict_header(size_t len) {
-            return push_command(CMD_DICT, (uint32_t)len);
+            return push_command(CMD_DICT, static_cast<uint32_t>(len));
         }
     
         bool push_delete(Ref ref) {
-            return push_command_with_ptr(CMD_DELETE, reinterpret_cast<QEntry>(ref));
+            if (reject_push()) return false;
+            PyObject* token = ref;
+            const bool own_token = queue_is_weakref_token(token);
+            if (own_token) Py_INCREF(token);
+            try {
+                push_entry_unchecked(cmd_entry(CMD_DELETE));
+                push_entry_unchecked(reinterpret_cast<QEntry>(ref));
+                return wait_for_slots(4);
+            } catch (...) {
+                if (own_token) Py_DECREF(token);
+                throw;
+            }
         }
 
         bool push_bind(Ref ref) {
-            return push_command_with_ptr(CMD_BIND, reinterpret_cast<QEntry>(ref));
+            if (reject_push()) return false;
+            PyObject* token = ref;
+            const bool own_token = queue_is_weakref_token(token);
+            if (own_token) Py_INCREF(token);
+            try {
+                push_entry_unchecked(cmd_entry(CMD_BIND));
+                push_entry_unchecked(reinterpret_cast<QEntry>(ref));
+                return wait_for_slots(4);
+            } catch (...) {
+                if (own_token) Py_DECREF(token);
+                throw;
+            }
         }
 
         bool push_intern(PyObject* obj) {
-            const size_t estimated_size = queue_is_immortal(obj) ? 0 : approximate_size_bytes(obj);
-            return push_command_with_ptr(CMD_INTERN, reinterpret_cast<QEntry>(Py_NewRef(obj)), estimated_size);
+            return push_intern(obj, obj);
+        }
+
+        bool push_intern(PyObject* obj, Ref ref) {
+            PyObject* owned = Py_NewRef(obj);
+            PyObject* token = ref;
+            const bool own_token = queue_is_weakref_token(token);
+            if (reject_push()) {
+                Py_DECREF(owned);
+                return false;
+            }
+            if (own_token) Py_INCREF(token);
+            const size_t estimated_size = queue_is_immortal(owned) ? 0 : approximate_size_bytes(owned);
+            try {
+                if (estimated_size > 0) reserve_inflight(estimated_size);
+                push_entry_unchecked(cmd_entry(CMD_INTERN));
+                push_entry_unchecked(reinterpret_cast<QEntry>(owned));
+                push_entry_unchecked(reinterpret_cast<QEntry>(ref));
+                if (estimated_size > 0 && inflight_limit_bytes > 0 && inflight() >= inflight_limit_bytes) {
+                    if (!wait_for_inflight()) return false;
+                }
+                return wait_for_slots(6);
+            } catch (...) {
+                if (own_token) Py_DECREF(token);
+                Py_DECREF(owned);
+                throw;
+            }
         }
 
         inline bool push_ref(Ref ref) {
             if (reject_push()) return false;
-            push_entry_unchecked(ref_entry(ref));
+            PyObject* token = ref;
+            if (queue_is_weakref_token(token)) {
+                Py_INCREF(token);
+                push_entry_unchecked(object_entry(ref));
+            } else {
+                push_entry_unchecked(unowned_entry(ref));
+            }
             return wait_for_slots(4);
         }
 

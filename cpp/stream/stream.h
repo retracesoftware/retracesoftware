@@ -106,6 +106,10 @@ namespace retracesoftware_stream {
     extern PyTypeObject Persister_Type;
     extern PyTypeObject FramedWriter_Type;
 
+    void handle_write_error();
+    void handle_debug_error(bool quit_on_error);
+    void set_python_error_from_current_exception();
+
     class FramedWriter;
     FramedWriter* FramedWriter_get(PyObject* obj);
 

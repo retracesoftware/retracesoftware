@@ -642,6 +642,7 @@ def stream_writer(writer, stackfactory = None, on_write_error = None):
         write_result = bind_write_error(writer.handle('RESULT')),
         write_error  = bind_write_error(write_error),
         bind         = bind_write_error(writer.bind),
+        intern       = bind_write_error(writer.intern),
         new_patched  = bind_write_error(getattr(writer, 'new_patched', writer.bind)),
         write_call   = bind_write_error(writer.handle('CALL')),
         checkpoint   = bind_write_error(writer.handle('CHECKPOINT')),

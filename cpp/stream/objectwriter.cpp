@@ -204,7 +204,7 @@ namespace retracesoftware_stream {
                 printf("BIND(%s)\n", Py_TYPE(obj)->tp_name);
             }
 
-            if (!disable_if_push_failed(queue->push_bind(reinterpret_cast<Ref>(obj)))) return;
+            if (!disable_if_push_failed(queue->push_bind(binding_ref(obj)))) return;
             messages_written++;
             // trace_bind_event("producer-bind-enqueued", obj, (long)messages_written);
         }
@@ -224,7 +224,7 @@ namespace retracesoftware_stream {
                 printf("INTERN(%s)\n", Py_TYPE(obj)->tp_name);
             }
 
-            if (!disable_if_push_failed(queue->push_intern(obj))) return;
+            if (!disable_if_push_failed(queue->push_intern(obj, binding_ref(obj)))) return;
             messages_written++;
         }
 
@@ -232,14 +232,19 @@ namespace retracesoftware_stream {
             if (is_disabled()) return;
 
             ensure_bound_tracking(obj);
-
+            PyObject* type = reinterpret_cast<PyObject*>(Py_TYPE(obj));
+            if (!is_bound(type)) {
+                intern(type);
+                if (is_disabled()) return;
+            }
+            assert(is_bound(type));
 
             if (verbose) {
                 debug_prefix();
                 printf("NEW_PATCHED(%s)\n", Py_TYPE(obj)->tp_name);
             }
 
-            if (!disable_if_push_failed(queue->push_new_patched(obj))) return;
+            if (!disable_if_push_failed(queue->push_new_patched(binding_ref(type), binding_ref(obj)))) return;
             messages_written++;
         }
 
@@ -247,6 +252,18 @@ namespace retracesoftware_stream {
         
         bool is_bound(PyObject* obj) {
             return bound.contains(obj);
+        }
+
+        PyObject* binding_token(PyObject* obj) {
+            auto it = bound.find(obj);
+            if (it == bound.end()) return nullptr;
+            return it->second ? it->second : it->first;
+        }
+
+        Ref binding_ref(PyObject* obj) {
+            PyObject* token = binding_token(obj);
+            assert(token);
+            return reinterpret_cast<Ref>(token);
         }
 
         void ensure_bound_tracking(PyObject* obj) {
@@ -281,21 +298,21 @@ namespace retracesoftware_stream {
             if (is_disabled()) return;
 
             if (is_bound(obj)) {
-                disable_if_push_failed(queue->push_ref(reinterpret_cast<Ref>(obj)));
+                disable_if_push_failed(queue->push_ref(binding_ref(obj)));
             }
             else if (is_immortal(obj)) {
                 disable_if_push_failed(queue->push_obj(obj));
             }
             else if (Py_TYPE(obj)->tp_base == ext_wrapped_type && is_bound(reinterpret_cast<PyObject*>(Py_TYPE(obj))))
             {
-                disable_if_push_failed(queue->push_ext_wrapped(Py_TYPE(obj)));
+                disable_if_push_failed(queue->push_obj(reinterpret_cast<PyObject*>(Py_TYPE(obj))));
             } 
             else {
                 PyTypeObject* tp = Py_TYPE(obj);
                 
                 if (tp == &PyUnicode_Type && is_interned_unicode(obj)) {
                     intern(obj);
-                    disable_if_push_failed(queue->push_ref(reinterpret_cast<Ref>(obj)));
+                    disable_if_push_failed(queue->push_ref(binding_ref(obj)));
                 }
                 else if (tp == &PyList_Type) {
                     assert (depth < MAX_FLATTEN_DEPTH);
@@ -369,7 +386,7 @@ namespace retracesoftware_stream {
             //                bound.contains(obj)) {
             //         disable_if_push_failed(push_bound_ref(ensure_auto_handle(obj)));
             //     } else if (wrapped && PyObject_TypeCheck(obj, wrapped)) {
-            //         disable_if_push_failed(push_ext_wrapped(Py_TYPE(obj)));
+            //         disable_if_push_failed(push_obj(Py_TYPE(obj)));
             //     } else {
             //         // Try the full serializer (type_serializer + pickle fallback)
             //         PyObject* res = PyObject_CallOneArg(serializer, obj);
@@ -444,6 +461,8 @@ namespace retracesoftware_stream {
 
             auto it = bound.find(obj);
             if (it != bound.end()) {
+                PyObject* token = it->second ? it->second : it->first;
+                disable_if_push_failed(queue->push_delete(reinterpret_cast<Ref>(token)));
                 if (it->second) {
                     Py_DECREF(it->second);
                 } else {
@@ -451,7 +470,6 @@ namespace retracesoftware_stream {
                 }
                 bound.erase(it);
             }
-            disable_if_push_failed(queue->push_delete(reinterpret_cast<Ref>(obj)));
         }
 
         void write_all(PyObject*const * args, size_t nargs) {
