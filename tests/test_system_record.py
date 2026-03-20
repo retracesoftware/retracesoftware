@@ -29,6 +29,8 @@ pytest.importorskip("retracesoftware.stream")
 
 import retracesoftware.stream as stream
 import retracesoftware.proxy.system as proxy_system
+from retracesoftware.install import stream_writer
+from retracesoftware.proxy.messagestream import MessageStream
 
 
 class RecordingQueue:
@@ -283,3 +285,45 @@ def test_system_record_new_patched_reaches_python_persister_via_native_queue():
         writer.close()
 
     assert any(event[0] == "command" and event[1][0] == "new_patched" for event in writer.events)
+
+
+def test_system_record_memoryview_result_roundtrips_through_raw_replay(tmp_path):
+    """Readonly memoryview results should survive record + replay.
+
+    This is a focused regression for proxied external results. The patched
+    method returns a readonly ``memoryview``; replay should be able to read
+    back the recorded result from a raw file-backed trace.
+    """
+
+    system = proxy_system.System()
+    system.immutable_types.update({memoryview, int, float, str, bytes, bool, type, type(None)})
+    path = tmp_path / "memoryview.bin"
+
+    class Patched:
+        def payload(self):
+            return memoryview(b"payload")
+
+    system.patch_type(Patched)
+
+    with stream.writer(path, flush_interval=999, raw=True) as raw_writer:
+        writer = stream_writer(raw_writer)
+        with system.record_context(writer):
+            obj = Patched()
+            result = obj.payload()
+            assert isinstance(result, memoryview)
+            assert result.tobytes() == b"payload"
+
+    assert path.stat().st_size > 0
+
+    with stream.reader(path, read_timeout=1, verbose=False, raw=True) as raw_reader:
+        per_thread_source = stream.per_thread(
+            source=raw_reader,
+            thread=lambda: (),
+            timeout=1,
+        )
+        msg_stream = MessageStream(per_thread_source, native_reader=raw_reader)
+
+        with system.replay_context(msg_stream):
+            obj = Patched()
+            replayed = obj.payload()
+            assert bytes(replayed) == b"payload"

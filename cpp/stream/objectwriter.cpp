@@ -312,7 +312,18 @@ namespace retracesoftware_stream {
             else {
                 PyTypeObject* tp = Py_TYPE(obj);
                 
-                if (tp == &PyUnicode_Type && is_interned_unicode(obj)) {
+                if (PyMemoryView_Check(obj)) {
+                    PyObject* bytes = PyObject_Bytes(obj);
+                    if (!bytes) {
+                        throw nullptr;
+                    }
+                    const bool pushed = disable_if_push_failed(queue->push_obj(bytes));
+                    Py_DECREF(bytes);
+                    if (!pushed) {
+                        return;
+                    }
+                }
+                else if (tp == &PyUnicode_Type && is_interned_unicode(obj)) {
                     intern(obj);
                     disable_if_push_failed(queue->push_ref(binding_ref(obj)));
                 }
