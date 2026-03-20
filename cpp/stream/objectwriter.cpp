@@ -106,7 +106,7 @@ namespace retracesoftware_stream {
 
         ObjectWriter() {}
 
-        inline bool is_disabled() const { return queue == nullptr; }
+        inline bool is_disabled() const { return queue == nullptr || !queue->accepting_pushes(); }
 
         void clear_queue_ref() {
             Py_CLEAR(queue);
@@ -146,7 +146,9 @@ namespace retracesoftware_stream {
 
         void disable_push_fail() {
             fprintf(stderr, "retrace: writer queue stalled, disabling recording\n");
-            clear_queue_ref();
+            if (queue) {
+                queue->disable();
+            }
         }
 
         bool disable_if_push_failed(bool ok) {
@@ -509,7 +511,9 @@ namespace retracesoftware_stream {
         }
 
         static PyObject* py_disable(ObjectWriter* self, PyObject* unused) {
-            self->clear_queue_ref();
+            if (self->queue) {
+                self->queue->disable();
+            }
             Py_RETURN_NONE;
         }
 

@@ -22,7 +22,11 @@ namespace retracesoftware_stream {
     extern bool Persister_write_new_patched(Persister* persister, Ref type_ref, Ref ref);
 
     namespace {
-        constexpr size_t kMinQueueCapacity = 4;
+        // The producer can prepend a 2-entry CMD_THREAD_SWITCH packet ahead of
+        // a 3-entry logical command such as CMD_INTERN or CMD_NEW_PATCHED.
+        // Keep the minimum capacity large enough that this worst-case burst can
+        // be enqueued without silently truncating a multi-entry packet.
+        constexpr size_t kMinQueueCapacity = 5;
 
         inline size_t clamp_queue_capacity(size_t capacity) {
             return std::max(capacity, kMinQueueCapacity);
@@ -666,10 +670,22 @@ namespace retracesoftware_stream {
         return inflight_limit_bytes;
     }
 
+    bool Queue::accepting_pushes() const {
+        return !closed && state == QueueState::ACTIVE;
+    }
+
     void Queue::set_inflight_limit(int64_t value) {
         inflight_limit_bytes = value;
         return_notify_threshold_bytes =
             value > 0 ? std::max<int64_t>(1, value / 4) : 1;
+    }
+
+    void Queue::disable() {
+        if (closed || state == QueueState::STOPPED) return;
+        state = QueueState::STOPPED;
+        shutdown_flag.store(true, std::memory_order_release);
+        wake_cv.notify_one();
+        return_wake_cv.notify_one();
     }
 
     void Queue::close() {
@@ -755,7 +771,7 @@ namespace retracesoftware_stream {
     }
 
     bool Queue::reject_push() const {
-        return state != QueueState::ACTIVE;
+        return !accepting_pushes();
     }
 
     void Queue::set_push_fail_handler(PyObject* callback) {

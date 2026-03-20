@@ -131,7 +131,9 @@ namespace retracesoftware_stream {
     public:
         int64_t inflight() const;
         int64_t inflight_limit() const;
+        bool accepting_pushes() const;
         void set_inflight_limit(int64_t value);
+        void disable();
         void close();
         void drain();
         void resume();
