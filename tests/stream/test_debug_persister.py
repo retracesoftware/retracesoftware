@@ -1,5 +1,6 @@
 import gc
 import time
+import weakref
 import pytest
 
 pytest.importorskip("retracesoftware.stream")
@@ -265,6 +266,26 @@ def test_new_patched_uses_bind_lifecycle_tracking(monkeypatch):
         for _ in range(3):
             gc.collect()
             writer.flush()
+
+    assert _command_events(events, "new_patched")
+
+
+def test_new_patched_handles_nonweakrefable_instance_tokens(monkeypatch):
+    _disable_heartbeat(monkeypatch)
+    events = []
+    persister = stream.DebugPersister(events.append)
+
+    class Patched:
+        __retrace_system__ = object()
+        __slots__ = ()
+
+    obj = Patched()
+    with pytest.raises(TypeError):
+        weakref.ref(obj)
+
+    with stream.writer(output=persister, flush_interval=999) as writer:
+        assert writer.new_patched(obj) is None
+        writer.flush()
 
     assert _command_events(events, "new_patched")
 

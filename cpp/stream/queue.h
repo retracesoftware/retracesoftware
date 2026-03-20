@@ -250,8 +250,8 @@ namespace retracesoftware_stream {
             if (own_token) Py_INCREF(token);
             try {
                 push_entry_unchecked(cmd_entry(CMD_NEW_PATCHED));
-                push_entry_unchecked(own_type_token ? object_entry(type_ref) : unowned_entry(type_ref));
-                push_entry_unchecked(own_token ? object_entry(ref) : unowned_entry(ref));
+                    push_entry_unchecked(reinterpret_cast<QEntry>(type_ref));
+                    push_entry_unchecked(reinterpret_cast<QEntry>(ref));
                 return wait_for_slots(6);
             } catch (...) {
                 if (own_type_token) Py_DECREF(type_token);

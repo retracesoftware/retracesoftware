@@ -4,6 +4,7 @@
 #include <cerrno>
 #include <new>
 #include <stdexcept>
+#include "gilguard.h"
 
 #ifndef _WIN32
     #include <fcntl.h>
@@ -14,6 +15,47 @@
     #include <sys/un.h>
     #include <unistd.h>
 #endif
+
+static const char* get_utf8_if_exists(PyObject* op, Py_ssize_t* out_size) {
+    if (!PyUnicode_Check(op)) return nullptr;
+    PyASCIIObject* ascii = _PyASCIIObject_CAST(op);
+    if (PyUnicode_IS_COMPACT_ASCII(op)) {
+        if (out_size) *out_size = ascii->length;
+        return reinterpret_cast<const char*>(ascii + 1);
+    }
+    PyCompactUnicodeObject* compact = _PyCompactUnicodeObject_CAST(op);
+    if (compact->utf8 != nullptr) {
+        if (out_size) *out_size = compact->utf8_length;
+        return compact->utf8;
+    }
+    return nullptr;
+}
+
+// static const char* get_utf8_if_exists(PyObject* op, Py_ssize_t* out_size) {
+//     if (!PyUnicode_Check(op)) return nullptr;
+
+//     // Cast to the compact struct to access utf8 members
+//     PyCompactUnicodeObject* compact = (PyCompactUnicodeObject*)op;
+//     PyASCIIObject* ascii = &compact->_base;
+
+//     // Case 1: Compact ASCII
+//     // For pure ASCII, the UTF-8 version is the data itself.
+//     if (ascii->state.ascii && ascii->state.compact) {
+//         if (out_size) *out_size = ascii->length;
+//         // Data is immediately following the ASCII header
+//         return (const char*)(ascii + 1);
+//     }
+
+//     // Case 2: Non-ASCII (or non-compact) but UTF-8 is already cached
+//     // We check the 'utf8' member of the compact struct.
+//     if (compact->utf8 != nullptr) {
+//         if (out_size) *out_size = compact->utf8_length;
+//         return compact->utf8;
+//     }
+
+//     // Case 3: Buffer doesn't exist yet
+//     return nullptr;
+// }
 
 namespace retracesoftware_stream {
     class Persister : public PyObject {
@@ -435,16 +477,19 @@ namespace retracesoftware_stream {
 
     void Persister::write_str_value(PyObject* obj) {
         Py_ssize_t size = 0;
-        PyGILState_STATE gil = PyGILState_Ensure();
-        const char* utf8 = PyUnicode_AsUTF8AndSize(obj, &size);
+
+        const char* utf8 = get_utf8_if_exists(obj, &size);
+
+        if (!utf8 || size == 0) {
+            retracesoftware::GILGuard gil;
+            utf8 = PyUnicode_AsUTF8AndSize(obj, &size);
+        }
         if (!utf8) {
-            PyGILState_Release(gil);
             throw nullptr;
         }
 
         write_size(SizedTypes::STR, size);
         emit_bytes(reinterpret_cast<const uint8_t*>(utf8), size);
-        PyGILState_Release(gil);
     }
 
     void Persister::write_bytes_header(PyObject* obj) {
@@ -756,12 +801,12 @@ namespace retracesoftware_stream {
     }
 
     bool Persister_intern(Persister * persister, PyObject * obj, Ref ref) {
-        retracesoftware::GILGuard gstate;
+        // retracesoftware::GILGuard gstate;
         return persister->intern(obj, ref);
     }
 
     bool Persister_bind(Persister * persister, Ref ref) {
-        retracesoftware::GILGuard gstate;
+        // retracesoftware::GILGuard gstate;
         persister->bind(ref);
         return true;
     }
