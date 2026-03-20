@@ -13,14 +13,14 @@ TIMEOUT = 30
 
 
 def record_then_replay(tmpdir, script_file):
-    """Record a raw trace to disk, then replay from disk."""
+    """Record an unframed trace to disk, then replay from disk."""
     trace_file = os.path.join(tmpdir, "trace.retrace")
 
     # --- record ---
     rec = subprocess.run(
         [PYTHON, "-m", "retracesoftware",
          "--recording", trace_file,
-         "--raw",
+         "--format", "unframed_binary",
          "--", script_file],
         capture_output=True, text=True, timeout=TIMEOUT,
     )
@@ -37,8 +37,8 @@ def record_then_replay_via_pipe(pipe_path, script_file):
     """Record through a FIFO, materialise the trace, then replay.
 
     *pipe_path* must be the FIFO path itself (e.g. ``/tmp/dir/trace.bin``),
-    not its parent directory. The pipe variant records ``--raw`` because the
-    Python replay entrypoint consumes raw traces directly.
+    not its parent directory. The pipe variant records unframed binary because
+    the Python replay entrypoint consumes unframed traces directly.
     """
     drain_result = {}
     reader = threading.Thread(
@@ -48,7 +48,7 @@ def record_then_replay_via_pipe(pipe_path, script_file):
     rec = subprocess.run(
         [PYTHON, "-m", "retracesoftware",
          "--recording", pipe_path,
-         "--raw",
+         "--format", "unframed_binary",
          "--", script_file],
         capture_output=True, text=True, timeout=TIMEOUT,
     )

@@ -34,6 +34,6 @@ def test_writer_accepts_threadlocal_from_runtime_context(tmp_path):
     thread_ctx.set(("main",))
 
     path = tmp_path / "thread_ctx_trace.bin"
-    with stream.writer(path=path, thread=thread_ctx, flush_interval=0.01, raw=True) as writer:
+    with stream.writer(path=path, thread=thread_ctx, flush_interval=0.01, format="unframed_binary") as writer:
         writer("ok")
         writer.flush()

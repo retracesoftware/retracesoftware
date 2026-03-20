@@ -52,7 +52,7 @@ def test_record_then_replay_threading_single(tmpdir):
     record = subprocess.run(
         [PYTHON, "-m", "retracesoftware",
          "--recording", trace_file,
-         "--raw",
+         "--format", "unframed_binary",
          "--", str(script_file)],
         capture_output=True, text=True, timeout=TIMEOUT,
     )

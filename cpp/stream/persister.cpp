@@ -391,12 +391,9 @@ namespace retracesoftware_stream {
 
         PyMethodDef Persister_methods[] = {
             {"write_object", (PyCFunction)Persister_py_write_object, METH_O, "Write an object while mimicking consumer threading"},
-            {"nogil_write_object", (PyCFunction)Persister_py_write_object, METH_O, "Native fast-path alias for write_object"},
             {"intern", (PyCFunction)Persister_py_intern, METH_VARARGS, "Write and bind an object while mimicking consumer threading"},
             {"bind", (PyCFunction)Persister_py_bind, METH_O, "Register a bound object while mimicking consumer threading"},
-            {"nogil_bind", (PyCFunction)Persister_py_bind, METH_O, "Native fast-path alias for bind"},
             {"write_delete", (PyCFunction)Persister_py_write_delete, METH_O, "Write a delete event while mimicking consumer threading"},
-            {"nogil_write_delete", (PyCFunction)Persister_py_write_delete, METH_O, "Native fast-path alias for write_delete"},
             {"flush", (PyCFunction)Persister_py_flush, METH_NOARGS, "Flush the writer while mimicking consumer threading"},
             {"flush_background", (PyCFunction)Persister_py_flush_background, METH_NOARGS, "Flush buffered output after a worker batch"},
             {"shutdown", (PyCFunction)Persister_py_shutdown, METH_NOARGS, "Write shutdown while mimicking consumer threading"},
@@ -405,7 +402,6 @@ namespace retracesoftware_stream {
             {"start_tuple", (PyCFunction)Persister_py_start_tuple, METH_O, "Write a tuple header while mimicking consumer threading"},
             {"start_dict", (PyCFunction)Persister_py_start_dict, METH_O, "Write a dict header while mimicking consumer threading"},
             {"start_collection", (PyCFunction)Persister_py_start_collection, METH_VARARGS, "Write a collection header while mimicking consumer threading"},
-            {"nogil_start_collection", (PyCFunction)Persister_py_start_collection, METH_VARARGS, "Native fast-path alias for start_collection"},
             {"write_heartbeat", (PyCFunction)Persister_py_write_heartbeat, METH_NOARGS, "Write a heartbeat while mimicking consumer threading"},
             {"write_thread_switch", (PyCFunction)Persister_py_write_thread_switch, METH_O, "Write a thread switch while mimicking consumer threading"},
             {"nogil_write_thread_switch", (PyCFunction)Persister_py_write_thread_switch, METH_O, "Native fast-path alias for write_thread_switch"},

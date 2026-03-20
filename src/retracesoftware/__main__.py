@@ -111,6 +111,7 @@ def _write_shebang(trace_path, replay_bin):
 thread_id = utils.ThreadLocal()
 
 def record(system, options, args):
+    recording_format = getattr(options, 'format', 'binary')
 
     if options.recording is None:
         options.recording = '{script}.retrace'
@@ -136,7 +137,7 @@ def record(system, options, args):
         # FIFOs must stay open for the full recording; pre-writing the shebang
         # would close the pipe early, causing the reader to see EOF before the
         # FramedWriter starts streaming the actual trace.
-        if not is_fifo_path(trace_path):
+        if recording_format == 'binary' and not is_fifo_path(trace_path):
             _write_shebang(trace_path, replay_bin)
 
     preamble = None
@@ -161,10 +162,9 @@ def record(system, options, args):
             'env': dict(os.environ),
         }
         
-    raw = getattr(options, 'raw', False)
-
     with stream.writer(path = trace_path,
                        thread = thread_id,
+                       format = recording_format,
                        verbose = options.verbose,
                        preamble = preamble,
                        inflight_limit = options.inflight_limit,
@@ -172,8 +172,7 @@ def record(system, options, args):
                        queue_capacity = options.queue_capacity,
                        flush_interval = options.flush_interval,
                        quit_on_error = options.quit_on_error,
-                       serialize_errors = not options.quit_on_error,
-                       raw = raw) as writer:
+                       serialize_errors = not options.quit_on_error) as writer:
 
         if options.stacktraces:
             stackfactory = utils.StackFactory()
@@ -284,6 +283,7 @@ def replay(system, args):
     chunk_ms = getattr(args, 'chunk_ms', None)
     control_socket_path = getattr(args, 'control_socket', None)
     use_stdio = getattr(args, 'stdio', False)
+    format_hint = getattr(args, 'format', None)
 
     # Resolve path before any chdir.
     path = Path(args.recording).resolve()
@@ -291,16 +291,20 @@ def replay(system, args):
     if not path.is_file():
         raise RecordingNotFoundError(f"Recording path: {path} is not a file")
 
-    raw = stream.detect_raw_trace(path)
-    if not raw:
-        raise RuntimeError("Python replay currently requires raw recordings")
-    header, data_offset = stream.read_process_info(path, raw=True)
+    if format_hint == 'unframed_binary':
+        is_unframed = True
+    elif format_hint in {'binary', 'json'}:
+        is_unframed = False
+    else:
+        is_unframed = stream.detect_raw_trace(path)
+    if not is_unframed:
+        raise RuntimeError("Python replay currently requires unframed_binary recordings")
+    header, data_offset = stream.read_process_info(path, raw=is_unframed)
 
     with stream.reader(path = path,
                     read_timeout = args.read_timeout,
                     verbose = args.verbose,
-                    start_offset = data_offset,
-                    raw = raw) as reader:
+                    start_offset = data_offset) as reader:
 
             if chunk_ms is not None:
                 from retracesoftware.search import install_timeslice_search
@@ -560,8 +564,8 @@ def main():
             help='Path to file with additional regex patterns for path-based retrace filtering')
 
         parser.add_argument(
-            '--raw', action='store_true',
-            help='Write raw trace without PID framing (single-process, for testing)')
+            '--format', choices=('binary', 'unframed_binary', 'json'), default='binary',
+            help='Recording backend format (default: binary)')
 
         parser.add_argument(
             '--replay_bin', type=str, default=None,
@@ -616,6 +620,10 @@ def main():
             type=float,
             default=None,
             help='Search for replay chunk boundaries every N milliseconds of execution time')
+
+        parser.add_argument(
+            '--format', choices=('binary', 'unframed_binary', 'json'), default=None,
+            help='Optional recording format hint for replay input')
 
         args = parser.parse_args()
         replay(system, args)

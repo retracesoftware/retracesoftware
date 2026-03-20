@@ -287,12 +287,12 @@ def test_system_record_new_patched_reaches_python_persister_via_native_queue():
     assert any(event[0] == "command" and event[1][0] == "new_patched" for event in writer.events)
 
 
-def test_system_record_memoryview_result_roundtrips_through_raw_replay(tmp_path):
+def test_system_record_memoryview_result_roundtrips_through_unframed_binary_replay(tmp_path):
     """Readonly memoryview results should survive record + replay.
 
     This is a focused regression for proxied external results. The patched
     method returns a readonly ``memoryview``; replay should be able to read
-    back the recorded result from a raw file-backed trace.
+    back the recorded result from an unframed file-backed trace.
     """
 
     system = proxy_system.System()
@@ -305,7 +305,7 @@ def test_system_record_memoryview_result_roundtrips_through_raw_replay(tmp_path)
 
     system.patch_type(Patched)
 
-    with stream.writer(path, flush_interval=999, raw=True) as raw_writer:
+    with stream.writer(path, flush_interval=999, format="unframed_binary") as raw_writer:
         writer = stream_writer(raw_writer)
         with system.record_context(writer):
             obj = Patched()
@@ -315,7 +315,7 @@ def test_system_record_memoryview_result_roundtrips_through_raw_replay(tmp_path)
 
     assert path.stat().st_size > 0
 
-    with stream.reader(path, read_timeout=1, verbose=False, raw=True) as raw_reader:
+    with stream.reader(path, read_timeout=1, verbose=False) as raw_reader:
         per_thread_source = stream.per_thread(
             source=raw_reader,
             thread=lambda: (),

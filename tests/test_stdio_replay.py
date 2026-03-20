@@ -1,4 +1,4 @@
-"""End-to-end test: record with --raw, replay with --stdio, validate breakpoint hit."""
+"""End-to-end test: record unframed, replay with --stdio, validate breakpoint hit."""
 import json
 import os
 import sys
@@ -26,11 +26,11 @@ def tmpdir():
 
 
 def record_raw(script_path, trace_path):
-    """Record a script with --raw (no PID framing)."""
+    """Record a script with unframed binary output (no PID framing)."""
     cmd = [
         PYTHON, "-m", "retracesoftware",
         "--recording", trace_path,
-        "--raw",
+        "--format", "unframed_binary",
         "--", script_path,
     ]
     result = subprocess.run(cmd, capture_output=True, text=True, timeout=TIMEOUT)
@@ -40,7 +40,7 @@ def record_raw(script_path, trace_path):
 
 
 def replay_stdio(trace_path, commands):
-    """Replay a raw trace with --stdio, sending JSON commands and collecting responses.
+    """Replay an unframed trace with --stdio, sending JSON commands and collecting responses.
 
     Returns a list of parsed JSON response dicts.
     """

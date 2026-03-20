@@ -104,10 +104,10 @@ func Roundtrip(script string, stdout, stderr io.Writer, extraRecordArgs ...strin
 		return fmt.Errorf("os.Pipe: %w", err)
 	}
 
-	// Start the replay process.  It reads the raw (non-PID-framed)
+	// Start the replay process. It reads the unframed (non-PID-framed)
 	// stream from /dev/stdin.
 	replayArgs := []string{"-m", "retracesoftware",
-		"--recording", "/dev/stdin", "--raw", "--list_pids"}
+		"--recording", "/dev/stdin", "--format", "unframed_binary", "--list_pids"}
 	log.Printf("roundtrip replay: %s %v", pythonBin, replayArgs)
 
 	replayCmd := exec.Command(pythonBin, replayArgs...)

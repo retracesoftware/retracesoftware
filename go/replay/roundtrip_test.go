@@ -9,7 +9,8 @@ import (
 )
 
 // TestRoundtrip records a script through a FIFO, relays the first
-// PID's raw stream to a second FIFO, and runs the replay with --raw.
+// PID's unframed stream to a second FIFO, and runs the replay with
+// --format unframed_binary.
 func TestRoundtrip(t *testing.T) {
 	_ = requirePython(t)
 

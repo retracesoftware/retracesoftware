@@ -1,3 +1,4 @@
+import json
 import os
 import subprocess
 import sys
@@ -91,3 +92,35 @@ def test_requests_get_record_only_exits_without_cleanup_traceback(tmp_path):
         "TypeError: descriptor '_enter_' for '_thread.lock' objects "
         "doesn't apply to a 'lock' object"
     ) not in proc.stderr
+
+
+def test_cli_record_supports_json_format(tmp_path):
+    script = tmp_path / "hello.py"
+    script.write_text("print('hello from json trace')\n", encoding="utf-8")
+
+    trace_path = tmp_path / "trace.jsonl"
+    proc = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "retracesoftware",
+            "--recording",
+            str(trace_path),
+            "--format",
+            "json",
+            "--",
+            str(script),
+        ],
+        capture_output=True,
+        text=True,
+        timeout=60,
+        env=os.environ.copy(),
+    )
+
+    assert proc.returncode == 0
+    assert trace_path.is_file()
+    assert proc.stdout == "hello from json trace\n"
+    contents = trace_path.read_text(encoding="utf-8")
+    assert not contents.startswith("#!")
+    first_event = json.loads(contents.splitlines()[0])
+    assert first_event["event"] == "process_info"

@@ -8,7 +8,8 @@ import (
 	"testing"
 )
 
-// TestRoundtripThreads records examples/target_threads.py with --raw, then
+// TestRoundtripThreads records examples/target_threads.py with
+// --format unframed_binary, then
 // replays it with --stdio (hello + close), verifying that a simple
 // multi-threaded program survives a record/replay roundtrip.
 func TestRoundtripThreads(t *testing.T) {
@@ -32,7 +33,7 @@ func TestRoundtripThreads(t *testing.T) {
 	// --- Step 1: record ---
 	trace := filepath.Join(tmpDir, "trace.bin")
 	rec := exec.Command(python, "-m", "retracesoftware",
-		"--recording", trace, "--raw", "--", script)
+		"--recording", trace, "--format", "unframed_binary", "--", script)
 	rec.Dir = tmpDir
 	var recStderr strings.Builder
 	rec.Stderr = &recStderr

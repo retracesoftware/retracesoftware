@@ -3,6 +3,8 @@ retracesoftware.stream - Runtime selectable release/debug builds
 
 Set RETRACE_DEBUG=1 to use the debug build with symbols and assertions.
 """
+import base64
+import json
 import os
 import pickle
 import threading
@@ -258,6 +260,200 @@ class DebugPersister:
         return self._command0("serialize_error")
 
 
+def _qualified_name(obj):
+    module = getattr(obj, "__module__", None)
+    qualname = getattr(obj, "__qualname__", getattr(obj, "__name__", type(obj).__name__))
+    if module and module != "builtins":
+        return f"{module}.{qualname}"
+    return qualname
+
+
+def _encode_bytes_payload(obj):
+    return {
+        "kind": "bytes",
+        "encoding": "base64",
+        "data": base64.b64encode(bytes(obj)).decode("ascii"),
+    }
+
+
+class JsonPersister:
+    def __init__(self, path_or_stream, serializer=None, preamble=None, quit_on_error=False):
+        self._serializer = serializer
+        self.quit_on_error = bool(quit_on_error)
+        self._owns_stream = not hasattr(path_or_stream, "write")
+        if self._owns_stream:
+            self.path = str(path_or_stream)
+            self._stream = open(self.path, "a", encoding="utf-8")
+        else:
+            self._stream = path_or_stream
+            self.path = getattr(path_or_stream, "name", "")
+        self.reset_state()
+        if preamble is not None:
+            self._write_event("process_info", value=self._encode_value(preamble, use_serializer=False))
+
+    def _write_event(self, event, **payload):
+        self._stream.write(json.dumps({"event": event, **payload}, sort_keys=True) + "\n")
+
+    def _bind_index(self, ref_id):
+        return self._bindings.get(ref_id, self._next_binding_index)
+
+    def _remember_binding(self, ref_id, index, obj=None):
+        self._bindings[ref_id] = index
+        if obj is not None:
+            self._binding_values[index] = obj
+        self._next_binding_index = max(self._next_binding_index, index + 1)
+
+    def _forget_binding(self, ref_id):
+        index = self._bindings.pop(ref_id, None)
+        if index is not None:
+            self._binding_values.pop(index, None)
+        return index
+
+    def _bound_ref_index(self, obj):
+        return self._bindings.get(id(obj))
+
+    def _encode_value(self, value, use_serializer=True):
+        if value is None or isinstance(value, (bool, int, float, str)):
+            return value
+        if isinstance(value, (bytes, bytearray, memoryview)):
+            return _encode_bytes_payload(value)
+        if isinstance(value, list):
+            return [self._encode_value(item, use_serializer=False) for item in value]
+        if isinstance(value, tuple):
+            return {
+                "kind": "tuple",
+                "items": [self._encode_value(item, use_serializer=False) for item in value],
+            }
+        if isinstance(value, dict):
+            return {
+                "kind": "dict",
+                "items": [
+                    [
+                        self._encode_value(key, use_serializer=False),
+                        self._encode_value(item, use_serializer=False),
+                    ]
+                    for key, item in value.items()
+                ],
+            }
+        if isinstance(value, BaseException):
+            return {
+                "kind": "exception",
+                "type": _qualified_name(type(value)),
+                "args": [self._encode_value(arg, use_serializer=False) for arg in value.args],
+                "repr": repr(value),
+            }
+        if isinstance(value, type):
+            return {"kind": "type", "name": _qualified_name(value)}
+        if use_serializer and self._serializer is not None:
+            try:
+                serialized = self._serializer(value)
+            except Exception:
+                serialized = None
+            else:
+                if isinstance(serialized, (bytes, bytearray, memoryview)):
+                    return {
+                        "kind": "pickled",
+                        "encoding": "base64",
+                        "data": base64.b64encode(bytes(serialized)).decode("ascii"),
+                    }
+                return {
+                    "kind": "serialized",
+                    "value": self._encode_value(serialized, use_serializer=False),
+                }
+        return {
+            "kind": "repr",
+            "type": _qualified_name(type(value)),
+            "repr": repr(value),
+        }
+
+    def reset_state(self):
+        self._bindings = {}
+        self._binding_values = {}
+        self._next_binding_index = 0
+
+    def write_object(self, obj):
+        index = self._bound_ref_index(obj)
+        if index is not None:
+            self._write_event("bound_ref", index=index)
+            return None
+        self._write_event("object", value=self._encode_value(obj))
+        return None
+
+    def write_delete(self, ref):
+        ref_id = id(ref)
+        self._write_event("delete", ref=ref_id, index=self._forget_binding(ref_id))
+        return None
+
+    def intern(self, obj, ref):
+        ref_id = id(ref)
+        index = self._bind_index(ref_id)
+        self._remember_binding(ref_id, index, obj)
+        self._write_event("intern", index=index, value=self._encode_value(obj))
+        return None
+
+    def write_new_patched(self, typ_ref, ref):
+        type_index = self._bindings.get(id(typ_ref))
+        typ = self._binding_values.get(type_index, typ_ref)
+        ref_id = id(ref)
+        index = self._bind_index(ref_id)
+        self._remember_binding(ref_id, index)
+        self._write_event(
+            "new_patched",
+            index=index,
+            type_ref=type_index,
+            type_value=self._encode_value(typ, use_serializer=False),
+        )
+        return None
+
+    def start_collection(self, typ, length):
+        self._write_event("start_collection", collection_type=typ.__name__, length=int(length))
+        return None
+
+    def flush(self):
+        self._stream.flush()
+        return None
+
+    def flush_background(self):
+        return self.flush()
+
+    def shutdown(self):
+        return self.flush()
+
+    def prepare_resume(self):
+        return self.flush()
+
+    def write_thread_switch(self, thread_handle):
+        self._write_event("thread_switch", value=self._encode_value(thread_handle, use_serializer=False))
+        return None
+
+    def write_heartbeat(self):
+        self._write_event("heartbeat")
+        return None
+
+    def bind(self, ref):
+        ref_id = id(ref)
+        index = self._bind_index(ref_id)
+        self._remember_binding(ref_id, index)
+        self._write_event("bind", index=index)
+        return None
+
+    def write_pickled(self, obj):
+        self._write_event("pickled", value=_encode_bytes_payload(obj))
+        return None
+
+    def write_serialize_error(self):
+        self._write_event("serialize_error")
+        return None
+
+    def close(self):
+        if self._stream is None:
+            return
+        self.flush()
+        if self._owns_stream:
+            self._stream.close()
+        self._stream = None
+
+
 class ObjectWriter:
     def __init__(self, queue, serializer=None, verbose=False, quit_on_error=False):
         self.type_serializer = {}
@@ -354,7 +550,7 @@ def get_path_info():
 
 def _skip_shebang(f):
     """Skip past an optional '#!' shebang line. File position is left
-    at the start of binary data (first PID frame or raw message)."""
+    at the start of binary data (first PID frame or first unframed message)."""
     peek = f.read(2)
     if peek == b'#!':
         f.readline()
@@ -363,7 +559,7 @@ def _skip_shebang(f):
 
 
 def detect_raw_trace(path):
-    """Return True for raw traces, False for PID-framed traces."""
+    """Return True for unframed traces, False for PID-framed traces."""
     with open(str(path), 'rb') as f:
         _skip_shebang(f)
         first = f.read(1)
@@ -405,7 +601,7 @@ def read_process_info(path, raw=False):
     """Read JSON process info from the beginning of a trace file.
 
     When *raw* is False (default), the file is PID-framed and PID
-    headers are parsed to reassemble the JSON payload.  When *raw* is
+    headers are parsed to reassemble the JSON payload. When *raw* is
     True the file is a plain (unframed) stream.
 
     In both cases the preamble is a single JSON line terminated by
@@ -462,6 +658,7 @@ class writer(_backend_mod.ObjectWriter):
         return functional.partial(self, obj)
 
     def __init__(self, path=None, thread=None, output=None, queue=None,
+                 format="binary",
                  flush_interval=0.1,
                  verbose=False,
                  disable_retrace=None,
@@ -474,10 +671,13 @@ class writer(_backend_mod.ObjectWriter):
                  queue_capacity=None,
                  quit_on_error=False,
                  serialize_errors=True,
-                 validate_bindings=False,
-                 raw=False):
+                 validate_bindings=False):
+
+        if format not in {"binary", "unframed_binary", "json"}:
+            raise ValueError(f"unsupported writer format: {format!r}")
 
         self._fw = None
+        self._close_output = False
         self._queue = queue
         effective_push_fail_callback = push_fail_callback
         if effective_push_fail_callback is None and stall_timeout is not None:
@@ -500,16 +700,28 @@ class writer(_backend_mod.ObjectWriter):
             queue_kwargs["on_target_error"] = on_consumer_error
 
         if self._queue is None and path is not None:
-            fw = _backend_mod.FramedWriter(str(path), raw=raw)
-            self._fw = fw
+            if format in {"binary", "unframed_binary"}:
+                fw = _backend_mod.FramedWriter(
+                    str(path),
+                    raw=(format == "unframed_binary"),
+                )
+                self._fw = fw
 
-            if preamble is not None:
-                _write_process_info(fw, preamble)
+                if preamble is not None:
+                    _write_process_info(fw, preamble)
 
-            output = _backend_mod.Persister(
-                fw,
-                serializer=self.serialize,
-            )
+                output = _backend_mod.Persister(
+                    fw,
+                    serializer=self.serialize,
+                )
+            else:
+                output = JsonPersister(
+                    path,
+                    serializer=self.serialize,
+                    preamble=preamble,
+                    quit_on_error=quit_on_error,
+                )
+                self._close_output = True
 
         if self._queue is None and output is not None:
             self._queue = _backend_mod.Queue(output, **queue_kwargs)
@@ -547,7 +759,7 @@ class writer(_backend_mod.ObjectWriter):
 
         call_periodically(interval=flush_interval, func=self.heartbeat)
 
-        if path is not None and hasattr(os, 'register_at_fork'):
+        if self._fw is not None and path is not None and hasattr(os, 'register_at_fork'):
             os.register_at_fork(
                 before=self._before_fork,
                 after_in_parent=self._after_fork_parent,
@@ -565,6 +777,8 @@ class writer(_backend_mod.ObjectWriter):
                 self._queue.close()
             if hasattr(self, '_fw') and self._fw and hasattr(self._fw, 'close'):
                 self._fw.close()
+            if self._close_output and hasattr(self, '_output') and self._output and hasattr(self._output, 'close'):
+                self._output.close()
             self._output = None
             self._queue = None
             self._fw = None
@@ -692,7 +906,7 @@ def per_thread(source, thread, timeout):
 
 class reader(_backend_mod.ObjectStreamReader):
 
-    def __init__(self, path, read_timeout, verbose, start_offset=0, raw=False):
+    def __init__(self, path, read_timeout, verbose, start_offset=0):
         self.stub_factory = self._default_stub_factory
         super().__init__(
             path=str(path),

@@ -7,9 +7,10 @@ import (
 	"testing"
 )
 
-// TestStdioThreadBreakpoint records a multi-threaded Python script with --raw,
-// replays it with --stdio, sets a breakpoint inside the worker function, and
-// asserts that breakpoint_hit events arrive from multiple threads.
+// TestStdioThreadBreakpoint records a multi-threaded Python script with
+// --format unframed_binary, replays it with --stdio, sets a breakpoint inside
+// the worker function, and asserts that breakpoint_hit events arrive from
+// multiple threads.
 func TestStdioThreadBreakpoint(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping in short mode")
@@ -31,7 +32,7 @@ func TestStdioThreadBreakpoint(t *testing.T) {
 	// --- Record ---
 	trace := filepath.Join(tmpDir, "trace.bin")
 	rec := exec.Command(python, "-m", "retracesoftware",
-		"--recording", trace, "--raw", "--", script)
+		"--recording", trace, "--format", "unframed_binary", "--", script)
 	rec.Stderr = os.Stderr
 	if out, err := rec.Output(); err != nil {
 		t.Fatalf("recording failed: %v\noutput: %s", err, out)

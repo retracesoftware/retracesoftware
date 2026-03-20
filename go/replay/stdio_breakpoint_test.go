@@ -62,9 +62,10 @@ func stdioReplay(t *testing.T, python, trace, workDir string, commands []map[str
 	return msgs
 }
 
-// TestStdioBreakpointScan records a script with --raw, then launches the
-// Python replay directly with --stdio, sends hello + hit_breakpoints over
-// stdin, and asserts that breakpoint_hit events come back on stdout.
+// TestStdioBreakpointScan records a script with --format unframed_binary, then
+// launches the Python replay directly with --stdio, sends hello +
+// hit_breakpoints over stdin, and asserts that breakpoint_hit events come back
+// on stdout.
 //
 // This bypasses all Go replay infrastructure (ControlClient, QueryEngine,
 // Debugger, Proxy) and tests the Python breakpoint detection in isolation.
@@ -82,7 +83,7 @@ func TestStdioBreakpointScan(t *testing.T) {
 
 	trace := filepath.Join(tmpDir, "trace.bin")
 	cmd := exec.Command(python, "-m", "retracesoftware",
-		"--recording", trace, "--raw", "--", script)
+		"--recording", trace, "--format", "unframed_binary", "--", script)
 	cmd.Stderr = os.Stderr
 	if out, err := cmd.Output(); err != nil {
 		t.Fatalf("recording failed: %v\noutput: %s", err, out)

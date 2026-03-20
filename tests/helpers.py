@@ -16,7 +16,7 @@ def run_record(script_path, recording, extra_args=None, env=None):
     cmd = [
         PYTHON, "-m", "retracesoftware",
         "--recording", recording,
-        "--raw",
+        "--format", "unframed_binary",
         "--stacktraces",
         "--", str(script_path),
     ]
