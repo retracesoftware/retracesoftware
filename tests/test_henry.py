@@ -4,9 +4,37 @@ import sys
 import textwrap
 
 import pytest
+from retracesoftware.install import stream_writer
 
 
 pytest.importorskip("requests")
+
+
+def test_stream_writer_write_call_serializes_kwargs_as_payloads():
+    class RecordingWriter:
+        def __init__(self):
+            self.type_serializer = {}
+            self.calls = []
+
+        def handle(self, name):
+            def emit(*args):
+                self.calls.append((name, args))
+            return emit
+
+        def bind(self, obj):
+            self.calls.append(("bind", (obj,)))
+
+        def intern(self, obj):
+            self.calls.append(("intern", (obj,)))
+
+    raw_writer = RecordingWriter()
+    writer = stream_writer(raw_writer)
+
+    writer.write_call("socket", fileno=123, family=2)
+
+    assert raw_writer.calls == [
+        ("CALL", (("socket",), {"fileno": 123, "family": 2})),
+    ]
 
 
 def test_requests_get_record_only_exits_without_cleanup_traceback(tmp_path):

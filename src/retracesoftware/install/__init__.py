@@ -636,6 +636,14 @@ def stream_writer(writer, stackfactory = None, on_write_error = None):
         else:
             return func
         
+    _write_call = writer.handle('CALL')
+
+    def write_call(*args, **kwargs):
+        # Stream-backed writers expose handle-based call sites that accept
+        # positional payloads only. Serialize internal callback kwargs as the
+        # second CALL payload instead of forwarding them as Python kwargs.
+        return _write_call(args, kwargs)
+
     return SimpleNamespace(
         type_serializer = writer.type_serializer,
         sync         = bind_write_error(writer.handle('SYNC')),
@@ -644,6 +652,6 @@ def stream_writer(writer, stackfactory = None, on_write_error = None):
         bind         = bind_write_error(writer.bind),
         intern       = bind_write_error(writer.intern),
         new_patched  = bind_write_error(getattr(writer, 'new_patched', writer.bind)),
-        write_call   = bind_write_error(writer.handle('CALL')),
+        write_call   = bind_write_error(write_call),
         checkpoint   = bind_write_error(writer.handle('CHECKPOINT')),
         stacktrace   = bind_write_error(stacktrace))
