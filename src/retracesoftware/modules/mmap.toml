@@ -4,8 +4,9 @@
 # Needs patch_class wrapper for mmap.readinto (see Buffer Protocol section
 # in MODULES_GUIDE.md).
 
-proxy = ["mmap"]
-immutable = ["error"]
 
-[patch_class.mmap]
-readinto = "retracesoftware.install.edgecases.mmap_readinto"
+# proxy = ["mmap"]
+# immutable = ["error"]
+
+# [patch_class.mmap]
+# readinto = "retracesoftware.install.edgecases.mmap_readinto"

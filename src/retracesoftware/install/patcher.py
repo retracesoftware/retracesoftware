@@ -296,7 +296,10 @@ def replace(replacements, coll):
 def patch_class(transforms, cls):
     with modify(cls):
         for attr,transform in transforms.items():
-            utils.update(cls, attr, resolve(transform))
+            # Some C-extension APIs vary by Python build/version.
+            # Skip missing attributes so module configs can remain portable.
+            if hasattr(cls, attr):
+                utils.update(cls, attr, resolve(transform))
 
     return cls
 
