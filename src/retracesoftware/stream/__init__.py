@@ -4,6 +4,8 @@ retracesoftware.stream - Runtime selectable release/debug builds
 Set RETRACE_DEBUG=1 to use the debug build with symbols and assertions.
 """
 import base64
+import _thread
+import importlib
 import json
 import os
 import pickle
@@ -53,6 +55,13 @@ def _export_public(mod: ModuleType) -> None:
 
 _export_public(_backend_mod)
 
+BindingRef = getattr(_backend_mod, "BindingRef")
+BindingCreate = getattr(_backend_mod, "BindingCreate")
+BindingLookup = getattr(_backend_mod, "BindingLookup")
+BindingDelete = getattr(_backend_mod, "BindingDelete")
+NewMarker = getattr(_backend_mod, "NewMarker")
+_new_marker = getattr(_backend_mod, "_new_marker")
+
 _NATIVE_PERSISTER_TYPES = tuple(
     t for t in (
         getattr(_backend_mod, "Persister", None),
@@ -77,6 +86,56 @@ def _debug_object_event(obj):
 
 def _debug_command_event(name, args=()):
     return _debug_event("command", (name, args))
+
+
+def _wrap_start_new_thread(
+    start_new_thread,
+    *,
+    on_thread_enter,
+    on_thread_exit,
+    wrap_function,
+    get_ident,
+):
+    def wrapper(function, args, kwargs=None):
+        wrapped = wrap_function(function)
+
+        def run(*child_args, **child_kwargs):
+            ident = get_ident()
+            on_thread_enter(ident)
+            try:
+                return wrapped(*child_args, **child_kwargs)
+            finally:
+                on_thread_exit(ident)
+
+        if kwargs is None:
+            return start_new_thread(run, args)
+        return start_new_thread(run, args, kwargs)
+
+    return wrapper
+
+
+def replay_start_new_thread(
+    start_new_thread,
+    *,
+    on_thread_enter=utils.noop,
+    on_thread_exit=utils.noop,
+    wrap_function=functional.identity,
+    get_ident=_thread.get_ident,
+):
+    """Build a replay-side wrapper around ``start_new_thread``.
+
+    The returned callable mirrors ``_thread.start_new_thread`` and invokes
+    ``on_thread_enter`` / ``on_thread_exit`` in the child thread using the
+    live ``get_ident()`` value at those lifecycle boundaries.
+    """
+
+    return _wrap_start_new_thread(
+        start_new_thread,
+        on_thread_enter=on_thread_enter,
+        on_thread_exit=on_thread_exit,
+        wrap_function=wrap_function,
+        get_ident=get_ident,
+    )
 
 
 class _StallTimeoutBackoff:
@@ -679,6 +738,7 @@ class writer(_backend_mod.ObjectWriter):
         self._fw = None
         self._close_output = False
         self._queue = queue
+        self.type_serializer = {}
         effective_push_fail_callback = push_fail_callback
         if effective_push_fail_callback is None and stall_timeout is not None:
             effective_push_fail_callback = _StallTimeoutBackoff(stall_timeout)
@@ -724,6 +784,11 @@ class writer(_backend_mod.ObjectWriter):
                 self._close_output = True
 
         if self._queue is None and output is not None:
+            if isinstance(output, _backend_mod.Persister):
+                output.intern(True)
+                output.intern(False)
+                output.intern(-1)
+
             self._queue = _backend_mod.Queue(output, **queue_kwargs)
 
         if self._queue is None:
@@ -748,8 +813,6 @@ class writer(_backend_mod.ObjectWriter):
 
         if path is not None:
             self.path = path
-
-        self.type_serializer = {}
 
         try:
             from retracesoftware.utils import Stack
@@ -885,6 +948,12 @@ class Heartbeat(Control):
 def per_thread(source, thread, timeout):
     import retracesoftware.utils as utils
 
+    # The public Python reader already owns thread switching, buffering,
+    # demultiplexing, and binding resolution. Keep `per_thread(...)` as a
+    # compatibility no-op for that newer reader surface.
+    if hasattr(source, "demux_reader"):
+        return source
+
     is_control = functional.isinstanceof(Control)
     is_thread_switch = functional.isinstanceof(ThreadSwitch)
 
@@ -900,11 +969,29 @@ def per_thread(source, thread, timeout):
         extract=extract_thread_key,
         initial=thread())
 
-    demux = utils.demux(source=source, key_function=key_fn, timeout_seconds=timeout)
+    def on_timeout(demux, key):
+        buffered = demux.buffered
+        if isinstance(buffered, ThreadSwitch):
+            buffered_repr = f"ThreadSwitch({buffered.value!r})"
+        else:
+            buffered_repr = repr(buffered)
+        raise RuntimeError(
+            f"Error in demux waiting for: {key!r}; "
+            f"pending_keys={demux.pending_keys!r}; "
+            f"buffered={buffered_repr}; "
+            f"last_thread={key_fn.value!r}"
+        )
+
+    demux = utils.demux(
+        source=source,
+        key_function=key_fn,
+        timeout_seconds=timeout,
+        on_timeout=on_timeout,
+    )
     return drop(is_control, functional.sequence(thread, demux))
 
 
-class reader(_backend_mod.ObjectStreamReader):
+class reader1(_backend_mod.ObjectStreamReader):
 
     def __init__(self, path, read_timeout, verbose, start_offset=0):
         self.stub_factory = self._default_stub_factory
@@ -941,6 +1028,75 @@ class reader(_backend_mod.ObjectStreamReader):
             return self.type_deserializer[type(obj)](obj)
         else:
             return obj
+
+class TapeReader(_backend_mod.TapeReader):
+
+    def __init__(self, path, read_timeout, verbose, start_offset=0):
+        super().__init__(
+            path=str(path),
+            deserialize=self.deserialize,
+            create_stack_delta=lambda to_drop, frames: None,
+            on_thread_switch=ThreadSwitch,
+            read_timeout=read_timeout,
+            verbose=verbose,
+            on_heartbeat=Heartbeat,
+            start_offset=start_offset,
+        )
+        self.type_deserializer = {}
+
+    def __enter__(self): return self
+
+    def __exit__(self, *args):
+        self.close()
+
+    def deserialize(self, bytes):
+        obj = pickle.loads(bytes)
+        if type(obj) in self.type_deserializer:
+            return self.type_deserializer[type(obj)](obj)
+        return obj
+
+
+reader_stack = importlib.import_module(f"{__name__}.reader")
+HeartbeatReader = reader_stack.HeartbeatReader
+WithThreadReader = reader_stack.WithThreadReader
+PeekableReader = reader_stack.PeekableReader
+DemuxReader = reader_stack.DemuxReader
+ResolvingReader = reader_stack.ResolvingReader
+ObjectReader = reader_stack.ObjectReader
+
+class reader(reader_stack.ObjectReader):
+    __slots__ = ["_tape_reader", "stub_factory"]
+
+    def __init__(self, path, read_timeout, verbose, start_offset=0, thread_id=None):
+        self.stub_factory = self._default_stub_factory
+        self._tape_reader = TapeReader(
+            path=path,
+            read_timeout=read_timeout,
+            verbose=verbose,
+            start_offset=start_offset,
+        )
+        super().__init__(thread_id=thread_id, source=self._tape_reader)
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *args):
+        self.close()
+
+    def close(self):
+        self._tape_reader.close()
+
+    def _default_stub_factory(self, cls):
+        return utils.create_stub_object(cls)
+
+    @property
+    def type_deserializer(self):
+        return self._tape_reader.type_deserializer
+
+    @type_deserializer.setter
+    def type_deserializer(self, value):
+        self._tape_reader.type_deserializer = value
+
 
 
 __all__ = sorted([k for k in globals().keys() if not k.startswith("_")])

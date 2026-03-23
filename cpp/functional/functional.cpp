@@ -242,6 +242,7 @@ PyMODINIT_FUNC CONCAT(PyInit_, MODULE_NAME)(void) {
         &Indexer_Type,
         &Param_Type,
         &PositionalParam_Type,
+        &PositionalParamTransform_Type,
         &TernaryPredicate_Type,
         &IfThenElse_Type,
         &AnyArgs_Type,

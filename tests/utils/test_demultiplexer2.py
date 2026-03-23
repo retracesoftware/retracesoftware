@@ -4,7 +4,7 @@ Tests verify:
 - __call__(key) dispatches items by key_function match
 - Duplicate key detection
 - on_timeout callback on deadlock
-- pending_keys / pending properties
+- pending_keys plus keyed pending() access
 - Two-thread dispatch
 """
 import time
@@ -44,7 +44,7 @@ class TestCallSingleThread:
     def test_pending_none_after_take(self):
         d = _make_demux([(1, "a")])
         d(1)
-        assert d.pending is None
+        assert d.buffered is None
 
     def test_source_property(self):
         source = lambda: (1, "x")
@@ -160,3 +160,14 @@ class TestPendingKeys:
         d = _make_demux([(1, "a")])
         d(1)
         assert d.pending_keys == ()
+
+
+class TestPending:
+    def test_pending_returns_item_for_matching_key(self):
+        d = _make_demux([(1, "a"), (2, "b")])
+        assert d.pending(1) == (1, "a")
+
+    def test_pending_raises_key_error_for_other_key(self):
+        d = _make_demux([(1, "a"), (2, "b")])
+        with pytest.raises(KeyError):
+            d.pending(2)

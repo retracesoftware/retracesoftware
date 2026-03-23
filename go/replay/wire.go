@@ -34,21 +34,21 @@ const (
 
 // FixedSizeTypes — upper 4 bits when lower 4 == stFixedSize.
 const (
-	ftNone        = 0
-	ftTrue        = 1
-	ftFalse       = 2
-	ftFloat       = 3
-	ftNeg1        = 4
-	ftInt64       = 5
-	ftExtBind     = 6
+	ftNone         = 0
+	ftThreadEnter  = 1
+	ftThreadExit   = 2
+	ftFloat        = 3
+	ftInt64        = 4
+	ftBind         = 5
+	ftInternInline = 6
 	ftThreadSwitch = 7
-	ftNewHandle   = 8
-	ftBind        = 9
-	ftStack       = 10
-	ftAddFilename = 11
-	ftChecksum    = 12
-	ftDropped     = 13
-	ftHeartbeat   = 14
+	ftNewHandle    = 8
+	ftStack        = 9
+	ftAddFilename  = 10
+	ftChecksum     = 11
+	ftDropped      = 12
+	ftHeartbeat    = 13
+	ftSerializeErr = 14
 )
 
 // Size class markers in the upper 4 bits (for sized types).
@@ -127,8 +127,7 @@ func (d *Decoder) readSize(upper byte) (uint64, error) {
 
 // ReadValue reads one wire-format value and returns it as a Go type:
 //   - nil for None
-//   - bool for True/False
-//   - int64 for NEG1, INT64, and small UINT
+//   - int64 for INT64 and small UINT
 //   - uint64 for large UINT
 //   - *big.Int for BIGINT
 //   - float64 for FLOAT
@@ -158,12 +157,6 @@ func (d *Decoder) readFixed(ft byte) (any, error) {
 	switch ft {
 	case ftNone:
 		return nil, nil
-	case ftTrue:
-		return true, nil
-	case ftFalse:
-		return false, nil
-	case ftNeg1:
-		return int64(-1), nil
 	case ftFloat:
 		v, err := d.readU64()
 		if err != nil {
@@ -370,7 +363,7 @@ func MapProcesses(in <-chan string) (<-chan map[string]any, func() error) {
 
 // ReadRootValue reads the next root-level data value, consuming any
 // stream-level control messages that precede it (NEW_HANDLE, ADD_FILENAME,
-// DELETE, BINDING_DELETE, EXT_BIND, THREAD_SWITCH, BIND, STACK, etc.).
+// DELETE, BINDING_DELETE, INTERN, THREAD_SWITCH, BIND, STACK, etc.).
 func (d *Decoder) ReadRootValue() (map[string]any, error) {
 	for {
 		cb, err := d.readByte()
@@ -393,9 +386,9 @@ func (d *Decoder) ReadRootValue() (map[string]any, error) {
 					return nil, fmt.Errorf("skip ADD_FILENAME value: %w", err)
 				}
 				continue
-			case ftExtBind:
+			case ftInternInline:
 				if err := d.skipValue(); err != nil {
-					return nil, fmt.Errorf("skip EXT_BIND type ref: %w", err)
+					return nil, fmt.Errorf("skip INTERN value: %w", err)
 				}
 				continue
 			case ftBind, ftThreadSwitch, ftChecksum, ftDropped, ftHeartbeat:

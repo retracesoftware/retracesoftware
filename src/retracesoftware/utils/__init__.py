@@ -214,11 +214,17 @@ class Demultiplexer2:
     def pending_keys(self):
         return tuple(self._pending_keys)
 
+    def pending(self, key):
+        item = self._dispatcher.buffered
+        if self._key_function(item) != key:
+            raise KeyError(key)
+        return item
+
     @property
-    def pending(self):
+    def buffered(self):
         try:
             return self._dispatcher.buffered
-        except RuntimeError:
+        except Exception:
             return None
 
     @property

@@ -84,21 +84,49 @@ class MessageStream:
         self.type_deserializer = {}
         self._monitor_enabled = monitor_enabled
         self._native_reader = native_reader
+        self._new_patched = {}
 
     def bind(self, obj):
-        if self._native_reader is None:
-            raise RuntimeError("MessageStream.bind() requires a native reader")
-        while not self._native_reader.pending_bind:
-            self.source()
-        return self._native_reader.bind(obj)
+        self._native_reader.bind(obj)
 
     def new_patched(self, obj):
         raise RuntimeError("MessageStream.new_patched() should not be used during replay")
 
+    def _materialize_new_patched(self, marker):
+        cached = self._new_patched.get(marker.index)
+        if cached is not None:
+            return cached
+
+        native_reader = self._native_reader
+        factory = getattr(native_reader, "stub_factory", None)
+        if factory is None:
+            factory = utils.create_stub_object
+
+        instance = factory(marker.cls)
+        if not isinstance(instance, marker.cls):
+            raise TypeError(
+                f"NEW_PATCHED materializer returned {type(instance)!r} "
+                f"for {marker.cls!r}"
+            )
+
+        self._new_patched[marker.index] = instance
+        return instance
+
+    def _deserialize_result(self, value):
+        deserializer = self.type_deserializer.get(type(value))
+        if deserializer is not None:
+            return deserializer(value)
+
+        from retracesoftware.stream import NewMarker
+
+        if isinstance(value, NewMarker):
+            return self._materialize_new_patched(value)
+
+        return value
+
     def read_result(self):
         value = self.result()
-        deserializer = self.type_deserializer.get(type(value))
-        return deserializer(value) if deserializer else value
+        return self._deserialize_result(value)
 
     def _next_message(self):
         """Read and parse the next tagged message from the source."""

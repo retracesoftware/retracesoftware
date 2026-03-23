@@ -1,11 +1,12 @@
 #include "stream.h"
 #include "wireformat.h"
+
 #include <chrono>
-#include <stdexcept>
-#include <utility>
-#include <thread>
 #include <sstream>
+#include <stdexcept>
 #include <structmember.h>
+#include <thread>
+#include <utility>
 
 namespace retracesoftware_stream {
 
@@ -20,7 +21,7 @@ namespace retracesoftware_stream {
         return file;
     }
 
-    struct ObjectStream : public PyObject {
+    struct TapeReader : public PyObject {
         FILE * file = nullptr;
         PyObject * path = nullptr;
         size_t bytes_read = 0;
@@ -30,22 +31,19 @@ namespace retracesoftware_stream {
         std::vector<PyObject *> filenames;
         std::vector<PyObject *> interned_strings;
 
-        map<int, PyObject *> bindings;
-        bool pending_bind = false;
+        map<int, PyObject *> interns;
+        int intern_counter = 0;
         int binding_counter = 0;
         PyObject * create_pickled = nullptr;
-        PyObject * stub_factory = nullptr;
-        PyObject * create_stack_delta;
-        PyObject * create_thread_switch;
+        PyObject * create_stack_delta = nullptr;
+        PyObject * create_thread_switch = nullptr;
         PyObject * create_dropped = nullptr;
         PyObject * create_heartbeat = nullptr;
         bool verbose = false;
 
-        static int init(ObjectStream * self, PyObject* args, PyObject* kwds) {
-            
+        static int init(TapeReader * self, PyObject * args, PyObject * kwds) {
             PyObject * path;
             PyObject * create_pickled;
-            PyObject * stub_factory;
             PyObject * create_stack_delta;
             PyObject * create_thread_switch;
             PyObject * create_dropped = nullptr;
@@ -55,10 +53,9 @@ namespace retracesoftware_stream {
             int verbose = 0;
             long long start_offset = 0;
 
-            static const char* kwlist[] = {
-                "path", 
+            static const char * kwlist[] = {
+                "path",
                 "deserialize",
-                "stub_factory",
                 "create_stack_delta",
                 "on_thread_switch",
                 "read_timeout",
@@ -66,37 +63,38 @@ namespace retracesoftware_stream {
                 "on_dropped",
                 "on_heartbeat",
                 "start_offset",
-                nullptr};
+                nullptr
+            };
 
-            if (!PyArg_ParseTupleAndKeywords(args, kwds, "O!OOOOip|OOL", (char **)kwlist, 
-                &PyUnicode_Type, &path, 
-                &create_pickled,
-                &stub_factory,
-                &create_stack_delta,
-                &create_thread_switch,
-                &read_timeout,
-                &verbose,
-                &create_dropped,
-                &create_heartbeat,
-                &start_offset)) {
+            if (!PyArg_ParseTupleAndKeywords(
+                    args,
+                    kwds,
+                    "O!OOOip|OOL",
+                    (char **)kwlist,
+                    &PyUnicode_Type, &path,
+                    &create_pickled,
+                    &create_stack_delta,
+                    &create_thread_switch,
+                    &read_timeout,
+                    &verbose,
+                    &create_dropped,
+                    &create_heartbeat,
+                    &start_offset)) {
                 return -1;
             }
 
             new (&self->filenames) std::vector<PyObject *>();
             new (&self->interned_strings) std::vector<PyObject *>();
-            new (&self->bindings) map<int, PyObject *>();
+            new (&self->interns) map<int, PyObject *>();
 
             self->create_pickled = Py_NewRef(create_pickled);
-            self->stub_factory = Py_NewRef(stub_factory);
             self->create_stack_delta = Py_NewRef(create_stack_delta);
             self->create_thread_switch = Py_NewRef(create_thread_switch);
             self->create_dropped = Py_XNewRef(create_dropped);
             self->create_heartbeat = Py_XNewRef(create_heartbeat);
             self->read_timeout = read_timeout;
             self->verbose = verbose;
-
             self->vectorcall = (vectorcallfunc)call;
-
             self->path = Py_NewRef(path);
 
             try {
@@ -117,31 +115,28 @@ namespace retracesoftware_stream {
             }
         }
 
-        static void dealloc(ObjectStream* self) {
+        static void dealloc(TapeReader * self) {
             PyObject_GC_UnTrack(self);
             clear(self);
 
             self->filenames.std::vector<PyObject *>::~vector();
             self->interned_strings.std::vector<PyObject *>::~vector();
-            self->bindings.~map<int, PyObject *>();
+            self->interns.~map<int, PyObject *>();
 
-            Py_TYPE(self)->tp_free(reinterpret_cast<PyObject*>(self));
+            Py_TYPE(self)->tp_free(reinterpret_cast<PyObject *>(self));
         }
 
-        static int traverse(ObjectStream* self, visitproc visit, void* arg) {
+        static int traverse(TapeReader * self, visitproc visit, void * arg) {
             Py_VISIT(self->path);
             Py_VISIT(self->create_pickled);
-            Py_VISIT(self->stub_factory);
             Py_VISIT(self->create_stack_delta);
             Py_VISIT(self->create_thread_switch);
             Py_VISIT(self->create_dropped);
             Py_VISIT(self->create_heartbeat);
-
             return 0;
         }
 
-        static int clear(ObjectStream* self) {
-
+        static int clear(TapeReader * self) {
             for (auto elem : self->filenames) {
                 Py_XDECREF(elem);
             }
@@ -152,14 +147,13 @@ namespace retracesoftware_stream {
             }
             self->interned_strings.clear();
 
-            for (auto const& [index, value] : self->bindings) {
+            for (auto const& [index, value] : self->interns) {
                 Py_XDECREF(value);
             }
-            self->bindings.clear();
+            self->interns.clear();
 
             Py_CLEAR(self->path);
             Py_CLEAR(self->create_pickled);
-            Py_CLEAR(self->stub_factory);
             Py_CLEAR(self->create_stack_delta);
             Py_CLEAR(self->create_thread_switch);
             Py_CLEAR(self->create_dropped);
@@ -178,7 +172,7 @@ namespace retracesoftware_stream {
 
                 if (r < size) {
                     std::stringstream message;
-                    message << "Could not read: " << (size - r) << " bytes from tracefile with timeout: " << read_timeout 
+                    message << "Could not read: " << (size - r) << " bytes from tracefile with timeout: " << read_timeout
                             << " milliseconds";
                     throw std::runtime_error(message.str());
                 }
@@ -237,14 +231,12 @@ namespace retracesoftware_stream {
                 value |= ((uint64_t)buffer[7] << 56);
                 return value;
             }
-
             else if constexpr (std::is_same_v<T, double>) {
                 uint64_t raw = read<uint64_t>();
                 return *(double *)&raw;
             }
             else {
                 static_assert(std::is_void_v<T>, "Unsupported type in read<T>()");
-                // static_assert(false, "read<T>() not specialized for this type");
             }
         }
 
@@ -292,7 +284,6 @@ namespace retracesoftware_stream {
         }
 
         PyObject * read_dict(size_t size) {
-
             auto dict = PyObjectPtr(PyDict_New());
 
             if (!dict.get()) {
@@ -322,8 +313,39 @@ namespace retracesoftware_stream {
             return Py_NewRef(dict.get());
         }
 
-        PyObject * read_str(size_t size) {
+        PyObject * read_set(size_t size, bool frozen) {
+            auto set = PyObjectPtr(PySet_New(nullptr));
 
+            if (!set.get()) {
+                throw nullptr;
+            }
+
+            while (size--) {
+                auto value = PyObjectPtr(read());
+
+                if (!value.get()) {
+                    assert(PyErr_Occurred());
+                    throw nullptr;
+                }
+
+                if (PySet_Add(set.get(), value.get()) == -1) {
+                    assert(PyErr_Occurred());
+                    throw nullptr;
+                }
+            }
+
+            if (!frozen) {
+                return Py_NewRef(set.get());
+            }
+
+            auto frozenset = PyObjectPtr(PyFrozenSet_New(set.get()));
+            if (!frozenset.get()) {
+                throw nullptr;
+            }
+            return Py_NewRef(frozenset.get());
+        }
+
+        PyObject * read_str(size_t size) {
             static thread_local int8_t scratch[1024];
 
             if (size >= sizeof(scratch)) {
@@ -345,7 +367,6 @@ namespace retracesoftware_stream {
                 return str;
 
             } else {
-            
                 read((uint8_t *)scratch, size);
                 scratch[size] = '\0';
 
@@ -357,7 +378,6 @@ namespace retracesoftware_stream {
         }
 
         PyObject * read_bytes(size_t size) {
-
             if (size == 0) {
                 return PyBytes_FromStringAndSize(NULL, 0);
             } else {
@@ -385,17 +405,7 @@ namespace retracesoftware_stream {
             return res;
         }
 
-        static PyObject * create_indexed(PyObject * factory, size_t index) {
-            PyObject * i = PyLong_FromLong(index);
-            if (!i) throw nullptr;
-            PyObject * res = PyObject_CallOneArg(factory, i);
-            Py_DECREF(i);
-            if (!res) throw nullptr;
-            return res;
-        }
-
         PyObject * read_bigint(size_t size) {
-            // Read big-endian signed bytes and convert to PyLong
             uint8_t * buf = (uint8_t *)malloc(size);
             if (!buf) {
                 PyErr_NoMemory();
@@ -411,7 +421,6 @@ namespace retracesoftware_stream {
         }
 
         PyObject * read_sized(Control control) {
-
             size_t size = read_unsigned_number(control);
 
             switch (control.Sized.type) {
@@ -421,92 +430,121 @@ namespace retracesoftware_stream {
                     return result;
                 }
                 case SizedTypes::BINDING:
-                case SizedTypes::INTERN:
-                    return Py_NewRef(bindings[size]);
-                case SizedTypes::BYTES: return read_bytes(size);
-                case SizedTypes::LIST: return read_list(size);
-                case SizedTypes::DICT: return read_dict(size);
-                case SizedTypes::TUPLE: return read_tuple(size);
+                    return binding_ref_new(&BindingRefLookup_Type, size);
+
+                case SizedTypes::BINDING_DELETE:
+                    return binding_ref_new(&BindingRefDelete_Type, size);
+
+                case SizedTypes::INTERN: {
+                    auto it = interns.find(size);
+                    if (it == interns.end() || it->second == nullptr) {
+                        PyErr_Format(PyExc_RuntimeError, "unknown intern index: %zu", size);
+                        throw nullptr;
+                    }
+                    return Py_NewRef(it->second);
+                }
+                case SizedTypes::BYTES:
+                    return read_bytes(size);
+                case SizedTypes::LIST:
+                    return read_list(size);
+                case SizedTypes::DICT:
+                    return read_dict(size);
+                case SizedTypes::TUPLE:
+                    return read_tuple(size);
+                case SizedTypes::SET:
+                    return read_set(size, false);
+                case SizedTypes::FROZENSET:
+                    return read_set(size, true);
                 case SizedTypes::STR: {
-                    // Read string and store for potential STR_REF later
                     PyObject * str = read_str(size);
                     interned_strings.push_back(Py_NewRef(str));
                     return str;
                 }
                 case SizedTypes::STR_REF:
-                    // Reference to previously-read string
+                    if (size >= interned_strings.size() || interned_strings[size] == nullptr) {
+                        PyErr_Format(PyExc_RuntimeError, "unknown string intern index: %zu", size);
+                        throw nullptr;
+                    }
                     return Py_NewRef(interned_strings[size]);
-                case SizedTypes::PICKLED: return read_pickled(size);
-                case SizedTypes::BIGINT: return read_bigint(size);
+                case SizedTypes::PICKLED:
+                    return read_pickled(size);
+                case SizedTypes::BIGINT:
+                    return read_bigint(size);
                 default:
                     PyErr_Format(PyExc_RuntimeError, "unknown sized type: %i", control.Sized.type);
                     throw nullptr;
             }
         }
 
-        PyObject * create_from_next(PyObject * factory) {
-            PyObject * next = read();
-            if (!next) return nullptr;
-
-            PyObject * result = PyObject_CallOneArg(factory, next);
-
-            Py_DECREF(next);
-            return result;
-        }
-
         uint64_t read_expected_int() {
             uint8_t i = read<uint8_t>();
-            
             return i == 255 ? read<uint64_t>() : (uint64_t)i;
         }
 
         PyObject * read_stack_delta() {
-
             int size = read_expected_int();
-            
+
             PyObject * stack = PyList_New(size);
-            if (!stack) throw nullptr;
+            if (!stack) {
+                throw nullptr;
+            }
 
             for (size_t i = 0; i < size; i++) {
                 PyObject * filename = filenames[read<uint16_t>()];
+                int line = read<uint16_t>();
 
-                int l = read<uint16_t>();
-
-                if (verbose) {
-                    printf("  %s:%i\n", PyUnicode_AsUTF8(filename), l);
+                PyObject * lineno = PyLong_FromLong(line);
+                if (!lineno) {
+                    Py_DECREF(stack);
+                    throw nullptr;
                 }
-
-                PyObject * lineno = PyLong_FromLong(l);
-                if (!lineno) throw nullptr;
 
                 PyObject * frame = PyTuple_Pack(2, filename, lineno);
                 Py_DECREF(lineno);
-                if (!frame) throw nullptr;
+                if (!frame) {
+                    Py_DECREF(stack);
+                    throw nullptr;
+                }
 
                 PyList_SET_ITEM(stack, i, frame);
             }
+
             return stack;
         }
 
         PyObject * read_fixedsize(FixedSizeTypes type) {
-            assert (!PyErr_Occurred());
-
-            // if (verbose) printf("%s ", FixedSizeTypes_Name(type));
+            assert(!PyErr_Occurred());
 
             switch (type) {
-                case FixedSizeTypes::NONE: 
+                case FixedSizeTypes::NONE:
                     return Py_NewRef(Py_None);
                 case FixedSizeTypes::FLOAT:
                     return PyFloat_FromDouble(read<double>());
                 case FixedSizeTypes::INT64:
                     return PyLong_FromLongLong(read<int64_t>());
+                case FixedSizeTypes::BIND: {
+                    PyObject * created = binding_ref_new(&BindingRefCreate_Type, binding_counter);
+                    if (!created) {
+                        return nullptr;
+                    }
+                    binding_counter++;
+                    return created;
+                }
+                case FixedSizeTypes::NEW_PATCHED: {
+                    PyObject * marker = read_new_patched(intern_counter, "NEW_PATCHED");
+                    if (!marker) {
+                        return nullptr;
+                    }
+                    interns[intern_counter++] = Py_NewRef(marker);
+                    return marker;
+                }
 
                 case FixedSizeTypes::THREAD_SWITCH: {
-                    PyObject* thread = read();
+                    PyObject * thread = read();
                     if (!thread) {
                         return nullptr;
                     }
-                    PyObject* result = PyObject_CallOneArg(create_thread_switch, thread);
+                    PyObject * result = PyObject_CallOneArg(create_thread_switch, thread);
                     Py_DECREF(thread);
                     return result;
                 }
@@ -522,12 +560,12 @@ namespace retracesoftware_stream {
                     const char * name = FixedSizeTypes_Name(static_cast<FixedSizeTypes>(type));
 
                     if (name) {
-                        PyErr_Format(PyExc_RuntimeError, 
-                            "unhandled subtype: %s (0x%02X) for FixedSized at byte %zu, message %zu", 
+                        PyErr_Format(PyExc_RuntimeError,
+                            "unhandled subtype: %s (0x%02X) for FixedSized at byte %zu, message %zu",
                             name, (unsigned)type, bytes_read, messages_read);
                     } else {
-                        PyErr_Format(PyExc_RuntimeError, 
-                            "Unknown subtype: %i (0x%02X) for FixedSized at byte %zu, message %zu", 
+                        PyErr_Format(PyExc_RuntimeError,
+                            "Unknown subtype: %i (0x%02X) for FixedSized at byte %zu, message %zu",
                             type, (unsigned)type, bytes_read, messages_read);
                     }
                     throw nullptr;
@@ -544,56 +582,64 @@ namespace retracesoftware_stream {
 
                 if (control == AddFilename) {
                     if (verbose) {
-                        printf("Retrace - ObjectStream[%lu, %zu] - Inline ADD_FILENAME", messages_read, start);
+                        printf("Retrace - TapeReader[%lu, %zu] - Inline ADD_FILENAME", messages_read, start);
                     }
                     filenames.push_back(read());
                     if (verbose) {
                         printf(" -> read %zu bytes, now at %zu\n", bytes_read - start, bytes_read);
                     }
                     messages_read++;
-                    continue;
                 }
-
-                if (control.Sized.type == SizedTypes::BINDING_DELETE) {
+                else if (control == Intern) {
                     if (verbose) {
-                        printf("Retrace - ObjectStream[%lu, %zu] - Inline BINDING_DELETE\n", messages_read, start);
+                        printf("Retrace - TapeReader[%lu, %zu] - Inline INTERN\n", messages_read, start);
                     }
-                    size_t size = read_unsigned_number(control);
-                    Py_DECREF(bindings[size]);
-                    bindings.erase(size);
+                    interns[intern_counter++] = read();
                     messages_read++;
-                    continue;
-                }
-
-                if (control == Intern) {
-                    if (verbose) {
-                        printf("Retrace - ObjectStream[%lu, %zu] - Inline INTERN\n", messages_read, start);
+                } else if (control == Dropped) {
+                    PyObject * count = read();
+                    if (!count) {
+                        return nullptr;
                     }
-                    bindings[binding_counter++] = read();
                     messages_read++;
-                    continue;
-                }
-
-                if (control == NewPatched) {
-                    if (verbose) {
-                        printf("Retrace - ObjectStream[%lu, %zu] - Inline NEW_PATCHED\n", messages_read, start);
+                    if (create_dropped) {
+                        PyObject * result = PyObject_CallOneArg(create_dropped, count);
+                        Py_DECREF(count);
+                        return result;
                     }
-                    bindings[binding_counter++] = read_new_patched("NEW_PATCHED");
+                    Py_DECREF(count);
+                } else if (control == Heartbeat) {
+                    PyObject * payload = read();
+                    if (!payload) {
+                        return nullptr;
+                    }
                     messages_read++;
-                    continue;
+                    if (create_heartbeat) {
+                        PyObject * result = PyObject_CallOneArg(create_heartbeat, payload);
+                        Py_DECREF(payload);
+                        return result;
+                    }
+                    Py_DECREF(payload);
+                } else if (control == Stack) {
+                    int to_drop = read_expected_int();
+                    PyObject * stack_delta = read_stack_delta();
+                    if (!stack_delta) {
+                        return nullptr;
+                    }
+                    messages_read++;
+                    PyObject * py_to_drop = PyLong_FromLong(to_drop);
+                    if (!py_to_drop) {
+                        Py_DECREF(stack_delta);
+                        return nullptr;
+                    }
+                    PyObject * result = PyObject_CallFunctionObjArgs(
+                        create_stack_delta, py_to_drop, stack_delta, nullptr);
+                    Py_DECREF(py_to_drop);
+                    Py_DECREF(stack_delta);
+                    return result;
+                } else {
+                    return read(control);
                 }
-
-                if (control == Bind) {
-                    PyErr_Format(
-                        PyExc_RuntimeError,
-                        "unexpected inline BIND at byte %zu, message %zu",
-                        start,
-                        messages_read
-                    );
-                    throw nullptr;
-                }
-
-                return read(control);
             }
         }
 
@@ -603,137 +649,27 @@ namespace retracesoftware_stream {
                 : read_sized(control);
         }
 
-        PyTypeObject * read_bound_type(const char * opname) {
-            PyObject * type_obj = read();
+        PyObject * read_new_patched(uint64_t index, const char * opname) {
+            PyObject * cls = read();
 
-            if (!type_obj) {
+            if (!cls) {
                 if (!PyErr_Occurred()) {
                     PyErr_Format(PyExc_RuntimeError, "read() returned NULL without setting exception in %s", opname);
                 }
                 throw nullptr;
             }
 
-            if (!PyType_Check(type_obj)) {
-                PyErr_Format(PyExc_TypeError, "%s expected a type but read: %S", opname, type_obj);
-                Py_DECREF(type_obj);
-                throw nullptr;
-            }
-
-            return reinterpret_cast<PyTypeObject *>(type_obj);
-        }
-
-        PyObject * create_stub(PyTypeObject * cls, const char * opname) {
-            PyObject * instance = PyObject_CallOneArg(stub_factory, reinterpret_cast<PyObject *>(cls));
-
-            if (!instance) {
-                throw nullptr;
-            }
-
-            if (!PyObject_TypeCheck(instance, cls)) {
-                PyErr_Format(PyExc_TypeError,
-                    "%s stub_factory returned <%s object at %p> for type %s",
-                    opname, Py_TYPE(instance)->tp_name, (void *)instance, cls->tp_name);
-                Py_DECREF(instance);
-                throw nullptr;
-            }
-
+            PyObject * instance = new_marker_new(index, cls);
+            Py_DECREF(cls);
             return instance;
         }
 
-        PyObject * read_new_patched(const char * opname) {
-            PyTypeObject * cls = read_bound_type(opname);
-            PyObject * instance = create_stub(cls, opname);
-            Py_DECREF(reinterpret_cast<PyObject *>(cls));
-            return instance;
-        }
-
-        PyObject * read_ext_bind() {
-            PyTypeObject * cls = read_bound_type("BIND");
-            PyObject * empty = PyTuple_New(0);
-
-            if (!empty) {
-                Py_DECREF(reinterpret_cast<PyObject *>(cls));
-                throw nullptr;
-            }
-
-            PyObject * instance = cls->tp_new(cls, empty, nullptr);
-
-            Py_DECREF(empty);
-            Py_DECREF(reinterpret_cast<PyObject *>(cls));
-
-            if (!instance) {
-                throw nullptr;
-            }
-            return instance;
-        }
-
-        Control consume(size_t & start) {
-            while (true) {
-                start = bytes_read;
-                Control control = read_control();
-                
-                if (verbose > 1) {
-                    printf("  consume: control 0x%02X at byte %zu\n", control.raw, start);
-                }
-                
-                if (control == AddFilename) {
-                    if (verbose) printf("Retrace - ObjectStream[%lu, %lu] - Consumed ADD_FILENAME", messages_read, start);
-                    filenames.push_back(read());
-                    if (verbose) printf(" -> read %zu bytes, now at %zu\n", bytes_read - start, bytes_read);
-                    messages_read++;
-                } else if (control.Sized.type == SizedTypes::BINDING_DELETE) {
-                    if (verbose) printf("Retrace - ObjectStream[%lu, %lu] - Consumed BINDING_DELETE\n", messages_read, start);
-                    size_t size = read_unsigned_number(control);
-                    Py_DECREF(bindings[size]);
-                    bindings.erase(size);
-                    messages_read++;
-                } else if (control == Bind) {                
-                    if (verbose) printf("Retrace - ObjectStream[%lu, %lu] - Consumed BIND\n", messages_read, start);
-                    pending_bind = true;
-                    messages_read++;
-                    return control;
-                } else if (control == Intern) {
-                    if (verbose) printf("Retrace - ObjectStream[%lu, %lu] - Consumed INTERN\n", messages_read, start);
-                    bindings[binding_counter++] = read();
-                    messages_read++;
-                } else if (control == NewPatched) {
-                    if (verbose) printf("Retrace - ObjectStream[%lu, %lu] - Consumed NEW_PATCHED\n", messages_read, start);
-                    bindings[binding_counter++] = read_new_patched("NEW_PATCHED");
-                    messages_read++;
-                } else {
-                    return control;
-                }
-            }
-        }
-
-        bool bind(PyObject * binding) {
-            if (!pending_bind) {
-                PyErr_Format(PyExc_RuntimeError, "Trying to bind when no pending bind");
-                return false;
-            }
-            bindings[binding_counter++] = Py_NewRef(binding);
-            pending_bind = false;
-            return true;
-        }
-
-        static PyObject * py_bind(ObjectStream * self, PyObject * binding) {
-            try {
-                if (!self->bind(binding)) {
-                    return nullptr;
-                }
-            } catch (...) {
-                assert(PyErr_Occurred());
-                return nullptr;
-            }
-            Py_RETURN_NONE;
-        }
-
-        static PyObject * py_close(ObjectStream * self, PyObject * usused) {
+        static PyObject * py_close(TapeReader * self, PyObject * unused) {
             self->close();
             Py_RETURN_NONE;
         }
 
-        static PyObject * py_file_offset(ObjectStream * self, PyObject * unused) {
+        static PyObject * py_file_offset(TapeReader * self, PyObject * unused) {
             if (!self->file) {
                 PyErr_SetString(PyExc_RuntimeError, "file is not open");
                 return nullptr;
@@ -746,7 +682,7 @@ namespace retracesoftware_stream {
             return PyLong_FromLong(offset);
         }
 
-        static PyObject * py_reopen(ObjectStream * self, PyObject * args) {
+        static PyObject * py_reopen(TapeReader * self, PyObject * args) {
             long long offset;
             if (!PyArg_ParseTuple(args, "L", &offset)) return nullptr;
             if (!self->path) {
@@ -768,95 +704,18 @@ namespace retracesoftware_stream {
             Py_RETURN_NONE;
         }
 
-        PyObject * next() {
-            if (pending_bind) {
-                PyErr_Format(PyExc_RuntimeError, "Can't reading next as unbound pending bind");
+        PyObject * next_tuple() {
+            PyObject * value = read();
+            if (!value) {
                 return nullptr;
             }
-
-            size_t start;
-            Control control = consume(start);
-
-            if (control == Stack) {
-                int to_drop = read_expected_int();
-
-                if (verbose) {
-                    printf("Retrace - ObjectStream[%lu, %lu] - Consumed STACK - drop: %i\n", messages_read, start, to_drop);
-                }
-
-                PyObject * stack_delta = read_stack_delta();
-
-                messages_read++;
-
-                PyObject * py_to_drop = PyLong_FromLong(to_drop);
-                PyObject * result = PyObject_CallFunctionObjArgs(create_stack_delta, py_to_drop, stack_delta, nullptr);
-                Py_DECREF(py_to_drop);
-                Py_DECREF(stack_delta);
-                return result;
-            }
-            if (control == ThreadSwitch) {
-
-                PyObject * thread = read();
-
-                if (verbose) {
-                    PyObject * s = PyObject_Str(thread);
-                    printf("Retrace - ObjectStream[%lu, %lu] - Consumed THREAD_SWITCH(%s)\n", messages_read, start, PyUnicode_AsUTF8(s));
-                    Py_DECREF(s);
-                }
-                messages_read++;
-                PyObject * result = PyObject_CallOneArg(create_thread_switch, thread);
-                Py_DECREF(thread);
-                return result;
-            }
-            if (control == Dropped) {
-                PyObject * count = read();
-                if (verbose) {
-                    PyObject * s = PyObject_Str(count);
-                    printf("Retrace - ObjectStream[%lu, %lu] - Consumed DROPPED(%s)\n", messages_read, start, PyUnicode_AsUTF8(s));
-                    Py_DECREF(s);
-                }
-                messages_read++;
-                if (create_dropped) {
-                    PyObject * result = PyObject_CallOneArg(create_dropped, count);
-                    Py_DECREF(count);
-                    return result;
-                }
-                Py_DECREF(count);
-                return next();
-            }
-            if (control == Heartbeat) {
-                PyObject * payload = read();
-                if (verbose) {
-                    printf("Retrace - ObjectStream[%lu, %lu] - Consumed HEARTBEAT\n", messages_read, start);
-                }
-                messages_read++;
-                if (create_heartbeat) {
-                    PyObject * result = PyObject_CallOneArg(create_heartbeat, payload);
-                    Py_DECREF(payload);
-                    return result;
-                }
-                Py_DECREF(payload);
-                return next();
-            }
-            if (control == Bind) {
-                Py_RETURN_NONE;
-            }
-            else {
-                PyObject * result = read(control);
-
-                if (verbose) {
-                    PyObject * s = PyObject_Str(result);
-                    printf("Retrace - ObjectStream[%lu, %lu] - Read: %s\n", messages_read, start, PyUnicode_AsUTF8(s));
-                    Py_DECREF(s);
-                }
-                messages_read++;
-                return result;
-            }
+            messages_read++;
+            return value;
         }
 
-        static PyObject* call(ObjectStream *self, PyObject *const *args, size_t nargsf, PyObject *kwnames) {
+        static PyObject * py_next(TapeReader * self, PyObject * unused) {
             try {
-                return self->next();
+                return self->next_tuple();
             } catch (std::exception &e) {
                 if (!PyErr_Occurred()) {
                     PyErr_SetString(PyExc_RuntimeError, e.what());
@@ -864,64 +723,79 @@ namespace retracesoftware_stream {
                 return nullptr;
             } catch (...) {
                 if (!PyErr_Occurred()) {
-                    PyErr_SetString(PyExc_RuntimeError, "Unknown C++ exception in ObjectStream");
+                    PyErr_SetString(PyExc_RuntimeError, "Unknown C++ exception in TapeReader");
                 }
                 return nullptr;
             }
         }
+
+        static PyObject * call(TapeReader * self, PyObject * const * args, size_t nargsf, PyObject * kwnames) {
+            try {
+                return self->next_tuple();
+            } catch (std::exception &e) {
+                if (!PyErr_Occurred()) {
+                    PyErr_SetString(PyExc_RuntimeError, e.what());
+                }
+                return nullptr;
+            } catch (...) {
+                if (!PyErr_Occurred()) {
+                    PyErr_SetString(PyExc_RuntimeError, "Unknown C++ exception in TapeReader");
+                }
+                return nullptr;
+            }
+        }
+
+        static PyObject * iter(PyObject * self) {
+            return Py_NewRef(self);
+        }
+
+        static PyObject * iternext(TapeReader * self) {
+            return py_next(self, nullptr);
+        }
+
     };
 
-    static PyMemberDef members[] = {
-        // {"bytes_read", T_ULONGLONG, OFFSET_OF_MEMBER(ObjectReader, bytes_read), READONLY, "TODO"},
-        // {"messages_read", T_ULONGLONG, OFFSET_OF_MEMBER(ObjectReader, messages_read), READONLY, "TODO"},
-        // {"stacktraces", T_OBJECT, OFFSET_OF_MEMBER(ObjectReader, stacktraces), READONLY, "TODO"},
-        // {"active_thread", T_OBJECT, OFFSET_OF_MEMBER(ObjectReader, active_thread), READONLY, "TODO"},
-        // {"stack_stop_at", T_ULONGLONG, OFFSET_OF_MEMBER(ObjectReader, stack_stop_at), 0, "TODO"},
-        // {"pending_reads", T_OBJECT, OFFSET_OF_MEMBER(ObjectReader, pending_reads), READONLY, "TODO"},
-        // {"path", T_OBJECT, OFFSET_OF_MEMBER(Writer, path), READONLY, "TODO"},
-        {"read_timeout", T_INT, OFFSET_OF_MEMBER(ObjectStream, read_timeout), 0, "TODO"},
-        {"bytes_read", T_ULONG, OFFSET_OF_MEMBER(ObjectStream, bytes_read), READONLY, "TODO"},
-        {"messages_read", T_ULONG, OFFSET_OF_MEMBER(ObjectStream, messages_read), READONLY, "TODO"},
-        {"pending_bind", T_BOOL, OFFSET_OF_MEMBER(ObjectStream, pending_bind), READONLY, "TODO"},
-        {"verbose", T_BOOL, OFFSET_OF_MEMBER(ObjectStream, verbose), 0, "TODO"},
-        {NULL}  /* Sentinel */
+    static PyMemberDef tape_members[] = {
+        {"read_timeout", T_INT, OFFSET_OF_MEMBER(TapeReader, read_timeout), 0, "TODO"},
+        {"bytes_read", T_ULONG, OFFSET_OF_MEMBER(TapeReader, bytes_read), READONLY, "TODO"},
+        {"messages_read", T_ULONG, OFFSET_OF_MEMBER(TapeReader, messages_read), READONLY, "TODO"},
+        {"verbose", T_BOOL, OFFSET_OF_MEMBER(TapeReader, verbose), 0, "TODO"},
+        {NULL}
     };
 
-    static PyGetSetDef getset[] = {
-        // {"next_control", (getter)ObjectReader::next_control_getter, nullptr, "TODO", NULL},
-        // {"next_control", (getter)ObjectReader::next_control_getter, nullptr, "TODO", NULL},
-        // {"pending", (getter)ObjectReader::pending_getter, nullptr, "TODO", NULL},
-        // {"thread_number", (getter)Writer::thread_getter, (setter)Writer::thread_setter, "TODO", NULL},
-        {NULL}  // Sentinel
+    static PyGetSetDef tape_getset[] = {
+        {NULL}
     };
 
-    static PyMethodDef methods[] = {
-        {"bind", (PyCFunction)ObjectStream::py_bind, METH_O, "TODO"},
-        {"close", (PyCFunction)ObjectStream::py_close, METH_NOARGS, "TODO"},
-        {"file_offset", (PyCFunction)ObjectStream::py_file_offset, METH_NOARGS,
+    static PyMethodDef tape_methods[] = {
+        {"close", (PyCFunction)TapeReader::py_close, METH_NOARGS, "TODO"},
+        {"file_offset", (PyCFunction)TapeReader::py_file_offset, METH_NOARGS,
          "Return the current file read position"},
-        {"reopen", (PyCFunction)ObjectStream::py_reopen, METH_VARARGS,
+        {"reopen", (PyCFunction)TapeReader::py_reopen, METH_VARARGS,
          "Close and reopen the trace file at the given byte offset"},
-        {NULL}  // Sentinel
+        {"next", (PyCFunction)TapeReader::py_next, METH_NOARGS,
+         "Read the next tape entry as a record-domain object"},
+        {NULL}
     };
 
-    PyTypeObject ObjectStream_Type = {
+    PyTypeObject TapeReader_Type = {
         .ob_base = PyVarObject_HEAD_INIT(NULL, 0)
-        .tp_name = MODULE "ObjectStreamReader",
-        .tp_basicsize = sizeof(ObjectStream),
+        .tp_name = MODULE "TapeReader",
+        .tp_basicsize = sizeof(TapeReader),
         .tp_itemsize = 0,
-        .tp_dealloc = (destructor)ObjectStream::dealloc,
-        .tp_vectorcall_offset = OFFSET_OF_MEMBER(ObjectStream, vectorcall),
+        .tp_dealloc = (destructor)TapeReader::dealloc,
+        .tp_vectorcall_offset = OFFSET_OF_MEMBER(TapeReader, vectorcall),
         .tp_call = PyVectorcall_Call,
         .tp_flags = Py_TPFLAGS_DEFAULT | Py_TPFLAGS_HAVE_GC | Py_TPFLAGS_BASETYPE | Py_TPFLAGS_HAVE_VECTORCALL,
-        .tp_doc = "TODO",
-        .tp_traverse = (traverseproc)ObjectStream::traverse,
-        .tp_clear = (inquiry)ObjectStream::clear,
-        .tp_methods = methods,
-        .tp_members = members,
-        .tp_getset = getset,
-        .tp_init = (initproc)ObjectStream::init,
+        .tp_doc = "Read a retrace tape as record-domain objects.",
+        .tp_traverse = (traverseproc)TapeReader::traverse,
+        .tp_clear = (inquiry)TapeReader::clear,
+        .tp_methods = tape_methods,
+        .tp_members = tape_members,
+        .tp_getset = tape_getset,
+        .tp_iter = TapeReader::iter,
+        .tp_iternext = (iternextfunc)TapeReader::iternext,
+        .tp_init = (initproc)TapeReader::init,
         .tp_new = PyType_GenericNew,
     };
-
 }

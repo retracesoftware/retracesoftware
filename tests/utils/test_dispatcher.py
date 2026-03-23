@@ -30,12 +30,19 @@ class TestNextPredicate:
         result = d.next(lambda x: x[0] == 1)
         assert result == (1, "hello")
 
-    def test_buffered_raises_when_empty(self):
-        """Accessing buffered raises RuntimeError when nothing is buffered."""
+    def test_buffered_forces_lazy_load(self):
+        """Accessing buffered loads the next pending item on demand."""
         d = _make_dispatcher([(1, "a"), (2, "b")])
+        assert d.buffered == (1, "a")
         d.next(lambda x: x[0] == 1)
-        with pytest.raises(RuntimeError, match="no item currently buffered"):
-            d.buffered
+        assert d.buffered == (2, "b")
+
+    def test_peek_returns_buffered_item_without_consuming(self):
+        d = _make_dispatcher([(1, "a"), (2, "b")])
+        assert d.peek() == (1, "a")
+        assert d.peek() == (1, "a")
+        assert d.next(lambda x: x[0] == 1) == (1, "a")
+        assert d.peek() == (2, "b")
 
     def test_two_threads_dispatch(self):
         """Two threads each get their own events via predicates."""
@@ -94,3 +101,16 @@ class TestNoMatch:
 
         with pytest.raises(RuntimeError, match="too many threads waiting"):
             d.next(lambda x: x[0] == 1)
+
+
+class TestTerminalState:
+    def test_peek_replays_stop_iteration_after_eof(self):
+        d = _make_dispatcher([(1, "done")])
+
+        assert d.next(lambda x: x[0] == 1) == (1, "done")
+
+        with pytest.raises(StopIteration):
+            d.peek()
+
+        with pytest.raises(StopIteration):
+            d.buffered

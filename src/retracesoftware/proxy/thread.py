@@ -52,7 +52,7 @@ def per_thread_messages(messages):
     # thread_id = lambda: 'FOOOOO!!!'
 
     def on_timeout(demux, key):
-        print(f'ON TIMEOUT!!!! {key} pending: {demux.pending} {demux.pending_keys}')
+        print(f'ON TIMEOUT!!!! {key} pending: {demux.buffered} {demux.pending_keys}')
         utils.sigtrap(demux)
         os._exit(1)
 

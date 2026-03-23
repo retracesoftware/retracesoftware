@@ -24,11 +24,13 @@ namespace retracesoftware_stream {
         PICKLED,
         UINT,
         BIGINT,
+
         SET,
         FROZENSET,
-
         BINDING,
         BINDING_DELETE,
+        INTERN,
+        
         STR_REF,  // Reference to previously-written interned string
         FIXED_SIZE,
         SizedTypes__LAST__,
@@ -60,16 +62,14 @@ namespace retracesoftware_stream {
 
     enum FixedSizeTypes : uint8_t {
         NONE,
-        TRUE,
-        FALSE,
+        THREAD_ENTER,
+        THREAD_EXIT,
         FLOAT,
-
-        NEG1,
         INT64,
         BIND,
-        INTERN,
+        INTERN_INLINE,
+
         THREAD_SWITCH,
-        
         NEW_PATCHED,
         STACK,
         ADD_FILENAME,
@@ -139,7 +139,7 @@ namespace retracesoftware_stream {
     constexpr Control Heartbeat = create_fixed_size(FixedSizeTypes::HEARTBEAT);
     constexpr Control SerializeError = create_fixed_size(FixedSizeTypes::SERIALIZE_ERROR);
     constexpr Control Bind = create_fixed_size(FixedSizeTypes::BIND);
-    constexpr Control Intern = create_fixed_size(FixedSizeTypes::INTERN);
+    constexpr Control Intern = create_fixed_size(FixedSizeTypes::INTERN_INLINE);
     constexpr Control NewPatched = create_fixed_size(FixedSizeTypes::NEW_PATCHED);
     // constexpr Control BindingDelete = create_fixed_size(FixedSizeTypes::);
 
@@ -206,13 +206,12 @@ namespace retracesoftware_stream {
     constexpr const char * FixedSizeTypes_Name(enum FixedSizeTypes root) {
         switch (root) {
             case FixedSizeTypes::NONE: return "NONE";
-            case FixedSizeTypes::TRUE: return "TRUE";
-            case FixedSizeTypes::FALSE: return "FALSE";
+            case FixedSizeTypes::THREAD_ENTER: return "THREAD_ENTER";
+            case FixedSizeTypes::THREAD_EXIT: return "THREAD_EXIT";
             case FixedSizeTypes::FLOAT: return "FLOAT";
-            case FixedSizeTypes::NEG1: return "NEG1";
             case FixedSizeTypes::INT64: return "INT64";
             case FixedSizeTypes::BIND: return "BIND";
-            case FixedSizeTypes::INTERN: return "INTERN";
+            case FixedSizeTypes::INTERN_INLINE: return "INTERN";
             case FixedSizeTypes::THREAD_SWITCH: return "THREAD_SWITCH";
             case FixedSizeTypes::NEW_PATCHED: return "NEW_PATCHED";
             case FixedSizeTypes::STACK: return "STACK";
@@ -243,6 +242,7 @@ namespace retracesoftware_stream {
 
             case SizedTypes::BINDING: return "BINDING";
             case SizedTypes::BINDING_DELETE: return "BINDING_DELETE";
+            case SizedTypes::INTERN: return "INTERN";
             case SizedTypes::STR_REF: return "STR_REF";
             case SizedTypes::FIXED_SIZE: return "FIXED_SIZE";
 

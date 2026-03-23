@@ -1,12 +1,15 @@
 _stream_name = '_retracesoftware_stream'
 _stream_sources = files(
+  'bindingref.cpp',
   'framed_writer.cpp',
   'module.cpp',
+  'newmarker.cpp',
   'objectstream.cpp',
   'objectwriter.cpp',
   'persister.cpp',
   'queue.cpp',
   'search.cpp',
+  'tapereader.cpp',
 )
 _stream_includes = include_directories('.', '../common/include', 'vendor')
 _stream_cpp_args = host_machine.system() == 'windows' ? [] : ['-fvisibility=hidden']

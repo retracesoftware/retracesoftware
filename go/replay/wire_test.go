@@ -76,35 +76,15 @@ func TestFixedNone(t *testing.T) {
 	}
 }
 
-func TestFixedBool(t *testing.T) {
-	data := []byte{fixedControl(ftTrue), fixedControl(ftFalse)}
+func TestFixedThreadLifecycleUnhandled(t *testing.T) {
+	data := []byte{fixedControl(ftThreadEnter), fixedControl(ftThreadExit)}
 	dec := NewDecoder(bytes.NewReader(data))
 
-	v, err := dec.ReadValue()
-	if err != nil {
-		t.Fatal(err)
+	if _, err := dec.ReadValue(); err == nil {
+		t.Fatal("expected thread-enter fixed control to be unhandled")
 	}
-	if v != true {
-		t.Fatalf("expected true, got %v", v)
-	}
-
-	v, err = dec.ReadValue()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if v != false {
-		t.Fatalf("expected false, got %v", v)
-	}
-}
-
-func TestFixedNeg1(t *testing.T) {
-	dec := NewDecoder(bytes.NewReader([]byte{fixedControl(ftNeg1)}))
-	v, err := dec.ReadValue()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if v != int64(-1) {
-		t.Fatalf("expected int64(-1), got %v (%T)", v, v)
+	if _, err := dec.ReadValue(); err == nil {
+		t.Fatal("expected thread-exit fixed control to be unhandled")
 	}
 }
 
@@ -120,6 +100,21 @@ func TestFixedInt64(t *testing.T) {
 	}
 	if v != int64(-42) {
 		t.Fatalf("expected int64(-42), got %v (%T)", v, v)
+	}
+}
+
+func TestFixedInt64Neg1(t *testing.T) {
+	var buf []byte
+	buf = append(buf, fixedControl(ftInt64))
+	buf = binary.LittleEndian.AppendUint64(buf, ^uint64(0))
+
+	dec := NewDecoder(bytes.NewReader(buf))
+	v, err := dec.ReadValue()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if v != int64(-1) {
+		t.Fatalf("expected int64(-1), got %v (%T)", v, v)
 	}
 }
 
@@ -289,7 +284,7 @@ func TestList(t *testing.T) {
 func TestTuple(t *testing.T) {
 	var buf []byte
 	buf = append(buf, controlByte(stTuple, 1))
-	buf = append(buf, fixedControl(ftTrue))
+	buf = appendUint(buf, 1)
 
 	dec := NewDecoder(bytes.NewReader(buf))
 	v, err := dec.ReadValue()
@@ -297,8 +292,8 @@ func TestTuple(t *testing.T) {
 		t.Fatal(err)
 	}
 	lst, ok := v.([]any)
-	if !ok || len(lst) != 1 || lst[0] != true {
-		t.Fatalf("expected [true], got %v", v)
+	if !ok || len(lst) != 1 || lst[0] != int64(1) {
+		t.Fatalf("expected [1], got %v", v)
 	}
 }
 
@@ -329,13 +324,13 @@ func TestDict(t *testing.T) {
 }
 
 func TestNestedDict(t *testing.T) {
-	// {"outer": {"inner": true}}
+	// {"outer": {"inner": 1}}
 	var buf []byte
 	buf = append(buf, controlByte(stDict, 1))
 	buf = appendStr(buf, "outer")
 	buf = append(buf, controlByte(stDict, 1))
 	buf = appendStr(buf, "inner")
-	buf = append(buf, fixedControl(ftTrue))
+	buf = appendUint(buf, 1)
 
 	dec := NewDecoder(bytes.NewReader(buf))
 	v, err := dec.ReadValue()
@@ -344,8 +339,8 @@ func TestNestedDict(t *testing.T) {
 	}
 	m := v.(map[string]any)
 	inner := m["outer"].(map[string]any)
-	if inner["inner"] != true {
-		t.Fatalf("expected true, got %v", inner["inner"])
+	if inner["inner"] != int64(1) {
+		t.Fatalf("expected int64(1), got %v", inner["inner"])
 	}
 }
 

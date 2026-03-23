@@ -63,7 +63,9 @@ namespace retracesoftware_stream {
         FramedWriter* fw = nullptr;
         PyObject* serializer = nullptr;
         map<PyObject*, int> bindings;
+        map<PyObject*, int> interns;
         int binding_counter = 0;
+        int intern_counter = 0;
         size_t bytes_written = 0;
         bool verbose = false;
         map<PyObject*, uint16_t> interned_index;
@@ -98,16 +100,17 @@ namespace retracesoftware_stream {
         void write_memory_view(PyObject* obj);
         void write_size(SizedTypes type, Py_ssize_t size);
         void write_unsigned_number(SizedTypes type, uint64_t value);
-        void write_lookup(int ref);
+        void write_binding_lookup(int ref);
+        void write_intern_lookup(int ref);
         void write_str_value(PyObject* obj);
         void write_bytes_header(PyObject* obj);
         void write_bytes_data(PyObject* obj);
         void write_bytes_value(PyObject* obj);
         void write_pickled_value(PyObject* bytes);
-        void write_bool_value(PyObject* obj);
         void write_sized_int(int64_t value);
         bool object_freed(PyObject* obj);
         void remember_binding(PyObject* key, int index);
+        void remember_intern(PyObject* key, int index);
         void forget_binding(PyObject* key);
 
     public:
@@ -179,9 +182,11 @@ namespace retracesoftware_stream {
             }
             self->interned_index.clear();
             self->bindings.clear();
+            self->interns.clear();
             Py_CLEAR(self->framed_writer_obj);
             self->fw = nullptr;
             self->binding_counter = 0;
+            self->intern_counter = 0;
             self->bytes_written = 0;
             self->interned_counter = 0;
             return 0;
@@ -467,8 +472,12 @@ namespace retracesoftware_stream {
         write_size(type, value);
     }
 
-    void Persister::write_lookup(int ref) {
+    void Persister::write_binding_lookup(int ref) {
         write_unsigned_number(SizedTypes::BINDING, ref);
+    }
+
+    void Persister::write_intern_lookup(int ref) {
+        write_unsigned_number(SizedTypes::INTERN, ref);
     }
 
     void Persister::write_str_value(PyObject* obj) {
@@ -507,10 +516,6 @@ namespace retracesoftware_stream {
         write_bytes_data(bytes);
     }
 
-    void Persister::write_bool_value(PyObject* obj) {
-        emit(obj == Py_True ? FixedSizeTypes::TRUE : FixedSizeTypes::FALSE);
-    }
-
     void Persister::write_memory_view(PyObject* obj) {
         Py_buffer* view = PyMemoryView_GET_BUFFER(obj);
         assert(view->readonly);
@@ -521,8 +526,6 @@ namespace retracesoftware_stream {
     void Persister::write_sized_int(int64_t value) {
         if (value >= 0) {
             write_unsigned_number(SizedTypes::UINT, value);
-        } else if (value == -1) {
-            emit_control(CreateFixedSize(FixedSizeTypes::NEG1));
         } else {
             emit_control(CreateFixedSize(FixedSizeTypes::INT64));
             emit(value);
@@ -604,12 +607,11 @@ namespace retracesoftware_stream {
             return write_long(obj);
         } else if (Py_TYPE(obj) == &PyBytes_Type) {
             write_bytes_value(obj);
-        } else if (Py_TYPE(obj) == &PyBool_Type) {
-            write_bool_value(obj);
         } else if (bindings.contains(obj)) {
-            write_lookup(bindings[obj]);
-        } 
-        else {
+            write_binding_lookup(bindings[obj]);
+        } else if (interns.contains(obj)) {
+            write_intern_lookup(interns[obj]);
+        } else {
             return write_fallback(obj);
         }
         return true;
@@ -619,26 +621,31 @@ namespace retracesoftware_stream {
         bindings[key] = index;
     }
 
+    void Persister::remember_intern(PyObject* key, int index) {
+        interns[key] = index;
+    }
+
     void Persister::forget_binding(PyObject* key) {
         bindings.erase(key);
+        interns.erase(key);
     }
 
     void Persister::bind(Ref ref) {
         PyObject* key = reinterpret_cast<PyObject*>(ref);
         assert(!bindings.contains(key));
+        assert(!interns.contains(key));
         emit_control(Bind);
         remember_binding(key, binding_counter++);
     }
 
     bool Persister::object_freed(PyObject* obj) {
-        auto it = bindings.find(obj);
-        if (it == bindings.end()) {
-            return false;
+        if (auto it = bindings.find(obj); it != bindings.end()) {
+            write_unsigned_number(SizedTypes::BINDING_DELETE, it->second);
+            forget_binding(obj);
+            return true;
         }
 
-        write_unsigned_number(SizedTypes::BINDING_DELETE, it->second);
-        forget_binding(obj);
-        return true;
+        return false;
     }
 
     bool Persister::write_object(PyObject* obj) {
@@ -648,7 +655,11 @@ namespace retracesoftware_stream {
     bool Persister::intern(PyObject* obj, Ref ref) {
         PyObject* key = reinterpret_cast<PyObject*>(ref);
         if (bindings.contains(key)) {
-            write_lookup(bindings[key]);
+            write_binding_lookup(bindings[key]);
+            return true;
+        }
+        if (interns.contains(key)) {
+            write_intern_lookup(interns[key]);
             return true;
         }
 
@@ -656,7 +667,7 @@ namespace retracesoftware_stream {
         if (!write(obj)) {
             return false;
         }
-        remember_binding(key, binding_counter++);
+        remember_intern(key, intern_counter++);
         return true;
     }
 
@@ -715,17 +726,24 @@ namespace retracesoftware_stream {
         PyObject* type_key = reinterpret_cast<PyObject*>(type_ref);
         PyObject* key = reinterpret_cast<PyObject*>(ref);
         assert(!bindings.contains(key));
-        assert(bindings.contains(type_key));
-        remember_binding(key, binding_counter++);
+        assert(!interns.contains(key));
+        remember_intern(key, intern_counter++);
 
         emit(FixedSizeTypes::NEW_PATCHED);
-        write_lookup(bindings[type_key]);
+        if (bindings.contains(type_key)) {
+            write_binding_lookup(bindings[type_key]);
+        } else {
+            assert(interns.contains(type_key));
+            write_intern_lookup(interns[type_key]);
+        }
         PyGILState_Release(gil);
     }
 
     void Persister::reset_state() {
         bindings.clear();
+        interns.clear();
         binding_counter = 0;
+        intern_counter = 0;
     }
 
     static PyObject* Persister_path_getter(PyObject* obj, void*) {

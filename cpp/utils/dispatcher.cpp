@@ -38,6 +38,27 @@ static inline int count_interpreter_tstates() {
 
 static PyObject * const LOADING = (PyObject *)0x2;
 
+static inline bool is_tagged_callback(PyObject *value) {
+    return ((uintptr_t)value & 1U) != 0;
+}
+
+static inline bool is_buffered_pyobject(PyObject *value) {
+    return value != nullptr && value != LOADING && !is_tagged_callback(value);
+}
+
+static inline PyObject *get_raised_exception() {
+    PyObject *type = nullptr, *value = nullptr, *tb = nullptr;
+    PyErr_Fetch(&type, &value, &tb);
+    PyErr_NormalizeException(&type, &value, &tb);
+    Py_XDECREF(type);
+    Py_XDECREF(tb);
+    return value;
+}
+
+static inline void restore_raised_exception(PyObject *exc) {
+    PyErr_Restore(Py_NewRef((PyObject *)Py_TYPE(exc)), Py_NewRef(exc), nullptr);
+}
+
 struct Dispatcher : public PyObject {
 
     PyObject* source;
@@ -70,14 +91,19 @@ struct Dispatcher : public PyObject {
     // Block until predicate(buffered_item) is truthy, return the item.
     // ------------------------------------------------------------------
 
-    PyObject *load_next() {
+    PyObject *peek_next() {
         while (true) {
             PyObject *next = buffered.load(std::memory_order_acquire);
 
-            if (next && next != LOADING && !((uintptr_t)next & 1))
+            if (is_buffered_pyobject(next)) {
+                if (source == nullptr) {
+                    restore_raised_exception(next);
+                    return nullptr;
+                }
                 return next;
+            }
 
-            if ((uintptr_t)next & 1) {
+            if (is_tagged_callback(next)) {
                 PyObject *cb = (PyObject *)((uintptr_t)next & ~1UL);
                 PyObject *result = PyObject_CallNoArgs(cb);
                 Py_XDECREF(result);
@@ -90,11 +116,18 @@ struct Dispatcher : public PyObject {
                 atomic_wait_compat(buffered, LOADING);
                 Py_END_ALLOW_THREADS
             } else {
+                if (source == nullptr) {
+                    PyErr_SetString(PyExc_RuntimeError, "Dispatcher: terminal state missing exception");
+                    return nullptr;
+                }
                 buffered.store(LOADING, std::memory_order_release);
                 next = PyObject_CallNoArgs(source);
                 if (!next) {
-                    buffered.store(nullptr, std::memory_order_release);
+                    PyObject *exc = get_raised_exception();
+                    Py_CLEAR(source);
+                    buffered.store(exc, std::memory_order_release);
                     atomic_notify_all_compat(buffered);
+                    restore_raised_exception(exc);
                     return nullptr;
                 }
                 buffered.store(next, std::memory_order_release);
@@ -104,10 +137,18 @@ struct Dispatcher : public PyObject {
         }
     }
 
+    static PyObject *peek_method(Dispatcher *self, PyObject *Py_UNUSED(ignored)) {
+        PyObject *item = self->peek_next();
+        if (!item) {
+            return nullptr;
+        }
+        return Py_NewRef(item);
+    }
+
     static PyObject *next_method(Dispatcher *self, PyObject *predicate) {
 
         while (true) {
-            PyObject * next = self->load_next();
+            PyObject * next = self->peek_next();
 
             if (!next) {
                 return nullptr;
@@ -196,12 +237,7 @@ struct Dispatcher : public PyObject {
     }
 
     static PyObject *get_buffered(Dispatcher *self, void *) {
-        PyObject *item = self->buffered.load(std::memory_order_acquire);
-        if (!item || item == LOADING || ((uintptr_t)item & 1)) {
-            PyErr_SetString(PyExc_RuntimeError, "Dispatcher: no item currently buffered");
-            return nullptr;
-        }
-        return Py_NewRef(item);
+        return peek_method(self, nullptr);
     }
 
     static PyObject *get_waiting_thread_count(Dispatcher *self, void *) {
@@ -209,7 +245,7 @@ struct Dispatcher : public PyObject {
     }
 
     static PyObject *get_source(Dispatcher *self, void *) {
-        return Py_NewRef(self->source);
+        return Py_NewRef(self->source ? self->source : Py_None);
     }
 
     // ------------------------------------------------------------------
@@ -219,14 +255,18 @@ struct Dispatcher : public PyObject {
     static int traverse(Dispatcher *self, visitproc visit, void *arg) {
         Py_VISIT(self->source);
         PyObject *buf = self->buffered.load(std::memory_order_relaxed);
-        Py_VISIT(buf);
+        if (is_buffered_pyobject(buf)) {
+            Py_VISIT(buf);
+        }
         return 0;
     }
 
     static int clear(Dispatcher *self) {
         Py_CLEAR(self->source);
         PyObject *buf = self->buffered.exchange(nullptr, std::memory_order_acq_rel);
-        Py_XDECREF(buf);
+        if (is_buffered_pyobject(buf)) {
+            Py_XDECREF(buf);
+        }
         return 0;
     }
 
@@ -238,6 +278,10 @@ struct Dispatcher : public PyObject {
 };
 
 static PyMethodDef dispatcher_methods[] = {
+    {"peek", (PyCFunction)Dispatcher::peek_method, METH_NOARGS,
+     "peek() -> item\n\n"
+     "Return the current buffered item, loading from source if needed.\n"
+     "Raises the stored terminal exception once source is exhausted."},
     {"next", (PyCFunction)Dispatcher::next_method, METH_O,
      "next(predicate) -> item\n\n"
      "Block until predicate(buffered_item) is truthy, then return\n"
@@ -256,7 +300,7 @@ static PyMethodDef dispatcher_methods[] = {
 
 static PyGetSetDef dispatcher_getset[] = {
     {"buffered", (getter)Dispatcher::get_buffered, nullptr,
-     "Currently buffered item.  Raises RuntimeError if nothing is buffered.", nullptr},
+     "Current buffered item. Loads lazily and re-raises terminal exceptions.", nullptr},
     {"waiting_thread_count", (getter)Dispatcher::get_waiting_thread_count, nullptr,
      "Number of threads currently waiting inside the dispatcher.", nullptr},
     {"source", (getter)Dispatcher::get_source, nullptr,

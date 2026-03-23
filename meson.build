@@ -60,6 +60,7 @@ py.install_sources(
 # stream
 py.install_sources(
   _py_root / 'stream/__init__.py',
+  _py_root / 'stream/reader.py',
   subdir: 'retracesoftware/stream',
 )
 

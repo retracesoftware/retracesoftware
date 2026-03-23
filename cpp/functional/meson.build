@@ -29,6 +29,7 @@ _func_sources = files(
   'param.cpp',
   'partial.cpp',
   'positional_param.cpp',
+  'positional_param_transform.cpp',
   'repeatedly.cpp',
   'repr.cpp',
   'selfapply.cpp',

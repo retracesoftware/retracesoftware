@@ -186,3 +186,32 @@ class TestMapArgs:
         
         assert mapped.custom_attr == "test"
 
+
+class TestPositionalParamTransform:
+    def test_transforms_only_selected_positional_arg(self):
+        def target(a, b, c):
+            return (a, b, c)
+
+        double = lambda x: x * 2
+
+        mapped = fn.positional_param_transform(target, double, 1)
+
+        assert mapped(1, 2, 3) == (1, 4, 3)
+
+    def test_leaves_kwargs_unchanged(self):
+        def target(a, b=0):
+            return (a, b)
+
+        mapped = fn.positional_param_transform(target, str, 0)
+
+        assert mapped(5, b=7) == ("5", 7)
+
+    def test_raises_when_index_missing(self):
+        def target(a):
+            return a
+
+        mapped = fn.positional_param_transform(target, str, 1)
+
+        with pytest.raises(IndexError):
+            mapped(5)
+

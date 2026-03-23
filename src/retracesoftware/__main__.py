@@ -161,7 +161,8 @@ def record(system, options, args):
             'checksums': recorded_checksums,
             'env': dict(os.environ),
         }
-        
+
+            
     with stream.writer(path = trace_path,
                        thread = thread_id,
                        format = recording_format,
@@ -305,7 +306,6 @@ def replay(system, args):
                     read_timeout = args.read_timeout,
                     verbose = args.verbose,
                     start_offset = data_offset) as reader:
-
             if chunk_ms is not None:
                 from retracesoftware.search import install_timeslice_search
                 install_timeslice_search(
@@ -391,12 +391,6 @@ def replay(system, args):
                 msg_stream.sync = _sync
 
             context = system.replay_context(reader=msg_stream)
-            import threading
-
-            _thread_start = threading.Thread.start
-            _thread_join = threading.Thread.join
-            threading.Thread.start = system.disable_for(_thread_start)
-            threading.Thread.join = system.disable_for(_thread_join)
 
             if monitor_level > 0:
                 def _verify_monitor(value):
@@ -444,8 +438,6 @@ def replay(system, args):
             except Exception:
                 raise
             finally:
-                threading.Thread.start = _thread_start
-                threading.Thread.join = _thread_join
                 gc.enable()
                 if controller:
                     controller.on_replay_finished()

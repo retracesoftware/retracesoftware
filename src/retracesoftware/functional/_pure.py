@@ -511,6 +511,39 @@ class positional_param:
         return f"positional_param({self.index})"
 
 
+class _PositionalParamTransform:
+    def __init__(self, func: Callable[..., Any], transform: Callable[[Any], Any], index: int):
+        self._func = func
+        self._transform = transform
+        self._index = index
+
+        functools.update_wrapper(self, func)  # type: ignore[arg-type]
+
+    def __call__(self, *args: Any, **kwargs: Any) -> Any:
+        if self._index >= len(args):
+            raise IndexError(
+                f"positional_param_transform({self._index}): expected at least "
+                f"{self._index + 1} positional args, got {len(args)}")
+        args2 = list(args)
+        args2[self._index] = self._transform(args2[self._index])
+        return self._func(*args2, **kwargs)
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._func, name)
+
+
+def positional_param_transform(
+    func: Callable[..., Any], transform: Callable[[Any], Any], index: int
+) -> Callable[..., Any]:
+    """positional_param_transform(func, transform, index) rewrites one positional arg before calling func."""
+
+    if not callable(func) or not callable(transform):
+        raise TypeError("positional_param_transform() expects callables")
+    if not isinstance(index, int) or index < 0:
+        raise TypeError("positional_param_transform() expects index to be a non-negative int")
+    return _PositionalParamTransform(func, transform, index=index)
+
+
 class _MapArgs:
     def __init__(self, func: Callable[..., Any], transform: Callable[[Any], Any], starting: int = 0):
         self._func = func
