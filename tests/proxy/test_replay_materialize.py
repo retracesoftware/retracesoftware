@@ -27,6 +27,30 @@ def test_patch_registers_replay_materialize_callables_and_undoes():
     assert MemoryBIO not in system.replay_materialize
 
 
+def test_patch_registers_original_callable_when_proxy_and_replay_materialize_overlap():
+    system = System()
+
+    def allocate_lock():
+        return object()
+
+    namespace = {
+        "__name__": "_thread",
+        "allocate_lock": allocate_lock,
+    }
+    undo = patch(
+        namespace,
+        {"proxy": ["allocate_lock"], "replay_materialize": ["allocate_lock"]},
+        system,
+    )
+
+    assert allocate_lock in system.replay_materialize
+    assert namespace["allocate_lock"] not in system.replay_materialize
+
+    undo()
+
+    assert allocate_lock not in system.replay_materialize
+
+
 def test_run_with_replay_materializes_selected_functions():
     trace_result = object()
     live_result = object()
@@ -41,6 +65,24 @@ def test_run_with_replay_materializes_selected_functions():
     )
 
     assert replay(allocate_lock) is live_result
+
+
+def test_run_with_replay_materializes_patched_functions():
+    trace_result = object()
+    live_result = object()
+    system = System()
+
+    def allocate_lock():
+        return live_result
+
+    patched = system.patch_function(allocate_lock)
+    replay = _run_with_replay(
+        lambda: trace_result,
+        replay_materialize={allocate_lock},
+        materialize=lambda fn, *args, **kwargs: fn(*args, **kwargs),
+    )
+
+    assert replay(patched) is live_result
 
 
 def test_run_with_replay_materializes_selected_types():

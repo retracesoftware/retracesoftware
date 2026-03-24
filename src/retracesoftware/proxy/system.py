@@ -24,7 +24,7 @@ Two gates control all interception:
 
 Two additional lifecycle gates handle object allocation/binding:
 
-    _new_patched
+    _async_new_patched
                 Notified when a patched object is allocated while
                 retrace is active.  The current record/replay path
                 passes the newly allocated object directly.
@@ -201,6 +201,7 @@ import retracesoftware.utils as utils
 import retracesoftware.functional as functional
 from types import SimpleNamespace
 from typing import Callable
+from retracesoftware.proxy.protocol import ReaderProtocol, WriterProtocol
 from retracesoftware.proxy.typeutils import WithoutFlags
 from retracesoftware.proxy.stubfactory import StubRef
 
@@ -281,23 +282,36 @@ def get_all_subtypes(cls):
         subclasses.update(get_all_subtypes(subclass))
     return subclasses
 
-def _run_with_replay(ext_runner, replay_materialize = None, materialize = None):
+def _run_with_replay(ext_runner, replay_materialize = None, materialize = None, bind_materialized = None):
     """Return a callable matching apply_with's signature: (fn, *args, **kwargs).
 
     During replay, the real external function is never called.  Instead,
     ext_runner() reads the next recorded result from the stream and
     returns it directly.  fn, args, and kwargs are ignored.
     """
-    replay_materialize = replay_materialize or frozenset()
+    def canonical_replay_target(value):
+        while hasattr(value, "__wrapped__"):
+            value = value.__wrapped__
+        if utils.is_wrapped(value):
+            value = utils.unwrap(value)
+        return value
+
+    replay_materialize = frozenset(
+        canonical_replay_target(value)
+        for value in (replay_materialize or frozenset())
+    )
 
     def replay_fn(fn, *args, **kwargs):
         recorded = ext_runner()
 
-        key = utils.unwrap(fn) if utils.is_wrapped(fn) else fn
+        key = canonical_replay_target(fn)
         if key in replay_materialize:
             if materialize is None:
                 raise RuntimeError("replay materialization requested without materializer")
-            return materialize(key, *args, **kwargs)
+            value = materialize(key, *args, **kwargs)
+            if bind_materialized is not None:
+                value = bind_materialized(value)
+            return value
 
         return recorded
     return replay_fn
@@ -351,7 +365,7 @@ def adapter(function,
     signature ``(fn, *args, **kwargs) -> result``:
 
         1. on_call   (optional) — observe the call before it happens
-                                  (e.g. writer.sync or writer.write_call)
+                                  (e.g. writer.sync or writer.async_call)
         2. proxy_input          — transform each argument (starting from
                                   position 1) from one domain to the other
         3. unproxy_input        — strip directional wrappers from arguments
@@ -597,7 +611,7 @@ class System:
         # instantiated, to notify the writer/reader that a new object
         # has entered the boundary.
         #
-        # _new_patched: allocation-origin notification.  Receives the
+        # _async_new_patched: allocation-origin notification.  Receives the
         #               allocated object itself; backends can recover
         #               the concrete type from the live object.
         # _bind:        generic binding hook kept separate from
@@ -605,13 +619,13 @@ class System:
         # _register_thread_id:
         #               optional hook used to memoize thread ids before
         #               they first appear on the wire.
-        self._new_patched = utils.Gate(default = utils.noop)
+        self._async_new_patched = utils.Gate(default = utils.noop)
         self._bind = utils.Gate(default = utils.noop)
         self._register_thread_id = utils.Gate(default = utils.noop)
 
         # ── Bound / unretraced sets ───────────────────────────────
         #
-        # _bound tracks every object/type that was seen by bind/new_patched.
+        # _bound tracks every object/type that was seen by bind/async_new_patched.
         # It uses a native hybrid weak set: weakrefable objects auto-evict,
         # others are held strongly for the lifetime of the System.
         self.is_bound = utils.WeakSet()
@@ -677,7 +691,7 @@ class System:
         # _on_alloc is installed on the patched type family.
         # Objects created outside any context remain live/unbound.
         #
-        # The allocation gate (_new_patched) is called directly —
+        # The allocation gate (_async_new_patched) is called directly —
         # gate(obj) dispatches to the executor when set, or to the
         # default (utils.noop) when no context is active.
         #
@@ -685,13 +699,17 @@ class System:
         #   - When the external gate is active: _bind(obj), because the
         #     concrete object already exists and only needs a stream
         #     identity.
-        #   - When the internal gate is active: _new_patched(obj)
-        #     so replay can materialize patched objects by type.
+        #   - When the internal gate is active: emit _async_new_patched(obj)
+        #     first, then bind the concrete object. This is the
+        #     out-of-sandbox allocation path during retrace: replay
+        #     needs the type signal in order to materialize the object,
+        #     and both record/replay still need the normal binding
+        #     lifecycle for the created instance.
         #   - Otherwise: utils.noop keeps the object unbound, so later
         #     patched method calls passthrough.
         self._on_alloc = functional.cond(
             self._external.is_set, utils.runall(self._bind, self.is_bound.add),
-            self._internal.is_set, utils.runall(self._new_patched, self.is_bound.add),
+            self._internal.is_set, utils.runall(self._async_new_patched, self._bind, self.is_bound.add),
             utils.noop)
 
     @property
@@ -731,7 +749,7 @@ class System:
         """Build a reusable, thread-safe context manager for gate executors.
 
         Each keyword argument names a private gate attribute on self
-        (e.g. ``_internal``, ``_external``, ``_new_patched``, ``_bind``).
+        (e.g. ``_internal``, ``_external``, ``_async_new_patched``, ``_bind``).
         The corresponding gate's executor is saved on ``__enter__``,
         replaced with the given value, then restored on ``__exit__``.
 
@@ -843,6 +861,7 @@ class System:
         original_init_subclass = cls.__dict__.get('__init_subclass__', missing)
         original_retrace = cls.__dict__.get('__retrace__', missing)
         original_retrace_system = cls.__dict__.get('__retrace_system__', missing)
+        bound_types = []
 
         def restore_attr(target, name, original):
             if original is missing:
@@ -850,6 +869,11 @@ class System:
                     delattr(target, name)
             else:
                 setattr(target, name, original)
+
+        def bind_patched_type(target):
+            self.is_bound.add(target)
+            bound_types.append(target)
+            self._bind(target)
 
         def proxy_attrs(cls, dict, handler, originals):
             """Replace callables and descriptors in *dict* on *cls*.
@@ -906,6 +930,7 @@ class System:
                     def init_subclass(cls, patch_alloc = True, **kwargs):
                         self.patched_types.add(cls)
                         patched_subtypes.append(cls)
+                        bind_patched_type(cls)
 
                         if patch_alloc:
                             alloc_undo = utils.set_on_alloc(cls, self._on_alloc)
@@ -916,8 +941,14 @@ class System:
                             for name, value in cls.__dict__.items()
                             if name in base_method_names
                         }
+                        direct_methods = {
+                            name: value
+                            for name, value in cls.__dict__.items()
+                            if name not in base_method_names
+                        }
                         originals = subtype_attrs.setdefault(cls, {})
                         proxy_attrs(cls, dict=overrides, handler=self._int_handler, originals=originals)
+                        proxy_attrs(cls, dict=direct_methods, handler=self._ext_handler, originals=originals)
 
                     cls.__init_subclass__ = classmethod(init_subclass)
 
@@ -928,7 +959,7 @@ class System:
                 cls.__retrace__ = self
 
             # Step 4: Notify the bind gate
-            self._bind(cls)
+            bind_patched_type(cls)
         except Exception:
             for undo in reversed(subtype_alloc_undos):
                 undo()
@@ -949,6 +980,9 @@ class System:
                 restore_attr(cls, '__init_subclass__', original_init_subclass)
                 restore_attr(cls, '__retrace_system__', original_retrace_system)
                 restore_attr(cls, '__retrace__', original_retrace)
+
+            for bound_type in reversed(bound_types):
+                self.is_bound.discard(bound_type)
 
             self.patched_types.discard(cls)
             raise
@@ -993,7 +1027,7 @@ class System:
             instead of executing the real function).
 
         **args
-            Additional gate executors to set (e.g. ``_new_patched``,
+            Additional gate executors to set (e.g. ``_async_new_patched``,
             ``_bind``).
 
         Executor construction
@@ -1044,7 +1078,7 @@ class System:
               2. C base class code calling a Python override during an
                  external call — a genuine ext→int callback.  The
                  passthrough means:
-                   (a) The callback is not recorded (write_call skipped).
+                   (a) The callback is not recorded (async_call skipped).
                    (b) The external gate stays None, so outbound calls
                        from within the override (e.g. super().recv())
                        bypass the external pipeline — also unrecorded.
@@ -1061,6 +1095,12 @@ class System:
             ext_runner,
             replay_materialize = self.replay_materialize,
             materialize = lambda fn, *args, **kwargs: self.disable_for(fn)(*args, **kwargs),
+            bind_materialized = functional.walker(
+                functional.when(
+                    lambda value: type(value) in self.patched_types and not self.is_bound(value),
+                    lambda value: (self._bind(value), self.is_bound.add(value), value)[-1],
+                )
+            ),
         ) if ext_runner \
             else self._external.apply_with(None)
 
@@ -1120,7 +1160,7 @@ class System:
             ``reader.bind``.
         on_call : callable or None
             Observer called when an ext→int callback fires.  During
-            record this is ``writer.write_call``; during replay this
+            record this is ``writer.async_call``; during replay this
             is None (callbacks are re-invoked, not read from stream).
         on_result : callable or None
             Observer called when an ext→int callback returns.  Used by
@@ -1237,7 +1277,7 @@ class System:
             on_passthrough_result = on_passthrough_result,
             on_error = on_error)
 
-    def record_context(self, writer, normalize = None, stacktraces = False):
+    def record_context(self, writer: WriterProtocol, normalize = None, stacktraces = False):
         """Context manager for recording.
 
         Inside this context, all calls to methods on patched types go
@@ -1248,8 +1288,8 @@ class System:
         Parameters
         ----------
         writer : object
-            Must provide: ``bind(obj)``, ``intern(obj)``, ``new_patched(obj)``,
-            ``write_call(*a, **kw)``, ``sync()``,
+            Must provide: ``bind(obj)``, ``intern(obj)``, ``async_new_patched(obj)``,
+            ``async_call(*a, **kw)``, ``sync()``,
             ``write_result(*a, **kw)``, ``write_error(*a, **kw)``.
             If *normalize* is set, must also provide
             ``checkpoint(value)``.
@@ -1294,7 +1334,7 @@ class System:
                     f"retrace-callback fn={name} arg_types={arg_types} kwarg_types={kwarg_types}\n"
                 )
                 sys.stderr.flush()
-            writer.write_call(*args, **kwargs)
+            writer.async_call(*args, **kwargs)
 
         if stacktraces:
             def write_stack_then(*args, **kwargs):
@@ -1305,23 +1345,26 @@ class System:
             ext_on_call = writer.sync
             int_on_call = write_internal_call
 
-        def register_type_serializer(proxytype, cls):
-            stub_ref = StubRef(cls)
-            writer.type_serializer[proxytype] = lambda value: stub_ref
-        
         remember_bind = utils.runall(writer.bind, self.is_bound.add)
 
         intern = utils.runall(writer.intern, self.is_bound.add)
+
+        def register_type_serializer(proxytype, cls):
+            stub_ref = StubRef(cls)
+            intern(stub_ref)
+            writer.type_serializer[proxytype] = functional.constantly(stub_ref)
+        
         # register_thread_id = intern
         # register_thread_id = getattr(writer, 'intern', writer.bind)
         # remember_thread_id = utils.runall(register_thread_id, self.is_bound.add)
 
-        def remember_new_patched(obj):
-            writer.new_patched(obj)
-            self.is_bound.add(obj)
+        def remember_async_new_patched(obj):
+            assert self.is_bound(type(obj))
+
+            writer.async_new_patched(type(obj))
 
         return self._create_context(
-            _new_patched = remember_new_patched,
+            _async_new_patched = remember_async_new_patched,
             _bind = remember_bind,
             _register_thread_id = intern,
             int_spec = self._create_int_spec(
@@ -1335,7 +1378,7 @@ class System:
                 on_error = utils.chain(writer.write_error, checkpoint),
                 on_new_proxytype = register_type_serializer))
 
-    def replay_context(self, reader, normalize = None):
+    def replay_context(self, reader: ReaderProtocol, normalize = None):
         """Context manager for replay.
 
         Inside this context, external calls are never executed.
@@ -1379,7 +1422,7 @@ class System:
             # Replay-side stub materialization must not re-enter the active
             # gates. Some C types (for example _io.BufferedReader) allocate
             # patched objects during __new__, which would otherwise recurse
-            # back into bind/new_patched mid-materialization.
+            # back into bind/async_new_patched mid-materialization.
             native_reader.stub_factory = self.disable_for(native_reader.stub_factory)
 
         def remember_bind(obj):

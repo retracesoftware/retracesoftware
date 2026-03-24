@@ -11,7 +11,7 @@ from retracesoftware.install import stream_writer
 pytest.importorskip("requests")
 
 
-def test_stream_writer_write_call_serializes_kwargs_as_payloads():
+def test_stream_writer_async_call_serializes_kwargs_as_payloads():
     class RecordingWriter:
         def __init__(self):
             self.type_serializer = {}
@@ -31,10 +31,10 @@ def test_stream_writer_write_call_serializes_kwargs_as_payloads():
     raw_writer = RecordingWriter()
     writer = stream_writer(raw_writer)
 
-    writer.write_call("socket", fileno=123, family=2)
+    writer.async_call("socket", fileno=123, family=2)
 
     assert raw_writer.calls == [
-        ("CALL", (("socket",), {"fileno": 123, "family": 2})),
+        ("ASYNC_CALL", (("socket",), {"fileno": 123, "family": 2})),
     ]
 
 

@@ -11,10 +11,97 @@ The recording is an ordered sequence of events:
     error       — exception raised by an external call
     checkpoint  — normalised value for divergence detection
 
-Additional hooks (bind, write_call, sync) let the writer
+Additional hooks (bind, async_call, sync) let the writer
 track object identity and synchronise with the underlying transport.
 """
 from abc import ABC, abstractmethod
+from typing import Any, MutableMapping, Protocol, runtime_checkable
+
+
+@runtime_checkable
+class BindableProtocol(Protocol):
+    def bind(self, obj: object) -> Any:
+        ...
+
+
+@runtime_checkable
+class InterningWriterProtocol(BindableProtocol, Protocol):
+    def intern(self, obj: object) -> Any:
+        ...
+
+
+@runtime_checkable
+class AsyncNewPatchedWriterProtocol(Protocol):
+    def async_new_patched(self, obj: object) -> Any:
+        ...
+
+
+@runtime_checkable
+class ResultWriterProtocol(Protocol):
+    def write_result(self, value: object) -> None:
+        ...
+
+    def write_error(self, exc_type, exc_value, exc_tb) -> None:
+        ...
+
+
+@runtime_checkable
+class AsyncCallWriterProtocol(Protocol):
+    def async_call(self, *args, **kwargs) -> None:
+        ...
+
+
+@runtime_checkable
+class SyncProtocol(Protocol):
+    def sync(self) -> None:
+        ...
+
+
+@runtime_checkable
+class CheckpointProtocol(Protocol):
+    def checkpoint(self, value: object) -> None:
+        ...
+
+
+@runtime_checkable
+class StacktraceWriterProtocol(Protocol):
+    def stacktrace(self) -> None:
+        ...
+
+
+@runtime_checkable
+class TypeSerializerWriterProtocol(Protocol):
+    type_serializer: MutableMapping[type, Any]
+
+
+@runtime_checkable
+class TypeDeserializerReaderProtocol(Protocol):
+    type_deserializer: MutableMapping[type, Any]
+
+
+@runtime_checkable
+class StubFactoryReaderProtocol(BindableProtocol, Protocol):
+    def stub_factory(self, cls: type) -> object:
+        ...
+
+
+@runtime_checkable
+class ReaderProtocol(BindableProtocol, SyncProtocol, Protocol):
+    def read_result(self) -> object:
+        ...
+
+
+@runtime_checkable
+class WriterProtocol(
+    InterningWriterProtocol,
+    AsyncNewPatchedWriterProtocol,
+    ResultWriterProtocol,
+    AsyncCallWriterProtocol,
+    SyncProtocol,
+    TypeSerializerWriterProtocol,
+    Protocol,
+):
+    pass
 
 
 class Writer(ABC):
@@ -30,7 +117,7 @@ class Writer(ABC):
         """Notify that a patched object has entered the sandbox."""
 
     @abstractmethod
-    def write_call(self, *a, **kw):
+    def async_call(self, *a, **kw):
         """Record an internal callback invocation (ext→int)."""
 
     @abstractmethod
@@ -116,4 +203,3 @@ class Reader(ABC):
         ``replay_context``.  The default is a no-op; override when
         checkpoint support is needed.
         """
-

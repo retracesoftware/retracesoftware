@@ -88,8 +88,8 @@ def test_system_register_thread_id_uses_intern_once():
     assert writer.bound == []
 
 
-def test_system_active_allocations_use_bind_path():
-    """External allocations bind, internal allocations report new_patched."""
+def test_system_active_allocations_bind_after_async_new_patched_outside_sandbox():
+    """Inside retrace but outside the sandbox, allocations emit async_new_patched then bind."""
     system = System()
 
     class Patched:
@@ -97,31 +97,83 @@ def test_system_active_allocations_use_bind_path():
 
     system.patch_type(Patched)
 
-    bound = []
-    new_patched = []
+    events = []
 
     def bind(obj):
-        bound.append(obj)
+        events.append(("bind", obj))
 
-    def on_new_patched(obj):
-        new_patched.append(obj)
+    def on_async_new_patched(obj):
+        events.append(("async_new_patched", obj))
 
-    with system._context(_bind=bind, _new_patched=on_new_patched, _external=utils.noop):
+    with system._context(_bind=bind, _async_new_patched=on_async_new_patched, _external=utils.noop):
         external_obj = Patched()
 
-    assert bound == [external_obj]
-    assert new_patched == []
+    assert events == [("bind", external_obj)]
     assert system.is_bound(external_obj)
 
-    bound.clear()
-    new_patched.clear()
+    events.clear()
 
-    with system._context(_bind=bind, _new_patched=on_new_patched, _internal=utils.noop):
+    with system._context(_bind=bind, _async_new_patched=on_async_new_patched, _internal=utils.noop):
         internal_obj = Patched()
 
-    assert bound == []
-    assert new_patched == [internal_obj]
+    assert events == [
+        ("async_new_patched", internal_obj),
+        ("bind", internal_obj),
+    ]
     assert system.is_bound(internal_obj)
+
+
+def test_patch_type_binds_existing_and_future_subclasses():
+    system = System()
+
+    class Base:
+        pass
+
+    class Existing(Base):
+        pass
+
+    system.patch_type(Base)
+
+    class Future(Base):
+        pass
+
+    assert system.is_bound(Base)
+    assert system.is_bound(Existing)
+    assert system.is_bound(Future)
+
+
+def test_patch_type_routes_subclass_only_methods_through_external_gate():
+    system = System()
+    system.immutable_types.update({int, str, bytes, bool, type, type(None), float})
+
+    class Base:
+        pass
+
+    system.patch_type(Base)
+
+    calls = 0
+
+    class Sub(Base):
+        def extra(self):
+            nonlocal calls
+            calls += 1
+            return f"value-{calls}"
+
+    writer = MemoryWriter()
+
+    with system.record_context(writer):
+        obj = Sub()
+        recorded = obj.extra()
+
+    assert recorded == "value-1"
+
+    calls = 100
+    with system.replay_context(writer.reader()):
+        obj = Sub()
+        replayed = obj.extra()
+
+    assert replayed == "value-1"
+    assert calls == 100, "subclass-only method should not execute real code during replay"
 
 
 def test_system_preexisting_instance_stays_live_in_record_and_replay():
@@ -397,7 +449,7 @@ def test_system_ext_int_ext_callback():
 
     # Use a custom writer here to track calls separately from results
     class TrackingWriter(MemoryWriter):
-        def write_call(self, *a, **kw):
+        def async_call(self, *a, **kw):
             recorded_calls.append(('call', a, kw))
 
         def write_result(self, *a, **kw):
@@ -453,7 +505,7 @@ def test_system_ext_int_ext_callback_should_record_nested_external():
             return self.fetch() * 2
 
     class TrackingWriter(MemoryWriter):
-        def write_call(self, *a, **kw):
+        def async_call(self, *a, **kw):
             recorded_calls.append((a, kw))
 
         def write_result(self, *a, **kw):

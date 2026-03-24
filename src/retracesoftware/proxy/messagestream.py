@@ -17,9 +17,14 @@ When multiple threads are active, ``MemoryWriter`` inserts
 ``MemoryReader`` demultiplexes the interleaved tape so each thread
 reads only its own messages.
 """
+from collections import deque
 import threading
+from typing import Callable
 
+import retracesoftware.functional as functional
 import retracesoftware.utils as utils
+from retracesoftware.proxy.protocol import BindableProtocol
+from retracesoftware.proxy.stubfactory import StubRef
 
 
 # ── Message types ─────────────────────────────────────────────
@@ -46,6 +51,11 @@ class CheckpointMessage:
         self.value = value
 
 class MonitorMessage:
+    __slots__ = ('value',)
+    def __init__(self, value):
+        self.value = value
+
+class AsyncNewPatchedMessage:
     __slots__ = ('value',)
     def __init__(self, value):
         self.value = value
@@ -79,54 +89,84 @@ class MessageStream:
         traces, or ``iter(tape).__next__`` for in-memory.
     """
 
-    def __init__(self, source, monitor_enabled=False, native_reader=None):
+    def __init__(self, source: Callable[[], object], monitor_enabled=False, native_reader: BindableProtocol | None = None):
         self.source = source
         self.type_deserializer = {}
         self._monitor_enabled = monitor_enabled
         self._native_reader = native_reader
-        self._new_patched = {}
+        self._pending_async_new_patched = deque()
 
     def bind(self, obj):
-        self._native_reader.bind(obj)
+        native_reader = self._native_reader
+        if native_reader is None:
+            return None
+        bind = getattr(native_reader, "bind", None)
+        if bind is None:
+            return None
+        return bind(obj)
 
-    def new_patched(self, obj):
-        raise RuntimeError("MessageStream.new_patched() should not be used during replay")
+    def async_new_patched(self, obj):
+        raise RuntimeError("MessageStream.async_new_patched() should not be used during replay")
 
-    def _materialize_new_patched(self, marker):
-        cached = self._new_patched.get(marker.index)
-        if cached is not None:
-            return cached
+    def _async_new_patched_signature(self, value):
+        if isinstance(value, StubRef):
+            return ("stub-ref", value.module, value.name)
+        if isinstance(value, type):
+            return ("instance-type", value)
+        if value is None or isinstance(value, (bool, int, float, str, bytes, bytearray, memoryview)):
+            return None
+        if isinstance(value, (list, tuple, dict)):
+            return None
+        target_type = getattr(type(value), "__retrace_target_type__", None)
+        if target_type is not None:
+            return ("stub-instance", target_type)
+        return ("instance-type", type(value))
 
+    def _materialize_async_new_patched(self, value):
+        deserializer = self.type_deserializer.get(type(value))
+        if deserializer is not None:
+            return deserializer(value)
+
+        target_type = getattr(type(value), "__retrace_target_type__", None)
+        if target_type is not None:
+            return value
+
+        cls = value if isinstance(value, type) else type(value)
         native_reader = self._native_reader
         factory = getattr(native_reader, "stub_factory", None)
         if factory is None:
             factory = utils.create_stub_object
 
-        instance = factory(marker.cls)
-        if not isinstance(instance, marker.cls):
+        instance = factory(cls)
+        if not isinstance(instance, cls):
             raise TypeError(
-                f"NEW_PATCHED materializer returned {type(instance)!r} "
-                f"for {marker.cls!r}"
+                f"async_new_patched materializer returned {type(instance)!r} "
+                f"for {cls!r}"
             )
-
-        self._new_patched[marker.index] = instance
         return instance
 
+    def _remember_async_new_patched(self, value):
+        materialized = self._materialize_async_new_patched(value)
+        self.bind(materialized)
+        signature = self._async_new_patched_signature(value)
+        self._pending_async_new_patched.append((signature, materialized))
+        return materialized
+
     def _deserialize_result(self, value):
-        deserializer = self.type_deserializer.get(type(value))
-        if deserializer is not None:
-            return deserializer(value)
+        def transform(item):
+            signature = self._async_new_patched_signature(item)
+            if self._pending_async_new_patched and signature == self._pending_async_new_patched[0][0]:
+                return self._pending_async_new_patched.popleft()[1]
 
-        from retracesoftware.stream import NewMarker
+            deserializer = self.type_deserializer.get(type(item))
+            if deserializer is not None:
+                return deserializer(item)
+            return item
 
-        if isinstance(value, NewMarker):
-            return self._materialize_new_patched(value)
-
-        return value
+        return functional.walker(transform)(value)
 
     def read_result(self):
-        value = self.result()
-        return self._deserialize_result(value)
+        return self.result()
 
     def _next_message(self):
         """Read and parse the next tagged message from the source."""
@@ -134,18 +174,22 @@ class MessageStream:
 
         # Skip handle messages encountered after a PID switch in fork replay.
         while isinstance(tag, HandleMessage):
+            if tag.name == 'ASYNC_NEW_PATCHED':
+                return AsyncNewPatchedMessage(tag.value)
             tag = self.source()
 
         if tag == 'RESULT':
             return ResultMessage(self.source())
         elif tag == 'ERROR':
             return ErrorMessage(self.source())
-        elif tag == 'CALL':
+        elif tag == 'ASYNC_CALL':
             return CallMessage(self.source(), self.source())
         elif tag == 'CHECKPOINT':
             return CheckpointMessage(self.source())
         elif tag == 'MONITOR':
             return MonitorMessage(self.source())
+        elif tag == 'ASYNC_NEW_PATCHED':
+            return AsyncNewPatchedMessage(self.source())
         else:
             # SYNC, or any other bare tag — return as-is
             return tag
@@ -155,7 +199,7 @@ class MessageStream:
         """Read the next result, skipping side-effect messages.
 
         Returns the value on RESULT, raises the exception on ERROR.
-        CALL messages between SYNC and RESULT are consumed and
+        ASYNC_CALL messages between SYNC and RESULT are consumed and
         discarded (during replay, callbacks re-execute naturally).
 
         The ``@striptraceback`` decorator is critical for correctness.
@@ -174,11 +218,19 @@ class MessageStream:
         re-raising, so no extra frame references are retained and
         object lifetimes match the recording.
         """
+        saw_async_new_patched = False
         while True:
             msg = self._next_message()
 
             if isinstance(msg, ResultMessage):
-                return msg.result
+                value = self._deserialize_result(msg.result)
+                # Some external calls allocate a patched object and then emit
+                # nested callback traffic before the outer call writes its real
+                # result. Keep consuming until the pending materialized object
+                # is actually attached to a later result payload.
+                if saw_async_new_patched and self._pending_async_new_patched:
+                    continue
+                return value
             elif isinstance(msg, ErrorMessage):
                 raise msg.error
             elif isinstance(msg, MonitorMessage):
@@ -186,6 +238,10 @@ class MessageStream:
                     from retracesoftware.install import ReplayDivergence
                     raise ReplayDivergence(
                         f"unexpected MONITOR({msg.value!r}) in result stream")
+                continue
+            elif isinstance(msg, AsyncNewPatchedMessage):
+                self._remember_async_new_patched(msg.value)
+                saw_async_new_patched = True
                 continue
             elif isinstance(msg, (CallMessage, CheckpointMessage)):
                 continue  # skip side-effects
@@ -213,6 +269,9 @@ class MessageStream:
                         f"unexpected MONITOR({msg.value!r}) during sync "
                         f"— recording had function calls that replay did not")
                 continue
+            if isinstance(msg, AsyncNewPatchedMessage):
+                self._remember_async_new_patched(msg.value)
+                continue
 
     def checkpoint(self, value):
         """Read the next CHECKPOINT and compare against *value*.
@@ -234,6 +293,9 @@ class MessageStream:
                     from retracesoftware.install import ReplayDivergence
                     raise ReplayDivergence(
                         f"unexpected MONITOR({msg.value!r}) during checkpoint")
+                continue
+            elif isinstance(msg, AsyncNewPatchedMessage):
+                self._remember_async_new_patched(msg.value)
                 continue
             elif isinstance(msg, (CallMessage, ResultMessage, ErrorMessage)):
                 continue
@@ -336,9 +398,9 @@ class MemoryWriter:
         self.tape.append('ERROR')
         self.tape.append(exc_value)
 
-    def write_call(self, *args, **kwargs):
+    def async_call(self, *args, **kwargs):
         self._maybe_switch()
-        self.tape.append('CALL')
+        self.tape.append('ASYNC_CALL')
         self.tape.append(args)
         self.tape.append(kwargs)
 
@@ -392,8 +454,11 @@ class MemoryWriter:
     def intern(self, obj):
         return self.bind(obj)
 
-    def new_patched(self, obj):
-        return self.bind(obj)
+    def async_new_patched(self, obj):
+        self._maybe_switch()
+        self.tape.append('ASYNC_NEW_PATCHED')
+        serializer = self.type_serializer.get(type(obj))
+        self.tape.append(serializer(obj) if serializer else obj)
 
     def reader(self):
         """Create a ``MemoryReader`` from the recorded tape."""
@@ -421,7 +486,7 @@ class MemoryReader:
     """
 
     def __init__(self, tape, timeout=None, monitor_enabled=False):
-        self.type_deserializer = {}
+        self._type_deserializer = {}
         self._monitor_enabled = monitor_enabled
         self._tape = tape
         self._tape_len = len(tape)
@@ -429,8 +494,12 @@ class MemoryReader:
         has_threads = any(isinstance(v, ThreadSwitchMessage) for v in tape)
 
         if has_threads:
-            self._demux = _TapeDemux(tape, timeout=timeout,
-                                     monitor_enabled=monitor_enabled)
+            self._demux = _TapeDemux(
+                tape,
+                timeout=timeout,
+                monitor_enabled=monitor_enabled,
+                type_deserializer=self._type_deserializer,
+            )
             self._stream = None  # per-thread streams managed by demux
             self._tape_iter = None
         else:
@@ -438,6 +507,7 @@ class MemoryReader:
             self._tape_iter = iter(tape)
             self._stream = MessageStream(self._tape_iter.__next__,
                                          monitor_enabled=monitor_enabled)
+            self._stream.type_deserializer = self._type_deserializer
 
     def _get_stream(self):
         if self._demux is not None:
@@ -448,11 +518,7 @@ class MemoryReader:
         self._get_stream().sync()
 
     def read_result(self):
-        result = self._get_stream().result()
-        deserializer = self.type_deserializer.get(type(result))
-        if deserializer:
-            return deserializer(result)
-        return result
+        return self._get_stream().read_result()
 
     def bind(self, *a, **kw):
         pass
@@ -462,6 +528,18 @@ class MemoryReader:
 
     def monitor_checkpoint(self, value):
         self._get_stream().monitor_checkpoint(value)
+
+    @property
+    def type_deserializer(self):
+        return self._type_deserializer
+
+    @type_deserializer.setter
+    def type_deserializer(self, value):
+        self._type_deserializer = value
+        if self._stream is not None:
+            self._stream.type_deserializer = value
+        if self._demux is not None:
+            self._demux.type_deserializer = value
 
     @property
     def remaining(self):
@@ -491,7 +569,7 @@ class _TapeDemux:
     same interleaving.
     """
 
-    def __init__(self, tape, timeout=None, monitor_enabled=False):
+    def __init__(self, tape, timeout=None, monitor_enabled=False, type_deserializer=None):
         self._tape = tape
         self._pos = 0
         self._lock = threading.Lock()
@@ -499,6 +577,7 @@ class _TapeDemux:
         self._events = {}
         self._timeout = timeout
         self._monitor_enabled = monitor_enabled
+        self._type_deserializer = type_deserializer if type_deserializer is not None else {}
 
         # Determine the initial thread from the first ThreadSwitchMessage
         self._current_thread = None
@@ -517,10 +596,22 @@ class _TapeDemux:
         """Return a ``MessageStream`` for the calling thread."""
         tid = threading.get_ident()
         if tid not in self._streams:
-            self._streams[tid] = MessageStream(
+            stream = MessageStream(
                 self._make_source(tid),
                 monitor_enabled=self._monitor_enabled)
+            stream.type_deserializer = self._type_deserializer
+            self._streams[tid] = stream
         return self._streams[tid]
+
+    @property
+    def type_deserializer(self):
+        return self._type_deserializer
+
+    @type_deserializer.setter
+    def type_deserializer(self, value):
+        self._type_deserializer = value
+        for stream in self._streams.values():
+            stream.type_deserializer = value
 
     def _make_source(self, tid):
         """Return a callable that yields values for thread *tid*."""

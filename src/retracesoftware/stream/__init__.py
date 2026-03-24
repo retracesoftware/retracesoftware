@@ -59,8 +59,6 @@ BindingRef = getattr(_backend_mod, "BindingRef")
 BindingCreate = getattr(_backend_mod, "BindingCreate")
 BindingLookup = getattr(_backend_mod, "BindingLookup")
 BindingDelete = getattr(_backend_mod, "BindingDelete")
-NewMarker = getattr(_backend_mod, "NewMarker")
-_new_marker = getattr(_backend_mod, "_new_marker")
 
 _NATIVE_PERSISTER_TYPES = tuple(
     t for t in (
@@ -297,14 +295,14 @@ class DebugPersister:
             _debug_command_event("new_handle", (index, _debug_object_event(obj)))
         )
 
-    def write_new_patched(self, typ_ref, ref):
+    def write_async_new_patched(self, typ_ref, ref):
         type_index = self._bindings[self._ref_key(typ_ref)]
         typ = self._binding_values.get(type_index, typ_ref)
         ref_key = self._ref_key(ref)
         self._remember_binding(ref_key, self._bind_index(ref_key))
         return self._dispatch_event(
             _debug_command_event(
-                "new_patched",
+                "async_new_patched",
                 (_debug_object_event(typ),),
             )
         )
@@ -450,14 +448,14 @@ class JsonPersister:
         self._write_event("intern", index=index, value=self._encode_value(obj))
         return None
 
-    def write_new_patched(self, typ_ref, ref):
+    def write_async_new_patched(self, typ_ref, ref):
         type_index = self._bindings.get(id(typ_ref))
         typ = self._binding_values.get(type_index, typ_ref)
         ref_id = id(ref)
         index = self._bind_index(ref_id)
         self._remember_binding(ref_id, index)
         self._write_event(
-            "new_patched",
+            "async_new_patched",
             index=index,
             type_ref=type_index,
             type_value=self._encode_value(typ, use_serializer=False),
@@ -552,17 +550,6 @@ class ObjectWriter:
             return self._native.intern(obj)
         token = self._bind_token(obj)
         self._queue.push_intern(obj, token)
-        return None
-
-    def new_patched(self, obj):
-        if self._native is not None:
-            return self._native.new_patched(obj)
-        typ = type(obj)
-        if typ not in self._bound:
-            self.intern(typ)
-        token = self._bind_token(obj)
-        type_token = self._bind_token(typ)
-        self._queue.push_new_patched(type_token, token)
         return None
 
 # ---------------------------------------------------------------------------

@@ -250,7 +250,7 @@ def test_debug_persister_emits_intern_then_ref(monkeypatch):
     assert ("bound_ref", 0) in events
 
 
-def test_new_patched_uses_bind_lifecycle_tracking(monkeypatch):
+def test_async_new_patched_uses_bind_lifecycle_tracking(monkeypatch):
     _disable_heartbeat(monkeypatch)
     events = []
     persister = stream.DebugPersister(events.append)
@@ -260,17 +260,23 @@ def test_new_patched_uses_bind_lifecycle_tracking(monkeypatch):
 
     with stream.writer(output=persister, flush_interval=999) as writer:
         obj = Patched()
-        assert writer.new_patched(obj) is None
+        assert writer.handle("ASYNC_NEW_PATCHED")(obj) is None
         writer.flush()
         del obj
         for _ in range(3):
             gc.collect()
             writer.flush()
 
-    assert _command_events(events, "new_patched")
+    assert any(
+        event[0] == "command"
+        and event[1][0] == "intern"
+        and event[1][1][1] == ("object", "ASYNC_NEW_PATCHED")
+        for event in events
+    )
+    assert any(event[0] == "object" and type(event[1]).__name__ == "Patched" for event in events)
 
 
-def test_new_patched_handles_nonweakrefable_instance_tokens(monkeypatch):
+def test_async_new_patched_handles_nonweakrefable_instance_tokens(monkeypatch):
     _disable_heartbeat(monkeypatch)
     events = []
     persister = stream.DebugPersister(events.append)
@@ -284,10 +290,16 @@ def test_new_patched_handles_nonweakrefable_instance_tokens(monkeypatch):
         weakref.ref(obj)
 
     with stream.writer(output=persister, flush_interval=999) as writer:
-        assert writer.new_patched(obj) is None
+        assert writer.handle("ASYNC_NEW_PATCHED")(obj) is None
         writer.flush()
 
-    assert _command_events(events, "new_patched")
+    assert any(
+        event[0] == "command"
+        and event[1][0] == "intern"
+        and event[1][1][1] == ("object", "ASYNC_NEW_PATCHED")
+        for event in events
+    )
+    assert any(event[0] == "object" and type(event[1]).__name__ == "Patched" for event in events)
 
 
 def test_debug_persister_emits_new_ext_wrapped_for_external_result(monkeypatch):

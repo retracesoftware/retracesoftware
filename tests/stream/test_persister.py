@@ -16,7 +16,7 @@ import pytest
 
 pytest.importorskip("retracesoftware.stream")
 import retracesoftware.stream as stream
-from retracesoftware.proxy.messagestream import MessageStream
+from retracesoftware.proxy.messagestream import HandleMessage, MessageStream
 
 _mod = stream._backend_mod
 FramedWriter = _mod.FramedWriter
@@ -467,45 +467,24 @@ def test_tape_reader_hydrates_interned_values(tmp_path):
         reader.close()
 
 
-def test_tape_reader_emits_new_marker_for_new_patched(tmp_path):
-    path = tmp_path / "raw_tape_reader_new_patched.bin"
-    fw = FramedWriter(str(path), raw=True)
-    persister = Persister(fw, serializer=pickle.dumps)
-
-    patched_type = list
-    value = object()
-
-    try:
-        persister.intern(patched_type)
-        persister.write_new_patched(patched_type, value)
-        persister.write_object(value)
-        persister.flush()
-    finally:
-        fw.close()
-
-    reader = _make_tape_reader(path)
-    try:
-        marker = reader()
-        assert isinstance(marker, stream.NewMarker)
-        assert marker.index == 1
-        assert marker.cls is patched_type
-
-        lookup = reader()
-        assert lookup is marker
-    finally:
-        reader.close()
-
-
-def test_message_stream_materializes_new_patched_markers():
-    marker = stream._new_marker(7, list)
+def test_message_stream_materializes_async_new_patched_tag_before_result():
     native_reader = SimpleNamespace(stub_factory=lambda cls: cls.__new__(cls))
-    source = iter(["RESULT", marker, "RESULT", marker]).__next__
+    source = iter(["ASYNC_NEW_PATCHED", list, "RESULT", list]).__next__
     messages = MessageStream(source, native_reader=native_reader)
 
     materialized = messages.read_result()
     assert isinstance(materialized, list)
     assert materialized == []
-    assert messages.read_result() is materialized
+
+
+def test_message_stream_materializes_async_new_patched_handle_before_result():
+    native_reader = SimpleNamespace(stub_factory=lambda cls: cls.__new__(cls))
+    source = iter([HandleMessage("ASYNC_NEW_PATCHED", list), "RESULT", list]).__next__
+    messages = MessageStream(source, native_reader=native_reader)
+
+    materialized = messages.read_result()
+    assert isinstance(materialized, list)
+    assert materialized == []
 
 
 def test_writer_start_new_thread_uses_get_ident_and_callbacks():
@@ -754,34 +733,6 @@ def test_resolving_reader_peek_resolves_values_using_binding_table(tmp_path):
         assert reader.next(None) is resolved
         assert reader.peek(None) == "after"
         assert reader.next(None) == "after"
-    finally:
-        reader.close()
-
-
-def test_resolving_reader_resolves_new_marker_class_lookup(tmp_path):
-    path = tmp_path / "raw_resolving_reader_new_marker.bin"
-    fw = FramedWriter(str(path), raw=True)
-    persister = Persister(fw, serializer=pickle.dumps)
-    patched_type = list
-    patched_value = object()
-
-    try:
-        persister.bind(patched_type)
-        persister.write_new_patched(patched_type, patched_value)
-        persister.write_object(patched_value)
-        persister.flush()
-    finally:
-        fw.close()
-
-    reader = stream.ObjectReader(thread_id=lambda: None, source=_make_tape_reader(path))
-    resolved_type = dict
-    try:
-        reader.bind(resolved_type)
-        marker = reader.next(None)
-        assert isinstance(marker, stream.NewMarker)
-        assert marker.index == 0
-        assert marker.cls is resolved_type
-        assert reader.next(None) is marker
     finally:
         reader.close()
 

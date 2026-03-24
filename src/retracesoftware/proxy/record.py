@@ -184,7 +184,7 @@ class RecordProxySystem(ProxySystem):
         self.writer.exclude_from_stacktrace(write_error)
         # self.writer.exclude_from_stacktrace(Tracer.write_call)
         
-        self.on_int_call = self.writer.handle('CALL')
+        self.on_int_call = self.writer.handle('ASYNC_CALL')
         
         # write_new_ref = self.writer.handle('RESULT')
 
@@ -222,5 +222,4 @@ class RecordProxySystem(ProxySystem):
         self.writer.type_serializer[proxytype] = functional.constantly(ref)
 
         return proxytype
-
 

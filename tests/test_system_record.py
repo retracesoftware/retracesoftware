@@ -66,7 +66,7 @@ class SystemRecordHarness:
     """Small writer-like object for ``System.record_context`` tests.
 
     ``System.record_context`` expects a writer with methods such as ``bind``,
-    ``new_patched``, ``sync``, and ``write_result``.  The real high-level
+    ``async_new_patched``, ``sync``, and ``write_result``.  The real high-level
     stream writer carries much more behavior than these tests need, so this
     harness delegates the binding/allocation operations to the native
     ``stream.ObjectWriter`` while keeping the other callbacks as simple
@@ -87,21 +87,28 @@ class SystemRecordHarness:
         self.calls.append(("intern", obj))
         return self.object_writer.intern(obj)
 
-    def new_patched(self, obj):
-        self.calls.append(("new_patched", obj))
-        return self.object_writer.new_patched(obj)
+    def async_new_patched(self, obj):
+        self.calls.append(("async_new_patched", obj))
+        tag = "ASYNC_NEW_PATCHED"
+        self.object_writer.intern(tag)
+        if self.object_writer._native is not None:
+            self.object_writer._native(tag, obj)
+        else:
+            self.queue.push_ref(self.object_writer._bind_token(tag))
+            self.queue.push_obj(obj)
+        return None
 
     def sync(self):
         self.calls.append(("sync",))
 
-    def write_call(self, *args, **kwargs):
-        self.calls.append(("write_call", args, kwargs))
+    def async_call(self, *args, **kwargs):
+        self.calls.append(("async_call", args, kwargs))
 
     def write_result(self, value):
         self.calls.append(("write_result", value))
 
-    def write_error(self, error):
-        self.calls.append(("write_error", error))
+    def write_error(self, exc_type, exc_value, exc_tb):
+        self.calls.append(("write_error", exc_type, exc_value, exc_tb))
 
     def checkpoint(self, value):
         self.calls.append(("checkpoint", value))
@@ -180,14 +187,15 @@ def test_system_record_binds_allocations_in_sandbox():
     assert not queue.named("push_new_patched")
 
 
-def test_system_record_uses_new_patched_during_external_phase_allocation():
-    """Allocations during an external call should emit ``new_patched``.
+def test_system_record_uses_async_new_patched_during_external_phase_allocation():
+    """Allocations during an external call should emit ``new_patched`` then ``bind``.
 
     After entering ``record_context``, calling a patched base-type method moves
     execution into the temporary external-call phase.  If a new patched object
     is allocated there, replay needs a stronger signal than ``bind`` so it can
-    reconstruct the object by type.  The expected queue-visible effect is a
-    ``push_new_patched`` call rather than ``push_bind``.
+    reconstruct the object by type.  Once the object exists, it should still
+    enter the normal binding lifecycle, so the queue-visible effect is
+    ``NEW_PATCHED`` protocol writes followed by ``push_bind``.
     """
 
     system = proxy_system.System()
@@ -206,8 +214,10 @@ def test_system_record_uses_new_patched_during_external_phase_allocation():
         peer = root.make_peer()
         assert peer is not None
 
-    assert len(queue.named("push_new_patched")) == 1
-    assert not queue.named("push_bind")
+    assert len(queue.named("push_intern")) == 1
+    assert len(queue.named("push_ref")) == 1
+    assert len(queue.named("push_obj")) == 1
+    assert len(queue.named("push_bind")) == 1
 
 
 def test_system_record_passthroughs_unbound_instances():
@@ -263,7 +273,7 @@ def test_system_record_bind_reaches_python_persister_via_native_queue():
     assert ("command", ("bind", (0,))) in writer.events
 
 
-def test_system_record_new_patched_reaches_python_persister_via_native_queue():
+def test_system_record_async_new_patched_reaches_python_persister_via_native_queue():
     """External-phase allocations should survive native Queue -> Python persister dispatch."""
 
     system = proxy_system.System()
@@ -284,7 +294,14 @@ def test_system_record_new_patched_reaches_python_persister_via_native_queue():
     finally:
         writer.close()
 
-    assert any(event[0] == "command" and event[1][0] == "new_patched" for event in writer.events)
+    assert any(
+        event[0] == "command"
+        and event[1][0] == "intern"
+        and event[1][1][1] == ("object", "ASYNC_NEW_PATCHED")
+        for event in writer.events
+    )
+    assert any(event[0] == "bound_ref" for event in writer.events)
+    assert any(event[0] == "object" and event[1].__name__ == "Patched" for event in writer.events)
 
 
 def test_system_record_memoryview_result_roundtrips_through_unframed_binary_replay(tmp_path):
