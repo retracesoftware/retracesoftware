@@ -1,0 +1,7 @@
+interface:
+  display_name: "Determinism Check"
+  short_description: "Replay safety review checklist"
+  default_prompt: "Use $determinism-check to review this change for replay determinism hazards."
+
+policy:
+  allow_implicit_invocation: false

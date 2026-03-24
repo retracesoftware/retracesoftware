@@ -84,12 +84,6 @@ hard constraints, not as an encyclopedia.
   then export `RETRACE_REPLAY_BIN=/absolute/path/to/retracesoftware/.retrace-replay-bin`
 - `RETRACE_SKIP_CHECKSUMS=1` exists as a debugging escape hatch for checksum
   mismatches, but do not rely on it for normal validation.
-- Manual local record/replay loop for a single test:
-  `rm -f test.retrace trace.bin && rm -rf test.d`
-  `python -m retracesoftware install`
-  `RETRACE_CONFIG=debug python test.py`
-  `./test.retrace --extract`
-  then run the extracted root pid binary from `test.d/`
 - Debug a recording or replay failure:
   `RETRACE_DEBUG=1 python -m retracesoftware --recording /tmp/test.retrace --verbose --stacktraces -- my_script.py`
 
@@ -106,6 +100,8 @@ if needed.
   cursor logic, explicitly call out the determinism impact.
 - If you touch `cpp/`, `src/retracesoftware/proxy/`, or `src/retracesoftware/dap/`,
   also read the local `AGENTS.md` in that directory if present.
+- If a task depends on a test-directory-specific manual replay loop, inspect
+  the target test directory and existing scripts before suggesting commands.
 - For changes touching replay-sensitive boundary logic, threading, weakrefs,
   finalizers, fork behavior, or module interception coverage, consider running
   the repo skill `$determinism-check`.

@@ -1,10 +1,11 @@
 ---
 name: determinism-check
 description: >
-  Check a proposed change for replay determinism hazards. Use for edits touching
-  proxy boundary logic, replay message handling, thread/fork behavior, weakref
-  or finalizer timing, module interception coverage, or other replay-sensitive
-  control flow.
+  Manually review a proposed change for replay determinism hazards. Use only
+  for replay-sensitive edits touching proxy boundary logic, replay message
+  handling, thread/fork behavior, weakref or finalizer timing, module
+  interception coverage, or similar control flow. Do not use for general code
+  review, trivial cleanup, or ordinary non-replay changes.
 ---
 
 # Determinism Check
