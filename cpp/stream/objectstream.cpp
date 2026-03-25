@@ -574,15 +574,6 @@ namespace retracesoftware_stream {
                     continue;
                 }
 
-                if (control == NewPatched) {
-                    if (verbose) {
-                        printf("Retrace - ObjectStream[%lu, %zu] - Inline NEW_PATCHED\n", messages_read, start);
-                    }
-                    bindings[binding_counter++] = read_new_patched("NEW_PATCHED");
-                    messages_read++;
-                    continue;
-                }
-
                 if (control == Bind) {
                     PyErr_Format(
                         PyExc_RuntimeError,
@@ -640,13 +631,6 @@ namespace retracesoftware_stream {
             return instance;
         }
 
-        PyObject * read_new_patched(const char * opname) {
-            PyTypeObject * cls = read_bound_type(opname);
-            PyObject * instance = create_stub(cls, opname);
-            Py_DECREF(reinterpret_cast<PyObject *>(cls));
-            return instance;
-        }
-
         PyObject * read_ext_bind() {
             PyTypeObject * cls = read_bound_type("BIND");
             PyObject * empty = PyTuple_New(0);
@@ -695,10 +679,6 @@ namespace retracesoftware_stream {
                 } else if (control == Intern) {
                     if (verbose) printf("Retrace - ObjectStream[%lu, %lu] - Consumed INTERN\n", messages_read, start);
                     bindings[binding_counter++] = read();
-                    messages_read++;
-                } else if (control == NewPatched) {
-                    if (verbose) printf("Retrace - ObjectStream[%lu, %lu] - Consumed NEW_PATCHED\n", messages_read, start);
-                    bindings[binding_counter++] = read_new_patched("NEW_PATCHED");
                     messages_read++;
                 } else {
                     return control;

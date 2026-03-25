@@ -260,7 +260,7 @@ def test_async_new_patched_uses_bind_lifecycle_tracking(monkeypatch):
 
     with stream.writer(output=persister, flush_interval=999) as writer:
         obj = Patched()
-        assert writer.handle("ASYNC_NEW_PATCHED")(obj) is None
+        assert writer.async_new_patched(obj) is None
         writer.flush()
         del obj
         for _ in range(3):
@@ -290,7 +290,7 @@ def test_async_new_patched_handles_nonweakrefable_instance_tokens(monkeypatch):
         weakref.ref(obj)
 
     with stream.writer(output=persister, flush_interval=999) as writer:
-        assert writer.handle("ASYNC_NEW_PATCHED")(obj) is None
+        assert writer.async_new_patched(obj) is None
         writer.flush()
 
     assert any(

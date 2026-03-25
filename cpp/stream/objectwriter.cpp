@@ -230,26 +230,6 @@ namespace retracesoftware_stream {
             messages_written++;
         }
 
-        void new_patched(PyObject * obj) {
-            if (is_disabled()) return;
-
-            ensure_bound_tracking(obj);
-            PyObject* type = reinterpret_cast<PyObject*>(Py_TYPE(obj));
-            if (!is_bound(type)) {
-                intern(type);
-                if (is_disabled()) return;
-            }
-            assert(is_bound(type));
-
-            if (verbose) {
-                debug_prefix();
-                printf("NEW_PATCHED(%s)\n", Py_TYPE(obj)->tp_name);
-            }
-
-            if (!disable_if_push_failed(queue->push_new_patched(binding_ref(type), binding_ref(obj)))) return;
-            messages_written++;
-        }
-
         static constexpr int MAX_FLATTEN_DEPTH = 32;
         
         bool is_bound(PyObject* obj) {
@@ -547,7 +527,6 @@ namespace retracesoftware_stream {
 
         static PyObject * py_bind(ObjectWriter * self, PyObject* obj);
         static PyObject * py_intern(ObjectWriter * self, PyObject* obj);
-        static PyObject * py_new_patched(ObjectWriter * self, PyObject* obj);
 
         static PyObject* py_new(PyTypeObject* type, PyObject*, PyObject*) {
             ObjectWriter* self = reinterpret_cast<ObjectWriter*>(type->tp_alloc(type, 0));
@@ -706,15 +685,6 @@ namespace retracesoftware_stream {
         }
     }
 
-    PyObject* ObjectWriter::py_new_patched(ObjectWriter* self, PyObject* obj) {
-        try {
-            self->new_patched(obj);
-            Py_RETURN_NONE;
-        } catch (...) {
-            return nullptr;
-        }
-    }
-
     PyObject* ObjectWriter::py_intern(ObjectWriter* self, PyObject* obj) {
         try {
             self->intern(obj);
@@ -732,7 +702,6 @@ namespace retracesoftware_stream {
         {"heartbeat", (PyCFunction)ObjectWriter::py_heartbeat, METH_O, "Push heartbeat payload dict and flush"},
         {"bind", (PyCFunction)ObjectWriter::py_bind, METH_O, "TODO"},
         {"intern", (PyCFunction)ObjectWriter::py_intern, METH_O, "TODO"},
-        {"new_patched", (PyCFunction)ObjectWriter::py_new_patched, METH_O, "TODO"},
         {NULL}
     };
 

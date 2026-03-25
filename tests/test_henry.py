@@ -28,6 +28,9 @@ def test_stream_writer_async_call_serializes_kwargs_as_payloads():
         def intern(self, obj):
             self.calls.append(("intern", (obj,)))
 
+        def async_new_patched(self, obj):
+            self.calls.append(("ASYNC_NEW_PATCHED", (obj,)))
+
     raw_writer = RecordingWriter()
     writer = stream_writer(raw_writer)
 

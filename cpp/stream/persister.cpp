@@ -135,7 +135,6 @@ namespace retracesoftware_stream {
 
         void write_heartbeat();
         void write_pickled(PyObject* obj);
-        void write_new_patched(Ref type_ref, Ref ref);
 
         static PyObject* tp_new(PyTypeObject* type, PyObject*, PyObject*) {
             Persister* self = reinterpret_cast<Persister*>(type->tp_alloc(type, 0));
@@ -368,20 +367,6 @@ namespace retracesoftware_stream {
             return result;
         }
 
-        PyObject* Persister_py_write_new_patched(Persister* self, PyObject* args) {
-            PyObject* type_ref;
-            PyObject* ref = nullptr;
-            if (!PyArg_ParseTuple(args, "O|O", &type_ref, &ref)) return nullptr;
-            PyObject* owned_type_ref = Py_NewRef(type_ref);
-            PyObject* owned_ref = ref ? Py_NewRef(ref) : Py_NewRef(owned_type_ref);
-            PyObject* result = call_persister_method([&] {
-                self->write_new_patched(owned_type_ref, owned_ref);
-            });
-            Py_DECREF(owned_type_ref);
-            Py_DECREF(owned_ref);
-            return result;
-        }
-
         PyObject* Persister_py_reset_state(Persister* self, PyObject*) {
             return call_persister_method([&] { self->reset_state(); });
         }
@@ -409,9 +394,7 @@ namespace retracesoftware_stream {
             {"start_collection", (PyCFunction)Persister_py_start_collection, METH_VARARGS, "Write a collection header while mimicking consumer threading"},
             {"write_heartbeat", (PyCFunction)Persister_py_write_heartbeat, METH_NOARGS, "Write a heartbeat while mimicking consumer threading"},
             {"write_thread_switch", (PyCFunction)Persister_py_write_thread_switch, METH_O, "Write a thread switch while mimicking consumer threading"},
-            {"nogil_write_thread_switch", (PyCFunction)Persister_py_write_thread_switch, METH_O, "Native fast-path alias for write_thread_switch"},
             {"write_pickled", (PyCFunction)Persister_py_write_pickled, METH_O, "Write a pre-pickled payload while mimicking consumer threading"},
-            {"write_new_patched", (PyCFunction)Persister_py_write_new_patched, METH_VARARGS, "Write a new patched object while mimicking consumer threading"},
             {"reset_state", (PyCFunction)Persister_py_reset_state, METH_NOARGS, "Reset persister state while mimicking consumer threading"},
             {nullptr}
         };
@@ -721,24 +704,6 @@ namespace retracesoftware_stream {
         PyGILState_Release(gil);
     }
 
-    void Persister::write_new_patched(Ref type_ref, Ref ref) {
-        PyGILState_STATE gil = PyGILState_Ensure();
-        PyObject* type_key = reinterpret_cast<PyObject*>(type_ref);
-        PyObject* key = reinterpret_cast<PyObject*>(ref);
-        assert(!bindings.contains(key));
-        assert(!interns.contains(key));
-        remember_intern(key, intern_counter++);
-
-        emit(FixedSizeTypes::NEW_PATCHED);
-        if (bindings.contains(type_key)) {
-            write_binding_lookup(bindings[type_key]);
-        } else {
-            assert(interns.contains(type_key));
-            write_intern_lookup(interns[type_key]);
-        }
-        PyGILState_Release(gil);
-    }
-
     void Persister::reset_state() {
         bindings.clear();
         interns.clear();
@@ -822,11 +787,6 @@ namespace retracesoftware_stream {
     bool Persister_bind(Persister * persister, Ref ref) {
         // retracesoftware::GILGuard gstate;
         persister->bind(ref);
-        return true;
-    }
-
-    bool Persister_write_new_patched(Persister* persister, Ref type_ref, Ref ref) {
-        persister->write_new_patched(type_ref, ref);
         return true;
     }
 }

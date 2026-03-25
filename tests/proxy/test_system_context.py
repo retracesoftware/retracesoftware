@@ -20,6 +20,7 @@ import retracesoftware.utils as utils
 import retracesoftware.proxy.system as system_mod
 from retracesoftware.proxy.system import System
 from retracesoftware.proxy.messagestream import MemoryWriter, MemoryReader, HandleMessage
+from retracesoftware.stream import BindingCreate
 
 _PATCHED_TYPE_KEEPALIVE = []
 
@@ -142,7 +143,7 @@ def test_patch_type_binds_existing_and_future_subclasses():
     assert system.is_bound(Future)
 
 
-def test_patch_type_routes_subclass_only_methods_through_external_gate():
+def test_patch_type_leaves_subclass_only_methods_as_plain_python():
     system = System()
     system.immutable_types.update({int, str, bytes, bool, type, type(None), float})
 
@@ -166,14 +167,17 @@ def test_patch_type_routes_subclass_only_methods_through_external_gate():
         recorded = obj.extra()
 
     assert recorded == "value-1"
+    assert len(writer.tape) == 1
+    assert isinstance(writer.tape[0], BindingCreate)
+    assert writer.tape[0].index == 0
 
     calls = 100
     with system.replay_context(writer.reader()):
         obj = Sub()
         replayed = obj.extra()
 
-    assert replayed == "value-1"
-    assert calls == 100, "subclass-only method should not execute real code during replay"
+    assert replayed == "value-101"
+    assert calls == 101, "subclass-only method should execute normally on replay"
 
 
 def test_system_preexisting_instance_stays_live_in_record_and_replay():
@@ -407,6 +411,63 @@ def test_system_ext_to_int_callback():
     assert len(lt_calls) > 0, "__lt__ callback should have fired during replay"
 
 
+def test_system_init_subclass_only_wraps_overrides():
+    """Subclass-only methods stay plain Python; overrides become internal."""
+
+    class Base:
+        def compute(self):
+            return 42
+
+    system = System()
+    system.immutable_types.update({int, str, bytes, bool, type, type(None), float})
+    system.patch_type(Base)
+
+    class Sub(Base):
+        def compute(self):
+            return 100
+
+        def helper(self):
+            return 200
+
+    assert isinstance(Sub.compute, utils.wrapped_function)
+    assert not isinstance(Sub.helper, utils.wrapped_function)
+
+
+def test_system_direct_override_call_uses_external_path_not_async_callback():
+    """Direct calls to subclass overrides should record as external calls."""
+
+    recorded_calls = []
+    recorded_results = []
+
+    class Base:
+        def compute(self):
+            return 42
+
+    system = System()
+    system.immutable_types.update({int, str, bytes, bool, type, type(None), float})
+    system.patch_type(Base)
+
+    class Sub(Base):
+        def compute(self):
+            return 100
+
+    class TrackingWriter(MemoryWriter):
+        def async_call(self, *a, **kw):
+            recorded_calls.append((a, kw))
+            super().async_call(*a, **kw)
+
+        def write_result(self, value):
+            recorded_results.append(value)
+            super().write_result(value)
+
+    with system.record_context(TrackingWriter()):
+        result = Sub().compute()
+
+    assert result == 100
+    assert recorded_calls == []
+    assert 100 in recorded_results
+
+
 def test_system_ext_int_ext_callback():
     """ext→int→ext: patched method → Python override → outbound external call.
 
@@ -563,22 +624,8 @@ def test_system_normalize_checkpoint():
     assert val == 42
 
 
-def test_system_normalize_detects_divergence():
-    """normalize raises when replay produces a different internal result.
-
-    Sub.compute (internal override) is called directly inside the
-    context — not nested in an external call — so the int_executor
-    takes the adapter branch and the checkpoint fires.
-
-    During record, compute returns 200 and the checkpoint is stored.
-    During replay, we force compute to return 999.  The checkpoint
-    catches the mismatch.
-
-    NOTE: if compute were called from within a base class external
-    method (e.g. Base.process → self.compute()), the passthrough
-    branch would skip the checkpoint entirely.  This test exercises
-    the direct-call path where the adapter does fire.
-    """
+def test_system_normalize_skips_direct_call_on_live_override_instance():
+    """Direct calls on preexisting override instances stay live and uncheckpointed."""
 
     class Base:
         def compute(self):
@@ -600,18 +647,14 @@ def test_system_normalize_detects_divergence():
     writer = MemoryWriter()
     obj = Sub()
 
-    # Record — direct call to internal method, adapter branch fires
     with system.record_context(writer, normalize=normalize):
         result = obj.compute()
     assert result == 200
-    assert 'CHECKPOINT' in writer.tape, "compute result should be checkpointed"
+    assert writer.tape == []
 
-    # Replay — compute returns 999, checkpoint catches the mismatch
     diverge = True
-    obj = Sub()
-    with pytest.raises(AssertionError, match="replay divergence"):
-        with system.replay_context(writer.reader(), normalize=normalize):
-            obj.compute()
+    with system.replay_context(writer.reader(), normalize=normalize):
+        assert obj.compute() == 999
 
 
 def test_system_proxied_return_value():

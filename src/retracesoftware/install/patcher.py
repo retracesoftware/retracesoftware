@@ -211,7 +211,7 @@ def patch(module, spec, system, update_refs = False, pathpredicate = None):
             for name in config:
                 if name not in namespace:
                     continue
-                value = namespace[name]
+                value = originals.get(name, namespace[name])
                 if callable(value):
                     system.replay_materialize.add(value)
                     added_replay_materialize.append(value)

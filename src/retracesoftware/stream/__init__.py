@@ -703,6 +703,30 @@ class writer(_backend_mod.ObjectWriter):
         self.intern(obj)
         return functional.partial(self, obj)
 
+    def async_new_patched(self, obj):
+        self.intern("ASYNC_NEW_PATCHED")
+        return self("ASYNC_NEW_PATCHED", obj)
+
+    def start_new_thread(
+        self,
+        function,
+        args,
+        kwargs=None,
+        *,
+        start_new_thread=_thread.start_new_thread,
+        on_thread_enter=utils.noop,
+        on_thread_exit=utils.noop,
+        wrap_function=functional.identity,
+        get_ident=_thread.get_ident,
+    ):
+        return _wrap_start_new_thread(
+            start_new_thread,
+            on_thread_enter=on_thread_enter,
+            on_thread_exit=on_thread_exit,
+            wrap_function=wrap_function,
+            get_ident=get_ident,
+        )(function, args, kwargs)
+
     def __init__(self, path=None, thread=None, output=None, queue=None,
                  format="binary",
                  flush_interval=0.1,

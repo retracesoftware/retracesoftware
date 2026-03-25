@@ -16,7 +16,6 @@ static PyTypeObject * exposed_types[] = {
     &retracesoftware_stream::BindingRefCreate_Type,
     &retracesoftware_stream::BindingRefLookup_Type,
     &retracesoftware_stream::BindingRefDelete_Type,
-    &retracesoftware_stream::NewMarker_Type,
     nullptr
 };
 
@@ -35,19 +34,9 @@ static PyObject * set_thread_id(PyObject * module, PyObject * id) {
     Py_RETURN_NONE;
 }
 
-static PyObject * new_marker(PyObject * module, PyObject * args) {
-    unsigned long long index;
-    PyObject * cls;
-    if (!PyArg_ParseTuple(args, "KO", &index, &cls)) {
-        return nullptr;
-    }
-    return retracesoftware_stream::new_marker_new(index, cls);
-}
-
 static PyMethodDef module_methods[] = {
     {"thread_id", (PyCFunction)thread_id, METH_NOARGS, "TODO"},
     {"set_thread_id", (PyCFunction)set_thread_id, METH_O, "TODO"},
-    {"_new_marker", (PyCFunction)new_marker, METH_VARARGS, "Create a NewMarker"},
     // {"create_wrapping_proxy_type", (PyCFunction)create_wrapping_proxy_type, METH_VARARGS | METH_KEYWORDS, "TODO"},
     // {"unwrap_apply", (PyCFunction)unwrap_apply, METH_FASTCALL | METH_KEYWORDS, "Call the wrapped target with unproxied *args/**kwargs."},
     // {"thread_id", (PyCFunction)thread_id, METH_NOARGS, "TODO"},

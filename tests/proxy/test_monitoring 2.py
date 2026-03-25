@@ -1,7 +1,7 @@
 """Tests for sys.monitoring-based divergence detection.
 
 Exercises the full monitoring stack:
-  - MonitorMessage parsing in MessageStream
+  - MonitorMessage parsing in next_message
   - monitor_checkpoint verification
   - install_monitoring callback registration
   - TestRunner integration with monitor= parameter
@@ -10,7 +10,7 @@ import sys
 import pytest
 
 from retracesoftware.proxy.messagestream import (
-    MessageStream, MonitorMessage, MemoryWriter, MemoryReader,
+    ReplayReader, MonitorMessage, MemoryWriter, MemoryReader, next_message,
 )
 
 
@@ -19,27 +19,26 @@ from retracesoftware.proxy.messagestream import (
 class TestMonitorMessage:
     def test_parse_monitor_tag(self):
         tape = ['MONITOR', 'S:foo', 'SYNC']
-        ms = MessageStream(iter(tape).__next__)
-        msg = ms._next_message()
+        msg = next_message(iter(tape).__next__)
         assert isinstance(msg, MonitorMessage)
         assert msg.value == 'S:foo'
 
     def test_monitor_checkpoint_match(self):
         tape = ['MONITOR', 'S:foo']
-        ms = MessageStream(iter(tape).__next__, monitor_enabled=True)
+        ms = ReplayReader(iter(tape).__next__, bind=lambda obj: None, monitor_enabled=True)
         ms.monitor_checkpoint('S:foo')
 
     def test_monitor_checkpoint_mismatch(self):
         from retracesoftware.install import ReplayDivergence
         tape = ['MONITOR', 'S:foo']
-        ms = MessageStream(iter(tape).__next__, monitor_enabled=True)
+        ms = ReplayReader(iter(tape).__next__, bind=lambda obj: None, monitor_enabled=True)
         with pytest.raises(ReplayDivergence, match='monitor divergence'):
             ms.monitor_checkpoint('S:bar')
 
     def test_monitor_checkpoint_wrong_message_type(self):
         from retracesoftware.install import ReplayDivergence
         tape = ['SYNC']
-        ms = MessageStream(iter(tape).__next__, monitor_enabled=True)
+        ms = ReplayReader(iter(tape).__next__, bind=lambda obj: None, monitor_enabled=True)
         with pytest.raises(ReplayDivergence, match='expected MONITOR'):
             ms.monitor_checkpoint('S:foo')
 
@@ -49,37 +48,37 @@ class TestMonitorMessage:
 class TestMonitorSkip:
     def test_sync_skips_monitor_when_disabled(self):
         tape = ['MONITOR', 'S:foo', 'MONITOR', 'R:foo', 'SYNC']
-        ms = MessageStream(iter(tape).__next__, monitor_enabled=False)
+        ms = ReplayReader(iter(tape).__next__, bind=lambda obj: None, monitor_enabled=False)
         ms.sync()
 
     def test_sync_raises_on_monitor_when_enabled(self):
         from retracesoftware.install import ReplayDivergence
         tape = ['MONITOR', 'S:foo', 'SYNC']
-        ms = MessageStream(iter(tape).__next__, monitor_enabled=True)
+        ms = ReplayReader(iter(tape).__next__, bind=lambda obj: None, monitor_enabled=True)
         with pytest.raises(ReplayDivergence, match='unexpected MONITOR'):
             ms.sync()
 
     def test_result_skips_monitor_when_disabled(self):
         tape = ['MONITOR', 'S:foo', 'RESULT', 42]
-        ms = MessageStream(iter(tape).__next__, monitor_enabled=False)
-        assert ms.result() == 42
+        ms = ReplayReader(iter(tape).__next__, bind=lambda obj: None, monitor_enabled=False)
+        assert ms.read_result() == 42
 
     def test_result_raises_on_monitor_when_enabled(self):
         from retracesoftware.install import ReplayDivergence
         tape = ['MONITOR', 'S:foo', 'RESULT', 42]
-        ms = MessageStream(iter(tape).__next__, monitor_enabled=True)
+        ms = ReplayReader(iter(tape).__next__, bind=lambda obj: None, monitor_enabled=True)
         with pytest.raises(ReplayDivergence, match='unexpected MONITOR'):
-            ms.result()
+            ms.read_result()
 
     def test_checkpoint_skips_monitor_when_disabled(self):
         tape = ['MONITOR', 'S:foo', 'CHECKPOINT', 'ok']
-        ms = MessageStream(iter(tape).__next__, monitor_enabled=False)
+        ms = ReplayReader(iter(tape).__next__, bind=lambda obj: None, monitor_enabled=False)
         ms.checkpoint('ok')
 
     def test_checkpoint_raises_on_monitor_when_enabled(self):
         from retracesoftware.install import ReplayDivergence
         tape = ['MONITOR', 'S:foo', 'CHECKPOINT', 'ok']
-        ms = MessageStream(iter(tape).__next__, monitor_enabled=True)
+        ms = ReplayReader(iter(tape).__next__, bind=lambda obj: None, monitor_enabled=True)
         with pytest.raises(ReplayDivergence, match='unexpected MONITOR'):
             ms.checkpoint('ok')
 

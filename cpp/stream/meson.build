@@ -3,7 +3,6 @@ _stream_sources = files(
   'bindingref.cpp',
   'framed_writer.cpp',
   'module.cpp',
-  'newmarker.cpp',
   'objectstream.cpp',
   'objectwriter.cpp',
   'persister.cpp',

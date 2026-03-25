@@ -309,7 +309,7 @@ class TestRunner:
         """
         import threading
         import retracesoftware.functional as functional
-        from retracesoftware.proxy.messagestream import MemoryWriter
+        from retracesoftware.testing.protocol_memory import MemoryWriter
         from retracesoftware.install.startthread import patch_thread_start
 
         writer = MemoryWriter(thread=threading.get_ident)
@@ -372,7 +372,7 @@ class TestRunner:
         Returns the result from the record phase.
         """
         import retracesoftware.functional as functional
-        from retracesoftware.proxy.messagestream import MemoryReader
+        from retracesoftware.testing.protocol_memory import MemoryReader
         from retracesoftware.install.startthread import patch_thread_start
 
         reader = MemoryReader(recording.tape, timeout=timeout,
@@ -588,70 +588,4 @@ def install_for_pytest(modules=None):
     return _pytest_runner
 
 
-# ── stream.writer → protocol.Writer adapter ───────────────────────
-
-def stream_writer(writer, stackfactory = None, on_write_error = None):
-    """Adapt a ``stream.writer`` to the ``protocol.Writer`` interface.
-
-    Returns a ``SimpleNamespace`` whose attributes map directly to
-    stream handles — no lambdas, no method dispatch overhead.
-
-    Parameters
-    ----------
-    writer : retracesoftware.stream.writer
-        The underlying stream writer.
-    stackfactory : utils.StackFactory or None
-        When provided, ``stacktrace()`` captures a stack delta and
-        writes it to a ``STACKTRACE`` handle on the stream.
-
-    Example
-    -------
-        from retracesoftware.stream import writer as stream_writer_cls
-        from retracesoftware.install import stream_writer
-
-        sw = stream_writer_cls(path, thread=thread)
-        pw = stream_writer(sw, stackfactory=sf)
-
-        with system.record_context(pw):
-            ...
-    """
-    from types import SimpleNamespace
-
-    if stackfactory:
-        stacktrace_handle = writer.handle('STACKTRACE')
-        def stacktrace():
-            stacktrace_handle(stackfactory.delta())
-    else:
-        stacktrace = None
-
-    _write_error = writer.handle('ERROR')
-    def write_error(exc_type, exc_value, exc_tb):
-        _write_error(exc_value)
-
-    def bind_write_error(func):
-        from retracesoftware import utils
-
-        if on_write_error:
-            return utils.observer(function = func, on_error = on_write_error)
-        else:
-            return func
-        
-    _async_call = writer.handle('ASYNC_CALL')
-
-    def async_call(*args, **kwargs):
-        # Stream-backed writers expose handle-based call sites that accept
-        # positional payloads only. Serialize internal callback kwargs as the
-        # second ASYNC_CALL payload instead of forwarding them as Python kwargs.
-        return _async_call(args, kwargs)
-
-    return SimpleNamespace(
-        type_serializer = writer.type_serializer,
-        sync         = bind_write_error(writer.handle('SYNC')),
-        write_result = bind_write_error(writer.handle('RESULT')),
-        write_error  = bind_write_error(write_error),
-        bind         = bind_write_error(writer.bind),
-        intern       = bind_write_error(writer.intern),
-        async_new_patched = bind_write_error(writer.handle('ASYNC_NEW_PATCHED')),
-        async_call   = bind_write_error(async_call),
-        checkpoint   = bind_write_error(writer.handle('CHECKPOINT')),
-        stacktrace   = bind_write_error(stacktrace))
+from retracesoftware.protocol.record import stream_writer

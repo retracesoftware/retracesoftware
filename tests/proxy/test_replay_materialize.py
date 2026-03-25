@@ -119,7 +119,7 @@ def test_run_with_replay_does_not_materialize_unselected_functions():
     assert replay(allocate_lock) is trace_result
 
 
-def test_run_with_replay_preserves_recorded_error_before_materialization():
+def test_run_with_replay_may_materialize_before_recorded_error():
     class RecordedFailure(RuntimeError):
         pass
 
@@ -146,4 +146,4 @@ def test_run_with_replay_preserves_recorded_error_before_materialization():
     else:
         assert False, "expected recorded failure to be raised"
 
-    assert called is False
+    assert called is True

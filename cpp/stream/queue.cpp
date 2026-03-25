@@ -19,11 +19,10 @@ namespace retracesoftware_stream {
     extern bool Persister_write_object(Persister* persister, PyObject* obj);
     extern bool Persister_intern(Persister* persister, PyObject* obj, Ref ref);
     extern bool Persister_bind(Persister* persister, Ref ref);
-    extern bool Persister_write_new_patched(Persister* persister, Ref type_ref, Ref ref);
 
     namespace {
         // The producer can prepend a 2-entry CMD_THREAD_SWITCH packet ahead of
-        // a 3-entry logical command such as CMD_INTERN or CMD_NEW_PATCHED.
+        // a 3-entry logical command such as CMD_INTERN.
         // Keep the minimum capacity large enough that this worst-case burst can
         // be enqueued without silently truncating a multi-entry packet.
         constexpr size_t kMinQueueCapacity = 5;
@@ -367,27 +366,6 @@ namespace retracesoftware_stream {
             return false;
         }
         PyObject* result = PyObject_CallFunctionObjArgs(method, obj, ref, nullptr);
-        Py_DECREF(method);
-        if (!result) {
-            capture_current_target_error();
-            return false;
-        }
-        Py_DECREF(result);
-        return true;
-    }
-
-    bool Queue::call_target_new_patched(PyObject* type_ref, Ref ref) {
-        if (is_persister()) {
-            return Persister_write_new_patched(native_persister(target_obj), type_ref, ref);
-        }
-        retracesoftware::GILGuard gstate;
-        PyObject* method = lookup_target_method(target_obj, "write_new_patched");
-        if (!method) {
-            PyErr_SetString(PyExc_AttributeError, "target is missing 'write_new_patched'");
-            capture_current_target_error();
-            return false;
-        }
-        PyObject* result = PyObject_CallFunctionObjArgs(method, type_ref, ref, nullptr);
         Py_DECREF(method);
         if (!result) {
             capture_current_target_error();
@@ -1014,18 +992,6 @@ namespace retracesoftware_stream {
                 finish_consumed_ref(ref);
                 return true;
             }
-            case CMD_NEW_PATCHED: {
-                Ref type_ref = consume_ref();
-                Ref ref = consume_ref();
-                if (!call_target_new_patched(type_ref, ref)) {
-                    release_consumed_ref(type_ref);
-                    release_consumed_ref(ref);
-                    return false;
-                }
-                finish_consumed_ref(type_ref);
-                finish_consumed_ref(ref);
-                return true;
-            }
             case CMD_THREAD_SWITCH: {
                 PyObject* obj = consume_owned_payload();
                 if (is_persister()) {
@@ -1187,10 +1153,6 @@ namespace retracesoftware_stream {
                 break;
             case CMD_INTERN:
                 release_consumed_obj(consume_owned_payload());
-                release_consumed_ref(consume_ref());
-                break;
-            case CMD_NEW_PATCHED:
-                release_consumed_ref(consume_ref());
                 release_consumed_ref(consume_ref());
                 break;
             case CMD_THREAD_SWITCH:

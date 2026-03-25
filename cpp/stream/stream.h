@@ -110,10 +110,8 @@ namespace retracesoftware_stream {
     extern PyTypeObject BindingRefCreate_Type;
     extern PyTypeObject BindingRefLookup_Type;
     extern PyTypeObject BindingRefDelete_Type;
-    extern PyTypeObject NewMarker_Type;
 
     PyObject* binding_ref_new(PyTypeObject* type, uint64_t index);
-    PyObject* new_marker_new(uint64_t index, PyObject* cls);
 
     void handle_write_error();
     void handle_debug_error(bool quit_on_error);

@@ -302,8 +302,6 @@ def _run_with_replay(ext_runner, replay_materialize = None, materialize = None, 
     )
 
     def replay_fn(fn, *args, **kwargs):
-        recorded = ext_runner()
-
         key = canonical_replay_target(fn)
         if key in replay_materialize:
             if materialize is None:
@@ -311,9 +309,10 @@ def _run_with_replay(ext_runner, replay_materialize = None, materialize = None, 
             value = materialize(key, *args, **kwargs)
             if bind_materialized is not None:
                 value = bind_materialized(value)
+            ext_runner()
             return value
 
-        return recorded
+        return ext_runner()
     return replay_fn
 
 def input_adapter(function, passthrough, proxy, unproxy, on_call = None):
@@ -685,6 +684,11 @@ class System:
         # retrace is active. When retrace is disabled, ``self._internal``
         # naturally passthroughs to the original target.
         self._int_handler = self._internal
+        self._override_handler = self.create_dispatch(
+            disabled=functional.apply,
+            external=self._ext_handler,
+            internal=self._int_handler,
+        )
 
         # ── Allocation hook ────────────────────────────────────────
         #
@@ -898,7 +902,7 @@ class System:
                         originals[name] = getattr(cls, name)
                     if type(value) in [types.MemberDescriptorType, types.GetSetDescriptorType]:
                         setattr(cls, name, proxy_member(value))
-                    elif callable(value):
+                    elif callable(value) and not isinstance(value, type):
                         setattr(cls, name, proxy_function(value))
 
         try:
@@ -941,14 +945,8 @@ class System:
                             for name, value in cls.__dict__.items()
                             if name in base_method_names
                         }
-                        direct_methods = {
-                            name: value
-                            for name, value in cls.__dict__.items()
-                            if name not in base_method_names
-                        }
                         originals = subtype_attrs.setdefault(cls, {})
-                        proxy_attrs(cls, dict=overrides, handler=self._int_handler, originals=originals)
-                        proxy_attrs(cls, dict=direct_methods, handler=self._ext_handler, originals=originals)
+                        proxy_attrs(cls, dict=overrides, handler=self._override_handler, originals=originals)
 
                     cls.__init_subclass__ = classmethod(init_subclass)
 
@@ -1004,7 +1002,7 @@ class System:
         """
         return functional.walker(functional.when(self.should_proxy, maybe_proxy(proxytype)))
 
-    def _create_context(self, int_spec, ext_spec, ext_runner = None, **args):
+    def _create_context(self, int_spec, ext_spec, ext_runner = None, replay_bind_materialized = None, **args):
         """Build the executor pair and enter a gate context.
 
         This is the core wiring that record_context and replay_context
@@ -1095,11 +1093,9 @@ class System:
             ext_runner,
             replay_materialize = self.replay_materialize,
             materialize = lambda fn, *args, **kwargs: self.disable_for(fn)(*args, **kwargs),
-            bind_materialized = functional.walker(
-                functional.when(
-                    lambda value: type(value) in self.patched_types and not self.is_bound(value),
-                    lambda value: (self._bind(value), self.is_bound.add(value), value)[-1],
-                )
+            bind_materialized = replay_bind_materialized or functional.when(
+                lambda value: self.should_proxy(value) and not self.is_bound(value),
+                lambda value: (self._bind(value), self.is_bound.add(value), value)[-1],
             ),
         ) if ext_runner \
             else self._external.apply_with(None)
@@ -1115,7 +1111,7 @@ class System:
             functional.identity)
 
         passthrough = functional.or_predicate(utils.FastTypePredicate(
-                lambda cls: cls in self.patched_types or issubclass(cls, tuple(self.immutable_types))
+                lambda cls: issubclass(cls, tuple(self.immutable_types))
             ).istypeof,
             self.is_bound)
 
@@ -1190,7 +1186,10 @@ class System:
             on_result = on_result,
             on_error = on_error)
 
-    def _create_ext_spec(self, sync : Callable, on_result : Callable, on_error : Callable,
+    def _create_ext_spec(self, sync : Callable, 
+                         on_result : Callable, 
+                         on_error : Callable,
+                         track : Callable,
                          on_passthrough_result : Callable = None,
                          on_new_proxytype : Callable = None,
                          disabled_handler : Callable = None,
@@ -1270,8 +1269,20 @@ class System:
 
             return proxytype
 
+        is_patched_type = utils.FastTypePredicate(
+            lambda cls: cls in self.patched_types
+        ).istypeof
+
+        if track:
+            proxy = functional.if_then_else(
+                is_patched_type,
+                track,
+                self._proxyfactory(self.disable_for(ext_proxytype)))
+        else:
+            proxy = self._proxyfactory(self.disable_for(ext_proxytype))
+
         return SimpleNamespace(
-            proxy = self._proxyfactory(self.disable_for(ext_proxytype)),
+            proxy = proxy,
             on_call = functional.lazy(sync),
             on_result = on_result,
             on_passthrough_result = on_passthrough_result,
@@ -1363,6 +1374,11 @@ class System:
 
             writer.async_new_patched(type(obj))
 
+        def track(obj):
+            writer.async_new_patched(type(obj))
+            remember_bind(obj)
+            return obj
+
         return self._create_context(
             _async_new_patched = remember_async_new_patched,
             _bind = remember_bind,
@@ -1374,6 +1390,7 @@ class System:
                 on_error = checkpoint),
             ext_spec = self._create_ext_spec(
                 sync = ext_on_call,
+                track = track,
                 on_result = utils.chain(writer.write_result, checkpoint),
                 on_error = utils.chain(writer.write_error, checkpoint),
                 on_new_proxytype = register_type_serializer))
@@ -1417,6 +1434,12 @@ class System:
         if hasattr(reader, 'type_deserializer'):
             reader.type_deserializer[StubRef] = _ReplayStubFactory()
 
+        if hasattr(reader, "_mark_retraced"):
+            reader._mark_retraced = self.is_bound.add
+        stream = getattr(reader, "_stream", None)
+        if stream is not None and hasattr(stream, "_mark_retraced"):
+            stream._mark_retraced = self.is_bound.add
+
         native_reader = getattr(reader, '_native_reader', reader)
         if hasattr(native_reader, 'stub_factory'):
             # Replay-side stub materialization must not re-enter the active
@@ -1429,15 +1452,31 @@ class System:
             self.is_bound.add(obj)
             return reader.bind(obj)
 
+        def remember_materialized_bind(obj):
+            if not self.should_proxy(obj) or self.is_bound(obj):
+                return obj
+
+            bind_if_pending = getattr(reader, "bind_if_pending", None)
+            if bind_if_pending is not None:
+                if bind_if_pending(obj):
+                    self.is_bound.add(obj)
+                return obj
+
+            self._bind(obj)
+            self.is_bound.add(obj)
+            return obj
+
         return self._create_context(
             _bind = remember_bind,
             _register_thread_id = self.is_bound.add,
+            replay_bind_materialized = remember_materialized_bind,
             int_spec = self._create_int_spec(
                 bind = remember_bind,
                 on_result = checkpoint,
                 on_error = checkpoint),
             ext_spec = self._create_ext_spec(
                 sync = reader.sync,
+                track = None,
                 on_result = checkpoint,
                 on_error = checkpoint,
                 disabled_handler = functional.mapargs(

@@ -24,9 +24,7 @@ from . import (
     BindingDelete,
     BindingLookup,
     Heartbeat,
-    NewMarker,
     ThreadSwitch,
-    _new_marker,
 )
 
 _MISSING = object()
@@ -229,12 +227,11 @@ class ResolvingReader:
     record by calling ``bind(obj)``.
     """
 
-    __slots__ = ["source", "_bindings", "_new_markers"]
+    __slots__ = ["source", "_bindings"]
 
     def __init__(self, source):
         self.source = source
         self._bindings = {}
-        self._new_markers = {}
 
     def __call__(self, thread_id=_MISSING):
         return self.next(thread_id)
@@ -246,14 +243,6 @@ class ResolvingReader:
         def transform(value):
             if isinstance(value, BindingLookup):
                 return bindings[value.index]
-            if isinstance(value, NewMarker):
-                cls = resolver(value.cls)
-                cached = self._new_markers.get(value.index)
-                if cached is not None and cached.cls is cls:
-                    return cached
-                resolved = value if cls is value.cls else _new_marker(value.index, cls)
-                self._new_markers[value.index] = resolved
-                return resolved
             return value
 
         resolver = functional.walker(transform)

@@ -16,7 +16,7 @@ import pytest
 
 pytest.importorskip("retracesoftware.stream")
 import retracesoftware.stream as stream
-from retracesoftware.proxy.messagestream import HandleMessage, MessageStream
+from retracesoftware.proxy.messagestream import ReplayReader
 
 _mod = stream._backend_mod
 FramedWriter = _mod.FramedWriter
@@ -467,24 +467,122 @@ def test_tape_reader_hydrates_interned_values(tmp_path):
         reader.close()
 
 
+class _FakeBindingReader:
+    def __init__(self, tape):
+        self._iter = iter(tape)
+        self._bindings = {}
+        self.stub_factory = lambda cls: cls.__new__(cls)
+
+    def __call__(self):
+        item = next(self._iter)
+        if isinstance(item, stream.BindingLookup):
+            return self._bindings[item.index]
+        return item
+
+    def bind(self, obj):
+        item = next(self._iter)
+        if not isinstance(item, stream.BindingCreate):
+            raise RuntimeError(
+                f"expected BindingCreate during bind, got {type(item).__name__}"
+            )
+        self._bindings[item.index] = obj
+
+
 def test_message_stream_materializes_async_new_patched_tag_before_result():
-    native_reader = SimpleNamespace(stub_factory=lambda cls: cls.__new__(cls))
-    source = iter(["ASYNC_NEW_PATCHED", list, "RESULT", list]).__next__
-    messages = MessageStream(source, native_reader=native_reader)
+    native_reader = _FakeBindingReader([
+        "ASYNC_NEW_PATCHED",
+        list,
+        stream.BindingCreate(0),
+        "RESULT",
+        stream.BindingLookup(0),
+    ])
+    messages = ReplayReader(
+        native_reader,
+        bind=native_reader.bind,
+        stub_factory=getattr(native_reader, "stub_factory", None),
+    )
 
     materialized = messages.read_result()
     assert isinstance(materialized, list)
     assert materialized == []
 
 
-def test_message_stream_materializes_async_new_patched_handle_before_result():
-    native_reader = SimpleNamespace(stub_factory=lambda cls: cls.__new__(cls))
-    source = iter([HandleMessage("ASYNC_NEW_PATCHED", list), "RESULT", list]).__next__
-    messages = MessageStream(source, native_reader=native_reader)
+def test_message_stream_resolves_binding_lookup_for_async_new_patched_result():
+    native_reader = _FakeBindingReader([
+        "ASYNC_NEW_PATCHED",
+        list,
+        stream.BindingCreate(0),
+        "RESULT",
+        stream.BindingLookup(0),
+    ])
+    messages = ReplayReader(
+        native_reader,
+        bind=native_reader.bind,
+        stub_factory=getattr(native_reader, "stub_factory", None),
+    )
 
     materialized = messages.read_result()
     assert isinstance(materialized, list)
     assert materialized == []
+
+
+def test_message_stream_ignores_unreturned_async_new_patched_helpers():
+    native_reader = _FakeBindingReader([
+        "ASYNC_NEW_PATCHED",
+        list,
+        stream.BindingCreate(0),
+        "ASYNC_NEW_PATCHED",
+        dict,
+        stream.BindingCreate(1),
+        "RESULT",
+        stream.BindingLookup(1),
+        "SYNC",
+        "RESULT",
+        None,
+    ])
+    messages = ReplayReader(
+        native_reader,
+        bind=native_reader.bind,
+        stub_factory=getattr(native_reader, "stub_factory", None),
+    )
+
+    materialized = messages.read_result()
+    assert isinstance(materialized, dict)
+    assert materialized == {}
+
+    messages.sync()
+    assert messages.read_result() is None
+
+
+def test_message_stream_raises_immediately_on_unmatched_bind():
+    native_reader = _FakeBindingReader(["ASYNC_NEW_PATCHED", list, "RESULT", list])
+    messages = ReplayReader(
+        native_reader,
+        bind=native_reader.bind,
+        stub_factory=getattr(native_reader, "stub_factory", None),
+    )
+
+    with pytest.raises(RuntimeError, match="expected BindingCreate during bind"):
+        messages.read_result()
+
+
+def test_memory_writer_reader_roundtrip_uses_binding_lookup_for_bound_results():
+    from retracesoftware.proxy.messagestream import MemoryReader, MemoryWriter
+
+    writer = MemoryWriter()
+    bound = object()
+    writer.bind(bound)
+    writer.sync()
+    writer.write_result(bound)
+
+    assert isinstance(writer.tape[0], stream.BindingCreate)
+    assert isinstance(writer.tape[3], stream.BindingLookup)
+
+    reader = MemoryReader(writer.tape)
+    resolved = object()
+    reader.bind(resolved)
+    reader.sync()
+    assert reader.read_result() is resolved
 
 
 def test_writer_start_new_thread_uses_get_ident_and_callbacks():
@@ -752,7 +850,7 @@ def test_raw_persister_non_bytes_serializer_emits_serialize_error(tmp_path):
         fw.close()
 
     raw = path.read_bytes()
-    assert raw[0] == 0xEE
+    assert raw[0] == 0xDE
 
     reader = _make_raw_native_reader(path)
     try:

@@ -5,7 +5,7 @@ import stat
 import retracesoftware.utils as utils
 import retracesoftware.functional as functional
 from pathlib import Path
-from retracesoftware.proxy.messagestream import MessageStream
+from retracesoftware.proxy.messagestream import ReplayReader
 import retracesoftware.stream as stream
 import datetime
 import gc
@@ -265,7 +265,7 @@ def make_replay_fork(proxied_fork, reader, fork_path):
     """Wrap a proxied os.fork to handle PID switching on replay.
 
     The orphaned RESULT(0) left in the child's stream is naturally
-    skipped by MessageStream.sync() on the next proxy call.
+    skipped by ReplayReader.sync() on the next proxy call.
     """
     fork_index = [0]
     def replay_fork():
@@ -335,10 +335,11 @@ def replay(system, args):
             per_thread_source = stream.per_thread(
                 source=reader, thread = thread_id.get,
                 timeout=max(1, args.read_timeout // 1000))
-            msg_stream = MessageStream(
+            msg_stream = ReplayReader(
                 per_thread_source,
+                bind=reader.bind,
+                stub_factory=getattr(reader, "stub_factory", None),
                 monitor_enabled=(monitor_level > 0),
-                native_reader=reader,
             )
 
             controller = None
@@ -401,7 +402,7 @@ def replay(system, args):
 
             # During replay, weakref callbacks fire naturally and handle
             # messages (ON_WEAKREF_CALLBACK_START/END) on the tape are
-            # auto-skipped by MessageStream, so wrap_callback is identity.
+            # auto-skipped by the replay reader, so wrap_callback is identity.
             def wrap_callback(callback):
                 return callback
 

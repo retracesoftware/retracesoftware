@@ -30,7 +30,7 @@ pytest.importorskip("retracesoftware.stream")
 import retracesoftware.stream as stream
 import retracesoftware.proxy.system as proxy_system
 from retracesoftware.install import stream_writer
-from retracesoftware.proxy.messagestream import MessageStream
+from retracesoftware.proxy.messagestream import ReplayReader
 
 
 class RecordingQueue:
@@ -338,9 +338,13 @@ def test_system_record_memoryview_result_roundtrips_through_unframed_binary_repl
             thread=lambda: (),
             timeout=1,
         )
-        msg_stream = MessageStream(per_thread_source, native_reader=raw_reader)
+        replay_reader = ReplayReader(
+            per_thread_source,
+            bind=raw_reader.bind,
+            stub_factory=getattr(raw_reader, "stub_factory", None),
+        )
 
-        with system.replay_context(msg_stream):
+        with system.replay_context(replay_reader):
             obj = Patched()
             replayed = obj.payload()
             assert bytes(replayed) == b"payload"

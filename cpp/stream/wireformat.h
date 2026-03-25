@@ -70,7 +70,6 @@ namespace retracesoftware_stream {
         INTERN_INLINE,
 
         THREAD_SWITCH,
-        NEW_PATCHED,
         STACK,
         ADD_FILENAME,
         
@@ -140,7 +139,6 @@ namespace retracesoftware_stream {
     constexpr Control SerializeError = create_fixed_size(FixedSizeTypes::SERIALIZE_ERROR);
     constexpr Control Bind = create_fixed_size(FixedSizeTypes::BIND);
     constexpr Control Intern = create_fixed_size(FixedSizeTypes::INTERN_INLINE);
-    constexpr Control NewPatched = create_fixed_size(FixedSizeTypes::NEW_PATCHED);
     // constexpr Control BindingDelete = create_fixed_size(FixedSizeTypes::);
 
     constexpr bool is_binding_delete(Control control) {
@@ -213,7 +211,6 @@ namespace retracesoftware_stream {
             case FixedSizeTypes::BIND: return "BIND";
             case FixedSizeTypes::INTERN_INLINE: return "INTERN";
             case FixedSizeTypes::THREAD_SWITCH: return "THREAD_SWITCH";
-            case FixedSizeTypes::NEW_PATCHED: return "NEW_PATCHED";
             case FixedSizeTypes::STACK: return "STACK";
             case FixedSizeTypes::ADD_FILENAME: return "ADD_FILENAME";
             case FixedSizeTypes::CHECKSUM: return "CHECKSUM";

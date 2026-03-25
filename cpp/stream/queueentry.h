@@ -90,7 +90,6 @@ namespace retracesoftware_stream {
         CMD_BIND,
         CMD_INTERN,
         CMD_DELETE,
-        CMD_NEW_PATCHED,
         CMD_THREAD_SWITCH,
         CMD_FLUSH,
         CMD_SHUTDOWN,

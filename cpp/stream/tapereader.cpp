@@ -530,15 +530,6 @@ namespace retracesoftware_stream {
                     binding_counter++;
                     return created;
                 }
-                case FixedSizeTypes::NEW_PATCHED: {
-                    PyObject * marker = read_new_patched(intern_counter, "NEW_PATCHED");
-                    if (!marker) {
-                        return nullptr;
-                    }
-                    interns[intern_counter++] = Py_NewRef(marker);
-                    return marker;
-                }
-
                 case FixedSizeTypes::THREAD_SWITCH: {
                     PyObject * thread = read();
                     if (!thread) {
@@ -647,21 +638,6 @@ namespace retracesoftware_stream {
             return control.Sized.type == SizedTypes::FIXED_SIZE
                 ? read_fixedsize(control.Fixed.type)
                 : read_sized(control);
-        }
-
-        PyObject * read_new_patched(uint64_t index, const char * opname) {
-            PyObject * cls = read();
-
-            if (!cls) {
-                if (!PyErr_Occurred()) {
-                    PyErr_Format(PyExc_RuntimeError, "read() returned NULL without setting exception in %s", opname);
-                }
-                throw nullptr;
-            }
-
-            PyObject * instance = new_marker_new(index, cls);
-            Py_DECREF(cls);
-            return instance;
         }
 
         static PyObject * py_close(TapeReader * self, PyObject * unused) {

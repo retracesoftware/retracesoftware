@@ -85,7 +85,6 @@ namespace retracesoftware_stream {
         bool call_target_bind(Ref ref);
         bool call_target_delete(Ref ref);
         bool call_target_intern(PyObject* obj, Ref ref);
-        bool call_target_new_patched(PyObject* type, Ref ref);
         bool call_target_collection(PyObject* type, size_t len);
         bool call_target_write_object(PyObject* obj);
 
@@ -234,32 +233,6 @@ namespace retracesoftware_stream {
             return push_command(CMD_SHUTDOWN);
         }
     
-        bool push_new_patched(PyObject* obj) {
-            return push_new_patched(reinterpret_cast<PyObject*>(Py_TYPE(obj)), obj);
-        }
-
-        bool push_new_patched(Ref type_ref, Ref ref) {
-            PyObject* type_token = type_ref;
-            PyObject* token = ref;
-            const bool own_type_token = queue_is_weakref_token(type_token);
-            const bool own_token = queue_is_weakref_token(token);
-            if (reject_push()) {
-                return false;
-            }
-            if (own_type_token) Py_INCREF(type_token);
-            if (own_token) Py_INCREF(token);
-            try {
-                push_entry_unchecked(cmd_entry(CMD_NEW_PATCHED));
-                    push_entry_unchecked(reinterpret_cast<QEntry>(type_ref));
-                    push_entry_unchecked(reinterpret_cast<QEntry>(ref));
-                return wait_for_slots(6);
-            } catch (...) {
-                if (own_type_token) Py_DECREF(type_token);
-                if (own_token) Py_DECREF(token);
-                throw;
-            }
-        }
-
         bool push_heartbeat() {
             return push_command(CMD_HEARTBEAT);
         }
