@@ -285,33 +285,11 @@ def get_all_subtypes(cls):
 def _run_with_replay(ext_runner, replay_materialize = None, materialize = None, bind_materialized = None):
     """Return a callable matching apply_with's signature: (fn, *args, **kwargs).
 
-    During replay, the real external function is never called.  Instead,
+    During replay, the real external function is never called. Instead,
     ext_runner() reads the next recorded result from the stream and
-    returns it directly.  fn, args, and kwargs are ignored.
+    returns it directly. fn, args, and kwargs are ignored.
     """
-    def canonical_replay_target(value):
-        while hasattr(value, "__wrapped__"):
-            value = value.__wrapped__
-        if utils.is_wrapped(value):
-            value = utils.unwrap(value)
-        return value
-
-    replay_materialize = frozenset(
-        canonical_replay_target(value)
-        for value in (replay_materialize or frozenset())
-    )
-
     def replay_fn(fn, *args, **kwargs):
-        key = canonical_replay_target(fn)
-        if key in replay_materialize:
-            if materialize is None:
-                raise RuntimeError("replay materialization requested without materializer")
-            value = materialize(key, *args, **kwargs)
-            if bind_materialized is not None:
-                value = bind_materialized(value)
-            ext_runner()
-            return value
-
         return ext_runner()
     return replay_fn
 
@@ -1374,10 +1352,19 @@ class System:
 
             writer.async_new_patched(type(obj))
 
-        def track(obj):
-            writer.async_new_patched(type(obj))
-            remember_bind(obj)
-            return obj
+        def track(value):
+            def visit(obj):
+                if type(obj) in self.patched_types and not self.is_bound(obj):
+                    writer.async_new_patched(type(obj))
+                    remember_bind(obj)
+                return obj
+
+            return functional.walker(visit)(value)
+            
+        # def track(obj):
+        #     writer.async_new_patched(type(obj))
+        #     remember_bind(obj)
+        #     return obj
 
         return self._create_context(
             _async_new_patched = remember_async_new_patched,
@@ -1434,11 +1421,16 @@ class System:
         if hasattr(reader, 'type_deserializer'):
             reader.type_deserializer[StubRef] = _ReplayStubFactory()
 
+        if hasattr(reader, "stub_factory"):
+            reader.stub_factory = self.disable_for(reader.stub_factory)
+
         if hasattr(reader, "_mark_retraced"):
             reader._mark_retraced = self.is_bound.add
         stream = getattr(reader, "_stream", None)
         if stream is not None and hasattr(stream, "_mark_retraced"):
             stream._mark_retraced = self.is_bound.add
+        if stream is not None and hasattr(stream, "stub_factory"):
+            stream.stub_factory = self.disable_for(stream.stub_factory)
 
         native_reader = getattr(reader, '_native_reader', reader)
         if hasattr(native_reader, 'stub_factory'):
@@ -1454,12 +1446,6 @@ class System:
 
         def remember_materialized_bind(obj):
             if not self.should_proxy(obj) or self.is_bound(obj):
-                return obj
-
-            bind_if_pending = getattr(reader, "bind_if_pending", None)
-            if bind_if_pending is not None:
-                if bind_if_pending(obj):
-                    self.is_bound.add(obj)
                 return obj
 
             self._bind(obj)

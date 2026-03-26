@@ -51,7 +51,7 @@ def test_patch_registers_original_callable_when_proxy_and_replay_materialize_ove
     assert allocate_lock not in system.replay_materialize
 
 
-def test_run_with_replay_materializes_selected_functions():
+def test_run_with_replay_always_returns_recorded_result_for_selected_functions():
     trace_result = object()
     live_result = object()
 
@@ -64,10 +64,10 @@ def test_run_with_replay_materializes_selected_functions():
         materialize=lambda fn, *args, **kwargs: fn(*args, **kwargs),
     )
 
-    assert replay(allocate_lock) is live_result
+    assert replay(allocate_lock) is trace_result
 
 
-def test_run_with_replay_materializes_patched_functions():
+def test_run_with_replay_always_returns_recorded_result_for_patched_functions():
     trace_result = object()
     live_result = object()
     system = System()
@@ -82,10 +82,10 @@ def test_run_with_replay_materializes_patched_functions():
         materialize=lambda fn, *args, **kwargs: fn(*args, **kwargs),
     )
 
-    assert replay(patched) is live_result
+    assert replay(patched) is trace_result
 
 
-def test_run_with_replay_materializes_selected_types():
+def test_run_with_replay_always_returns_recorded_result_for_selected_types():
     trace_result = object()
 
     class MemoryBIO:
@@ -98,10 +98,7 @@ def test_run_with_replay_materializes_selected_types():
         materialize=lambda fn, *args, **kwargs: fn(*args, **kwargs),
     )
 
-    result = replay(MemoryBIO)
-
-    assert isinstance(result, MemoryBIO)
-    assert result.live is True
+    assert replay(MemoryBIO) is trace_result
 
 
 def test_run_with_replay_does_not_materialize_unselected_functions():
@@ -119,7 +116,7 @@ def test_run_with_replay_does_not_materialize_unselected_functions():
     assert replay(allocate_lock) is trace_result
 
 
-def test_run_with_replay_may_materialize_before_recorded_error():
+def test_run_with_replay_does_not_materialize_before_recorded_error():
     class RecordedFailure(RuntimeError):
         pass
 
@@ -146,4 +143,4 @@ def test_run_with_replay_may_materialize_before_recorded_error():
     else:
         assert False, "expected recorded failure to be raised"
 
-    assert called is True
+    assert called is False
