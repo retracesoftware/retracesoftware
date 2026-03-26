@@ -19,8 +19,10 @@ hard constraints, not as an encyclopedia.
   Runtime patching, import hooks, weakref/thread setup, monitoring, pytest integration.
 - `src/retracesoftware/proxy/`
   Record/replay boundary semantics, gates, proxying, message streams.
+- `src/retracesoftware/protocol/`
+  Semantic replay protocol layered above stream transport.
 - `src/retracesoftware/stream/` and `cpp/stream/`
-  Trace writing/reading, queue transport, wire format, thread/process framing.
+  Trace writing/reading, binding transport, queue transport, thread/process framing.
 - `cpp/utils/` and `cpp/cursor/`
   CPython internals, gates, demux, cursor/call-count machinery.
 - `src/retracesoftware/dap/` and `go/replay/`
@@ -82,6 +84,8 @@ hard constraints, not as an encyclopedia.
   current checkout layout:
   `cd go && go build -o ../.retrace-replay-bin ./cmd/replay`
   then export `RETRACE_REPLAY_BIN=/absolute/path/to/retracesoftware/.retrace-replay-bin`
+  (or `REPLAY_BIN=/absolute/path/to/retracesoftware/.retrace-replay-bin` for
+  direct `__main__.py` resolution paths)
 - `RETRACE_SKIP_CHECKSUMS=1` exists as a debugging escape hatch for checksum
   mismatches, but do not rely on it for normal validation.
 - Debug a recording or replay failure:
@@ -100,6 +104,10 @@ if needed.
   cursor logic, explicitly call out the determinism impact.
 - If you touch `cpp/`, `src/retracesoftware/proxy/`, or `src/retracesoftware/dap/`,
   also read the local `AGENTS.md` in that directory if present.
+- If you touch `src/retracesoftware/stream/`, `src/retracesoftware/protocol/`,
+  or `tests/`, also read the local `AGENTS.md` there if present.
+- If you touch `dockertests/`, `go/`, or `src/retracesoftware/modules/`,
+  also read the local `AGENTS.md` there if present.
 - If a task depends on a test-directory-specific manual replay loop, inspect
   the target test directory and existing scripts before suggesting commands.
 - For changes touching replay-sensitive boundary logic, threading, weakrefs,

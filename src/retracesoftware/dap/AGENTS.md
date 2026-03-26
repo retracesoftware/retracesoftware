@@ -52,6 +52,8 @@ checking the Go DAP proxy and replay tooling too.
 - Reconnect/fork behavior that changes which transport or socket the debugger uses.
 - Adapter reconnect-after-fork behavior is part of the design; child replay
   processes need their own transport/file description state.
+- Client-visible event ordering is part of the contract. Adding new events
+  before existing stop/breakpoint events is a protocol change, not harmless noise.
 
 ## Working Rules
 
@@ -67,6 +69,9 @@ checking the Go DAP proxy and replay tooling too.
   `sys.monitoring` design where possible.
 - Assume paused-frame state is fragile. After resume, references derived from a
   paused frame may no longer be valid.
+- If a control-plane change affects event sequencing or stop semantics, update
+  the tests in `tests/test_stdio_replay.py` or the relevant DAP tests in the
+  same diff, or explicitly call out the intended contract change.
 
 ## Build And Test
 

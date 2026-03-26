@@ -2,10 +2,11 @@
 name: determinism-check
 description: >
   Manually review a proposed change for replay determinism hazards. Use only
-  for replay-sensitive edits touching proxy boundary logic, replay message
-  handling, thread/fork behavior, weakref or finalizer timing, module
-  interception coverage, or similar control flow. Do not use for general code
-  review, trivial cleanup, or ordinary non-replay changes.
+  for replay-sensitive edits touching proxy boundary logic, stream or protocol
+  semantics, replay message handling, Go replay/control behavior, thread/fork
+  behavior, weakref or finalizer timing, module interception coverage, or
+  similar control flow. Do not use for general code review, trivial cleanup,
+  or ordinary non-replay changes.
 ---
 
 # Determinism Check
@@ -16,10 +17,13 @@ correctness. This is a focused review checklist, not a full code review.
 Start by reading the relevant local `AGENTS.md` files and the actual diff. In
 this repo, the most common high-risk areas are:
 
+- `src/retracesoftware/stream/`
+- `src/retracesoftware/protocol/`
 - `src/retracesoftware/proxy/`
 - `src/retracesoftware/install/`
 - `src/retracesoftware/modules/*.toml`
 - `src/retracesoftware/dap/`
+- `go/replay/`
 - `cpp/stream/`
 - `cpp/utils/`
 - `cpp/cursor/`
@@ -55,14 +59,27 @@ For each relevant category below, decide whether the change is `safe`,
 - If `messagestream.py` changed, could exception tracebacks, skipped handle
   messages, or result consumption change object lifetimes or divergence timing?
 
-### 4. Threading and fork
+### 4. Binding and materialization contract
+
+- Does the change alter when `BindingCreate`, `BindingLookup`, or
+  `BindingDelete` records are emitted, consumed, or resolved?
+- Could it change replay-side materialization order for wrapped objects,
+  `StubRef`, or `ASYNC_NEW_PATCHED` values?
+- Could it change what external method bodies observe for wrapped arguments, or
+  whether immutable/patched values now take a different passthrough path?
+- Could `bind(obj)` now happen too early, too late, or on the wrong logical
+  object/thread?
+- If the symptom is `ExpectedBindingCreate`, have you checked stream/protocol
+  contract drift before changing unrelated higher-level code?
+
+### 5. Threading and fork
 
 - Does the change alter thread creation, thread-id routing, locks, wakeups,
   synchronization, or callback ordering?
 - Does it affect fork behavior, parent/child replay setup, or trace reopening?
 - Could it perturb replay ordering even if the code still "works" functionally?
 
-### 5. Object lifetime and cleanup
+### 6. Object lifetime and cleanup
 
 - Does it change weakrefs, `__del__`, finalizers, GC timing, or shutdown order?
 - Could an exception or traceback now keep retrace internals alive longer than
@@ -70,20 +87,31 @@ For each relevant category below, decide whether the change is `safe`,
 - Does install-layer lifecycle or `atexit` behavior move I/O inside or outside
   the recorded context?
 
-### 6. Control-plane observer effect
+### 7. Control-plane observer effect
 
 - Does it add debugger I/O, trace reads, monitoring callbacks, logging, or
   other control-plane work in replay-sensitive paths?
 - If yes, does it bypass retrace gates so the debugger/tooling does not record
   itself?
 
-### 7. Native/runtime assumptions
+### 8. Native/runtime assumptions
 
 - Does the change cross Python-version-specific branches or CPython internals?
 - Does it move Python object access into native hot paths, queue loops, or
   GIL-free sections?
 - Does it change queue protocol, inflight accounting, thread-switch injection,
   or cursor state assumptions?
+
+### 9. Contract drift
+
+- Does the change alter CLI flags, command names, event ordering, stop reasons,
+  response payload shape, or debugger/control-protocol semantics?
+- Could it insert extra events ahead of expected `breakpoint_hit` or stop
+  events, or change `set_backstop` semantics relative to replay progress and
+  `message_index`?
+- If tests/helpers still assume old behavior, are they being updated in the
+  same diff?
+- Could this be test drift or protocol drift rather than a pure determinism bug?
 
 ## Output
 

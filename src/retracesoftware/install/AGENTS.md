@@ -42,6 +42,9 @@ Many bugs that look like proxy or replay bugs are actually install-layer bugs.
   patching/hook installation settles.
 - `install_for_pytest()` is the in-process testing path; keep it aligned with
   the main lifecycle rather than letting it drift into a separate runtime model.
+- Auto-enable bootstrap is also part of the install story: `autoenable.py` and
+  `retracesoftware_autoenable.pth` are what make child processes or fresh
+  interpreters start under retrace automatically in some workflows.
 
 ## High-Risk Areas
 
@@ -57,10 +60,15 @@ Many bugs that look like proxy or replay bugs are actually install-layer bugs.
   retracing or proxy too much of the system.
 - Already-loaded module patching: ref replacement behavior can be subtle and
   affect modules imported before retrace setup.
+- Auto-enable bootstrap drift: changes that desynchronize `.pth` startup,
+  environment-driven activation, and the main install lifecycle can break
+  child-process activation in ways that look like replay or packaging bugs.
 - `atexit` and shutdown behavior: whether cleanup runs inside or outside the
   active context changes what gets recorded.
-- `with_atexit` / `trace_shutdown` is a semantic choice, not just a convenience
-  flag: it decides whether exit-time I/O becomes part of the recording.
+- `trace_shutdown` is a semantic choice, not just a convenience flag: it
+  decides whether exit-time I/O becomes part of the recording.
+- Record must not hang after user code has completed. Threadpool/executor
+  cleanup, writer drain/close, and atexit ordering are no-break behavior.
 
 ## Working Rules
 
@@ -73,6 +81,9 @@ Many bugs that look like proxy or replay bugs are actually install-layer bugs.
   bypass and re-entrancy behavior.
 - If you change thread, weakref, import, or monitoring behavior, explain the
   determinism impact and update focused tests.
+- If you change shutdown ordering, explicitly reason about:
+  non-daemon thread waiting, threadpool/executor cleanup, queue drain/close,
+  and whether atexit hooks run inside or outside the active context.
 - Do not casually proxy import machinery or retrace-internal monitoring events;
   the current design disables or filters these for a reason.
 - Keep fixes narrow. Install-layer changes can affect the entire runtime.
@@ -99,5 +110,7 @@ Many bugs that look like proxy or replay bugs are actually install-layer bugs.
 - `src/retracesoftware/install/monitoring.py`
 - `src/retracesoftware/install/startthread.py`
 - `src/retracesoftware/install/pathpredicate.py`
+- `src/retracesoftware/autoenable.py`
+- `src/retracesoftware/retracesoftware_autoenable.pth`
 - `src/retracesoftware/modules/*.toml`
 - `docs/DEBUGGING.md`

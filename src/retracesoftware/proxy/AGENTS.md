@@ -57,6 +57,12 @@ the `System`-based implementation used by the current top-level runtime.
 - Proxyable external objects may be stored as `StubRef` metadata and recreated
   through replay-side materialization. Do not "simplify" this without tracing
   the object-identity consequences.
+- Wrapped arguments seen inside external method bodies are part of the contract.
+  Changes to wrapping/materialization that alter what method bodies observe can
+  break replay even if the call signatures still look correct.
+- Passthrough predicates for immutable or already-safe values are contract
+  behavior, not just optimization. Changing passthrough semantics can break
+  callback routing and materialization expectations for patched types.
 
 ## Message Stream Invariants
 
@@ -87,6 +93,8 @@ the `System`-based implementation used by the current top-level runtime.
 - Changes to wrapping, unwrapping, walker logic, stub refs, or materialization
   without tests for nested structures and callback paths.
 - Anything that changes when `CALL` messages are emitted or consumed.
+- Callback exceptions must round-trip with the same semantic behavior. Changes
+  that swallow, rewrap, or reroute callback exceptions can break replay parity.
 
 ## Working Rules
 
@@ -96,6 +104,9 @@ the `System`-based implementation used by the current top-level runtime.
   layer, prefer that over rewriting boundary logic.
 - If you change `system.py`, `record.py`, `replay.py`, `messagestream.py`, or
   `thread.py`, explicitly call out the determinism impact.
+- If you change wrapped-argument behavior, passthrough rules, or stub
+  materialization, re-check the contract against binding/materialization tests
+  rather than only looking at the immediate call site.
 - Control-plane work such as debugger I/O, trace reads, or monitoring-related
   plumbing must remain invisible to replay.
 - If you touch exception replay or message consumption in `messagestream.py`,
