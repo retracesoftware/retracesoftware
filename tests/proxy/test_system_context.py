@@ -63,30 +63,37 @@ def test_system_record_replay_context():
     assert not system._out_sandbox()
 
 
-def test_system_register_thread_id_uses_intern_once():
+def test_gate_context_restores_current_context_per_thread():
     system = System()
+    context = system._context(_internal=utils.noop)
 
-    class TrackingWriter(MemoryWriter):
-        def __init__(self):
-            super().__init__()
-            self.interned = []
-            self.bound = []
+    main_parent = object()
+    child_parent = object()
+    child_entered = threading.Event()
+    allow_child_exit = threading.Event()
+    child_restored = {}
 
-        def intern(self, obj):
-            self.interned.append(obj)
+    def child():
+        system.current_context.set(child_parent)
+        with context:
+            assert system.current_context.get() is context
+            child_entered.set()
+            assert allow_child_exit.wait(timeout=1)
+        child_restored["value"] = system.current_context.get()
 
-        def bind(self, obj):
-            self.bound.append(obj)
+    system.current_context.set(main_parent)
 
-    writer = TrackingWriter()
-    thread_id = ()
+    with context:
+        assert system.current_context.get() is context
+        thread = threading.Thread(target=child)
+        thread.start()
+        assert child_entered.wait(timeout=1)
 
-    with system.record_context(writer):
-        assert system.register_thread_id(thread_id) is None
-        assert system.register_thread_id(thread_id) is None
-
-    assert writer.interned == [thread_id]
-    assert writer.bound == []
+    assert system.current_context.get() is main_parent
+    allow_child_exit.set()
+    thread.join(timeout=1)
+    assert not thread.is_alive()
+    assert child_restored["value"] is child_parent
 
 
 def test_system_active_allocations_bind_after_async_new_patched_outside_sandbox():
@@ -223,7 +230,7 @@ def test_system_location_property():
     assert system.location == "disabled"
 
 
-def test_system_context_constructs_passthrough_for_immutable_and_patched(monkeypatch):
+def test_system_context_constructs_passthrough_for_immutable_and_bound(monkeypatch):
     system = System()
     system.immutable_types.update({int})
 
@@ -272,7 +279,7 @@ def test_system_context_constructs_passthrough_for_immutable_and_patched(monkeyp
 
     assert predicate(int)
     assert predicate(IntSubclass)
-    assert predicate(Base)
+    assert not predicate(Base)
     assert not predicate(str)
 
 

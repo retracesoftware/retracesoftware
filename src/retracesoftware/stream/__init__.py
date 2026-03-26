@@ -704,8 +704,11 @@ class writer(_backend_mod.ObjectWriter):
         return functional.partial(self, obj)
 
     def async_new_patched(self, obj):
-        self.intern("ASYNC_NEW_PATCHED")
-        return self("ASYNC_NEW_PATCHED", obj)
+        handle = getattr(self, "_async_new_patched_handle", None)
+        if handle is None:
+            handle = self.handle("ASYNC_NEW_PATCHED")
+            self._async_new_patched_handle = handle
+        return handle(obj)
 
     def start_new_thread(
         self,
@@ -749,6 +752,7 @@ class writer(_backend_mod.ObjectWriter):
         self._fw = None
         self._close_output = False
         self._queue = queue
+        self._async_new_patched_handle = None
         self.type_serializer = {}
         effective_push_fail_callback = push_fail_callback
         if effective_push_fail_callback is None and stall_timeout is not None:

@@ -11,6 +11,8 @@ import datetime
 import gc
 import hashlib
 
+from retracesoftware.threadid import ThreadId
+
 from retracesoftware.proxy.system import System
 
 from retracesoftware.install import ThreadRunContext, run_with_context, stream_writer
@@ -108,7 +110,7 @@ def _write_shebang(trace_path, replay_bin):
         f.write(shebang.encode('utf-8'))
     os.chmod(str(trace_path), 0o755)
 
-thread_id = utils.ThreadLocal()
+thread_id = ThreadId()
 
 def record(system, options, args):
     recording_format = getattr(options, 'format', 'binary')
@@ -164,7 +166,7 @@ def record(system, options, args):
 
             
     with stream.writer(path = trace_path,
-                       thread = thread_id,
+                       thread = thread_id.id.get,
                        format = recording_format,
                        verbose = options.verbose,
                        preamble = preamble,
@@ -305,7 +307,8 @@ def replay(system, args):
     with stream.reader(path = path,
                     read_timeout = args.read_timeout,
                     verbose = args.verbose,
-                    start_offset = data_offset) as reader:
+                    start_offset = data_offset,
+                    thread_id = thread_id) as reader:
             if chunk_ms is not None:
                 from retracesoftware.search import install_timeslice_search
                 install_timeslice_search(
@@ -330,10 +333,8 @@ def replay(system, args):
 
             monitor_level = header.get('monitor', 0)
 
-            thread_id.set(())
-
             per_thread_source = stream.per_thread(
-                source=reader, thread = thread_id.get,
+                source=reader, thread = thread_id,
                 timeout=max(1, args.read_timeout // 1000))
             msg_stream = ReplayReader(
                 per_thread_source,

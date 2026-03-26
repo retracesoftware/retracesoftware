@@ -3,7 +3,6 @@ import pytest
 import retracesoftware.functional as functional
 import retracesoftware.proxy.system as system_mod
 import retracesoftware.utils as utils
-from retracesoftware.proxy.stubfactory import StubRef
 from retracesoftware.proxy.messagestream import MemoryWriter
 
 
@@ -209,14 +208,8 @@ def test_record_context_external_method_body_sees_wrapped_argument():
     assert isinstance(result, utils.ExternalWrapped)
     assert type(utils.unwrap(result)) is Payload
 
-    assert seen["bound_objects"][0] is host
-    assert isinstance(seen["bound_objects"][1], StubRef)
+    assert seen["bound_objects"] == [host]
     assert seen["bind_calls"] == [
-        {
-            "is_wrapped": False,
-            "is_internal_wrapped": False,
-            "unwraps_to_payload": False,
-        },
         {
             "is_wrapped": False,
             "is_internal_wrapped": False,

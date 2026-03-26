@@ -694,8 +694,19 @@ namespace retracesoftware_stream {
     }
 
     bool Persister::write_thread_switch(PyObject* thread_handle) {
+        PyObject* key = thread_handle;
+        if (!interns.contains(key)) {
+            if (!intern(thread_handle, thread_handle)) {
+                return false;
+            }
+        }
+
         emit_control(ThreadSwitch);
-        return write(thread_handle);
+        if (interns.contains(key)) {
+            write_intern_lookup(interns[key]);
+            return true;
+        }
+        return false;
     }
 
     void Persister::write_pickled(PyObject* obj) {

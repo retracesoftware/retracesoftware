@@ -85,36 +85,52 @@ def run_with_context(system,
     """
     import sys
     import atexit
+    import _thread
+    import threading
     import retracesoftware.functional as functional
     import retracesoftware.utils as utils
-    from retracesoftware.run import run_python_command, wait_for_non_daemon_threads
+    from retracesoftware.run import run_python_command
     from retracesoftware.modules import ModuleConfigResolver
     from retracesoftware.install.patcher import patch, install_hash_patching
     from retracesoftware.install.importhook import install_import_hooks, patch_already_loaded
     from retracesoftware.install.hooks import install_weakref_hooks, init_weakref
 
-    counter = utils.ThreadLocal(0)
+    # counter = utils.ThreadLocal(0)
 
-    thread_id.set(())
+    # thread_id.set(())
 
-    def inc(x): return x + 1
+    # def inc(x): return x + 1
 
-    def next_thread_id():
-        current = thread_id.get()
-        if current is not None and system._out_sandbox():
-            new_id = current + (counter.update(inc),)
-            system.register_thread_id(new_id)
-            return new_id
-        return None
+    # def next_thread_id():
+    #     current = thread_id.get()
+    #     if current is not None and system._out_sandbox():
+    #         new_id = current + (counter.update(inc),)
+    #         return new_id
+    #     return None
 
-    utils.add_thread_middleware(lambda: thread_id.context(next_thread_id()))
-    utils.add_thread_middleware(
-        child_context_factory if child_context_factory is not None
-        else functional.constantly(context))
+    # utils.add_thread_middleware(lambda: thread_id.context(next_thread_id()))
+    # utils.add_thread_middleware(
+    #     child_context_factory if child_context_factory is not None
+    #     else functional.constantly(context))
+
+    original_start_new_thread = _thread.start_new_thread
+
+    _thread.start_new_thread = functional.if_then_else(
+        functional.repeatedly(system.enabled),
+        thread_id.wrap_start_new_thread(_thread.start_new_thread),
+        _thread.start_new_thread)
+
+    _thread.start_new_thread = system.wrap_start_new_thread(_thread.start_new_thread)
+    threading._start_new_thread = _thread.start_new_thread
+
+    def uninstall_thread_start():
+        _thread.start_new_thread = original_start_new_thread
+        threading._start_new_thread = original_start_new_thread
 
     uninstallers = []
 
     # ── one-time system setup ─────────────────────────────────
+    uninstallers.append(uninstall_thread_start)
     uninstallers.append(install_hash_patching(system))
     uninstallers.append(install_weakref_hooks(system, wrap_callback))
     init_weakref()
@@ -157,21 +173,21 @@ def run_with_context(system,
 
     try:
         with context:
-            system.register_thread_id(thread_id.get())
             for cls in sorted(system.patched_types, key=lambda c: c.__qualname__):
                 system._bind(cls)
             try:
                 run_python_command(argv)
             finally:
-                system.disable_for(wait_for_non_daemon_threads)()
                 if trace_shutdown:
                     try:
+                        system.disable_for(threading._shutdown)()
                         atexit._run_exitfuncs()
                     except Exception as e:
                         print(f"Error in atexit hook: {e}", file=sys.stderr)
 
         if not trace_shutdown:
             try:
+                system.disable_for(threading._shutdown)()
                 atexit._run_exitfuncs()
             except Exception as e:
                 print(f"Error in atexit hook: {e}", file=sys.stderr)

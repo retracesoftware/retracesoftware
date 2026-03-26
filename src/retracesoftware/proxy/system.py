@@ -261,7 +261,11 @@ class _GateContext:
         self._saved = _thread._local()
 
     def __enter__(self):
+        self._saved.current_context = self._system.current_context.context(self)
+        self._saved.current_context.__enter__()
+
         saved = {}
+
         for key in self._kwargs:
             saved[key] = getattr(self._system, key).executor
         self._saved.state = saved
@@ -272,8 +276,8 @@ class _GateContext:
     def __exit__(self, *exc):
         for key, value in self._saved.state.items():
             setattr(getattr(self._system, key), 'executor', value)
+        self._saved.current_context.__exit__(*exc)
         return False
-
 
 def get_all_subtypes(cls):
     """Recursively find all subtypes of a given class."""
@@ -426,6 +430,13 @@ class Patched(utils.Patched):
     """
     __slots__ = ()
 
+def with_context(context, function):
+    return utils.observer(
+        on_call=lambda *args, **kwargs: context.__enter__(),
+        on_result=lambda result: context.__exit__(None, None, None),
+        on_error=lambda typ, exc, tb: context.__exit__(typ, exc, tb),
+        function = function)
+
 class System:
     """Gate-based record/replay kernel.
 
@@ -458,6 +469,25 @@ class System:
                           (i.e. we are inside a record/replay context).
     _out_sandbox()        True when the internal gate has an executor.
     """
+
+    def wrap_start_new_thread(self, original_start_new_thread):
+        """Wrap ``start_new_thread`` so child threads inherit active retrace context.
+
+        The wrapper captures ``self.current_context`` from the parent thread
+        at spawn time and, when retrace is active, rewrites the child target
+        so it enters that same context before executing user code.
+        """
+
+        def wrap_thread_function(function):
+            context = self.current_context.get()
+            if self._in_sandbox() and context:
+                return with_context(context, function)
+            return function
+
+        return functional.positional_param_transform(
+                function = original_start_new_thread, 
+                index = 0,
+                transform = wrap_thread_function)
 
     def patch_function(self, fn):
         """Return a wrapper that routes *fn* through the external gate.
@@ -492,12 +522,6 @@ class System:
         if callable(obj):
             return self.patch_function(obj)
         raise TypeError(f"cannot patch {type(obj).__name__!r} object")
-
-    def register_thread_id(self, thread_id):
-        """Register a thread id with the active backend when retrace is live."""
-        if thread_id is None or not self._out_sandbox() or self.is_bound(thread_id):
-            return None
-        return self._register_thread_id(thread_id)
 
     def disable_for(self, function):
         """Return a callable that runs *function* with both gates disabled.
@@ -581,6 +605,8 @@ class System:
         self._internal = utils.Gate()
         self._external = utils.Gate()
         
+        self.current_context = utils.ThreadLocal(None)
+
         # ── Binding / allocation gates ────────────────────────────
         #
         # These are gates whose default state is noop (not None).
@@ -593,12 +619,8 @@ class System:
         #               the concrete type from the live object.
         # _bind:        generic binding hook kept separate from
         #               allocation-origin semantics.
-        # _register_thread_id:
-        #               optional hook used to memoize thread ids before
-        #               they first appear on the wire.
         self._async_new_patched = utils.Gate(default = utils.noop)
         self._bind = utils.Gate(default = utils.noop)
-        self._register_thread_id = utils.Gate(default = utils.noop)
 
         # ── Bound / unretraced sets ───────────────────────────────
         #
@@ -1343,10 +1365,6 @@ class System:
             intern(stub_ref)
             writer.type_serializer[proxytype] = functional.constantly(stub_ref)
         
-        # register_thread_id = intern
-        # register_thread_id = getattr(writer, 'intern', writer.bind)
-        # remember_thread_id = utils.runall(register_thread_id, self.is_bound.add)
-
         def remember_async_new_patched(obj):
             assert self.is_bound(type(obj))
 
@@ -1369,7 +1387,6 @@ class System:
         return self._create_context(
             _async_new_patched = remember_async_new_patched,
             _bind = remember_bind,
-            _register_thread_id = intern,
             int_spec = self._create_int_spec(
                 bind = remember_bind,
                 on_call = int_on_call,
@@ -1454,7 +1471,6 @@ class System:
 
         return self._create_context(
             _bind = remember_bind,
-            _register_thread_id = self.is_bound.add,
             replay_bind_materialized = remember_materialized_bind,
             int_spec = self._create_int_spec(
                 bind = remember_bind,
