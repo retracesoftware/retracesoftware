@@ -163,12 +163,9 @@ class DemuxReader:
         return self.next(thread_id)
 
     def next(self, thread_id=_MISSING):
-        if thread_id is _MISSING:
-            item = self.dispatcher.next(
-                lambda item: item[0] == self.thread_id())
-        else:
-            item = self.dispatcher.next(
-                lambda item: item[0] == thread_id)
+        current_thread_id = self.thread_id() if thread_id is _MISSING else thread_id
+        predicate = lambda item: item[0] == current_thread_id
+        item = self.dispatcher.next(predicate)
         return item[1]
 
     def pending(self, thread_id):

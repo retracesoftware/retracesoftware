@@ -18,7 +18,7 @@ def wrap_start_new_thread(system, original_start_new_thread):
 
     def wrap_thread_function(function):
         context = system.current_context.get()
-        if system._in_sandbox() and context:
+        if context is not None:
             return with_context(context, function)
         return function
 

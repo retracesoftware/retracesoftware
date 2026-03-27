@@ -13,7 +13,6 @@ Ownership signal:
 
 from __future__ import annotations
 
-import json
 import os
 from pathlib import Path
 import socket
@@ -21,6 +20,7 @@ import subprocess
 import sys
 
 import pytest
+from tests.helpers import run_record, run_replay
 
 
 pytestmark = pytest.mark.skipif(
@@ -72,7 +72,6 @@ def test_replay_child_thread_select_does_not_diverge(tmp_path: Path):
     )
 
     recording = tmp_path / "trace.retrace"
-    extracted = tmp_path / "trace.d"
 
     env = os.environ.copy()
     env["PYTHONFAULTHANDLER"] = "1"
@@ -80,13 +79,7 @@ def test_replay_child_thread_select_does_not_diverge(tmp_path: Path):
     env["RETRACE_RECORDING"] = str(recording)
     env["RETRACE_MODULES_PATH"] = str(modules_dir)
 
-    record = subprocess.run(
-        [sys.executable, str(script)],
-        capture_output=True,
-        text=True,
-        timeout=60,
-        env=env,
-    )
+    record = run_record(str(script), str(recording), env=env)
     assert record.returncode == 0, (
         "record failed for child-thread select reproducer\n"
         f"exit: {record.returncode}\n"
@@ -94,35 +87,11 @@ def test_replay_child_thread_select_does_not_diverge(tmp_path: Path):
         f"stderr:\n{record.stderr}"
     )
 
-    extract = subprocess.run(
-        [str(recording), "--extract"],
-        capture_output=True,
-        text=True,
-        timeout=60,
-        cwd=tmp_path,
-        env=env,
-    )
-    assert extract.returncode == 0, (
-        "extract failed for child-thread select reproducer\n"
-        f"exit: {extract.returncode}\n"
-        f"stdout:\n{extract.stdout}\n"
-        f"stderr:\n{extract.stderr}"
-    )
-
-    index = json.loads((extracted / "index.json").read_text(encoding="utf-8"))
-    bin_path = extracted / f"{index['root']['pid']}.bin"
-
-    replay = subprocess.run(
-        [str(bin_path)],
-        capture_output=True,
-        text=True,
-        timeout=60,
-        cwd=extracted,
-        env=env,
-    )
+    replay = run_replay(str(recording), env=env)
     assert replay.returncode == 0, (
         "replay diverged for child-thread select reproducer\n"
         f"exit: {replay.returncode}\n"
         f"stdout:\n{replay.stdout}\n"
         f"stderr:\n{replay.stderr}"
     )
+    assert replay.stdout == record.stdout

@@ -175,9 +175,9 @@ struct Dispatcher : public PyObject {
                 atomic_notify_all_compat(self->num_waiting_threads);
                 Py_BEGIN_ALLOW_THREADS
                 atomic_wait_compat(self->buffered, next);
-                Py_END_ALLOW_THREADS
                 self->num_waiting_threads.fetch_sub(1, std::memory_order_release);
                 atomic_notify_all_compat(self->num_waiting_threads);
+                Py_END_ALLOW_THREADS
             } else {
                 PyErr_SetString(PyExc_RuntimeError, "Dispatcher: too many threads waiting for item");
                 return nullptr;
