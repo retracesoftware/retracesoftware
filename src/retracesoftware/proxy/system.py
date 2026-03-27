@@ -463,7 +463,11 @@ class System:
         self._int_handler = self._internal
         self._override_handler = self.create_dispatch(
             disabled=functional.apply,
-            external=self._ext_handler,
+            # Direct in-sandbox calls to Python overrides should behave like
+            # normal Python method calls. Only true outside->inside callbacks
+            # (which run while the external gate is temporarily cleared) should
+            # route through the internal gate.
+            external=functional.apply,
             internal=self._int_handler,
         )
 

@@ -5,6 +5,7 @@ Verifies that record_context and replay_context correctly manage
 gate lifecycle and route external calls through the pipeline.
 """
 import os
+import io
 import socket
 import subprocess
 import sys
@@ -418,6 +419,53 @@ def test_system_ext_to_int_callback():
     assert len(lt_calls) > 0, "__lt__ callback should have fired during replay"
 
 
+def test_system_external_method_replays_async_callback_automatically():
+    """Replaying an external method should automatically drive async callbacks.
+
+    ``Base.run`` is an external method on a patched type. It calls
+    ``self.callback(...)`` while the external gate is temporarily cleared, so
+    the subclass override crosses the ext->int boundary and records an
+    ``ASYNC_CALL``. On replay, calling ``run`` again should re-trigger the live
+    Python override automatically; replay should not require the test to call
+    ``callback`` manually.
+    """
+
+    callback_calls = []
+
+    class Base:
+        def callback(self, value):
+            raise NotImplementedError
+
+        def run(self, value):
+            return self.callback(value) + 1
+
+    system = System()
+    system.immutable_types.update({int, str, bytes, bool, type, type(None), float})
+    system.patch_type(Base)
+
+    class Child(Base):
+        def callback(self, value):
+            callback_calls.append(value)
+            return value * 2
+
+    writer = MemoryWriter()
+
+    with system.record_context(writer):
+        recorded = Child().run(5)
+
+    assert recorded == 11
+    assert callback_calls == [5]
+    assert "ASYNC_CALL" in writer.tape
+
+    callback_calls.clear()
+
+    with system.replay_context(writer.reader()):
+        replayed = Child().run(5)
+
+    assert replayed == 11
+    assert callback_calls == [5]
+
+
 def test_system_init_subclass_only_wraps_overrides():
     """Subclass-only methods stay plain Python; overrides become internal."""
 
@@ -438,6 +486,54 @@ def test_system_init_subclass_only_wraps_overrides():
 
     assert isinstance(Sub.compute, utils.wrapped_function)
     assert not isinstance(Sub.helper, utils.wrapped_function)
+
+
+def test_system_replay_runs_python_subclass_init_for_patched_base():
+    """Replay should still execute a Python subclass ``__init__`` body.
+
+    This is the minimal constructor replay regression behind the Flask
+    ``socket.socket`` issue. ``Base`` is the patched type family and ``Child``
+    is a Python subclass created after patching.
+
+    ``Base.__init__`` is still a patched/base method, so it records/replays as a
+    normal external call returning ``None``. ``Child.__init__`` is different: it
+    is Python-level setup code and should run directly when called from inside
+    the sandbox, even during replay.
+
+    The tape shape here is also intentional: constructor replay should not
+    depend on an async callback for ``Child.__init__``. We only expect the
+    normal allocation bind plus the recorded ``None`` result from
+    ``Base.__init__``.
+    """
+
+    class Base:
+        def __init__(self):
+            return None
+
+    system = System()
+    system.immutable_types.update({int, str, bytes, bool, type, type(None), float})
+    system.patch_type(Base)
+
+    class Child(Base):
+        def __init__(self):
+            super().__init__()
+            self.child_ran = True
+
+    writer = MemoryWriter()
+
+    with system.record_context(writer):
+        recorded = Child()
+
+    assert recorded.child_ran is True
+    assert len(writer.tape) == 4
+    assert isinstance(writer.tape[0], BindingCreate)
+    assert writer.tape[0].index == 0
+    assert writer.tape[1:] == ["SYNC", "RESULT", None]
+
+    with system.replay_context(writer.reader()):
+        replayed = Child()
+
+    assert replayed.child_ran is True
 
 
 def test_patch_type_wraps_c_data_descriptors():
@@ -466,8 +562,8 @@ def test_patch_type_wraps_c_data_descriptors():
     assert obj.x == 7
 
 
-def test_system_direct_override_call_uses_external_path_not_async_callback():
-    """Direct calls to subclass overrides should record as external calls."""
+def test_system_direct_override_call_stays_live_inside_sandbox():
+    """Direct in-sandbox calls to subclass overrides should stay live."""
 
     recorded_calls = []
     recorded_results = []
@@ -498,7 +594,7 @@ def test_system_direct_override_call_uses_external_path_not_async_callback():
 
     assert result == 100
     assert recorded_calls == []
-    assert 100 in recorded_results
+    assert recorded_results == []
 
 
 def test_system_ext_int_ext_callback():

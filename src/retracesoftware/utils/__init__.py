@@ -11,8 +11,6 @@ import warnings
 from typing import Any
 from types import ModuleType
 import retracesoftware.functional as functional
-import _thread
-import threading as _threading
 
 def _is_truthy_env(v):
     if v is None:
@@ -125,33 +123,6 @@ def update(obj, name, f, *args, **kwargs):
     value = getattr(obj, name)
     setattr(obj, name, f(value, *args, **kwargs))
 
-
-_thread_middleware = []
-
-_thread.start_new_thread = _threading._start_new_thread = functional.partial(
-    _backend_mod.start_new_thread_wrapper,
-    _thread.start_new_thread,
-    _thread_middleware)
-
-def add_thread_middleware(factory):
-    """Register a thread-spawn middleware factory.
-
-    *factory()* is called in the parent thread (with no arguments) and
-    must return a context manager (or None to skip).  The CM wraps the
-    child thread's execution.
-
-    Returns a callable that removes this middleware when called.
-    """
-    func = functional.repeatedly(factory)
-    _thread_middleware.append(func)
-
-    def remove():
-        try:
-            _thread_middleware.remove(func)
-        except ValueError:
-            pass
-
-    return remove
 
 def _return_none(func):
     return functional.sequence(func, functional.constantly(None))

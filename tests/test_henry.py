@@ -37,7 +37,7 @@ def test_stream_writer_async_call_serializes_kwargs_as_payloads():
     writer.async_call("socket", fileno=123, family=2)
 
     assert raw_writer.calls == [
-        ("ASYNC_CALL", (("socket",), {"fileno": 123, "family": 2})),
+        ("ASYNC_CALL", ("socket", (), {"fileno": 123, "family": 2})),
     ]
 
 

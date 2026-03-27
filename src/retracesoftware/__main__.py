@@ -15,7 +15,7 @@ from retracesoftware.threadid import ThreadId
 
 from retracesoftware.proxy.system import System
 
-from retracesoftware.install import ThreadRunContext, run_with_context, stream_writer
+from retracesoftware.install import run_with_context, stream_writer
 from retracesoftware.exceptions import RecordingNotFoundError, VersionMismatchError
 
 def expand_recording_path(path):
@@ -435,8 +435,7 @@ def replay(system, args):
                                 monitor_fn=monitor_fn,
                                 retrace_file_patterns=getattr(args, 'retrace_file_patterns', None),
                                 verbose=args.verbose,
-                                on_ready=on_ready,
-                                child_context_factory=lambda: ThreadRunContext(context))
+                                on_ready=on_ready)
             except Exception:
                 raise
             finally:

@@ -27,7 +27,7 @@ def next_message(source: Callable[[], object]):
     if tag == "ERROR":
         return ErrorMessage(source())
     if tag == "ASYNC_CALL":
-        return CallMessage(source(), source())
+        return CallMessage(source(), source(), source())
     if tag == "CHECKPOINT":
         return CheckpointMessage(source())
     if tag == "MONITOR":
@@ -140,6 +140,13 @@ class ReplayReader:
                 self._remember_async_new_patched(msg.value)
                 continue
 
+    def async_call(self, call_message):
+        try:
+            call_message.fn(*call_message.args, **call_message.kwargs)
+        except Exception:
+            import traceback
+            print(f"exception in async_call: {traceback.format_exc()}")
+
     @utils.striptraceback
     def read_result(self):
         while True:
@@ -149,24 +156,23 @@ class ReplayReader:
                 value = self._deserialize_result(msg.result)
                 self._pending_async_new_patched.clear()
                 return value
-            if isinstance(msg, ErrorMessage):
+            elif isinstance(msg, ErrorMessage):
                 raise msg.error
-            if isinstance(msg, MonitorMessage):
+            elif isinstance(msg, MonitorMessage):
                 if self._monitor_enabled:
                     from retracesoftware.install import ReplayDivergence
 
                     raise ReplayDivergence(
                         f"unexpected MONITOR({msg.value!r}) in result stream"
                     )
-                continue
-            if isinstance(msg, AsyncNewPatchedMessage):
+            elif isinstance(msg, AsyncNewPatchedMessage):
                 self._remember_async_new_patched(msg.value)
-                continue
-            if isinstance(msg, (CallMessage, CheckpointMessage)):
-                continue
-            if msg == "SYNC":
-                continue
-            continue
+            elif isinstance(msg, CallMessage):
+                self.async_call(msg)
+            # elif isinstance(msg, CheckpointMessage):
+            #     pass
+            else:
+                raise ValueError(f"unexpected message: {msg}")
 
     def checkpoint(self, value):
         while True:

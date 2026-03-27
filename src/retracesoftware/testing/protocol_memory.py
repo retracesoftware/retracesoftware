@@ -111,9 +111,10 @@ class MemoryWriter:
         self.tape.append("ERROR")
         self.tape.append(exc_value)
 
-    def async_call(self, *args, **kwargs):
+    def async_call(self, fn, *args, **kwargs):
         self._maybe_switch()
         self.tape.append("ASYNC_CALL")
+        self.tape.append(self._encode_value(fn))
         self.tape.append(self._encode_value(args))
         self.tape.append(self._encode_value(kwargs))
 

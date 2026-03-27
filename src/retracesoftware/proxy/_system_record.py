@@ -22,17 +22,17 @@ def record_context(system, writer, normalize=None, stacktraces=False):
                 f"retrace-callback fn={name} arg_types={arg_types} kwarg_types={kwarg_types}\n"
             )
             sys.stderr.flush()
-        writer.async_call(*args, **kwargs)
+        writer.async_call(_fn, *args, **kwargs)
 
     if stacktraces:
         def write_stack_then(*args, **kwargs):
             writer.stacktrace()
 
         ext_on_call = utils.chain(write_stack_then, writer.sync)
-        int_on_call = write_internal_call
     else:
         ext_on_call = writer.sync
-        int_on_call = write_internal_call
+    
+    int_on_call = write_internal_call
 
     remember_bind = utils.runall(writer.bind, system.is_bound.add)
     intern = utils.runall(writer.intern, system.is_bound.add)

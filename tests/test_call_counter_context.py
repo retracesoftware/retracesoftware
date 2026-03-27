@@ -660,11 +660,11 @@ class TestCallCounterContext:
             f"Worker thread watch should fire; got {len(worker_returned)}"
         )
 
-    # ── thread middleware auto-context ────────────────────────────────────
+    # ── child thread auto-context ────────────────────────────────────────
 
-    def test_thread_middleware_gives_new_threads_context(self):
+    def test_call_counter_gives_new_threads_context(self):
         """When CallCounter is installed, new threads automatically get
-        cursor tracking via the thread middleware."""
+        cursor tracking from the native per-thread call counter state."""
         cc = CallCounter()
         cc.install()
 
@@ -686,5 +686,5 @@ class TestCallCounterContext:
         t.join(timeout=5)
 
         assert worker_counts is not None, (
-            "Worker thread should have cursor tracking from middleware"
+            "Worker thread should have cursor tracking from the shared CallCounter"
         )

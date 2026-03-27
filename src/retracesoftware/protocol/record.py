@@ -32,11 +32,11 @@ def stream_writer(writer, stackfactory=None, on_write_error=None):
 
     _async_call = writer.handle("ASYNC_CALL")
 
-    def async_call(*args, **kwargs):
+    def async_call(fn, *args, **kwargs):
         # Stream-backed writers expose handle-based call sites that accept
         # positional payloads only. Serialize internal callback kwargs as the
         # second ASYNC_CALL payload instead of forwarding them as Python kwargs.
-        return _async_call(args, kwargs)
+        return _async_call(fn, args, kwargs)
 
     return SimpleNamespace(
         type_serializer=writer.type_serializer,

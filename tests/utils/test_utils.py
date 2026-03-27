@@ -1,4 +1,5 @@
 import sys
+import threading
 from pathlib import Path
 
 import pytest
@@ -2693,55 +2694,6 @@ class TestMemoryAddresses:
 
 
 # ============================================================================
-# Thread middleware tests
-# ============================================================================
-
-import threading
-import _thread
-
-
-class TestMiddleware:
-    """Verify the thread middleware system (add/remove, CM execution)."""
-
-    def test_add_and_remove_custom_middleware(self):
-        entered = []
-
-        class MyCM:
-            def __enter__(self):
-                entered.append(True)
-                return self
-            def __exit__(self, *args):
-                pass
-
-        def my_factory():
-            return MyCM()
-
-        remover = _utils.add_thread_middleware(my_factory)
-        assert callable(remover)
-
-        t = threading.Thread(target=lambda: None)
-        t.start()
-        t.join()
-        assert len(entered) > 0
-
-        count_before = len(entered)
-        remover()
-
-        t2 = threading.Thread(target=lambda: None)
-        t2.start()
-        t2.join()
-        assert len(entered) == count_before
-
-    def test_middleware_list_exists(self):
-        assert hasattr(_utils, '_thread_middleware')
-        assert isinstance(_utils._thread_middleware, list)
-
-    def test_start_new_thread_is_patched(self):
-        import retracesoftware.functional as functional
-        assert isinstance(_thread.start_new_thread, functional.partial)
-
-
-# ============================================================================
 # ThreadLocal tests
 # ============================================================================
 
@@ -3072,4 +3024,3 @@ class TestSetOnAlloc:
         assert freed == []
         del ev
         assert freed == ["freed"]
-

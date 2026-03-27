@@ -1,4 +1,3 @@
-import _thread
 from retracesoftware import utils
 from retracesoftware import functional
 
@@ -39,16 +38,3 @@ class ThreadId:
             function = original_start_new_thread, 
             index = 0,
             transform = self.wrap_thread_function)
-
-    def install(self):
-        original = _thread.start_new_thread
-
-        _thread.start_new_thread = self.wrap_start_new_thread(_thread.start_new_thread)
-        import threading
-        threading._start_new_thread = _thread.start_new_thread
-
-        def uninstall():
-            _thread.start_new_thread = original
-            threading._start_new_thread = original
-
-        return uninstall

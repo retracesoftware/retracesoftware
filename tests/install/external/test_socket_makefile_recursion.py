@@ -129,3 +129,52 @@ def test_bufferedreader_socketio_reproducer(tmp_path):
     )
 
     assert proc.returncode == 0, output
+
+
+def test_bufferedreader_descriptor_access_reproducer(tmp_path):
+    """Exercise proxied ``BufferedReader`` C descriptors in a tiny subprocess.
+
+    Root cause of the Flask 3.12 crash was not Flask itself, but the lower
+    `_io.BufferedReader` patching path. Retrace installs ``wrapped_member`` on
+    native descriptors such as ``raw`` and ``closed``.  The previous native
+    implementation re-entered descriptor lookup through ``target.__get__``,
+    which could recurse through CPython's descriptor machinery and crash.
+
+    This repro keeps the trigger close to that ownership boundary:
+    - construct a real ``io.BufferedReader`` over ``socket.SocketIO``
+    - access the C data descriptors that Retrace wraps
+    - do so from a child thread, matching the Flask/Werkzeug server path more
+      closely than a single-threaded smoke test
+
+    Keep this as a subprocess test because the historical failure mode was a
+    hard native crash rather than a clean Python exception.
+    """
+    proc, output = _run_retrace_script(
+        tmp_path,
+        """
+        import io
+        import socket
+        import threading
+
+        left, right = socket.socketpair()
+        try:
+            raw = socket.SocketIO(left, "rb")
+            buffered = io.BufferedReader(raw, 8192)
+
+            def worker():
+                for _ in range(20):
+                    assert buffered.raw is raw
+                    assert buffered.closed is False
+
+            thread = threading.Thread(target=worker)
+            thread.start()
+            thread.join(timeout=5)
+            assert not thread.is_alive()
+        finally:
+            left.close()
+            right.close()
+        """,
+    )
+
+    assert proc.returncode == 0, output
+    assert "RecursionError" not in output

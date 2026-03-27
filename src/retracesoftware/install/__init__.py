@@ -13,43 +13,11 @@ import importlib.resources
 _pytest_runner = None
 _pytest_installed_modules = set()
 
-class ThreadRunContext:
-    """Delay entering a thread retrace context until ``Thread.run()``."""
-
-    def __init__(self, context):
-        self.context = context
-        self.thread = None
-        self.original_run = None
-        self.restore_instance_attr = False
-
-    def __enter__(self):
-        import threading
-
-        self.thread = threading.current_thread()
-        self.restore_instance_attr = 'run' in getattr(self.thread, '__dict__', {})
-        self.original_run = self.thread.run
-
-        def run_with_context(*args, **kwargs):
-            with self.context:
-                return self.original_run(*args, **kwargs)
-
-        self.thread.run = run_with_context
-        return self
-
-    def __exit__(self, exc_type, exc_value, exc_tb):
-        if self.thread is None:
-            return
-        if self.restore_instance_attr:
-            self.thread.run = self.original_run
-        else:
-            del self.thread.run
-
-
 def run_with_context(system,
                      thread_id,
                      context, argv, wrap_callback, trace_shutdown=False, on_ready=None,
                      monitor_level=0, monitor_fn=None, retrace_file_patterns=None,
-                     verbose=False, child_context_factory=None):
+                     verbose=False):
     """Run a Python command inside a System context (record or replay).
 
     Parameters
@@ -109,10 +77,6 @@ def run_with_context(system,
     #     return None
 
     # utils.add_thread_middleware(lambda: thread_id.context(next_thread_id()))
-    # utils.add_thread_middleware(
-    #     child_context_factory if child_context_factory is not None
-    #     else functional.constantly(context))
-
     original_start_new_thread = _thread.start_new_thread
 
     _thread.start_new_thread = functional.if_then_else(

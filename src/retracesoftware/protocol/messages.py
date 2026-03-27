@@ -20,9 +20,10 @@ class ErrorMessage:
 
 
 class CallMessage:
-    __slots__ = ("args", "kwargs")
+    __slots__ = ("fn", "args", "kwargs")
 
-    def __init__(self, args, kwargs):
+    def __init__(self, fn, args, kwargs):
+        self.fn = fn
         self.args = args
         self.kwargs = kwargs
 
