@@ -440,6 +440,32 @@ def test_system_init_subclass_only_wraps_overrides():
     assert not isinstance(Sub.helper, utils.wrapped_function)
 
 
+def test_patch_type_wraps_c_data_descriptors():
+    system = System()
+
+    class Slotted:
+        __slots__ = ("x",)
+
+        def read(self):
+            return 1
+
+    class WithDict:
+        def read(self):
+            return 2
+
+    system.patch_type(Slotted)
+    system.patch_type(WithDict)
+
+    assert isinstance(Slotted.__dict__["x"], utils.wrapped_member)
+    assert not isinstance(WithDict.__dict__["__dict__"], utils.wrapped_member)
+    assert isinstance(Slotted.__dict__["read"], utils.wrapped_function)
+    assert isinstance(WithDict.__dict__["read"], utils.wrapped_function)
+
+    obj = Slotted()
+    obj.x = 7
+    assert obj.x == 7
+
+
 def test_system_direct_override_call_uses_external_path_not_async_callback():
     """Direct calls to subclass overrides should record as external calls."""
 
