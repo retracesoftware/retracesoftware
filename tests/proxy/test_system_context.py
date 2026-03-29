@@ -232,14 +232,6 @@ def test_system_location_property():
 
 
 def test_system_context_constructs_passthrough_for_immutable_and_bound(monkeypatch):
-    system = System()
-    system.immutable_types.update({int})
-
-    class Base:
-        pass
-
-    system.patch_type(Base)
-
     predicates = []
     passthroughs = []
 
@@ -259,6 +251,14 @@ def test_system_context_constructs_passthrough_for_immutable_and_bound(monkeypat
 
     monkeypatch.setattr(utils, "FastTypePredicate", SpyFastTypePredicate)
     monkeypatch.setattr(system_mod, "adapter", spy_adapter)
+
+    system = System()
+    system.immutable_types.update({int})
+
+    class Base:
+        pass
+
+    system.patch_type(Base)
 
     spec = SimpleNamespace(
         proxy = utils.noop,

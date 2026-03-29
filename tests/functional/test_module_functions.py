@@ -57,6 +57,43 @@ class TestApply:
         assert result == 42
 
 
+class TestCatchException:
+    def test_uses_handler_for_matching_exception(self):
+        def fail(a, b):
+            raise ValueError("boom")
+
+        def fallback(a, b):
+            return a + b
+
+        wrapped = fn.catch_exception(fail, ValueError, fallback)
+
+        assert wrapped(3, 4) == 7
+
+    def test_preserves_original_arguments_for_handler(self):
+        seen = []
+
+        def fail(*args, **kwargs):
+            raise RuntimeError("boom")
+
+        def fallback(*args, **kwargs):
+            seen.append((args, kwargs))
+            return "ok"
+
+        wrapped = fn.catch_exception(fail, RuntimeError, fallback)
+
+        assert wrapped(1, 2, label="x") == "ok"
+        assert seen == [((1, 2), {"label": "x"})]
+
+    def test_non_matching_exception_propagates(self):
+        def fail():
+            raise KeyError("boom")
+
+        wrapped = fn.catch_exception(fail, ValueError, lambda: "fallback")
+
+        with pytest.raises(KeyError):
+            wrapped()
+
+
 class TestFirstArg:
     def test_returns_first_positional_argument(self):
         result = fn.first_arg(1, 2, 3)
@@ -149,6 +186,7 @@ class TestModuleImports:
         assert hasattr(fn, 'identity')
         assert hasattr(fn, 'typeof')
         assert hasattr(fn, 'apply')
+        assert hasattr(fn, 'catch_exception')
         assert hasattr(fn, 'first_arg')
         assert hasattr(fn, 'isinstanceof')
         assert hasattr(fn, 'instance_test')
@@ -211,4 +249,3 @@ class TestEdgeCases:
         assert memo(lst) == 3
         assert memo(lst) == 3
         assert len(calls) == 1  # Cached by identity
-

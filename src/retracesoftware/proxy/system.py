@@ -199,6 +199,7 @@ Usage
 
 import retracesoftware.utils as utils
 import retracesoftware.functional as functional
+import types
 from types import SimpleNamespace
 from typing import Callable
 from retracesoftware.proxy.protocol import ReaderProtocol, WriterProtocol
@@ -223,6 +224,11 @@ from ._system_threading import (
     with_context,
     wrap_start_new_thread as _wrap_start_new_thread_impl,
 )
+
+
+class _PassthroughExternalCall(Exception):
+    """Signal that an external call should bypass retrace and run live."""
+
 
 class System:
     """Gate-based record/replay kernel.
@@ -421,6 +427,24 @@ class System:
 
         # Return True if *obj* is bound or is a dynamic proxy wrapper.
         self.is_retraced = functional.or_predicate(self.is_bound, utils.is_wrapped)
+        self.is_patched = lambda obj: (
+            (isinstance(obj, type) and obj in self.patched_types)
+            or type(obj) in self.patched_types
+        )
+        self.passthrough = functional.or_predicate(
+            utils.FastTypePredicate(
+                lambda cls: issubclass(cls, tuple(self.immutable_types))
+            ).istypeof,
+            self.is_bound,
+        )
+        self.ext_passthrough = functional.or_predicate(
+            self.passthrough,
+            functional.isinstanceof(utils.ExternalWrapped),
+        )
+        self.int_passthrough = functional.or_predicate(
+            self.passthrough,
+            functional.isinstanceof(utils.InternalWrapped),
+        )
 
         # ── Sandbox predicates ─────────────────────────────────────
         #
@@ -445,17 +469,19 @@ class System:
         #     when disabled (passthrough).
         #
         # _ext_handler is used by patch_type for methods on patched
-        # base types (int→ext calls). It routes through the external gate
-        # only for bound or wrapped instances; unbound patched instances
-        # pass through to the original target.
+        # base types (int→ext calls). Calls always enter the external
+        # gate, but mixed live/retraced arguments can raise
+        # _PassthroughExternalCall during input transformation. In that
+        # case we fall back to the real target locally.
         #
         # _int_handler is the raw _internal gate.  Subclass methods
         # (ext→int callbacks) dispatch to the executor when active, or
         # pass through when disabled.
-        self._ext_handler = functional.if_then_else(
-            functional.sequence(functional.positional_param(1), self.is_retraced),
+        self._ext_handler = functional.catch_exception(
             self._external,
-            functional.apply)
+            _PassthroughExternalCall,
+            functional.apply,
+        )
 
         # Internal overrides always route through the internal gate while
         # retrace is active. When retrace is disabled, ``self._internal``
@@ -558,12 +584,15 @@ class System:
           - ``object`` itself (everything is an object, skip it)
           - any subclass of a type in ``immutable_types`` (e.g. int,
             str, bytes — their values pass through the boundary as-is)
+          - built-in C data descriptors used by ``wrapped_member``
+            (their raw descriptor object is part of the call shape)
           - any type already in ``patched_types`` (already handled)
         """
         return cls is not object and \
                 not issubclass(cls, tuple(self.immutable_types)) and \
+                cls not in (types.MemberDescriptorType, types.GetSetDescriptorType) and \
                 cls not in self.patched_types
-                                
+
     def patch_type(self, cls, install_session=None):
         """Patch *cls* in-place so its methods route through the gates.
 
@@ -631,20 +660,26 @@ class System:
 
         return _patch_type_impl(self, cls, install_session=install_session)
 
-    def _proxyfactory(self, proxytype):
-        """Build a value transformer that wraps objects crossing the boundary.
+    def _throw_passthrough(self, _value):
+        raise _PassthroughExternalCall
 
-        Returns a ``functional.walker`` that recursively walks a value.
-        For each element, if ``should_proxy`` says the value's type
-        needs wrapping, it is passed through ``maybe_proxy(proxytype)``
-        which either unwraps an already-wrapped value or creates a new
-        proxy.
+    def _proxyfactory(self, proxytype):
+        """Build a per-value transformer that dynamically proxies when needed.
+
+        The returned callable handles a single value. Callers compose it under
+        ``functional.walker(...)`` and layer any direction-specific passthrough
+        or patched-object policy around it.
 
         The *proxytype* callable is run with both gates disabled (via
         ``disable_for``) to prevent re-entrancy during proxy class
         construction.
         """
-        return functional.walker(functional.when(self.should_proxy, maybe_proxy(proxytype)))
+
+        return functional.if_then_else(
+            self.should_proxy,
+            maybe_proxy(proxytype),
+            functional.identity,
+        )
 
     def _create_context(self, int_spec, ext_spec, ext_runner = None, replay_bind_materialized = None, **args):
         """Build the executor pair and enter a gate context.

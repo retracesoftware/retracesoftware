@@ -6,6 +6,7 @@ _func_sources = files(
   'anyargs.cpp',
   'arity_dispatch.cpp',
   'callall.cpp',
+  'catchexception.cpp',
   'casepredicate.cpp',
   'compose.cpp',
   'compose2.cpp',

@@ -180,6 +180,77 @@ def test_bound_instance_recorded():
     assert 'RESULT' in writer.tape, "tape should contain a RESULT entry"
 
 
+def test_mixed_bound_and_unbound_patched_args_passthrough():
+    """Mixed retraced/live patched arguments should fall through to the real method.
+
+    A bound receiver plus an unbound patched argument is a mixed-state call. The
+    method must not route through the external gate, otherwise record/replay would
+    operate against a partially live object graph.
+    """
+
+    class Sensor:
+        def __init__(self, value):
+            self.value = value
+
+        def combine(self, other):
+            return (self.value, other.value)
+
+    fake_module = {'Sensor': Sensor, '__name__': 'fake_sensor'}
+
+    system = System()
+    system.immutable_types.update({int, float, str, bytes, bool, type, type(None)})
+
+    patch(fake_module, {'proxy': ['Sensor']}, system)
+
+    live = Sensor("live")
+    writer = MemoryWriter()
+
+    with system.record_context(writer):
+        bound = Sensor("bound")
+        tape_before_call = len(writer.tape)
+        result = bound.combine(live)
+        tape_after_call = len(writer.tape)
+
+    assert result == ("bound", "live")
+    assert tape_after_call == tape_before_call, (
+        "mixed bound/unbound patched call should not be recorded"
+    )
+
+
+def test_mixed_bound_and_unbound_unhashable_patched_args_passthrough():
+    """Mixed-state passthrough should handle unhashable patched instances."""
+
+    class Sensor:
+        __hash__ = None
+
+        def __init__(self, value):
+            self.value = value
+
+        def combine(self, other):
+            return (self.value, other.value)
+
+    fake_module = {'Sensor': Sensor, '__name__': 'fake_sensor'}
+
+    system = System()
+    system.immutable_types.update({int, float, str, bytes, bool, type, type(None)})
+
+    patch(fake_module, {'proxy': ['Sensor']}, system)
+
+    live = Sensor("live")
+    writer = MemoryWriter()
+
+    with system.record_context(writer):
+        bound = Sensor("bound")
+        tape_before_call = len(writer.tape)
+        result = bound.combine(live)
+        tape_after_call = len(writer.tape)
+
+    assert result == ("bound", "live")
+    assert tape_after_call == tape_before_call, (
+        "mixed bound/unbound patched call should not be recorded"
+    )
+
+
 def test_pathparam_predicate_false_returns_unbound():
     """pathparam + predicate returning False → instance unbound, methods pass through.
 

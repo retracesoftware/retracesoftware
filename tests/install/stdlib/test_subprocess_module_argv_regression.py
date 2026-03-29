@@ -53,7 +53,12 @@ def test_record_child_python_m_preserves_module_argv_shape(tmp_path: Path):
     )
 
     common_env = os.environ.copy()
-    common_env["PYTHONPATH"] = str(tmp_path)
+    existing_pythonpath = common_env.get("PYTHONPATH")
+    common_env["PYTHONPATH"] = (
+        f"{tmp_path}{os.pathsep}{existing_pythonpath}"
+        if existing_pythonpath
+        else str(tmp_path)
+    )
     common_env["ARGV_CAPTURE"] = str(argv_capture)
 
     # Control: plain Python should pass.

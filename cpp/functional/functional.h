@@ -79,6 +79,7 @@ extern PyTypeObject WhenNotNone_Type;
 extern PyTypeObject WhenNot_Type;
 extern PyTypeObject Lazy_Type;
 extern PyTypeObject ArityDispatch_Type;
+extern PyTypeObject CatchException_Type;
 
 // extern PyTypeObject When_Type;
 // extern PyTypeObject WhenNot_Type;
@@ -134,4 +135,3 @@ static inline vectorcallfunc extract_vectorcall(PyObject *callable)
             return -1; \
         } \
     }
-

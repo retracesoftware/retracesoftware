@@ -30,6 +30,25 @@ def apply(func: Callable[..., Any], *args: Any, **kwargs: Any) -> Any:
     return func(*args, **kwargs)
 
 
+def catch_exception(
+    function: Callable[..., Any], exception_type: Any, handler: Callable[..., Any]
+) -> Callable[..., Any]:
+    """catch_exception(function, exception_type, handler)(*args, **kwargs)."""
+
+    if not callable(function):
+        raise TypeError("catch_exception() expects function to be callable")
+    if not callable(handler):
+        raise TypeError("catch_exception() expects handler to be callable")
+
+    def _caught(*args: Any, **kwargs: Any) -> Any:
+        try:
+            return function(*args, **kwargs)
+        except exception_type:
+            return handler(*args, **kwargs)
+
+    return _caught
+
+
 def first_arg(*args: Any, **kwargs: Any) -> Any:
     """first_arg(*args, **kwargs) -> first positional arg."""
 
@@ -808,4 +827,3 @@ __all__ = [
     "when_not_none",
     "when_predicate",
 ]
-

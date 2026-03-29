@@ -260,6 +260,7 @@ PyMODINIT_FUNC CONCAT(PyInit_, MODULE_NAME)(void) {
         &WhenNot_Type,
         &Lazy_Type,
         &ArityDispatch_Type,
+        &CatchException_Type,
         NULL
     };
     

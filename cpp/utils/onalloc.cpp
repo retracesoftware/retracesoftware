@@ -103,9 +103,6 @@ namespace retracesoftware {
 
         PyErr_Restore(exc_type, exc_value, exc_tb);
 
-        PyObject *wr = PyTuple_GET_ITEM(args, 0);
-        Py_DECREF(wr);
-
         Py_RETURN_NONE;
     }
 

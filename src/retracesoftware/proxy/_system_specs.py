@@ -46,16 +46,9 @@ def create_context(
         functional.identity,
     )
 
-    passthrough = functional.or_predicate(
-        utils.FastTypePredicate(
-            lambda cls: issubclass(cls, tuple(system.immutable_types))
-        ).istypeof,
-        system.is_bound,
-    )
-
     ext_executor = adapter_fn(
         function=function,
-        passthrough=passthrough,
+        passthrough=system.passthrough,
         proxy_input=int_spec.proxy,
         unproxy_input=unproxy_ext,
         proxy_output=ext_spec.proxy,
@@ -68,7 +61,7 @@ def create_context(
 
     int_executor = adapter_fn(
         function=system._external.apply_with(ext_executor),
-        passthrough=passthrough,
+        passthrough=system.passthrough,
         proxy_input=ext_spec.proxy,
         unproxy_input=unproxy_int,
         proxy_output=int_spec.proxy,
@@ -95,8 +88,18 @@ def create_int_spec(system, bind, on_call=None, on_result=None, on_error=None):
             bind=bind,
         )
 
+    maybe_int_proxy = functional.if_then_else(
+        system.int_passthrough,
+        functional.identity,
+        functional.if_then_else(
+            system.is_patched,
+            system._throw_passthrough,
+            system._proxyfactory(system.disable_for(int_proxytype)),
+        ),
+    )
+
     return SimpleNamespace(
-        proxy=system._proxyfactory(system.disable_for(int_proxytype)),
+        proxy=maybe_int_proxy,
         on_call=on_call,
         on_result=on_result,
         on_error=on_error,
@@ -159,18 +162,19 @@ def create_ext_spec(
         lambda cls: cls in system.patched_types
     ).istypeof
 
-    if track:
-        proxy = functional.if_then_else(
+    maybe_ext_proxy = functional.if_then_else(
+        system.ext_passthrough,
+        functional.identity,
+        functional.if_then_else(
             is_patched_type,
-            track,
+            track if track else functional.identity,
             system._proxyfactory(system.disable_for(ext_proxytype)),
-        )
-    else:
-        proxy = system._proxyfactory(system.disable_for(ext_proxytype))
+        ),
+    )
 
     return SimpleNamespace(
-        proxy=proxy,
-        on_call=functional.lazy(sync),
+        proxy=maybe_ext_proxy,
+        on_call=functional.repeatedly(sync),
         on_result=on_result,
         on_passthrough_result=on_passthrough_result,
         on_error=on_error,
