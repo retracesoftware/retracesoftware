@@ -52,7 +52,6 @@ py.install_sources(
 py.install_sources(
   _py_root / 'utils/__init__.py',
   _py_root / 'utils/breakpoint.py',
-  _py_root / 'utils/threadcontext.py',
   _py_root / 'utils/trace.py',
   subdir: 'retracesoftware/utils',
 )
@@ -99,6 +98,7 @@ py.install_sources(
   _py_root / 'install/patchfindspec.py',
   _py_root / 'install/pathpredicate.py',
   _py_root / 'install/replace.py',
+  _py_root / 'install/session.py',
   _py_root / 'install/startthread.py',
   subdir: 'retracesoftware/install',
 )

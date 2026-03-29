@@ -69,7 +69,6 @@ def test_flask_record_teardown_does_not_crash_background_writer(tmp_path: Path):
                 str(recording),
                 "--stacktraces",
                 "--quit_on_error",
-                "--raw",
                 "--",
                 str(script),
             ],

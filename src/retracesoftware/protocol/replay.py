@@ -47,6 +47,7 @@ class ReplayReader:
         mark_retraced: Callable[[object], None] | None = None,
         stub_factory=None,
         monitor_enabled: bool = False,
+        normalize_callback: Callable[[object], object] | None = None,
     ):
         self.source = source
         self.type_deserializer = {}
@@ -55,6 +56,7 @@ class ReplayReader:
         self.stub_factory = stub_factory
         self._monitor_enabled = monitor_enabled
         self._pending_async_new_patched = deque()
+        self.normalize_callback = functional.identity if normalize_callback is None else normalize_callback
 
     def bind(self, obj):
         return self._bind(obj)
@@ -140,9 +142,10 @@ class ReplayReader:
                 self._remember_async_new_patched(msg.value)
                 continue
 
-    def async_call(self, call_message):
+    def async_call(self, fn, *args, **kwargs):
+        fn = self.normalize_callback(fn)
         try:
-            call_message.fn(*call_message.args, **call_message.kwargs)
+            fn(*args, **kwargs)
         except Exception:
             import traceback
             print(f"exception in async_call: {traceback.format_exc()}")
@@ -168,7 +171,10 @@ class ReplayReader:
             elif isinstance(msg, AsyncNewPatchedMessage):
                 self._remember_async_new_patched(msg.value)
             elif isinstance(msg, CallMessage):
-                self.async_call(msg)
+                self.async_call(
+                    self._deserialize_result(msg.fn),
+                    *self._deserialize_result(msg.args),
+                    **self._deserialize_result(msg.kwargs))
             # elif isinstance(msg, CheckpointMessage):
             #     pass
             else:

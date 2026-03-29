@@ -1326,6 +1326,28 @@ class TestWrappedUnwrap:
         unwrapped = _utils.try_unwrap(wm)
         assert unwrapped is member
 
+    def test_wrapped_member_handler_receives_descriptor_operation_and_target(self):
+        captured = []
+
+        class Owner:
+            value = property(lambda self: 7)
+
+        target = Owner.__dict__["value"]
+
+        def handler(fn, *args, **kwargs):
+            captured.append((fn, args, kwargs))
+            return fn(*args, **kwargs)
+
+        wm = _utils.wrapped_member(target=target, handler=handler)
+        owner = Owner()
+
+        assert wm.__get__(owner, Owner) == 7
+
+        fn, args, kwargs = captured[-1]
+        assert fn is type(target).__get__
+        assert args == (target, owner, Owner)
+        assert kwargs == {}
+
     def test_is_wrapped_positive(self):
         def original(x):
             return x + 1

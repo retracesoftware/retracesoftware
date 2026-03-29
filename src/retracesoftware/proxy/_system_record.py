@@ -6,12 +6,14 @@ import retracesoftware.utils as utils
 from retracesoftware.proxy.stubfactory import StubRef
 
 
-def record_context(system, writer, normalize=None, stacktraces=False):
+def record_context(system, writer, normalize=None, stacktraces=False, callback_normalize=None):
     """Build the recording gate context for *system*."""
 
     checkpoint = functional.sequence(normalize, writer.checkpoint) if normalize else None
 
     def write_internal_call(_fn, *args, **kwargs):
+        if callback_normalize is not None:
+            _fn = callback_normalize(_fn)
         if __import__("os").environ.get("RETRACE_CALLBACK_TRACE"):
             import sys
 

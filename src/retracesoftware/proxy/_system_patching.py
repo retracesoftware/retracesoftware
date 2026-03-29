@@ -23,7 +23,7 @@ def get_all_subtypes(cls):
     return subclasses
 
 
-def patch_type(system, cls):
+def patch_type(system, cls, install_session=None):
     """Patch *cls* in-place so its methods route through the gates."""
 
     assert isinstance(cls, type)
@@ -56,11 +56,11 @@ def patch_type(system, cls):
             setattr(target, name, original)
 
     def bind_patched_type(target):
-        system.is_bound.add(target)
+        system.bind(target)
         bound_types.append(target)
-        system._bind(target)
 
     def proxy_attrs(target_cls, attr_dict, handler, originals):
+
         blacklist = system._patch_type_blacklist
 
         def proxy_function(func):
@@ -74,10 +74,21 @@ def patch_type(system, cls):
                 continue
             if name not in originals:
                 originals[name] = getattr(target_cls, name)
+
+            def with_proxied(proxied):
+                setattr(target_cls, name, proxied)
+                if install_session is not None:
+                    install_session.register_wrapped_attr(
+                        owner=target_cls,
+                        name=name,
+                        target=value,
+                        wrapped=proxied,
+                    )
+
             if type(value) in [types.MemberDescriptorType, types.GetSetDescriptorType]:
-                setattr(target_cls, name, proxy_member(value))
+                with_proxied(proxy_member(value))
             elif callable(value) and not isinstance(value, type):
-                setattr(target_cls, name, proxy_function(value))
+                with_proxied(proxy_function(value))
 
     try:
         with WithoutFlags(cls, "Py_TPFLAGS_IMMUTABLETYPE"):

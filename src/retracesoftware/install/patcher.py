@@ -96,7 +96,7 @@ def param_predicate(signature, param_name, predicate):
     extractor = functional.param(str(param_name), idx)
     return functional.sequence(extractor, predicate) 
 
-def patch(module, spec, system, update_refs = False, pathpredicate = None):
+def patch(module, spec, system, update_refs = False, pathpredicate = None, install_session = None):
     """Apply a TOML-derived patch spec to *module* using *system*.
 
     Parameters
@@ -154,7 +154,7 @@ def patch(module, spec, system, update_refs = False, pathpredicate = None):
                 if not (isinstance(value, type) or callable(value)):
                     continue
                 try:
-                    patched = system.patch(value)
+                    patched = system.patch(value, install_session=install_session)
                 except Exception as exc:
                     module_name = namespace.get('__name__', '<unknown>')
                     raise RuntimeError(
@@ -168,7 +168,7 @@ def patch(module, spec, system, update_refs = False, pathpredicate = None):
                     continue
                 value = namespace[name]
                 if isinstance(value, type):
-                    system.patch_type(value)
+                    system.patch_type(value, install_session=install_session)
 
         elif directive == 'immutable':
             for name in config:
@@ -239,7 +239,12 @@ def patch(module, spec, system, update_refs = False, pathpredicate = None):
                         cls_ns = {attr: getattr(cls, attr)
                                   for attr in (sub_names if isinstance(sub_names, list) else sub_names.keys())
                                   if hasattr(cls, attr)}
-                        patch(cls_ns, {sub_directive: sub_names}, system)
+                        patch(
+                            cls_ns,
+                            {sub_directive: sub_names},
+                            system,
+                            install_session=install_session,
+                        )
                         for attr, new_val in cls_ns.items():
                             old_val = getattr(cls, attr, None)
                             if old_val is not new_val:

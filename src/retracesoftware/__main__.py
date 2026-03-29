@@ -16,6 +16,7 @@ from retracesoftware.threadid import ThreadId
 from retracesoftware.proxy.system import System
 
 from retracesoftware.install import run_with_context, stream_writer
+from retracesoftware.install.session import InstallSession
 from retracesoftware.exceptions import RecordingNotFoundError, VersionMismatchError
 
 def expand_recording_path(path):
@@ -114,6 +115,7 @@ thread_id = ThreadId()
 
 def record(system, options, args):
     recording_format = getattr(options, 'format', 'binary')
+    install_session = InstallSession()
 
     if options.recording is None:
         options.recording = '{script}.retrace'
@@ -199,7 +201,8 @@ def record(system, options, args):
         
         context = system.record_context(
             writer=pw, 
-            stacktraces = options.stacktraces)
+            stacktraces = options.stacktraces,
+            callback_normalize=install_session.normalize_record_callback)
 
         on_weakref_start = writer.handle('ON_WEAKREF_CALLBACK_START')
         on_weakref_end = writer.handle('ON_WEAKREF_CALLBACK_END')
@@ -229,7 +232,8 @@ def record(system, options, args):
                          monitor_level=monitor_level,
                          monitor_fn=monitor_fn,
                          retrace_file_patterns=getattr(options, 'retrace_file_patterns', None),
-                         verbose=options.verbose)
+                         verbose=options.verbose,
+                         install_session=install_session)
 
 def parse_breakpoint(s):
     """Parse 'file:line' or 'file:line:condition' into (path, line, condition)."""
@@ -282,6 +286,7 @@ def make_replay_fork(proxied_fork, reader, fork_path):
     return replay_fork
 
 def replay(system, args):
+    install_session = InstallSession()
 
     chunk_ms = getattr(args, 'chunk_ms', None)
     control_socket_path = getattr(args, 'control_socket', None)
@@ -392,7 +397,10 @@ def replay(system, args):
                     controller.on_new_message(None)
                 msg_stream.sync = _sync
 
-            context = system.replay_context(reader=msg_stream)
+            context = system.replay_context(
+                reader=msg_stream,
+                callback_normalize=install_session.normalize_replay_callback,
+            )
 
             if monitor_level > 0:
                 def _verify_monitor(value):
@@ -435,7 +443,8 @@ def replay(system, args):
                                 monitor_fn=monitor_fn,
                                 retrace_file_patterns=getattr(args, 'retrace_file_patterns', None),
                                 verbose=args.verbose,
-                                on_ready=on_ready)
+                                on_ready=on_ready,
+                                install_session=install_session)
             except Exception:
                 raise
             finally:

@@ -17,7 +17,7 @@ def run_with_context(system,
                      thread_id,
                      context, argv, wrap_callback, trace_shutdown=False, on_ready=None,
                      monitor_level=0, monitor_fn=None, retrace_file_patterns=None,
-                     verbose=False):
+                     verbose=False, install_session=None):
     """Run a Python command inside a System context (record or replay).
 
     Parameters
@@ -62,6 +62,10 @@ def run_with_context(system,
     from retracesoftware.install.patcher import patch, install_hash_patching
     from retracesoftware.install.importhook import install_import_hooks, patch_already_loaded
     from retracesoftware.install.hooks import install_weakref_hooks, init_weakref
+    from retracesoftware.install.session import InstallSession
+
+    if install_session is None:
+        install_session = InstallSession()
 
     # counter = utils.ThreadLocal(0)
 
@@ -125,7 +129,8 @@ def run_with_context(system,
         name = module_name or namespace.get('__name__')
         if name and name in module_config:
             undo = patch(namespace, module_config[name], system, update_refs,
-                         pathpredicate=pathpredicate)
+                         pathpredicate=pathpredicate,
+                         install_session=install_session)
             patch_undos.append(undo)
 
     # ── patch already-loaded modules, install hooks, run ──────
@@ -137,17 +142,21 @@ def run_with_context(system,
 
     try:
         with context:
-            for cls in sorted(system.patched_types, key=lambda c: c.__qualname__):
-                system._bind(cls)
+            install_session.activate_callback_binding(system.bind)
             try:
-                run_python_command(argv)
+                for cls in sorted(system.patched_types, key=lambda c: c.__qualname__):
+                    system._bind(cls)
+                try:
+                    run_python_command(argv)
+                finally:
+                    if trace_shutdown:
+                        try:
+                            system.disable_for(threading._shutdown)()
+                            atexit._run_exitfuncs()
+                        except Exception as e:
+                            print(f"Error in atexit hook: {e}", file=sys.stderr)
             finally:
-                if trace_shutdown:
-                    try:
-                        system.disable_for(threading._shutdown)()
-                        atexit._run_exitfuncs()
-                    except Exception as e:
-                        print(f"Error in atexit hook: {e}", file=sys.stderr)
+                install_session.deactivate_callback_binding()
 
         if not trace_shutdown:
             try:
@@ -260,10 +269,11 @@ class TestRunner:
             runner.replay(recording, do_requests)
     """
 
-    __slots__ = ('_system',)
+    __slots__ = ('_system', '_install_session')
 
-    def __init__(self, system):
+    def __init__(self, system, install_session=None):
         self._system = system
+        self._install_session = install_session
 
     # ── record ────────────────────────────────────────────────
 
@@ -293,7 +303,14 @@ class TestRunner:
         from retracesoftware.install.startthread import patch_thread_start
 
         writer = MemoryWriter(thread=threading.get_ident)
-        context = self._system.record_context(writer)
+        context = self._system.record_context(
+            writer,
+            callback_normalize=(
+                self._install_session.normalize_record_callback
+                if self._install_session is not None
+                else None
+            ),
+        )
         error = None
         result = None
 
@@ -319,10 +336,16 @@ class TestRunner:
 
         try:
             with context:
+                if self._install_session is not None:
+                    self._install_session.activate_callback_binding(self._system.bind)
                 try:
-                    result = fn(*args, **kwargs)
-                except Exception as exc:
-                    error = exc
+                    try:
+                        result = fn(*args, **kwargs)
+                    except Exception as exc:
+                        error = exc
+                finally:
+                    if self._install_session is not None:
+                        self._install_session.deactivate_callback_binding()
         finally:
             if uninstall_monitor:
                 uninstall_monitor()
@@ -357,7 +380,14 @@ class TestRunner:
 
         reader = MemoryReader(recording.tape, timeout=timeout,
                               monitor_enabled=(monitor > 0))
-        context = self._system.replay_context(reader)
+        context = self._system.replay_context(
+            reader,
+            callback_normalize=(
+                self._install_session.normalize_replay_callback
+                if self._install_session is not None
+                else None
+            ),
+        )
 
         uninstall_monitor = None
         if monitor > 0:
@@ -384,19 +414,25 @@ class TestRunner:
         try:
             try:
                 with context:
+                    if self._install_session is not None:
+                        self._install_session.activate_callback_binding(self._system.bind)
                     try:
-                        replay_result = fn(*args, **kwargs)
-                    except ReplayDivergence:
-                        raise
-                    except Exception as exc:
-                        if recording.error is None:
-                            raise ReplayDivergence(
-                                f"replay raised {type(exc).__name__} "
-                                f"but record succeeded",
-                                tape=recording.tape,
-                            ) from exc
-                        # Both raised — same code path, not divergence.
-                        raise recording.error
+                        try:
+                            replay_result = fn(*args, **kwargs)
+                        except ReplayDivergence:
+                            raise
+                        except Exception as exc:
+                            if recording.error is None:
+                                raise ReplayDivergence(
+                                    f"replay raised {type(exc).__name__} "
+                                    f"but record succeeded",
+                                    tape=recording.tape,
+                                ) from exc
+                            # Both raised — same code path, not divergence.
+                            raise recording.error
+                    finally:
+                        if self._install_session is not None:
+                            self._install_session.deactivate_callback_binding()
             except ReplayDivergence:
                 raise
             except Exception as exc:
@@ -528,8 +564,10 @@ def install_for_pytest(modules=None):
     from retracesoftware.install.patcher import patch, install_hash_patching
     from retracesoftware.install.importhook import install_import_hooks, patch_already_loaded
     from retracesoftware.install.hooks import init_weakref
+    from retracesoftware.install.session import InstallSession
 
     system = System()
+    install_session = InstallSession()
 
     # ── one-time system setup ─────────────────────────────────
     install_hash_patching(system)
@@ -552,7 +590,13 @@ def install_for_pytest(modules=None):
     def module_patcher(namespace, update_refs, module_name=None):
         name = module_name or namespace.get('__name__')
         if name and name in module_config:
-            patch(namespace, module_config[name], system, update_refs)
+            patch(
+                namespace,
+                module_config[name],
+                system,
+                update_refs,
+                install_session=install_session,
+            )
 
     # ── patch already-loaded modules, install import hooks ────
     patch_already_loaded(module_patcher, module_config)
@@ -564,7 +608,7 @@ def install_for_pytest(modules=None):
             importlib.import_module(name)
             _pytest_installed_modules.add(name)
 
-    _pytest_runner = TestRunner(system)
+    _pytest_runner = TestRunner(system, install_session)
     return _pytest_runner
 
 

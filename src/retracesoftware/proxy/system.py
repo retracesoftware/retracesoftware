@@ -282,7 +282,7 @@ class System:
         """
         return self._external.bind(fn)
 
-    def patch(self, obj):
+    def patch(self, obj, install_session=None):
         """Patch *obj* for proxying — dispatches by type.
 
         If *obj* is a class, delegates to ``patch_type`` (mutates the
@@ -294,7 +294,7 @@ class System:
         Raises ``TypeError`` for anything else.
         """
         if isinstance(obj, type):
-            self.patch_type(obj)
+            self.patch_type(obj, install_session=install_session)
             return obj
         if callable(obj):
             return self.patch_function(obj)
@@ -497,6 +497,10 @@ class System:
             self._internal.is_set, utils.runall(self._async_new_patched, self._bind, self.is_bound.add),
             utils.noop)
 
+    def bind(self, obj):
+        self.is_bound.add(obj)
+        self._bind(obj)
+
     @property
     def enabled(self):
         return self._external.is_set or self._internal.is_set
@@ -560,7 +564,7 @@ class System:
                 not issubclass(cls, tuple(self.immutable_types)) and \
                 cls not in self.patched_types
                                 
-    def patch_type(self, cls):
+    def patch_type(self, cls, install_session=None):
         """Patch *cls* in-place so its methods route through the gates.
 
         This is the central operation of the system.  After calling
@@ -625,7 +629,7 @@ class System:
             # override routed through the internal gate.
         """
 
-        return _patch_type_impl(self, cls)
+        return _patch_type_impl(self, cls, install_session=install_session)
 
     def _proxyfactory(self, proxytype):
         """Build a value transformer that wraps objects crossing the boundary.
@@ -832,7 +836,13 @@ class System:
             internal_handler=internal_handler,
         )
 
-    def record_context(self, writer: WriterProtocol, normalize = None, stacktraces = False):
+    def record_context(
+        self,
+        writer: WriterProtocol,
+        normalize=None,
+        stacktraces=False,
+        callback_normalize=None,
+    ):
         """Context manager for recording.
 
         Inside this context, all calls to methods on patched types go
@@ -881,9 +891,10 @@ class System:
             writer,
             normalize=normalize,
             stacktraces=stacktraces,
+            callback_normalize=callback_normalize,
         )
 
-    def replay_context(self, reader: ReaderProtocol, normalize = None):
+    def replay_context(self, reader: ReaderProtocol, normalize = None, callback_normalize=None):
         """Context manager for replay.
 
         Inside this context, external calls are never executed.
@@ -920,4 +931,5 @@ class System:
             self,
             reader,
             normalize=normalize,
+            callback_normalize=callback_normalize,
         )

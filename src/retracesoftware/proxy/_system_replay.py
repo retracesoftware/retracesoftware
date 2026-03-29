@@ -30,13 +30,16 @@ class _ReplayStubFactory:
         return type(spec.name, (object,), slots)
 
 
-def replay_context(system, reader, normalize=None):
+def replay_context(system, reader, normalize=None, callback_normalize=None):
     """Build the replay gate context for *system*."""
 
     checkpoint = functional.sequence(normalize, reader.checkpoint) if normalize else None
 
     if hasattr(reader, "type_deserializer"):
         reader.type_deserializer[StubRef] = _ReplayStubFactory()
+
+    if callback_normalize is not None and hasattr(reader, "normalize_callback"):
+        reader.normalize_callback = callback_normalize
 
     if hasattr(reader, "stub_factory"):
         reader.stub_factory = system.disable_for(reader.stub_factory)
