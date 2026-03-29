@@ -21,16 +21,15 @@ class InstallSession:
 
     - bind their canonical callback identities once record/replay is active
     - normalize recorded callback ``fn`` payloads into a stable representation
-    - bind descriptor callback callables for wrapped members
+    - bind canonical wrapped-function callback identities once active
     """
 
-    __slots__ = ("_wrapped_attrs", "_wrapped_by_target", "_bound_keys", "_bound_callables", "_bind")
+    __slots__ = ("_wrapped_attrs", "_wrapped_by_target", "_bound_keys", "_bind")
 
     def __init__(self):
         self._wrapped_attrs = {}
         self._wrapped_by_target = {}
         self._bound_keys = set()
-        self._bound_callables = set()
         self._bind = None
 
     @staticmethod
@@ -41,20 +40,7 @@ class InstallSession:
     def _binding_identity(entry):
         if isinstance(entry.wrapped, utils.wrapped_function):
             return entry.wrapped
-        return entry.target
-
-    @staticmethod
-    def _descriptor_callbacks(entry):
-        if not isinstance(entry.wrapped, utils.wrapped_member):
-            return ()
-
-        callbacks = []
-        descriptor_type = type(entry.target)
-        for name in ("__get__", "__set__", "__delete__"):
-            callback = getattr(descriptor_type, name, None)
-            if callback is not None:
-                callbacks.append(callback)
-        return tuple(callbacks)
+        return None
 
     def register_wrapped_attr(self, owner, name, target, wrapped):
         key = self._key(owner, name)
@@ -70,20 +56,19 @@ class InstallSession:
             self._bind_entry(self._wrapped_attrs[key], key)
 
     def _bind_entry(self, entry, key):
-        self._bind(self._binding_identity(entry))
+        identity = self._binding_identity(entry)
+        if identity is not None:
+            self._bind(identity)
         self._bound_keys.add(key)
-        for callback in self._descriptor_callbacks(entry):
-            if callback in self._bound_callables:
-                continue
-            self._bind(callback)
-            self._bound_callables.add(callback)
 
     def activate_callback_binding(self, bind):
         self._bind = bind
+        self._bound_keys.clear()
         self.bind_callback_targets(bind)
 
     def deactivate_callback_binding(self):
         self._bind = None
+        self._bound_keys.clear()
 
     def bind_callback_targets(self, bind=None):
         bind = self._bind if bind is None else bind

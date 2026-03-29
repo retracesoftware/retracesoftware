@@ -39,7 +39,7 @@ def test_install_session_round_trips_wrapped_member_callbacks():
     recorded = session.normalize_record_callback(type(target).__get__)
     replay_fn = session.normalize_replay_callback(recorded)
 
-    assert bound == [target, type(target).__get__, type(target).__set__, type(target).__delete__]
+    assert bound == []
     assert recorded is type(target).__get__
     assert replay_fn is type(target).__get__
     assert replay_fn(target, Owner(), Owner) == 1
@@ -57,3 +57,23 @@ def test_install_session_binds_new_targets_immediately_while_active():
     session.register_wrapped_attr(owner=type("Owner", (), {}), name="callback", target=original, wrapped=wrapped)
 
     assert bound == [wrapped]
+
+
+def test_install_session_rebinds_targets_on_next_activation():
+    session = InstallSession()
+
+    def original():
+        return None
+
+    wrapped = utils.wrapped_function(target=original, handler=lambda fn, *args, **kwargs: fn(*args, **kwargs))
+    session.register_wrapped_attr(owner=type("Owner", (), {}), name="callback", target=original, wrapped=wrapped)
+
+    first = []
+    second = []
+
+    session.activate_callback_binding(first.append)
+    session.deactivate_callback_binding()
+    session.activate_callback_binding(second.append)
+
+    assert first == [wrapped]
+    assert second == [wrapped]
