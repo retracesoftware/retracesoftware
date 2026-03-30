@@ -103,6 +103,12 @@ If a diff touches any of these files:
 - `src/retracesoftware/proxy/_system_specs.py`
 - `src/retracesoftware/protocol/replay.py`
 - `src/retracesoftware/stream/reader.py`
+- `src/retracesoftware/install/__init__.py`
+- `src/retracesoftware/install/session.py`
+- `src/retracesoftware/proxy/_system_patching.py`
+- `src/retracesoftware/proxy/_system_record.py`
+- `src/retracesoftware/proxy/_system_replay.py`
+- `meson.build`
 
 do not stop at the nearest unit tests. Rerun the adjacent sentinel bundle.
 
@@ -115,8 +121,31 @@ Run these before saying a proxy-kernel change is safe:
 - `tests/install/stdlib/test_threaded_select_replay_dispatcher_regression.py`
 - `tests/install/external/test_anyio_from_thread_replay_dispatcher_regression.py`
 - `tests/install/external/test_starlette_testclient_replay_regression.py`
+- `tests/install/external/test_fastapi_testclient_replay_regression.py`
 - `tests/test_record_replay.py::test_record_then_replay_fastapi_testclient_request`
 - `tests/install/external/test_wsgiref_replay_cleanup_regression.py`
+
+### Install Session / Callback Sentinel Bundle
+
+Run these before saying a callback-binding or install-session change is safe:
+
+- `tests/test_install_session.py`
+- `tests/install/stdlib/test_threaded_select_replay_dispatcher_regression.py`
+- `tests/install/external/test_anyio_from_thread_replay_dispatcher_regression.py`
+- `tests/install/external/test_starlette_testclient_replay_regression.py`
+- `tests/install/external/test_fastapi_testclient_replay_regression.py`
+- `tests/test_record_replay.py::test_record_then_replay_fastapi_testclient_request`
+
+### Packaging Smoke Bundle
+
+Run these for `meson.build`, install-entrypoint, or package-layout changes:
+
+- fresh editable install in a clean venv
+- fresh wheel build in a clean venv
+- import smoke:
+  `python -c "import retracesoftware.protocol, retracesoftware.testing, retracesoftware.threadid"`
+- entrypoint smoke:
+  `python -m retracesoftware install`
 
 ### Web Replay Ladder
 
@@ -131,6 +160,10 @@ When debugging web replay issues, reduce in this order:
 7. plain `wsgiref` multi-request
 
 Prefer the smallest rung that still reproduces.
+
+If a change makes one rung green, rerun the highest rung that was failing
+before calling the issue fixed. Replay failures can move up or down the ladder
+between pushes.
 
 ## References
 

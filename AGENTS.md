@@ -65,6 +65,9 @@ hard constraints, not as an encyclopedia.
 - Multi-thread replay depends on preserved message ordering and stable per-thread routing.
 - Prefer fixes in the narrowest responsible layer. Avoid mixing `install`,
   `proxy`, and `stream` changes in one diff unless required.
+- Packaging is part of correctness here. A change that breaks editable/wheel
+  install, package contents, or `python -m retracesoftware install` blocks
+  real-world validation before replay behavior is even tested.
 
 ## Commands
 
@@ -106,6 +109,8 @@ if needed.
   also read the local `AGENTS.md` in that directory if present.
 - If you touch `src/retracesoftware/stream/`, `src/retracesoftware/protocol/`,
   or `tests/`, also read the local `AGENTS.md` there if present.
+- If you touch `meson.build`, package install lists, or runtime entrypoints,
+  run packaging smoke checks in addition to ordinary tests.
 - If you touch `dockertests/`, `go/`, or `src/retracesoftware/modules/`,
   also read the local `AGENTS.md` there if present.
 - If a task depends on a test-directory-specific manual replay loop, inspect

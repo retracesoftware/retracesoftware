@@ -124,8 +124,10 @@ Apply this rule when the diff changes any of:
 - `_ext_handler` / `_int_handler`
 - proxy/walker/materialization behavior
 - callback binding or thread routing
+- install-session or wrapped-callback registration/normalization behavior
 - replay `sync` / message-consumption behavior
 - stream reader/demux routing
+- package install lists, runtime entrypoints, or editable/wheel install behavior
 
 In those cases:
 
@@ -133,6 +135,8 @@ In those cases:
   verified current HEAD
 - if only local/proxy tests were run, return at least `YELLOW`
 - if the change fixed one lane but reopened an adjacent lane, return `RED`
+- if a lower ladder rung turns green, require the highest previously failing
+  rung to be rerun before treating the issue as fixed
 
 Recommended follow-up should name the exact sentinel bundle to rerun, not just
 say "run more tests".

@@ -9,6 +9,9 @@ Many bugs that look like proxy or replay bugs are actually install-layer bugs.
 
 - `__init__.py`
   Bootstraps retrace inside a live Python process via `run_with_context`.
+- `session.py`
+  Tracks install-time wrapped callback identity and binds canonical callback
+  targets when record/replay contexts become active.
 - `patcher.py`
   Applies TOML-driven patch specs to modules, types, and functions.
 - `importhook.py`
@@ -42,6 +45,9 @@ Many bugs that look like proxy or replay bugs are actually install-layer bugs.
   patching/hook installation settles.
 - `install_for_pytest()` is the in-process testing path; keep it aligned with
   the main lifecycle rather than letting it drift into a separate runtime model.
+- `InstallSession` is part of the runtime contract, not just test scaffolding.
+  If callback identity, wrapped descriptors, or callback normalization change,
+  record/replay and pytest paths must stay aligned.
 - Auto-enable bootstrap is also part of the install story: `autoenable.py` and
   `retracesoftware_autoenable.pth` are what make child processes or fresh
   interpreters start under retrace automatically in some workflows.
@@ -52,6 +58,9 @@ Many bugs that look like proxy or replay bugs are actually install-layer bugs.
   proxying overhead in import paths.
 - Thread startup wrapping: wrong behavior here breaks deterministic thread ids
   and replay ordering.
+- Callback binding activation/deactivation: wrong timing here can make one
+  replay lane go green while another lane silently moves up into AnyIO,
+  Starlette, FastAPI, or child-thread replay.
 - Weakref/finalizer wrapping: wrong behavior here changes callback timing and
   can cause replay divergence.
 - `sys.monitoring`: this must checkpoint user-program behavior without turning
@@ -69,6 +78,9 @@ Many bugs that look like proxy or replay bugs are actually install-layer bugs.
   decides whether exit-time I/O becomes part of the recording.
 - Record must not hang after user code has completed. Threadpool/executor
   cleanup, writer drain/close, and atexit ordering are no-break behavior.
+- Packaging/install drift is install-layer risk too. If `meson.build`,
+  install-time source lists, or entrypoint/import wiring drift, fresh-env tests
+  can fail before runtime behavior is even exercised.
 
 ## Working Rules
 
@@ -79,8 +91,16 @@ Many bugs that look like proxy or replay bugs are actually install-layer bugs.
   module patching order, and teardown order. Treat it as a lifecycle coordinator.
 - Any hook that can recurse into Python execution must be reviewed for gate
   bypass and re-entrancy behavior.
+- Treat `InstallSession`, callback normalization, and wrapped-attr registration
+  as high-blast-radius behavior. A fix that helps one callback path can move the
+  failure up or down the web replay ladder.
 - If you change thread, weakref, import, or monitoring behavior, explain the
   determinism impact and update focused tests.
+- If you touch:
+  `install/__init__.py`, `install/session.py`, `proxy/_system_patching.py`,
+  `proxy/_system_record.py`, `proxy/_system_replay.py`, or `protocol/replay.py`,
+  rerun the install/session sentinel bundle from `tests/AGENTS.md` before
+  calling the change safe.
 - If you change shutdown ordering, explicitly reason about:
   non-daemon thread waiting, threadpool/executor cleanup, queue drain/close,
   and whether atexit hooks run inside or outside the active context.
