@@ -123,7 +123,6 @@ Run these before saying a proxy-kernel change is safe:
 - `tests/install/external/test_starlette_testclient_replay_regression.py`
 - `tests/install/external/test_fastapi_testclient_replay_regression.py`
 - `tests/test_record_replay.py::test_record_then_replay_fastapi_testclient_request`
-- `tests/install/external/test_wsgiref_replay_cleanup_regression.py`
 
 ### Install Session / Callback Sentinel Bundle
 
@@ -156,8 +155,6 @@ When debugging web replay issues, reduce in this order:
 3. `starlette.testclient.TestClient`
 4. FastAPI async endpoint
 5. FastAPI sync endpoint
-6. plain `wsgiref` single request
-7. plain `wsgiref` multi-request
 
 Prefer the smallest rung that still reproduces.
 
