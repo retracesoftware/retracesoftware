@@ -66,6 +66,13 @@ py.install_sources(
 # proxy
 py.install_sources(
   _py_root / 'proxy/__init__.py',
+  _py_root / 'proxy/_system_adapters.py',
+  _py_root / 'proxy/_system_context.py',
+  _py_root / 'proxy/_system_patching.py',
+  _py_root / 'proxy/_system_record.py',
+  _py_root / 'proxy/_system_replay.py',
+  _py_root / 'proxy/_system_specs.py',
+  _py_root / 'proxy/_system_threading.py',
   _py_root / 'proxy/gateway.py',
   _py_root / 'proxy/globalref.py',
   _py_root / 'proxy/messagestream.py',
@@ -124,6 +131,28 @@ install_data(
   _py_root / 'modules/stdlib.toml',
   _py_root / 'modules/syslog.toml',
   install_dir: py.get_install_dir() / 'retracesoftware/modules',
+)
+
+# protocol
+py.install_sources(
+  _py_root / 'protocol/__init__.py',
+  _py_root / 'protocol/messages.py',
+  _py_root / 'protocol/record.py',
+  _py_root / 'protocol/replay.py',
+  subdir: 'retracesoftware/protocol',
+)
+
+# testing
+py.install_sources(
+  _py_root / 'testing/__init__.py',
+  _py_root / 'testing/protocol_memory.py',
+  subdir: 'retracesoftware/testing',
+)
+
+# threadid
+py.install_sources(
+  _py_root / 'threadid/__init__.py',
+  subdir: 'retracesoftware/threadid',
 )
 
 # replay (Python wrapper)
