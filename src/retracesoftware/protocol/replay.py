@@ -144,11 +144,14 @@ class ReplayReader:
 
     def async_call(self, fn, *args, **kwargs):
         fn = self.normalize_callback(fn)
+        # Replay callbacks regenerate sandbox side effects only.
+        # If an exception is supposed to cross back into the sandbox,
+        # it must come from a recorded ERROR message, not from the live
+        # callback execution here.
         try:
             fn(*args, **kwargs)
         except Exception:
-            import traceback
-            print(f"exception in async_call: {traceback.format_exc()}")
+            pass
 
     @utils.striptraceback
     def read_result(self):
