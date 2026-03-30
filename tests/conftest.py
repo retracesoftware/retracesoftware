@@ -1,6 +1,7 @@
 """Shared fixtures for retracesoftware tests."""
 import os
 from pathlib import Path
+import sys
 
 os.environ["RETRACE_DEBUG"] = "1"
 
@@ -24,8 +25,45 @@ def _append_mesonpy_editable_skip(path: Path) -> None:
         os.environ["MESONPY_EDITABLE_SKIP"] = os.pathsep.join(parts)
 
 
+def _prepend_python_path(path: Path) -> None:
+    if not path.exists():
+        return
+
+    value = str(path)
+    if value not in sys.path:
+        sys.path.insert(0, value)
+
+    current = os.environ.get("PYTHONPATH", "")
+    parts = [entry for entry in current.split(os.pathsep) if entry]
+    if value not in parts:
+        os.environ["PYTHONPATH"] = os.pathsep.join([value, *parts]) if parts else value
+
+
+_REPO_ROOT = Path(__file__).resolve().parents[1]
+_BUILD_TAG = f"cp{sys.version_info.major}{sys.version_info.minor}{getattr(sys, 'abiflags', '')}"
+_LOCAL_BUILD_DIR = _REPO_ROOT / "build" / _BUILD_TAG
+
+
+def _configure_local_imports() -> None:
+    # Import local Python sources and native extensions directly during tests.
+    # This avoids Meson editable-loader rebuilds in both pytest and child
+    # Python processes spawned by integration tests.
+    _prepend_python_path(_REPO_ROOT / "src")
+
+    if _LOCAL_BUILD_DIR.exists():
+        _append_mesonpy_editable_skip(_LOCAL_BUILD_DIR)
+        for relpath in (
+            Path("cpp") / "functional",
+            Path("cpp") / "utils",
+            Path("cpp") / "stream",
+            Path("cpp") / "cursor",
+        ):
+            _prepend_python_path(_LOCAL_BUILD_DIR / relpath)
+
+
+_configure_local_imports()
 _append_mesonpy_editable_skip(
-    Path(__file__).resolve().parents[2] / "utils" / "build" / "cp311d"
+    Path(__file__).resolve().parents[2] / "utils" / "build" / _BUILD_TAG
 )
 
 
