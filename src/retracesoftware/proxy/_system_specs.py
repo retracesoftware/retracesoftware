@@ -88,6 +88,11 @@ def create_int_spec(system, bind, on_call=None, on_result=None, on_error=None):
             bind=bind,
         )
 
+    # int_spec.proxy is used while preparing an outbound int->ext call.
+    # If a patched value reaches this path and wasn't already handled by
+    # int_passthrough, it means we have a mixed live/retraced call shape,
+    # so raise the passthrough sentinel and let System._ext_handler run the
+    # original target locally instead of partially routing through retrace.
     maybe_int_proxy = functional.if_then_else(
         system.int_passthrough,
         functional.identity,
@@ -162,6 +167,11 @@ def create_ext_spec(
         lambda cls: cls in system.patched_types
     ).istypeof
 
+    # ext_spec.proxy handles values flowing back from the external side
+    # (external results and args entering ext->int callbacks). Patched
+    # values are valid here: on record we track/bind fresh patched objects
+    # that cross back in, while ordinary external values are dynamically
+    # proxied. This is intentionally not the mixed-state bailout path.
     maybe_ext_proxy = functional.if_then_else(
         system.ext_passthrough,
         functional.identity,

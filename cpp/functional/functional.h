@@ -76,13 +76,11 @@ extern PyTypeObject Vector_Type;
 extern PyTypeObject UseWith_Type;
 extern PyTypeObject DeepWrap_Type;
 extern PyTypeObject WhenNotNone_Type;
+extern PyTypeObject When_Type;
 extern PyTypeObject WhenNot_Type;
 extern PyTypeObject Lazy_Type;
 extern PyTypeObject ArityDispatch_Type;
 extern PyTypeObject CatchException_Type;
-
-// extern PyTypeObject When_Type;
-// extern PyTypeObject WhenNot_Type;
 
 PyObject * instanceof_andnot(PyTypeObject * cls, PyTypeObject * andnot);
 PyObject * instance_test(PyTypeObject * cls);

@@ -1,6 +1,24 @@
 import retracesoftware.functional as fn
 
 
+def test_when_returns_input_when_predicate_does_not_match():
+    calls = []
+
+    def is_positive(x):
+        calls.append(("pred", x))
+        return x > 0
+
+    def wrap(x):
+        calls.append(("then", x))
+        return [x]
+
+    wrapper = fn.when(is_positive, wrap)
+
+    assert wrapper(-3) == -3
+    assert wrapper(2) == [2]
+    assert calls == [("pred", -3), ("pred", 2), ("then", 2)]
+
+
 def test_when_not_none_short_circuits_on_none_arguments():
     calls = []
 
@@ -53,4 +71,3 @@ def test_if_then_else_routes_to_correct_branch():
     assert gate(1) == 2
     assert gate(-2) == 2
     assert calls == [("pred", 1), ("then", 1), ("pred", -2), ("else", -2)]
-

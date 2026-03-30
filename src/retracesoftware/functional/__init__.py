@@ -112,8 +112,11 @@ def sequence(*args):
 
 
 def when(test, then):
-    """when(test, then)(x) -> then(x) if test(x) else None."""
-    return _backend_mod.if_then_else(test, then, None)
+    """when(test, then)(x) -> then(x) if test(x) else x."""
+    ctor = getattr(_backend_mod, "when", None)
+    if ctor is not None:
+        return ctor(test, then)
+    return _backend_mod.if_then_else(test, then, identity)
 
 
 def when_not(test, then):
