@@ -96,6 +96,35 @@ the `System`-based implementation used by the current top-level runtime.
 - Callback exceptions must round-trip with the same semantic behavior. Changes
   that swallow, rewrap, or reroute callback exceptions can break replay parity.
 
+## Proxy Kernel Blast Radius
+
+Treat these files as proxy-kernel files, not ordinary local implementation
+details:
+
+- `system.py`
+- `_system_specs.py`
+
+Changes here can fix a proxy-boundary bug while reopening failures in:
+
+- child-thread replay
+- callback binding
+- `anyio.from_thread` portal replay
+- Starlette/FastAPI `TestClient`
+- WSGI/socket cleanup after requests
+
+Be especially cautious with changes to:
+
+- passthrough predicates
+- `_ext_handler`
+- `_int_handler`
+- `_proxyfactory`
+- `on_call` / `sync` behavior
+- callback binding activation/deactivation
+- wrapped-argument visibility inside external method bodies
+
+If one of those changes lands, do not consider the change validated until the
+adjacent replay sentinels have been rerun from `tests/`.
+
 ## Working Rules
 
 - Prefer the current `System` path and verify real call sites from

@@ -113,6 +113,30 @@ For each relevant category below, decide whether the change is `safe`,
   same diff?
 - Could this be test drift or protocol drift rather than a pure determinism bug?
 
+## Validation Gate
+
+For high-blast-radius replay changes, `GREEN` requires current-HEAD validation,
+not just a plausible code argument.
+
+Apply this rule when the diff changes any of:
+
+- proxy passthrough predicates
+- `_ext_handler` / `_int_handler`
+- proxy/walker/materialization behavior
+- callback binding or thread routing
+- replay `sync` / message-consumption behavior
+- stream reader/demux routing
+
+In those cases:
+
+- do not return `GREEN` unless the relevant sentinel tests were rerun on the
+  verified current HEAD
+- if only local/proxy tests were run, return at least `YELLOW`
+- if the change fixed one lane but reopened an adjacent lane, return `RED`
+
+Recommended follow-up should name the exact sentinel bundle to rerun, not just
+say "run more tests".
+
 ## Output
 
 Return one of:

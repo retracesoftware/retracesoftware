@@ -39,6 +39,28 @@ Before proposing a fix, classify the failure:
 
 Do not treat all failures as product bugs automatically.
 
+## Current HEAD Verification
+
+When validating a pushed fix, do not assume the local checkout or editable
+install is current.
+
+Before summarizing results for a branch tip:
+
+- fetch the remote branch and record the exact commit sha
+- verify the worktree `HEAD` matches that sha
+- verify the active interpreter is importing the same checkout
+  (`python -m pip show retracesoftware` for editable installs)
+- only then run tests and summarize failures
+
+Do not report a bug as still live unless it was rerun on the current verified
+HEAD.
+
+Label each reported item as one of:
+
+- `Reproduced on current HEAD`
+- `Fixed on current HEAD`
+- `Not rechecked on current HEAD`
+
 ## Current Examples And Recent Hot Spots
 
 These are current examples, not permanent truth. Refresh them when the failure
@@ -70,6 +92,45 @@ mix changes.
 - Add the narrowest regression test that reproduces the real bug.
 - For cross-layer failures, identify the first owning layer before choosing
   which test bucket to extend.
+
+## Sentinel Bundles
+
+Some files have a much wider blast radius than their local tests suggest.
+
+If a diff touches any of these files:
+
+- `src/retracesoftware/proxy/system.py`
+- `src/retracesoftware/proxy/_system_specs.py`
+- `src/retracesoftware/protocol/replay.py`
+- `src/retracesoftware/stream/reader.py`
+
+do not stop at the nearest unit tests. Rerun the adjacent sentinel bundle.
+
+### Proxy Kernel Sentinel Bundle
+
+Run these before saying a proxy-kernel change is safe:
+
+- `tests/proxy/test_patch.py`
+- `tests/proxy/test_system_context.py`
+- `tests/install/stdlib/test_threaded_select_replay_dispatcher_regression.py`
+- `tests/install/external/test_anyio_from_thread_replay_dispatcher_regression.py`
+- `tests/install/external/test_starlette_testclient_replay_regression.py`
+- `tests/test_record_replay.py::test_record_then_replay_fastapi_testclient_request`
+- `tests/install/external/test_wsgiref_replay_cleanup_regression.py`
+
+### Web Replay Ladder
+
+When debugging web replay issues, reduce in this order:
+
+1. child-thread/select replay
+2. pure `anyio.from_thread` portal
+3. `starlette.testclient.TestClient`
+4. FastAPI async endpoint
+5. FastAPI sync endpoint
+6. plain `wsgiref` single request
+7. plain `wsgiref` multi-request
+
+Prefer the smallest rung that still reproduces.
 
 ## References
 
