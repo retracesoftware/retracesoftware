@@ -62,8 +62,10 @@ namespace retracesoftware_stream {
         PyObject* framed_writer_obj = nullptr;
         FramedWriter* fw = nullptr;
         PyObject* serializer = nullptr;
+        PyObject* intern_serializer = nullptr;
         map<PyObject*, int> bindings;
         map<PyObject*, int> interns;
+        std::vector<PyObject*> owned_intern_keys;
         int binding_counter = 0;
         int intern_counter = 0;
         size_t bytes_written = 0;
@@ -108,9 +110,11 @@ namespace retracesoftware_stream {
         void write_bytes_value(PyObject* obj);
         void write_pickled_value(PyObject* bytes);
         void write_sized_int(int64_t value);
+        PyObject* maybe_intern_payload(PyObject* value);
         bool object_freed(PyObject* obj);
         void remember_binding(PyObject* key, int index);
         void remember_intern(PyObject* key, int index);
+        void remember_owned_intern(PyObject* key, int index);
         void forget_binding(PyObject* key);
 
     public:
@@ -147,11 +151,12 @@ namespace retracesoftware_stream {
             PyObject* writer_obj;
             PyObject* serializer;
             PyObject* thread_key = nullptr;
+            PyObject* intern_serializer = Py_None;
 
-            static const char* kwlist[] = {"writer", "serializer", "thread", nullptr};
+            static const char* kwlist[] = {"writer", "serializer", "thread", "intern_serializer", nullptr};
             if (!PyArg_ParseTupleAndKeywords(
-                    args, kwds, "OO|O", (char**)kwlist,
-                    &writer_obj, &serializer, &thread_key)) {
+                    args, kwds, "OO|OO", (char**)kwlist,
+                    &writer_obj, &serializer, &thread_key, &intern_serializer)) {
                 return -1;
             }
             (void)thread_key;
@@ -159,15 +164,31 @@ namespace retracesoftware_stream {
             FramedWriter* fw_ptr = FramedWriter_get(writer_obj);
             if (!fw_ptr) return -1;
 
+            if (intern_serializer == Py_None) {
+                intern_serializer = nullptr;
+            } else if (!PyCallable_Check(intern_serializer)) {
+                PyErr_Format(
+                    PyExc_TypeError,
+                    "intern_serializer must be callable or None, got %S",
+                    intern_serializer
+                );
+                return -1;
+            }
+
             self->framed_writer_obj = Py_NewRef(writer_obj);
             self->fw = fw_ptr;
             self->serializer = Py_NewRef(serializer);
+            self->intern_serializer = Py_XNewRef(intern_serializer);
             return 0;
         }
 
         static int traverse(Persister* self, visitproc visit, void* arg) {
             Py_VISIT(self->framed_writer_obj);
             Py_VISIT(self->serializer);
+            Py_VISIT(self->intern_serializer);
+            for (auto* key : self->owned_intern_keys) {
+                Py_VISIT(key);
+            }
             for (auto& [key, value] : self->interned_index) {
                 visit(key, arg);
             }
@@ -176,6 +197,11 @@ namespace retracesoftware_stream {
 
         static int clear(Persister* self) {
             Py_CLEAR(self->serializer);
+            Py_CLEAR(self->intern_serializer);
+            for (auto* key : self->owned_intern_keys) {
+                Py_DECREF(key);
+            }
+            self->owned_intern_keys.clear();
             for (auto& [key, value] : self->interned_index) {
                 Py_DECREF(key);
             }
@@ -515,6 +541,17 @@ namespace retracesoftware_stream {
         }
     }
 
+    PyObject* Persister::maybe_intern_payload(PyObject* value) {
+        if (!intern_serializer) {
+            return Py_NewRef(Py_None);
+        }
+
+        PyGILState_STATE gil = PyGILState_Ensure();
+        PyObject* result = PyObject_CallOneArg(intern_serializer, value);
+        PyGILState_Release(gil);
+        return result;
+    }
+
     bool Persister::write_fallback(PyObject* value) {
         PyGILState_STATE gil = PyGILState_Ensure();
 
@@ -595,6 +632,33 @@ namespace retracesoftware_stream {
         } else if (interns.contains(obj)) {
             write_intern_lookup(interns[obj]);
         } else {
+            PyObject* interned = maybe_intern_payload(obj);
+            if (!interned) {
+                return false;
+            }
+
+            if (interned != Py_None) {
+                bool ok = true;
+                int index = intern_counter;
+
+                emit_control(Intern);
+                try {
+                    ok = write(interned);
+                    if (ok) {
+                        remember_owned_intern(obj, index);
+                        intern_counter++;
+                        write_intern_lookup(index);
+                    }
+                } catch (...) {
+                    Py_DECREF(interned);
+                    throw;
+                }
+
+                Py_DECREF(interned);
+                return ok;
+            }
+
+            Py_DECREF(interned);
             return write_fallback(obj);
         }
         return true;
@@ -606,6 +670,12 @@ namespace retracesoftware_stream {
 
     void Persister::remember_intern(PyObject* key, int index) {
         interns[key] = index;
+    }
+
+    void Persister::remember_owned_intern(PyObject* key, int index) {
+        PyObject* owned = Py_NewRef(key);
+        interns[owned] = index;
+        owned_intern_keys.push_back(owned);
     }
 
     void Persister::forget_binding(PyObject* key) {

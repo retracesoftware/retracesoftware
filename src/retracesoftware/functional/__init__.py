@@ -55,7 +55,7 @@ DEBUG_MODE = _DEBUG_MODE and __backend__.startswith("native")
 
 
 _DEPRECATED = frozenset({
-    "TypePredicate", "positional_param",
+    "TypePredicate",
     "advice", "anyargs", "callall", "composeN", "deepwrap",
     "dropargs", "either", "first", "first_arg", "indexed", "instance_test",
     "method_invoker", "not_predicate", "notinstance_test",
@@ -133,6 +133,17 @@ def when_not(test, then):
     return _gate
 
 
+def if_then_else(test, then, otherwise):
+    """if_then_else(test, then, otherwise)(x) -> then(x) if test(x) else otherwise(x)."""
+    if then is identity and otherwise is identity:
+        return identity
+    if otherwise is identity:
+        return when(test, then)
+    if then is identity:
+        return when_not(test, otherwise)
+    return _backend_mod.if_then_else(test, then, otherwise)
+
+
 def cond(*args):
     """
     Build a chain of if_then_else: cond(cond1, action1, cond2, action2, ..., default).
@@ -157,8 +168,83 @@ def cond(*args):
 
 
 def lazy(func, *args):
-    """lazy(func, *args) -> a thunk that calls func(*args) when invoked (ignores call-time args)."""
-    return _backend_mod.partial(func, *args, required=0)
+    """lazy(func, *args) -> compatibility wrapper for repeatedly(func, *args)."""
+    return _backend_mod.repeatedly(func, *args)
+
+
+def spread_and(pred):
+    """spread_and(pred)(*args, **kwargs) -> True iff pred(value) is truthy for every arg and kwarg value."""
+    ctor = getattr(_backend_mod, "spread_and", None)
+    if ctor is not None:
+        return ctor(pred)
+    if not callable(pred):
+        raise TypeError("spread_and() expects a callable")
+
+    def _spread_and(*args, **kwargs):
+        for value in args:
+            if not pred(value):
+                return False
+        for value in kwargs.values():
+            if not pred(value):
+                return False
+        return True
+
+    return _spread_and
+
+
+def spread_or(pred):
+    """spread_or(pred)(*args, **kwargs) -> True iff pred(value) is truthy for any arg or kwarg value."""
+    ctor = getattr(_backend_mod, "spread_or", None)
+    if ctor is not None:
+        return ctor(pred)
+    if not callable(pred):
+        raise TypeError("spread_or() expects a callable")
+
+    def _spread_or(*args, **kwargs):
+        for value in args:
+            if pred(value):
+                return True
+        for value in kwargs.values():
+            if pred(value):
+                return True
+        return False
+
+    return _spread_or
+
+
+def mapcall(function, *transforms):
+    """mapcall(function, arg0tx, arg1tx, ..., resttx).
+
+    If the trailing transform is ``identity``, drop it and use the backend's
+    identity-rest fast path.
+    """
+    if not transforms:
+        raise TypeError("mapcall() requires at least a rest transform")
+    if transforms[-1] is identity:
+        return _backend_mod.mapcall(function, *transforms[:-1], rest_is_identity=True)
+    return _backend_mod.mapcall(function, *transforms)
+
+
+def mapcall0(function, transform):
+    """mapcall0(function, transform) == mapcall(function, transform, identity)."""
+    return mapcall(function, transform, identity)
+
+
+def isinstanceof(*classes, andnot=None):
+    """isinstanceof(cls, andnot=None) or isinstanceof(cls1, cls2, ...).
+
+    With one class, preserve the backend behavior. With multiple classes,
+    return an ``or_predicate`` of the per-class predicates.
+    """
+    if not classes:
+        raise TypeError("isinstanceof() requires at least one type")
+    def _one(cls):
+        if andnot is None:
+            return _backend_mod.isinstanceof(cls)
+        return _backend_mod.isinstanceof(cls, andnot=andnot)
+    if len(classes) == 1:
+        return _one(classes[0])
+    return or_predicate(*(_one(cls) for cls in classes))
 
 
 __all__ = sorted([k for k in globals().keys() if not k.startswith("_")])

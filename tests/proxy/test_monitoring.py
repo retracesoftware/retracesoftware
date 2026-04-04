@@ -12,6 +12,15 @@ import pytest
 from retracesoftware.proxy.messagestream import (
     ReplayReader, MonitorMessage, MemoryWriter, MemoryReader, next_message,
 )
+from retracesoftware.protocol.replay import StacktraceFactory
+
+
+class FakeStackFactory:
+    def __init__(self, *deltas):
+        self._deltas = list(deltas)
+
+    def delta(self):
+        return self._deltas.pop(0)
 
 
 # ── MonitorMessage unit tests ─────────────────────────────────
@@ -19,7 +28,7 @@ from retracesoftware.proxy.messagestream import (
 class TestMonitorMessage:
     def test_parse_monitor_tag(self):
         tape = ['MONITOR', 'S:foo', 'SYNC']
-        msg = next_message(iter(tape).__next__)
+        msg = next_message(iter(tape).__next__, stacktrace_factory=lambda *_: None)
         assert isinstance(msg, MonitorMessage)
         assert msg.value == 'S:foo'
 
@@ -71,14 +80,24 @@ class TestMonitorSkip:
             ms.read_result()
 
     def test_checkpoint_skips_monitor_when_disabled(self):
-        tape = ['MONITOR', 'S:foo', 'CHECKPOINT', 'ok']
-        ms = ReplayReader(iter(tape).__next__, bind=lambda obj: None, monitor_enabled=False)
+        tape = ['MONITOR', 'S:foo', StacktraceFactory().materialize(0, ()), 'CHECKPOINT', 'ok']
+        ms = ReplayReader(
+            iter(tape).__next__,
+            bind=lambda obj: None,
+            monitor_enabled=False,
+            stacktrace_factory=FakeStackFactory((0, ())),
+        )
         ms.checkpoint('ok')
 
     def test_checkpoint_raises_on_monitor_when_enabled(self):
         from retracesoftware.install import ReplayDivergence
-        tape = ['MONITOR', 'S:foo', 'CHECKPOINT', 'ok']
-        ms = ReplayReader(iter(tape).__next__, bind=lambda obj: None, monitor_enabled=True)
+        tape = ['MONITOR', 'S:foo', StacktraceFactory().materialize(0, ()), 'CHECKPOINT', 'ok']
+        ms = ReplayReader(
+            iter(tape).__next__,
+            bind=lambda obj: None,
+            monitor_enabled=True,
+            stacktrace_factory=FakeStackFactory((0, ())),
+        )
         with pytest.raises(ReplayDivergence, match='unexpected MONITOR'):
             ms.checkpoint('ok')
 

@@ -208,7 +208,7 @@ def test_push_fail_callback_disables_objectwriter():
         queue_capacity=1,
         push_fail_callback=lambda: callbacks.append("fail"),
     )
-    writer = stream._backend_mod.ObjectWriter(queue, object)
+    writer = stream._backend_mod.ObjectWriter(queue)
 
     try:
         writer.bind(object())

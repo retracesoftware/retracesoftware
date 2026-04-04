@@ -196,6 +196,28 @@ static PyObject * unwrap_apply(PyObject *module, PyObject * const * args, size_t
     return result;
 }
 
+static PyObject * try_unwrap_apply(PyObject *module, PyObject * const * args, size_t nargs, PyObject* kwnames) {
+
+    if (nargs == 0) {
+        PyErr_SetString(PyExc_TypeError, "try_unwrap_apply requires at least one argument");
+        return nullptr;
+    }
+
+    PyObject * target = args[0];
+
+    if (PyObject_TypeCheck(target, &retracesoftware::Wrapped_Type)) {
+        target = retracesoftware::Wrapped_Target(target);
+    }
+
+    PyObject * result = PyObject_Vectorcall(
+        target,
+        args + 1,
+        (nargs - 1) | PY_VECTORCALL_ARGUMENTS_OFFSET,
+        kwnames);
+
+    return result;
+}
+
 static PyObject * yields_callable_instances(PyObject * module, PyObject * cls) {
     if (!PyType_Check(cls)) {
         PyErr_SetString(PyExc_TypeError, "yeilds_callable_instances takes a type");
@@ -600,6 +622,7 @@ static PyMethodDef module_methods[] = {
     {"yields_callable_instances", (PyCFunction)yields_callable_instances, METH_O, "TODO"},
     {"yields_weakly_referenceable_instances", (PyCFunction)yields_weakly_referenceable_instances, METH_O, "TODO"},
     {"unwrap_apply", (PyCFunction)unwrap_apply, METH_FASTCALL | METH_KEYWORDS, "TODO"},
+    {"try_unwrap_apply", (PyCFunction)try_unwrap_apply, METH_FASTCALL | METH_KEYWORDS, "TODO"},
     {"try_unwrap", try_unwrap, METH_O, "TODO"},
     {"unwrap", unwrap, METH_O, "TODO"},
     {"hashseed", get_hashseed, METH_NOARGS, "Get PYTHONHASHSEED internals"},
@@ -738,6 +761,7 @@ PyMODINIT_FUNC CONCAT(PyInit_, MODULE_NAME)(void) {
         &retracesoftware::Wrapped_Type,
         &retracesoftware::Proxy_Type,
         &retracesoftware::WrappedFunction_Type,
+        &retracesoftware::MutableFunctionWrapper_Type,
         &retracesoftware::WrappedMember_Type,
         &retracesoftware::Reference_Type,
         &retracesoftware::ThreadSwitchMonitor_Type,

@@ -1,20 +1,23 @@
 import pytest
 
 import retracesoftware.functional as functional
+import retracesoftware.proxy._system_adapters as adapters_mod
 import retracesoftware.proxy.system as system_mod
 import retracesoftware.utils as utils
+from retracesoftware.proxy._system_adapters import adapter
+from retracesoftware.proxy.contexts import record_context
 from retracesoftware.proxy.messagestream import MemoryWriter
 
 
 @pytest.fixture(autouse=True)
 def adapter_runtime_shims(monkeypatch):
     monkeypatch.setattr(
-        system_mod.functional,
+        adapters_mod.functional,
         "when_not",
         lambda predicate, slow_path: lambda value: value if predicate(value) else slow_path(value),
         raising=False,
     )
-    monkeypatch.setattr(system_mod.utils, "side_effect", functional.side_effect, raising=False)
+    monkeypatch.setattr(adapters_mod.utils, "side_effect", functional.side_effect, raising=False)
 
 
 def test_adapter_passthrough_skips_proxy_and_unproxy_without_observers():
@@ -43,7 +46,7 @@ def test_adapter_passthrough_skips_proxy_and_unproxy_without_observers():
         events.append(("function", arg))
         return f"result:{arg}"
 
-    wrapped = system_mod.adapter(
+    wrapped = adapter(
         function=function,
         passthrough=passthrough,
         proxy_input=proxy_input,
@@ -88,7 +91,7 @@ def test_adapter_records_proxied_input_then_calls_function_with_unproxied_value(
         events.append(("function", arg))
         return f"result:{arg}"
 
-    wrapped = system_mod.adapter(
+    wrapped = adapter(
         function=function,
         passthrough=passthrough,
         proxy_input=proxy_input,
@@ -143,7 +146,7 @@ def test_adapter_passthrough_writes_raw_result_without_proxying_output():
         events.append(("function", arg))
         return f"result:{arg}"
 
-    wrapped = system_mod.adapter(
+    wrapped = adapter(
         function=function,
         passthrough=passthrough,
         proxy_input=proxy_input,
@@ -200,7 +203,7 @@ def test_record_context_external_method_body_sees_wrapped_argument():
 
     writer = WriterSpy()
 
-    with system.record_context(writer):
+    with record_context(system, writer):
         host = Host()
         result = host.inspect(payload)
 
@@ -208,14 +211,12 @@ def test_record_context_external_method_body_sees_wrapped_argument():
     assert isinstance(result, utils.ExternalWrapped)
     assert type(utils.unwrap(result)) is Payload
 
-    assert seen["bound_objects"] == [host]
-    assert seen["bind_calls"] == [
-        {
-            "is_wrapped": False,
-            "is_internal_wrapped": False,
-            "unwraps_to_payload": False,
-        },
-    ]
+    assert host in seen["bound_objects"]
+    assert {
+        "is_wrapped": False,
+        "is_internal_wrapped": False,
+        "unwraps_to_payload": False,
+    } in seen["bind_calls"]
 
     assert seen == {
         "is_wrapped": True,
@@ -227,3 +228,45 @@ def test_record_context_external_method_body_sees_wrapped_argument():
         "written_is_external_wrapped": True,
         "written_unwraps_to_payload": True,
     }
+
+
+def test_record_context_binds_dynamic_internal_proxy_argument_on_creation():
+    seen = {}
+
+    class Payload:
+        pass
+
+    class Host:
+        def inspect(self, other):
+            seen["is_wrapped"] = utils.is_wrapped(other)
+            seen["is_internal_wrapped"] = isinstance(other, utils.InternalWrapped)
+            seen["is_bound"] = system.is_bound(other)
+            seen["unwraps_to_payload"] = utils.unwrap(other) is payload
+            return None
+
+    system = system_mod.System()
+    system.immutable_types.update({str, bool, int, type(None)})
+    system.patch_type(Host)
+
+    payload = Payload()
+
+    class WriterSpy(MemoryWriter):
+        def bind(self, obj):
+            seen.setdefault("bound_objects", []).append(obj)
+            return super().bind(obj)
+
+    writer = WriterSpy()
+
+    with record_context(system, writer):
+        Host().inspect(payload)
+
+    assert seen["is_wrapped"] is True
+    assert seen["is_internal_wrapped"] is True
+    assert seen["unwraps_to_payload"] is True
+    assert seen["is_bound"] is True
+    assert any(
+        utils.is_wrapped(obj)
+        and isinstance(obj, utils.InternalWrapped)
+        and utils.unwrap(obj) is payload
+        for obj in seen["bound_objects"]
+    )

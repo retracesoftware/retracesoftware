@@ -139,8 +139,6 @@ def _chain(*funcs):
         return functional.firstof(*funcs)
 
 def runall(*funcs):
-    if len(funcs) == 1:
-        return _return_none(funcs[0])
     return _backend_mod.runall(*funcs)
 
 _deprecated_local["return_none"] = _return_none

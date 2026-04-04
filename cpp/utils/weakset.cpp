@@ -1,4 +1,5 @@
 #include "utils.h"
+#include <algorithm>
 #include <new>
 
 namespace retracesoftware {
@@ -15,16 +16,25 @@ namespace retracesoftware {
         static PyObject* call(PyObject* self_obj, PyObject* args, PyObject*);
     };
 
+    struct WeakEntry {
+        PyObject* weakref;
+        unsigned int index;
+
+        WeakEntry(PyObject* weakref, unsigned int index)
+            : weakref(weakref), index(index) {}
+    };
+
     struct WeakSet : PyObject {
-        map<PyObject*, PyObject*> weak;
-        set<PyObject*> strong;
+        map<PyObject*, WeakEntry> weak;
+        map<PyObject*, unsigned int> strong;
         vectorcallfunc vectorcall;
+        unsigned int current_index = 0;
 
         static PyObject* create(PyTypeObject* type, PyObject*, PyObject*) {
             auto* self = reinterpret_cast<WeakSet*>(type->tp_alloc(type, 0));
             if (!self) return nullptr;
-            new (&self->weak) map<PyObject*, PyObject*>();
-            new (&self->strong) set<PyObject*>();
+            new (&self->weak) map<PyObject*, WeakEntry>();
+            new (&self->strong) map<PyObject*, unsigned int>();
             self->vectorcall = nullptr;
             return reinterpret_cast<PyObject*>(self);
         }
@@ -60,22 +70,22 @@ namespace retracesoftware {
         }
 
         static int traverse(WeakSet* self, visitproc visit, void* arg) {
-            for (auto const& [_, weakref] : self->weak) {
-                Py_VISIT(weakref);
+            for (auto const& [_, entry] : self->weak) {
+                Py_VISIT(entry.weakref);
             }
-            for (PyObject* obj : self->strong) {
+            for (auto const& [obj, _] : self->strong) {
                 Py_VISIT(obj);
             }
             return 0;
         }
 
         static int clear(WeakSet* self) {
-            for (auto const& [_, weakref] : self->weak) {
-                Py_DECREF(weakref);
+            for (auto const& [_, entry] : self->weak) {
+                Py_DECREF(entry.weakref);
             }
             self->weak.clear();
 
-            for (PyObject* obj : self->strong) {
+            for (auto const& [obj, _] : self->strong) {
                 Py_DECREF(obj);
             }
             self->strong.clear();
@@ -85,13 +95,29 @@ namespace retracesoftware {
         static void dealloc(WeakSet* self) {
             PyObject_GC_UnTrack(self);
             clear(self);
-            self->weak.~map<PyObject*, PyObject*>();
-            self->strong.~set<PyObject*>();
+            self->weak.~map<PyObject*, WeakEntry>();
+            self->strong.~map<PyObject*, unsigned int>();
             Py_TYPE(self)->tp_free(reinterpret_cast<PyObject*>(self));
         }
 
         bool contains(PyObject* obj) const {
             return weak.contains(obj) || strong.contains(obj);
+        }
+
+        bool try_get_index(PyObject* obj, unsigned int* index) const {
+            auto weak_it = weak.find(obj);
+            if (weak_it != weak.end()) {
+                *index = weak_it->second.index;
+                return true;
+            }
+
+            auto strong_it = strong.find(obj);
+            if (strong_it != strong.end()) {
+                *index = strong_it->second;
+                return true;
+            }
+
+            return false;
         }
 
         static Py_ssize_t sq_length(WeakSet* self) {
@@ -133,23 +159,87 @@ namespace retracesoftware {
                 }
                 PyErr_Clear();
 
-                auto [_, inserted] = self->strong.insert(obj);
-                if (inserted) Py_INCREF(obj);
+                auto [_, inserted] = self->strong.emplace(obj, self->current_index++);
+                if (inserted) {
+                    Py_INCREF(obj);
+                } else {
+                    self->current_index--;
+                }
                 return Py_NewRef(inserted ? Py_True : Py_False);
             }
 
-            self->weak[obj] = weakref;
+            self->weak.emplace(obj, WeakEntry(weakref, self->current_index++));
             Py_RETURN_TRUE;
         }
 
         static PyObject* py_contains(WeakSet* self, PyObject* obj) {
             return Py_NewRef(self->contains(obj) ? Py_True : Py_False);
         }
+
+        static PyObject* index(WeakSet* self, PyObject* obj) {
+            unsigned int index;
+            if (!self->try_get_index(obj, &index)) {
+                Py_RETURN_NONE;
+            }
+            return PyLong_FromUnsignedLong(index);
+        }
+
+        static PyObject* ordered(WeakSet* self, PyObject*) {
+            std::vector<std::pair<unsigned int, PyObject*>> ordered_entries;
+            ordered_entries.reserve(self->weak.size() + self->strong.size());
+
+            for (auto const& [obj, entry] : self->weak) {
+                ordered_entries.emplace_back(entry.index, obj);
+            }
+
+            for (auto const& [obj, index] : self->strong) {
+                ordered_entries.emplace_back(index, obj);
+            }
+
+            std::sort(
+                ordered_entries.begin(),
+                ordered_entries.end(),
+                [](auto const& left, auto const& right) {
+                    return left.first < right.first;
+                });
+
+            PyObject* result = PyTuple_New(ordered_entries.size());
+            if (!result) return nullptr;
+
+            for (Py_ssize_t i = 0; i < static_cast<Py_ssize_t>(ordered_entries.size()); ++i) {
+                PyTuple_SET_ITEM(result, i, Py_NewRef(ordered_entries[i].second));
+            }
+
+            return result;
+        }
+
+        static PyObject* discard(WeakSet* self, PyObject* obj) {
+            auto weak_it = self->weak.find(obj);
+            if (weak_it != self->weak.end()) {
+                PyObject* weakref = weak_it->second.weakref;
+                self->weak.erase(weak_it);
+                Py_DECREF(weakref);
+                Py_RETURN_TRUE;
+            }
+
+            auto strong_it = self->strong.find(obj);
+            if (strong_it != self->strong.end()) {
+                PyObject* strong_obj = strong_it->first;
+                self->strong.erase(strong_it);
+                Py_DECREF(strong_obj);
+                Py_RETURN_TRUE;
+            }
+
+            Py_RETURN_FALSE;
+        }
     };
 
     static PyMethodDef weakset_methods[] = {
         {"add", (PyCFunction)WeakSet::add, METH_O, "Add an object by identity."},
         {"contains", (PyCFunction)WeakSet::py_contains, METH_O, "Return True if the object is in the set."},
+        {"index", (PyCFunction)WeakSet::index, METH_O, "Return the insertion index for an object, or None."},
+        {"ordered", (PyCFunction)WeakSet::ordered, METH_NOARGS, "Return live objects in insertion order."},
+        {"discard", (PyCFunction)WeakSet::discard, METH_O, "Remove an object by identity if present."},
         {nullptr, nullptr, 0, nullptr}
     };
 
@@ -186,7 +276,7 @@ namespace retracesoftware {
         if (self->owner && self->key) {
             auto it = self->owner->weak.find(self->key);
             if (it != self->owner->weak.end()) {
-                PyObject* weakref = it->second;
+                PyObject* weakref = it->second.weakref;
                 self->owner->weak.erase(it);
                 Py_DECREF(weakref);
             }

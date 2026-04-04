@@ -103,20 +103,6 @@ class DescriptorStub:
     def __delete__(self, instance):
         return self.handler(Named('delattr'), self.name)
     
-def stubtype_from_spec(handler, module, name, methods, members):
-
-    spec = {
-        '__module__': module,        
-    }
-
-    for method in methods:
-        spec[method] = utils.wrapped_function(
-            handler = handler, target = Named(method))
-
-    for member in members:
-        spec[member] = DescriptorStub(handler = handler, name = member)
-
-    return type(name, (Stub, DynamicProxy,), spec)
 
     # stubtype.__new__ = thread_state.dispatch(disabled__new__, internal = stub.__new__, external = stub.__new__)
     # stub.__retrace_unproxied__ = cls
@@ -195,6 +181,23 @@ class DescriptorProxy:
 #         deleter = functional.partial(delattr, super(self.proxytype, instance))
 #         return self.handler(deleter, self.name)
 
+def dynamic_proxytype_from_spec(handler, module, name, methods, wrapped_base = utils.ExternalWrapped):
+    def wrap(func): return utils.wrapped_function(handler = handler, target = func)
+
+    spec = {
+        '__module__': module,
+        '__name__': name,
+    }
+    
+    for method in methods:
+        spec[method] = utils.wrapped_function(handler = handler, target = Named(method))
+                
+    return type(name, (wrapped_base, DynamicProxy), spec)
+
+def method_names(cls):
+    for name, value in superdict(cls).items():
+        if is_method_descriptor(value):
+            yield name
 
 def dynamic_proxytype(handler, cls, wrapped_base = utils.ExternalWrapped):
 
@@ -215,10 +218,14 @@ def dynamic_proxytype(handler, cls, wrapped_base = utils.ExternalWrapped):
 
     def wrap(func): return utils.wrapped_function(handler = handler, target = func)
     
-    for name in superdict(cls).keys():
+    source_type = getattr(cls, "__retrace_target_type__", None) or cls
+    if not hasattr(source_type, "__mro__"):
+        source_type = cls
+
+    for name in superdict(source_type).keys():
         if name not in blacklist:
             try:
-                value = getattr(cls, name)
+                value = getattr(source_type, name)
             except AttributeError:
                 # Some metatype attributes listed in the MRO dicts are not
                 # readable on the concrete class (for example `type` exposes
@@ -318,10 +325,20 @@ def instantiable_dynamic_proxytype(handler, cls, thread_state, create_stub = Fal
 
     return proxytype    
 
-def dynamic_int_proxytype(handler, cls, bind):
+def dynamic_int_proxytype(handler, cls, bind, checkpoint = None):
     proxytype = dynamic_proxytype(handler = handler, cls = cls, wrapped_base = utils.InternalWrapped)
-    proxytype.__new__ = functional.sequence(proxytype.__new__, functional.side_effect(bind))
     proxytype.__retrace_source__ = 'internal'
+
+    bound = []
+
+    for name, proxy in proxytype.__dict__.items():
+        if isinstance(proxy, utils.wrapped_function):
+            bind(proxy)
+            bound.append(name)
+
+    if checkpoint is not None:
+        checkpoint({'int_proxytype': str(cls), 'bound': bound})
+
     return proxytype
                                     
 

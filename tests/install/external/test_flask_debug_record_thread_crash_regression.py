@@ -1,4 +1,4 @@
-"""Regression: Flask debug-style record can crash during teardown on py3.12.
+"""Regression: Flask debug-style record can crash during teardown.
 
 Root component focus:
 - `retracesoftware.stream` background writer/heartbeat thread lifecycle during
@@ -17,13 +17,7 @@ from pathlib import Path
 import subprocess
 import sys
 
-import pytest
 
-
-@pytest.mark.skipif(
-    sys.version_info < (3, 12),
-    reason="regression observed on Python 3.12 path",
-)
 def test_flask_record_teardown_does_not_crash_background_writer(tmp_path: Path):
     script = tmp_path / "flask_repro.py"
     script.write_text(

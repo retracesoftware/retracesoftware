@@ -56,6 +56,7 @@ namespace retracesoftware {
     extern PyTypeObject Proxy_Type;
     extern PyTypeObject Reference_Type;
     extern PyTypeObject WrappedFunction_Type;
+    extern PyTypeObject MutableFunctionWrapper_Type;
     extern PyTypeObject WrappedMember_Type;
     extern PyTypeObject IdSet_Type;
     extern PyTypeObject IdSetTest_Type;

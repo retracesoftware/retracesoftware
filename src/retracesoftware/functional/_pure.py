@@ -8,6 +8,7 @@ public API exercised by the test suite), not performance.
 from __future__ import annotations
 
 import functools
+import operator
 import sys
 from typing import Any, Callable, Dict, Iterable, Mapping, MutableMapping, Sequence, Tuple
 
@@ -364,6 +365,49 @@ def firstof(*functions: Callable[..., Any]) -> Callable[..., Any]:
     return _firstof
 
 
+class _Partial:
+    def __init__(
+        self,
+        func: Callable[..., Any],
+        pargs: tuple[Any, ...],
+        pkwargs: Dict[str, Any],
+        required: int | None,
+    ) -> None:
+        self._function = func
+        self._args = list(pargs)
+        self._pkwargs = dict(pkwargs)
+        self._required = required
+        functools.update_wrapper(self, func)  # type: ignore[arg-type]
+
+    def _normalize_index(self, index: Any) -> int:
+        i = operator.index(index)
+        if i < 0:
+            i += len(self._args)
+        if i < 0 or i >= len(self._args):
+            raise IndexError("partial index out of range")
+        return i
+
+    def __call__(self, *args: Any, **kwargs: Any) -> Any:
+        if self._required == 0:
+            return self._function(*self._args, **self._pkwargs)
+
+        merged = dict(self._pkwargs)
+        merged.update(kwargs)
+        return self._function(*self._args, *args, **merged)
+
+    def __getitem__(self, index: Any) -> Any:
+        return self._args[self._normalize_index(index)]
+
+    def __setitem__(self, index: Any, value: Any) -> None:
+        self._args[self._normalize_index(index)] = value
+
+    def __len__(self) -> int:
+        return len(self._args)
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._function, name)
+
+
 def partial(func: Callable[..., Any], *pargs: Any, required: int | None = None, **pkwargs: Any) -> Callable[..., Any]:
     """partial(func, *args, required=None, **kwargs) -> callable (pure-Python fallback)."""
 
@@ -374,18 +418,7 @@ def partial(func: Callable[..., Any], *pargs: Any, required: int | None = None, 
         # The native implementation supports richer semantics; this fallback only implements what tests cover.
         raise NotImplementedError("pure partial() only supports required=None or required=0")
 
-    if required == 0:
-        def _thunk(*args: Any, **kwargs: Any) -> Any:
-            return func(*pargs, **pkwargs)
-
-        return _thunk
-
-    def _p(*args: Any, **kwargs: Any) -> Any:
-        merged = dict(pkwargs)
-        merged.update(kwargs)
-        return func(*pargs, *args, **merged)
-
-    return _p
+    return _Partial(func, pargs, pkwargs, required)
 
 
 def always(value: Any) -> Callable[..., Any]:
@@ -403,14 +436,14 @@ def always(value: Any) -> Callable[..., Any]:
     return _always_value
 
 
-def repeatedly(func: Callable[[], Any]) -> Callable[..., Any]:
-    """repeatedly(func) calls func() every time, ignoring all passed arguments."""
+def repeatedly(func: Callable[..., Any], *bound_args: Any) -> Callable[..., Any]:
+    """repeatedly(func, *args) calls func(*args) every time, ignoring all passed arguments."""
 
     if not callable(func):
         raise TypeError("repeatedly() expects a callable")
 
     def _rep(*args: Any, **kwargs: Any) -> Any:
-        return func()
+        return func(*bound_args)
 
     return _rep
 
@@ -530,6 +563,30 @@ class positional_param:
         return f"positional_param({self.index})"
 
 
+class _PackCall:
+    def __init__(self, loose: int, function: Callable[..., Any]) -> None:
+        if not isinstance(loose, int) or loose < 0:
+            raise ValueError("pack_call loose count must be a non-negative int")
+        if not callable(function):
+            raise TypeError("pack_call() expects a callable")
+        self._loose = loose
+        self._function = function
+        functools.update_wrapper(self, function)  # type: ignore[arg-type]
+
+    def __call__(self, *args: Any, **kwargs: Any) -> Any:
+        loose = min(len(args), self._loose)
+        return self._function(*args[:loose], args[loose:], kwargs)
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._function, name)
+
+
+def pack_call(loose: int, function: Callable[..., Any]) -> Callable[..., Any]:
+    """pack_call(loose, function)(*args, **kwargs) -> function(*args[:loose], args[loose:], kwargs)."""
+
+    return _PackCall(loose, function)
+
+
 class _PositionalParamTransform:
     def __init__(self, func: Callable[..., Any], transform: Callable[[Any], Any], index: int):
         self._func = func
@@ -591,6 +648,64 @@ def mapargs(func: Callable[..., Any], transform: Callable[[Any], Any], starting:
     if not isinstance(starting, int) or starting < 0:
         raise TypeError("mapargs() expects starting to be a non-negative int")
     return _MapArgs(func, transform, starting=starting)
+
+
+class _MapCall:
+    def __init__(
+        self,
+        function: Callable[..., Any],
+        transforms: tuple[Callable[[Any], Any], ...],
+        *,
+        rest_is_identity: bool = False,
+    ) -> None:
+        if not callable(function):
+            raise TypeError("mapcall() expects function to be callable")
+        if not transforms and not rest_is_identity:
+            raise TypeError("mapcall() requires at least a rest transform")
+        for transform in transforms:
+            if not callable(transform):
+                raise TypeError("mapcall() expects transforms to be callable")
+
+        self._function = function
+        self._rest_is_identity = rest_is_identity
+        if rest_is_identity:
+            self._prefix_transforms = transforms
+            self._rest_transform = None
+        else:
+            self._prefix_transforms = transforms[:-1]
+            self._rest_transform = transforms[-1]
+        functools.update_wrapper(self, function)  # type: ignore[arg-type]
+
+    def __call__(self, *args: Any, **kwargs: Any) -> Any:
+        if self._rest_is_identity and not self._prefix_transforms:
+            return self._function(*args, **kwargs)
+
+        args2 = list(args)
+        prefix_count = len(self._prefix_transforms)
+
+        for i in range(min(prefix_count, len(args2))):
+            args2[i] = self._prefix_transforms[i](args2[i])
+
+        if self._rest_is_identity:
+            kwargs2 = kwargs
+        else:
+            for i in range(prefix_count, len(args2)):
+                args2[i] = self._rest_transform(args2[i])
+            kwargs2 = {k: self._rest_transform(v) for k, v in kwargs.items()}
+        return self._function(*args2, **kwargs2)
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._function, name)
+
+
+def mapcall(
+    function: Callable[..., Any],
+    *transforms: Callable[[Any], Any],
+    rest_is_identity: bool = False,
+) -> Callable[..., Any]:
+    """mapcall(function, arg0tx, arg1tx, ..., resttx) transforms leading positional args individually and the rest uniformly."""
+
+    return _MapCall(function, transforms, rest_is_identity=rest_is_identity)
 
 
 def advice(
@@ -807,11 +922,13 @@ __all__ = [
     "intercept",
     "isinstanceof",
     "mapargs",
+    "mapcall",
     "memoize_one_arg",
     "method_invoker",
     "not_predicate",
     "notinstance_test",
     "or_predicate",
+    "pack_call",
     "param",
     "positional_param",
     "partial",

@@ -12,34 +12,31 @@ class ExtendedRef:
         self.type = type
         self.module = module
 
-class StubRef:
-    def __init__(self, cls):
-        blacklist = ['__class__', '__dict__', '__module__', '__doc__', '__new__']
 
-        self.methods = []
-        self.static_methods = []
-        self.class_methods = []
+def superdict(cls):
+    result = {}
+    for base in list(reversed(cls.__mro__))[1:]:
+        result.update(base.__dict__)
+    return result
 
-        for key,value in cls.__dict__.items():
-            if key not in blacklist:
-                if isinstance(value, classmethod):
-                    self.class_methods.append(key)
-                elif isinstance(value, staticmethod):
-                    self.class_methods.append(key)
-                elif utils.is_method_descriptor(value):
-                    self.methods.append(key)
 
-        self.name = cls.__name__ 
-        self.module = cls.__module__
+def stub_methods(cls):
+    blacklist = ['__class__', '__dict__', '__module__', '__doc__', '__new__']
+    methods = []
 
-    # def __init__(self, module, name, methods, members):
-    #     self.name = name
-    #     self.module = module
-    #     self.methods = methods
-    #     self.members = members
+    for key, value in superdict(cls).items():
+        if key in blacklist:
+            continue
+        if isinstance(value, (classmethod, staticmethod)):
+            continue
+        if utils.is_method_descriptor(value):
+            methods.append(key)
 
-    def __str__(self):
-        return f'StubRef(module = {self.module}, name = {self.name}, methods = {self.methods})'
+    for name in ('__getattr__', '__setattr__', '__delattr__'):
+        if name not in methods:
+            methods.append(name)
+
+    return methods
 
 def resolve(module, name):
     try:
@@ -132,13 +129,24 @@ class StubFactory:
 
         assert self.thread_state.value == 'disabled'
 
+        if isinstance(spec, type):
+            resolved = spec
+            module = spec.__module__
+            name = spec.__name__
+            methods = stub_methods(spec)
+        else:
+            module = spec.module
+            name = spec.name
+            methods = spec.methods
+            resolved = resolve(module, name)
+
         slots = {
-            '__module__': spec.module,
-            '__qualname__': spec.name,
-            '__name__': spec.name,
+            '__module__': module,
+            '__qualname__': name,
+            '__name__': name,
         }
 
-        for method in spec.methods:
+        for method in methods:
             slots[method] = self.create_method(method)
             assert utils.is_method_descriptor(slots[method])
 
@@ -170,17 +178,15 @@ class StubFactory:
         # slots['__getattr__'] = getattr
         slots['__setattr__'] = self.thread_state.method_dispatch(on_disabled, external = self.next_result)
 
-        resolved = resolve(spec.module, spec.name)
-
         # if isinstance(resolved, type):
         #     slots['__class__'] = property(functional.repeatedly(resolved))
 
         # else:
         #     utils.sigtrap(f'{spec.module}.{spec.name}')
 
-        stubtype = type(spec.name, (Stub, ), slots)
+        stubtype = type(name, (Stub, ), slots)
 
-        for method in spec.methods:
+        for method in methods:
             slots[method].__objclass__ = stubtype
 
         stubtype.__retrace_target_type__ = resolved

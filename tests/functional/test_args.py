@@ -187,6 +187,66 @@ class TestMapArgs:
         assert mapped.custom_attr == "test"
 
 
+class TestMapCall:
+    def test_mapcall0_transforms_first_arg_only(self):
+        def target(a, b, scale=1):
+            return (a, b, scale)
+
+        mapped = fn.mapcall0(target, str)
+
+        assert mapped(2, 3, scale=4) == ("2", 3, 4)
+
+    def test_identity_rest_transform_leaves_remaining_args_and_kwargs_unchanged(self):
+        def target(a, b, c, flag=None):
+            return (a, b, c, flag)
+
+        mapped = fn.mapcall(target, str, fn.identity)
+
+        assert mapped(1, 2, 3, flag=4) == ("1", 2, 3, 4)
+
+    def test_identity_only_fast_path_preserves_all_args(self):
+        def target(*args, **kwargs):
+            return (args, kwargs)
+
+        mapped = fn.mapcall(target, fn.identity)
+
+        assert mapped(1, 2, three=3) == ((1, 2), {"three": 3})
+
+    def test_rest_transform_only_applies_to_all_args_and_kwargs(self):
+        def target(a, b, scale=1):
+            return (a, b, scale)
+
+        mapped = fn.mapcall(target, str)
+
+        assert mapped(2, 3, scale=4) == ("2", "3", "4")
+
+    def test_prefix_transform_then_rest_transform(self):
+        def target(a, b, c, offset=0):
+            return (a, b, c, offset)
+
+        mapped = fn.mapcall(target, str, lambda x: x * 10)
+
+        assert mapped(1, 2, 3, offset=4) == ("1", 20, 30, 40)
+
+    def test_multiple_prefix_transforms_then_rest_transform(self):
+        def target(a, b, c, d, flag=False):
+            return (a, b, c, d, flag)
+
+        mapped = fn.mapcall(target, str, lambda x: x + 1, lambda x: x * 2)
+
+        assert mapped(5, 6, 7, 8, flag=9) == ("5", 7, 14, 16, 18)
+
+    def test_attribute_access_goes_to_wrapped_function(self):
+        def target(value):
+            return value
+
+        target.custom_attr = "test"
+
+        mapped = fn.mapcall(target, str)
+
+        assert mapped.custom_attr == "test"
+
+
 class TestPositionalParamTransform:
     def test_transforms_only_selected_positional_arg(self):
         def target(a, b, c):
@@ -215,3 +275,31 @@ class TestPositionalParamTransform:
         with pytest.raises(IndexError):
             mapped(5)
 
+
+class TestPackCall:
+    def test_leaves_loose_args_and_packs_rest_and_kwargs(self):
+        def target(fn, args, kwargs):
+            return (fn, args, kwargs)
+
+        packed = fn.pack_call(1, target)
+        marker = object()
+
+        result = packed(marker, 2, 3, scale=4)
+
+        assert result == (marker, (2, 3), {"scale": 4})
+
+    def test_zero_loose_packs_all_positional_args(self):
+        def target(args, kwargs):
+            return (args, kwargs)
+
+        packed = fn.pack_call(0, target)
+
+        assert packed(1, 2, three=3) == ((1, 2), {"three": 3})
+
+    def test_fewer_positional_args_than_loose_still_appends_empty_tuple_and_kwargs(self):
+        def target(a, rest, kwargs):
+            return (a, rest, kwargs)
+
+        packed = fn.pack_call(2, target)
+
+        assert packed("x") == ("x", (), {})

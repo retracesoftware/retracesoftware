@@ -4,7 +4,7 @@ import retracesoftware.functional as functional
 import retracesoftware.utils as utils
 
 
-def _run_with_replay(ext_runner, replay_materialize=None, materialize=None, bind_materialized=None):
+def _run_with_replay(ext_runner):
     """Return a replay callable matching apply_with's signature.
 
     During replay, the real external function is never called. Instead,
@@ -18,23 +18,23 @@ def _run_with_replay(ext_runner, replay_materialize=None, materialize=None, bind
     return replay_fn
 
 
-def input_adapter(function, passthrough, proxy, unproxy, on_call=None):
-    if on_call:
-        function = functional.mapargs(
-            starting=1,
-            transform=functional.walker(unproxy),
-            function=function,
-        )
-        function = utils.observer(on_call=on_call, function=function)
-        function = functional.mapargs(
-            starting=1,
-            transform=functional.walker(proxy),
-            function=function,
-        )
-    else:
-        slow_path = functional.walker(functional.sequence(proxy, unproxy))
-        transform = functional.when_not(passthrough, slow_path)
-        function = functional.mapargs(starting=1, transform=transform, function=function)
+def input_adapter(function, proxy, unproxy, on_call=None):
+    function = functional.mapargs(
+        transform=functional.walker(unproxy),
+        function=function,
+    )
+    
+    function = utils.observer(on_call=on_call, function=function)
+
+    function = functional.mapargs(
+        starting=1,
+        transform=functional.walker(proxy),
+        function=function,
+    )
+    # else:
+    #     # slow_path = functional.walker(functional.sequence(proxy, unproxy))
+    #     # transform = functional.when_not(passthrough, slow_path)
+    #     # function = functional.mapargs(starting=1, transform=transform, function=function)
 
     return function
 
@@ -86,24 +86,26 @@ def adapter(
 
     function = functional.sequence(function, output_transformer)
 
-    return input_adapter(function, passthrough, proxy_input, unproxy_input, on_call)
+    return input_adapter(function, proxy_input, unproxy_input, on_call)
 
 
-def proxy(proxytype):
+def proxy(proxytype_from):
     """Create a callable that wraps a value in a proxy type."""
 
+    # cls = proxytype_from(type(value))
+    # wrapped = utils.create_wrapped(cls, value)
     return functional.spread(
         utils.create_wrapped,
-        functional.sequence(functional.typeof, proxytype),
-        None,
+        functional.sequence(functional.typeof, proxytype_from),
+        functional.identity,
     )
 
 
-def maybe_proxy(proxytype):
+def maybe_proxy(proxytype_from, on_instance = None):
     """Conditionally proxy a value."""
 
     return functional.if_then_else(
         functional.isinstanceof(utils.Wrapped),
         functional.identity,
-        proxy(functional.memoize_one_arg(proxytype)),
+        functional.sequence(proxy(functional.memoize_one_arg(proxytype_from)), on_instance),
     )

@@ -70,9 +70,6 @@ namespace retracesoftware_stream {
         INTERN_INLINE,
 
         THREAD_SWITCH,
-        STACK,
-        ADD_FILENAME,
-        
         CHECKSUM,
         DROPPED,
         HEARTBEAT,
@@ -128,9 +125,7 @@ namespace retracesoftware_stream {
         return Control(SizedTypes::FIXED_SIZE, type);
     }
     
-    constexpr Control Stack = create_fixed_size(FixedSizeTypes::STACK);
     constexpr Control ThreadSwitch = create_fixed_size(FixedSizeTypes::THREAD_SWITCH);
-    constexpr Control AddFilename = create_fixed_size(FixedSizeTypes::ADD_FILENAME);
     constexpr Control Empty = ThreadSwitch;
 
     constexpr Control Checksum = create_fixed_size(FixedSizeTypes::CHECKSUM);
@@ -211,8 +206,6 @@ namespace retracesoftware_stream {
             case FixedSizeTypes::BIND: return "BIND";
             case FixedSizeTypes::INTERN_INLINE: return "INTERN";
             case FixedSizeTypes::THREAD_SWITCH: return "THREAD_SWITCH";
-            case FixedSizeTypes::STACK: return "STACK";
-            case FixedSizeTypes::ADD_FILENAME: return "ADD_FILENAME";
             case FixedSizeTypes::CHECKSUM: return "CHECKSUM";
             case FixedSizeTypes::DROPPED: return "DROPPED";
             case FixedSizeTypes::HEARTBEAT: return "HEARTBEAT";

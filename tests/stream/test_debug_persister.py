@@ -163,7 +163,7 @@ def test_consumer_error_callback_shuts_queue_down():
         handler,
         on_target_error=errors.append,
     )
-    writer = stream._backend_mod.ObjectWriter(queue, object)
+    writer = stream._backend_mod.ObjectWriter(queue)
 
     try:
         writer("before-error")
@@ -195,7 +195,7 @@ def test_raw_queue_passes_collection_lengths_as_python_ints():
 
     handler = RecordingPersister()
     queue = stream._backend_mod.Queue(handler)
-    writer = stream._backend_mod.ObjectWriter(queue, object)
+    writer = stream._backend_mod.ObjectWriter(queue)
 
     try:
         writer([1, 2])

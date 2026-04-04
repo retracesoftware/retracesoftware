@@ -134,6 +134,21 @@ def patch(module, spec, system, update_refs = False, pathpredicate = None, insta
     originals = {}      # name → first (pre-patch) value
     added_immutables = []  # types added to system.immutable_types
     added_replay_materialize = []  # callables added to system.replay_materialize
+    # Resolve dotted helper imports before mutating the module being patched.
+    # This avoids importing support code (for example edgecase wrappers for
+    # ``_io``) after core types in that same module have already been live-
+    # patched.
+    resolved_wrap = {
+        name: resolve(dotted_path)
+        for name, dotted_path in spec.get("wrap", {}).items()
+    }
+    resolved_patch_class = {
+        name: {
+            attr: resolve(transform)
+            for attr, transform in transforms.items()
+        }
+        for name, transforms in spec.get("patch_class", {}).items()
+    }
 
     def _apply(name, old, new):
         """Replace *name* in the namespace and optionally update refs."""
@@ -145,7 +160,6 @@ def patch(module, spec, system, update_refs = False, pathpredicate = None, insta
                 update(old, new)
 
     for directive, config in spec.items():
-
         if directive == 'proxy':
             for name in config:
                 if name not in namespace:
@@ -203,7 +217,7 @@ def patch(module, spec, system, update_refs = False, pathpredicate = None, insta
                 if name not in namespace:
                     continue
                 value = namespace[name]
-                wrapper_factory = resolve(dotted_path)
+                wrapper_factory = resolved_wrap[name]
                 new = wrapper_factory(value)
                 _apply(name, value, new)
 
@@ -225,7 +239,7 @@ def patch(module, spec, system, update_refs = False, pathpredicate = None, insta
                     cls = originals.get(name, cls)
                 if not isinstance(cls, type):
                     continue
-                patch_class(transforms, cls)
+                patch_class(resolved_patch_class.get(name, {}), cls)
 
         elif directive == 'type_attributes':
             for name, sub_spec in config.items():
@@ -300,11 +314,11 @@ def replace(replacements, coll):
         
 def patch_class(transforms, cls):
     with modify(cls):
-        for attr,transform in transforms.items():
+        for attr, wrapper in transforms.items():
             # Some C-extension APIs vary by Python build/version.
             # Skip missing attributes so module configs can remain portable.
             if hasattr(cls, attr):
-                utils.update(cls, attr, resolve(transform))
+                utils.update(cls, attr, wrapper)
 
     return cls
 

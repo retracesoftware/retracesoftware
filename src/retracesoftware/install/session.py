@@ -70,6 +70,12 @@ class InstallSession:
         self._bind = None
         self._bound_keys.clear()
 
+    def callback_binding_hooks(self, bind):
+        return {
+            "on_start": lambda: self.activate_callback_binding(bind),
+            "on_end": self.deactivate_callback_binding,
+        }
+
     def bind_callback_targets(self, bind=None):
         bind = self._bind if bind is None else bind
         if bind is None:

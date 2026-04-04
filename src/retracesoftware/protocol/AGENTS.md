@@ -41,7 +41,7 @@ async materialization.
   results in the same logical order the recording emitted it.
 - Matching can happen by object identity or by signature. Changing that matching
   policy can silently break replay for wrapped objects.
-- `StubRef` handling is part of protocol semantics here, not only proxy logic.
+- Legacy proxy-stub handling lives in protocol semantics here, not only proxy logic.
 - `type_deserializer`, `stub_factory`, `bind(obj)`, and `mark_retraced(obj)`
   must stay aligned; they are one materialization pipeline.
 - Clearing `_pending_async_new_patched` too early or too late changes replay

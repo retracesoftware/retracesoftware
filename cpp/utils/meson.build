@@ -14,6 +14,7 @@ _utils_sources = files(
   'marker.cpp',
   'memoryaddresses.cpp',
   'module.cpp',
+  'mutablefunctionwrapper.cpp',
   'newwrapper.cpp',
   'observer.cpp',
   'onalloc.cpp',

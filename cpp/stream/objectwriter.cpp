@@ -100,7 +100,6 @@ namespace retracesoftware_stream {
         int pid;
         bool verbose;
         bool quit_on_error;
-        PyTypeObject * ext_wrapped_type = nullptr;
         vectorcallfunc vectorcall = nullptr;
         PyObject *weakreflist = nullptr;
 
@@ -285,10 +284,6 @@ namespace retracesoftware_stream {
             else if (is_immortal(obj)) {
                 disable_if_push_failed(queue->push_obj(obj));
             }
-            else if (Py_TYPE(obj)->tp_base == ext_wrapped_type && is_bound(reinterpret_cast<PyObject*>(Py_TYPE(obj))))
-            {
-                disable_if_push_failed(queue->push_obj(reinterpret_cast<PyObject*>(Py_TYPE(obj))));
-            } 
             else {
                 PyTypeObject* tp = Py_TYPE(obj);
                 
@@ -437,25 +432,19 @@ namespace retracesoftware_stream {
             
             int verbose = 0;
             int quit_on_error = 0;
-            PyTypeObject * ext_wrapped_type;
-
             static const char* kwlist[] = {
                 "queue",
-                "ext_wrapped_type",
                 "verbose",
                 "quit_on_error",
                 nullptr};
 
-            if (!PyArg_ParseTupleAndKeywords(args, kwds, "O!O!|pp", (char **)kwlist,
-                &Queue_Type, &queue_obj, &PyType_Type, &ext_wrapped_type, &verbose, &quit_on_error)) {
+            if (!PyArg_ParseTupleAndKeywords(args, kwds, "O!|pp", (char **)kwlist,
+                &Queue_Type, &queue_obj, &verbose, &quit_on_error)) {
                 return -1;
             }
 
             self->verbose = verbose;
             self->quit_on_error = quit_on_error;
-
-            Py_INCREF(ext_wrapped_type);
-            self->ext_wrapped_type = ext_wrapped_type;
             
             self->messages_written = 0;
             
@@ -470,7 +459,6 @@ namespace retracesoftware_stream {
 
         static int traverse(ObjectWriter* self, visitproc visit, void* arg) {
             Py_VISIT(self->queue);
-            Py_VISIT(self->ext_wrapped_type);
             for (auto& [obj, weakref] : self->bound) {
                 if (weakref)
                     Py_VISIT(weakref);
@@ -482,7 +470,6 @@ namespace retracesoftware_stream {
 
         static int clear(ObjectWriter* self) {
             self->clear_queue_ref();
-            Py_CLEAR(self->ext_wrapped_type);
             for (auto& [obj, weakref] : self->bound) {
                 if (weakref)
                     Py_CLEAR(weakref);

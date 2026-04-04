@@ -5,6 +5,7 @@ import tempfile
 import threading
 
 import retracesoftware.utils as utils
+from retracesoftware.proxy.contexts import record_context
 from retracesoftware.proxy.system import System
 from retracesoftware.proxy.messagestream import MemoryWriter
 from retracesoftware.install.patcher import patch
@@ -43,7 +44,7 @@ def test_open_non_whitelisted_path_not_retraced():
         tmp_path = tmp.name
 
     try:
-        with system.record_context(writer):
+        with record_context(system, writer):
             f = patched_open(tmp_path, 'r')
             f.close()
 
@@ -78,7 +79,7 @@ def test_open_whitelisted_path_is_retraced():
         tmp_path = tmp.name
 
     try:
-        with system.record_context(writer):
+        with record_context(system, writer):
             f = patched_open(tmp_path, 'r')
             f.close()
 
@@ -108,7 +109,7 @@ def test_is_bound_true_for_whitelisted_open(system):
         tmp_path = tmp.name
 
     try:
-        with system.record_context(writer):
+        with record_context(system, writer):
             f = patched_open(tmp_path, 'r')
             assert system.is_bound(f), "file from whitelisted open should be bound"
             f.close()
@@ -138,7 +139,7 @@ def test_is_bound_false_for_non_whitelisted_open():
         tmp_path = tmp.name
 
     try:
-        with system.record_context(writer):
+        with record_context(system, writer):
             f = patched_open(tmp_path, 'r')
             assert not system.is_bound(f), "file from non-whitelisted open should not be bound"
             f.close()

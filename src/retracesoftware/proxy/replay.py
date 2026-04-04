@@ -6,7 +6,6 @@ from retracesoftware.proxy.thread import per_thread_messages, thread_id
 from retracesoftware.proxy.messagestream import *
 from retracesoftware.proxy.proxytype import *
 # from retracesoftware.proxy.gateway import gateway_pair
-from retracesoftware.proxy.record import StubRef
 from retracesoftware.proxy.proxysystem import ProxySystem
 from retracesoftware.proxy.stubfactory import StubFactory
 from retracesoftware.proxy.globalref import GlobalRef
@@ -32,7 +31,7 @@ class ReplayProxySystem(ProxySystem):
         return super().proxy__new__(func, *args, **kwargs)
 
     def basetype(self, cls):
-        return self.stub_factory.create_stubtype(StubRef(cls))
+        return self.stub_factory.create_stubtype(cls)
 
     def trace_writer(self, name, *args):
         with self.thread_state.select('disabled'):
@@ -97,7 +96,6 @@ class ReplayProxySystem(ProxySystem):
             print(f'run_ref!!!! {ref}')
             return ref()
 
-        self.reader.type_deserializer[StubRef] = self.stub_factory
         # self.reader.type_deserializer[GlobalRef] = lambda ref: ref()
         self.reader.type_deserializer[GlobalRef] = run_ref
 
@@ -107,12 +105,15 @@ class ReplayProxySystem(ProxySystem):
             self.messages.excludes.add(exclude)
 
         sync = functional.lazy(self.messages.read_required, 'SYNC')
+        write_call = functional.lazy(self.messages.read_required, 'CALL')
 
         read_sync = thread_state.dispatch(utils.noop, internal = sync)
+        read_write_call = thread_state.dispatch(utils.noop, internal = write_call)
 
-        self.on_ext_call = sync
+        self.on_ext_call = write_call
 
         self.sync = lambda function: utils.observer(on_call = read_sync, function = function)
+        self.write_call = lambda function: utils.observer(on_call = read_write_call, function = function)
         
         self.create_from_external = utils.noop
 

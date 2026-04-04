@@ -1,6 +1,7 @@
 import retracesoftware.functional as functional
 import retracesoftware.utils as utils
 import types
+from retracesoftware.protocol.normalize import normalize as normalize_for_checkpoint
 from retracesoftware.proxy.gateway import adapter_pair
 from types import SimpleNamespace
 from retracesoftware.proxy.proxytype import *
@@ -85,44 +86,6 @@ def exclude(text):
             if re.match(elem, text):
                 return True
     return False
-
-def normalize_for_checkpoint(obj):
-    if isinstance(obj, types.FunctionType):
-        return obj.__qualname__
-    elif isinstance(obj, types.MethodType):
-        return obj.__qualname__
-    elif isinstance(obj, types.BuiltinFunctionType):
-        return obj.__name__
-    elif isinstance(obj, types.BuiltinMethodType):
-        return obj.__name__
-    elif isinstance(obj, str):
-        return obj
-    elif isinstance(obj, dict):
-        return {normalize_for_checkpoint(k): normalize_for_checkpoint(v) for k,v in obj.items()}
-    elif isinstance(obj, tuple):
-        return tuple(normalize_for_checkpoint(x) for x in obj)
-    elif isinstance(obj, list):
-        return [normalize_for_checkpoint(x) for x in obj]
-    elif isinstance(obj, int):
-        # try and filter out memory addresses
-        if obj > 1000000 or obj < -1000000:
-            return "XXXX"
-        else:
-            return int(obj)
-    elif isinstance(obj, float):
-        return obj
-    elif isinstance(obj, bool):
-        return obj
-    elif isinstance(obj, type):
-        return obj.__name__
-    elif isinstance(obj, enum.Enum):
-        return obj.name
-    elif isinstance(obj, enum.EnumMeta):
-        return obj.__name__
-    elif isinstance(obj, enum.EnumMember):
-        return obj.name
-    else:
-        return f"<object of type: {type(obj)}>"
 
 class ProxySystem:
     

@@ -27,7 +27,6 @@ namespace retracesoftware_stream {
         size_t messages_read = 0;
         int read_timeout = 0;
         vectorcallfunc vectorcall;
-        std::vector<PyObject *> filenames;
         std::vector<PyObject *> interned_strings;
 
         map<int, PyObject *> bindings;
@@ -35,7 +34,6 @@ namespace retracesoftware_stream {
         int binding_counter = 0;
         PyObject * create_pickled = nullptr;
         PyObject * stub_factory = nullptr;
-        PyObject * create_stack_delta;
         PyObject * create_thread_switch;
         PyObject * create_dropped = nullptr;
         PyObject * create_heartbeat = nullptr;
@@ -46,7 +44,6 @@ namespace retracesoftware_stream {
             PyObject * path;
             PyObject * create_pickled;
             PyObject * stub_factory;
-            PyObject * create_stack_delta;
             PyObject * create_thread_switch;
             PyObject * create_dropped = nullptr;
             PyObject * create_heartbeat = nullptr;
@@ -59,7 +56,6 @@ namespace retracesoftware_stream {
                 "path", 
                 "deserialize",
                 "stub_factory",
-                "create_stack_delta",
                 "on_thread_switch",
                 "read_timeout",
                 "verbose",
@@ -68,11 +64,10 @@ namespace retracesoftware_stream {
                 "start_offset",
                 nullptr};
 
-            if (!PyArg_ParseTupleAndKeywords(args, kwds, "O!OOOOip|OOL", (char **)kwlist, 
+            if (!PyArg_ParseTupleAndKeywords(args, kwds, "O!OOOip|OOL", (char **)kwlist, 
                 &PyUnicode_Type, &path, 
                 &create_pickled,
                 &stub_factory,
-                &create_stack_delta,
                 &create_thread_switch,
                 &read_timeout,
                 &verbose,
@@ -82,13 +77,11 @@ namespace retracesoftware_stream {
                 return -1;
             }
 
-            new (&self->filenames) std::vector<PyObject *>();
             new (&self->interned_strings) std::vector<PyObject *>();
             new (&self->bindings) map<int, PyObject *>();
 
             self->create_pickled = Py_NewRef(create_pickled);
             self->stub_factory = Py_NewRef(stub_factory);
-            self->create_stack_delta = Py_NewRef(create_stack_delta);
             self->create_thread_switch = Py_NewRef(create_thread_switch);
             self->create_dropped = Py_XNewRef(create_dropped);
             self->create_heartbeat = Py_XNewRef(create_heartbeat);
@@ -121,7 +114,6 @@ namespace retracesoftware_stream {
             PyObject_GC_UnTrack(self);
             clear(self);
 
-            self->filenames.std::vector<PyObject *>::~vector();
             self->interned_strings.std::vector<PyObject *>::~vector();
             self->bindings.~map<int, PyObject *>();
 
@@ -132,7 +124,6 @@ namespace retracesoftware_stream {
             Py_VISIT(self->path);
             Py_VISIT(self->create_pickled);
             Py_VISIT(self->stub_factory);
-            Py_VISIT(self->create_stack_delta);
             Py_VISIT(self->create_thread_switch);
             Py_VISIT(self->create_dropped);
             Py_VISIT(self->create_heartbeat);
@@ -141,11 +132,6 @@ namespace retracesoftware_stream {
         }
 
         static int clear(ObjectStream* self) {
-
-            for (auto elem : self->filenames) {
-                Py_XDECREF(elem);
-            }
-            self->filenames.clear();
 
             for (auto elem : self->interned_strings) {
                 Py_XDECREF(elem);
@@ -160,7 +146,6 @@ namespace retracesoftware_stream {
             Py_CLEAR(self->path);
             Py_CLEAR(self->create_pickled);
             Py_CLEAR(self->stub_factory);
-            Py_CLEAR(self->create_stack_delta);
             Py_CLEAR(self->create_thread_switch);
             Py_CLEAR(self->create_dropped);
             Py_CLEAR(self->create_heartbeat);
@@ -460,34 +445,6 @@ namespace retracesoftware_stream {
             return i == 255 ? read<uint64_t>() : (uint64_t)i;
         }
 
-        PyObject * read_stack_delta() {
-
-            int size = read_expected_int();
-            
-            PyObject * stack = PyList_New(size);
-            if (!stack) throw nullptr;
-
-            for (size_t i = 0; i < size; i++) {
-                PyObject * filename = filenames[read<uint16_t>()];
-
-                int l = read<uint16_t>();
-
-                if (verbose) {
-                    printf("  %s:%i\n", PyUnicode_AsUTF8(filename), l);
-                }
-
-                PyObject * lineno = PyLong_FromLong(l);
-                if (!lineno) throw nullptr;
-
-                PyObject * frame = PyTuple_Pack(2, filename, lineno);
-                Py_DECREF(lineno);
-                if (!frame) throw nullptr;
-
-                PyList_SET_ITEM(stack, i, frame);
-            }
-            return stack;
-        }
-
         PyObject * read_fixedsize(FixedSizeTypes type) {
             assert (!PyErr_Occurred());
 
@@ -540,18 +497,6 @@ namespace retracesoftware_stream {
                 Control control = read_control();
                 if (verbose > 1) {
                     printf("    read control: 0x%02X at byte %zu\n", control.raw, bytes_read - 1);
-                }
-
-                if (control == AddFilename) {
-                    if (verbose) {
-                        printf("Retrace - ObjectStream[%lu, %zu] - Inline ADD_FILENAME", messages_read, start);
-                    }
-                    filenames.push_back(read());
-                    if (verbose) {
-                        printf(" -> read %zu bytes, now at %zu\n", bytes_read - start, bytes_read);
-                    }
-                    messages_read++;
-                    continue;
                 }
 
                 if (control.Sized.type == SizedTypes::BINDING_DELETE) {
@@ -660,12 +605,7 @@ namespace retracesoftware_stream {
                     printf("  consume: control 0x%02X at byte %zu\n", control.raw, start);
                 }
                 
-                if (control == AddFilename) {
-                    if (verbose) printf("Retrace - ObjectStream[%lu, %lu] - Consumed ADD_FILENAME", messages_read, start);
-                    filenames.push_back(read());
-                    if (verbose) printf(" -> read %zu bytes, now at %zu\n", bytes_read - start, bytes_read);
-                    messages_read++;
-                } else if (control.Sized.type == SizedTypes::BINDING_DELETE) {
+                if (control.Sized.type == SizedTypes::BINDING_DELETE) {
                     if (verbose) printf("Retrace - ObjectStream[%lu, %lu] - Consumed BINDING_DELETE\n", messages_read, start);
                     size_t size = read_unsigned_number(control);
                     Py_DECREF(bindings[size]);
@@ -757,23 +697,6 @@ namespace retracesoftware_stream {
             size_t start;
             Control control = consume(start);
 
-            if (control == Stack) {
-                int to_drop = read_expected_int();
-
-                if (verbose) {
-                    printf("Retrace - ObjectStream[%lu, %lu] - Consumed STACK - drop: %i\n", messages_read, start, to_drop);
-                }
-
-                PyObject * stack_delta = read_stack_delta();
-
-                messages_read++;
-
-                PyObject * py_to_drop = PyLong_FromLong(to_drop);
-                PyObject * result = PyObject_CallFunctionObjArgs(create_stack_delta, py_to_drop, stack_delta, nullptr);
-                Py_DECREF(py_to_drop);
-                Py_DECREF(stack_delta);
-                return result;
-            }
             if (control == ThreadSwitch) {
 
                 PyObject * thread = read();

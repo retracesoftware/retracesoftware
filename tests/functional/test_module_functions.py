@@ -142,6 +142,8 @@ class TestModuleImports:
     def test_predicate_types(self):
         assert hasattr(fn, 'and_predicate')
         assert hasattr(fn, 'or_predicate')
+        assert hasattr(fn, 'spread_and')
+        assert hasattr(fn, 'spread_or')
         assert hasattr(fn, 'not_predicate')
         assert hasattr(fn, 'TypePredicate')
         assert hasattr(fn, 'if_then_else')
@@ -160,8 +162,11 @@ class TestModuleImports:
 
     def test_arg_manipulation_types(self):
         assert hasattr(fn, 'spread')
+        assert hasattr(fn, 'pack_call')
         assert hasattr(fn, 'dropargs')
         assert hasattr(fn, 'mapargs')
+        assert hasattr(fn, 'mapcall')
+        assert hasattr(fn, 'mapcall0')
         assert hasattr(fn, 'param')
         assert hasattr(fn, 'indexed')
 

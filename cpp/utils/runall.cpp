@@ -7,6 +7,55 @@ namespace retracesoftware {
         vectorcallfunc vectorcall;
         FastCall functions[];
 
+        static int normalize_index(RunAll * self, Py_ssize_t index, Py_ssize_t * out) {
+            Py_ssize_t size = Py_SIZE(self);
+
+            if (index < 0) {
+                index += size;
+            }
+
+            if (index < 0 || index >= size) {
+                PyErr_SetString(PyExc_IndexError, "runall index out of range");
+                return -1;
+            }
+
+            *out = index;
+            return 0;
+        }
+
+        static Py_ssize_t length(RunAll * self) {
+            return Py_SIZE(self);
+        }
+
+        static PyObject * item(RunAll * self, Py_ssize_t index) {
+            if (normalize_index(self, index, &index) < 0) {
+                return nullptr;
+            }
+
+            return Py_NewRef(self->functions[index].callable);
+        }
+
+        static int ass_item(RunAll * self, Py_ssize_t index, PyObject * value) {
+            if (value == nullptr) {
+                PyErr_SetString(PyExc_TypeError, "runall does not support item deletion");
+                return -1;
+            }
+
+            if (!PyCallable_Check(value)) {
+                PyErr_Format(PyExc_TypeError, "runall item must be callable, got %S", value);
+                return -1;
+            }
+
+            if (normalize_index(self, index, &index) < 0) {
+                return -1;
+            }
+
+            PyObject * callable = Py_NewRef(value);
+            Py_XDECREF(self->functions[index].callable);
+            self->functions[index] = FastCall(callable);
+            return 0;
+        }
+
         static PyObject * call(RunAll * self, PyObject** args, size_t nargsf, PyObject* kwnames) {
         
             for (int i = 0; i < self->ob_size; i++) {
@@ -90,6 +139,19 @@ namespace retracesoftware {
         }
     };
 
+    static PySequenceMethods sequence_methods = {
+        .sq_length = (lenfunc)RunAll::length,
+        .sq_concat = 0,
+        .sq_repeat = 0,
+        .sq_item = (ssizeargfunc)RunAll::item,
+        .was_sq_slice = 0,
+        .sq_ass_item = (ssizeobjargproc)RunAll::ass_item,
+        .was_sq_ass_slice = 0,
+        .sq_contains = 0,
+        .sq_inplace_concat = 0,
+        .sq_inplace_repeat = 0,
+    };
+
     PyTypeObject RunAll_Type = {
         .ob_base = PyVarObject_HEAD_INIT(NULL, 0)
         .tp_name = MODULE "runall",
@@ -100,6 +162,7 @@ namespace retracesoftware {
         // .tp_repr = (reprfunc)RunAll::repr,
         .tp_call = PyVectorcall_Call,
         // .tp_str = (reprfunc)RunAll::repr,
+        .tp_as_sequence = &sequence_methods,
         .tp_flags = Py_TPFLAGS_DEFAULT | Py_TPFLAGS_HAVE_GC | Py_TPFLAGS_HAVE_VECTORCALL | Py_TPFLAGS_BASETYPE,
         .tp_doc = "TODO",
         .tp_traverse = (traverseproc)RunAll::traverse,

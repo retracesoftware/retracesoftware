@@ -161,7 +161,6 @@ class TestFirstOf:
         assert calls == ['f1', 'fallback']
 
 
-@pytest.mark.skip(reason="lazy not implemented in module")
 class TestLazy:
     def test_defers_execution_until_called(self):
         calls = []
@@ -258,3 +257,15 @@ class TestRepeatedly:
         assert rep() == 42
         assert rep("any", "args", key="ignored") == 42
 
+    def test_binds_positional_arguments_at_construction(self):
+        calls = []
+
+        def combine(a, b):
+            calls.append((a, b))
+            return a + b
+
+        rep = fn.repeatedly(combine, 2, 3)
+
+        assert rep() == 5
+        assert rep("ignored", key="ignored") == 5
+        assert calls == [(2, 3), (2, 3)]

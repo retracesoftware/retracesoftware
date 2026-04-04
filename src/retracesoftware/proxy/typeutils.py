@@ -71,7 +71,7 @@ def type_has_feature(cls, flag):
     return (utils.type_flags(cls) & flag) != 0
 
 def type_disallow_instantiation(cls : type):
-    return utils.type_flags(cls) & utils.Py_TPFLAGS_DISALLOW_INSTANTIATION
+    return utils.type_flags(cls) & utils.TypeFlags["Py_TPFLAGS_DISALLOW_INSTANTIATION"]
 
 def is_method_descriptor(cls : type):
     return (utils.type_flags(cls) & utils.TypeFlags["Py_TPFLAGS_METHOD_DESCRIPTOR"]) != 0

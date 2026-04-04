@@ -38,7 +38,6 @@ def _make_raw_native_reader(path, *, deserialize=pickle.loads, on_thread_switch=
         path=str(path),
         deserialize=deserialize,
         stub_factory=lambda cls: cls.__new__(cls),
-        create_stack_delta=lambda to_drop, frames: None,
         on_thread_switch=(lambda thread: thread) if on_thread_switch is None else on_thread_switch,
         read_timeout=1,
         verbose=False,
@@ -151,6 +150,42 @@ def test_write_multiple_messages(tmp_path):
     raw = path.read_bytes()
     payload = _unframe(raw)
     assert len(payload) > 0
+
+
+def test_writer_forwards_intern_serializer_to_native_persister(tmp_path, monkeypatch):
+    """writer(..., intern_serializer=...) should auto-intern matching identities."""
+    path = tmp_path / "writer_intern_serializer.bin"
+    value = object()
+    calls = []
+
+    monkeypatch.setattr(stream, "call_periodically", lambda interval, func: None)
+
+    def intern_serializer(obj):
+        calls.append(obj)
+        if obj is value:
+            return "writer-interned"
+        return None
+
+    with stream.writer(
+        path,
+        thread=_thread_id,
+        format="unframed_binary",
+        flush_interval=999,
+        intern_serializer=intern_serializer,
+    ) as w:
+        w._output.write_object(value)
+        w._output.write_object(value)
+        w._output.flush()
+
+    reader = _make_raw_native_reader(path)
+    try:
+        assert reader() == "writer-interned"
+        assert reader() == "writer-interned"
+    finally:
+        reader.close()
+
+    assert calls[:2] == [True, False]
+    assert calls[2:] == [value]
 
 
 def test_intern_lookup_uses_distinct_sized_tag(tmp_path):
@@ -536,7 +571,7 @@ def test_message_stream_ignores_unreturned_async_new_patched_helpers():
         stream.BindingCreate(1),
         "RESULT",
         stream.BindingLookup(1),
-        "SYNC",
+        "CALL",
         "RESULT",
         None,
     ])
@@ -550,7 +585,7 @@ def test_message_stream_ignores_unreturned_async_new_patched_helpers():
     assert isinstance(materialized, dict)
     assert materialized == {}
 
-    messages.sync()
+    messages.write_call()
     assert messages.read_result() is None
 
 
@@ -572,7 +607,7 @@ def test_memory_writer_reader_roundtrip_uses_binding_lookup_for_bound_results():
     writer = MemoryWriter()
     bound = object()
     writer.bind(bound)
-    writer.sync()
+    writer.write_call()
     writer.write_result(bound)
 
     assert isinstance(writer.tape[0], stream.BindingCreate)
@@ -581,7 +616,7 @@ def test_memory_writer_reader_roundtrip_uses_binding_lookup_for_bound_results():
     reader = MemoryReader(writer.tape)
     resolved = object()
     reader.bind(resolved)
-    reader.sync()
+    reader.write_call()
     assert reader.read_result() is resolved
 
 
@@ -896,6 +931,87 @@ def test_raw_persister_intern_roundtrip_with_native_reader(tmp_path):
         assert reader() == value
     finally:
         reader.close()
+
+
+def test_raw_persister_intern_serializer_inlines_and_reuses_identity(tmp_path):
+    """intern_serializer should inline once, then reuse the intern index by identity."""
+    path = tmp_path / "raw_intern_serializer.bin"
+    fw = FramedWriter(str(path), raw=True)
+    value = object()
+    serializer_calls = []
+    intern_calls = []
+
+    def serializer(obj):
+        serializer_calls.append(obj)
+        return "serializer-fallback"
+
+    def intern_serializer(obj):
+        intern_calls.append(obj)
+        if obj is value:
+            return "interned-value"
+        return None
+
+    persister = Persister(
+        fw,
+        serializer=serializer,
+        intern_serializer=intern_serializer,
+    )
+
+    try:
+        persister.write_object(value)
+        persister.write_object(value)
+        persister.flush()
+    finally:
+        fw.close()
+
+    reader = _make_raw_native_reader(path)
+    try:
+        assert reader() == "interned-value"
+        assert reader() == "interned-value"
+    finally:
+        reader.close()
+
+    assert intern_calls == [value]
+    assert serializer_calls == []
+
+
+def test_raw_persister_intern_serializer_none_falls_back_to_serializer(tmp_path):
+    """Returning None from intern_serializer should defer to serializer."""
+    path = tmp_path / "raw_intern_serializer_fallback.bin"
+    fw = FramedWriter(str(path), raw=True)
+    value = object()
+    calls = []
+
+    def serializer(obj):
+        calls.append(("serializer", obj))
+        return "serializer-fallback"
+
+    def intern_serializer(obj):
+        calls.append(("intern", obj))
+        return None
+
+    persister = Persister(
+        fw,
+        serializer=serializer,
+        intern_serializer=intern_serializer,
+    )
+
+    try:
+        persister.write_object(value)
+        persister.flush()
+    finally:
+        fw.close()
+
+    reader = _make_raw_native_reader(path)
+    try:
+        assert reader() == "serializer-fallback"
+    finally:
+        reader.close()
+
+    assert calls == [
+        ("intern", value),
+        ("serializer", value),
+    ]
 
 
 def test_raw_persister_interns_builtin_bools_roundtrip(tmp_path):

@@ -71,11 +71,60 @@ def test_runall_single_callable_returns_none():
         calls.append(("only", args, kwargs))
         return "ignored"
 
+    def replacement(*args, **kwargs):
+        calls.append(("replacement", args, kwargs))
+
     runner = _utils.runall(only)
+    assert len(runner) == 1
+    assert runner[0] is only
     assert runner(1, named="x") is None
+
+    runner[0] = replacement
+
+    assert runner[0] is replacement
+    assert runner(2, named="y") is None
     assert calls == [
         ("only", (1,), {"named": "x"}),
+        ("replacement", (2,), {"named": "y"}),
     ]
+
+
+def test_runall_supports_subscript_getter_and_setter():
+    calls = []
+
+    def first(*args, **kwargs):
+        calls.append(("first", args, kwargs))
+
+    def second(*args, **kwargs):
+        calls.append(("second", args, kwargs))
+
+    def replacement(*args, **kwargs):
+        calls.append(("replacement", args, kwargs))
+
+    runner = _utils.runall(first, second)
+
+    assert len(runner) == 2
+    assert runner[0] is first
+    assert runner[1] is second
+    assert runner[-1] is second
+
+    runner[0] = replacement
+
+    assert runner[0] is replacement
+    assert runner(1, named="x") is None
+    assert calls == [
+        ("replacement", (1,), {"named": "x"}),
+        ("second", (1,), {"named": "x"}),
+    ]
+
+    with pytest.raises(IndexError):
+        _ = runner[2]
+
+    with pytest.raises(IndexError):
+        runner[2] = replacement
+
+    with pytest.raises(TypeError):
+        runner[0] = object()
 
 
 # def test_striptraceback_removes_traceback_and_context():
@@ -132,6 +181,121 @@ def test_observer_hooks_and_error_handling():
     assert exc_type is RuntimeError
     assert isinstance(exc_value, RuntimeError)
     assert exc_tb is None or hasattr(exc_tb, "tb_frame")
+
+
+def test_observer_hooks_can_be_reassigned_at_runtime():
+    events = []
+
+    def add(x, y):
+        events.append(("add", x, y))
+        return x + y
+
+    def multiply(x, y):
+        events.append(("multiply", x, y))
+        return x * y
+
+    def first_on_call(*args, **kwargs):
+        events.append(("first_on_call", args, kwargs))
+
+    def second_on_call(*args, **kwargs):
+        events.append(("second_on_call", args, kwargs))
+
+    def first_on_result(result):
+        events.append(("first_on_result", result))
+
+    def second_on_result(result):
+        events.append(("second_on_result", result))
+
+    def first_on_error(exc_type, exc_value, exc_tb):
+        events.append(("first_on_error", exc_type.__name__, str(exc_value)))
+
+    def second_on_error(exc_type, exc_value, exc_tb):
+        events.append(("second_on_error", exc_type.__name__, str(exc_value)))
+
+    observer = _utils.observer(
+        add,
+        on_call=first_on_call,
+        on_result=first_on_result,
+        on_error=first_on_error,
+    )
+
+    assert observer(2, 3) == 5
+
+    observer.function = multiply
+    observer.on_call = second_on_call
+    observer.on_result = second_on_result
+    observer.on_error = second_on_error
+
+    assert observer(2, 3) == 6
+
+    observer.on_call = None
+    observer.on_result = None
+
+    assert observer(4, 5) == 20
+
+    def fail():
+        raise ValueError("boom")
+
+    observer.function = fail
+    observer.on_error = second_on_error
+
+    with pytest.raises(ValueError, match="boom"):
+        observer()
+
+    assert events == [
+        ("first_on_call", (2, 3), {}),
+        ("add", 2, 3),
+        ("first_on_result", 5),
+        ("second_on_call", (2, 3), {}),
+        ("multiply", 2, 3),
+        ("second_on_result", 6),
+        ("multiply", 4, 5),
+        ("second_on_error", "ValueError", "boom"),
+    ]
+
+
+def test_mutable_function_wrapper_calls_and_reassigns_runtime_target():
+    events = []
+
+    def add(x, y):
+        events.append(("add", x, y))
+        return x + y
+
+    def multiply(x, y):
+        events.append(("multiply", x, y))
+        return x * y
+
+    wrapper = _utils.mutable_function_wrapper(add)
+
+    assert wrapper(2, 3) == 5
+    assert wrapper.get() is add
+    assert wrapper.function is add
+    assert wrapper.__wrapped__ is add
+    assert _utils.unwrap(wrapper) is add
+
+    wrapper.set(multiply)
+
+    assert wrapper.get() is multiply
+    assert wrapper.function is multiply
+    assert wrapper.__wrapped__ is multiply
+    assert _utils.unwrap(wrapper) is multiply
+    assert wrapper(2, 3) == 6
+
+    wrapper.function = add
+
+    assert wrapper.get() is add
+    assert wrapper(4, 5) == 9
+    assert events == [
+        ("add", 2, 3),
+        ("multiply", 2, 3),
+        ("add", 4, 5),
+    ]
+
+    with pytest.raises(TypeError):
+        wrapper.set(object())
+
+    with pytest.raises(TypeError):
+        wrapper.function = object()
 
 
 def test_stack_functions_returns_list_of_functions():
@@ -1250,8 +1414,8 @@ class TestWrappedUnwrap:
         def original(x):
             return x + 1
 
-        def handler(target, *args, **kwargs):
-            return target(*args, **kwargs)
+        def handler(wrapped, *args, **kwargs):
+            return _utils.unwrap_apply(wrapped, *args, **kwargs)
 
         wf = _utils.wrapped_function(target=original, handler=handler)
         assert wf is not None
@@ -1262,23 +1426,23 @@ class TestWrappedUnwrap:
         def original(x):
             return x + 1
 
-        def handler(target, *args, **kwargs):
-            calls.append(('handler', target, args))
-            return target(*args, **kwargs)
+        def handler(wrapped, *args, **kwargs):
+            calls.append(('handler', wrapped, args))
+            return _utils.unwrap_apply(wrapped, *args, **kwargs)
 
         wf = _utils.wrapped_function(target=original, handler=handler)
         result = wf(5)
         assert result == 6
         assert len(calls) == 1
-        assert calls[0][1] is original
+        assert calls[0][1] is wf
         assert calls[0][2] == (5,)
 
     def test_try_unwrap_wrapped_function(self):
         def original(x):
             return x + 1
 
-        def handler(target, *args, **kwargs):
-            return target(*args, **kwargs)
+        def handler(wrapped, *args, **kwargs):
+            return _utils.unwrap_apply(wrapped, *args, **kwargs)
 
         wf = _utils.wrapped_function(target=original, handler=handler)
         unwrapped = _utils.try_unwrap(wf)
@@ -1295,8 +1459,8 @@ class TestWrappedUnwrap:
         def original(x):
             return x + 1
 
-        def handler(target, *args, **kwargs):
-            return target(*args, **kwargs)
+        def handler(wrapped, *args, **kwargs):
+            return _utils.unwrap_apply(wrapped, *args, **kwargs)
 
         wf = _utils.wrapped_function(target=original, handler=handler)
         unwrapped = _utils.unwrap(wf)
@@ -1352,8 +1516,8 @@ class TestWrappedUnwrap:
         def original(x):
             return x + 1
 
-        def handler(target, *args, **kwargs):
-            return target(*args, **kwargs)
+        def handler(wrapped, *args, **kwargs):
+            return _utils.unwrap_apply(wrapped, *args, **kwargs)
 
         wf = _utils.wrapped_function(target=original, handler=handler)
         assert _utils.is_wrapped(wf)
@@ -1375,9 +1539,9 @@ class TestWrappedUnwrap:
             calls.append(('original', x, y))
             return x + y
 
-        def handler(target, *args, **kwargs):
+        def handler(wrapped, *args, **kwargs):
             calls.append(('handler',))
-            return target(*args, **kwargs)
+            return _utils.unwrap_apply(wrapped, *args, **kwargs)
 
         wf = _utils.wrapped_function(target=original, handler=handler)
 
@@ -1385,6 +1549,34 @@ class TestWrappedUnwrap:
         result = _utils.unwrap_apply(wf, 3, 4)
         assert result == 7
         assert calls == [('original', 3, 4)]  # handler was NOT called
+
+    def test_try_unwrap_apply_calls_original_target_when_wrapped(self):
+        calls = []
+
+        def original(x, y):
+            calls.append(("original", x, y))
+            return x + y
+
+        def handler(wrapped, *args, **kwargs):
+            calls.append(("handler",))
+            return _utils.unwrap_apply(wrapped, *args, **kwargs)
+
+        wf = _utils.wrapped_function(target=original, handler=handler)
+
+        result = _utils.try_unwrap_apply(wf, 3, 4)
+        assert result == 7
+        assert calls == [("original", 3, 4)]
+
+    def test_try_unwrap_apply_falls_back_to_plain_apply_when_unwrapped(self):
+        calls = []
+
+        def original(x, y):
+            calls.append((x, y))
+            return x + y
+
+        result = _utils.try_unwrap_apply(original, 3, 4)
+        assert result == 7
+        assert calls == [(3, 4)]
 
     def test_dispatch_table_extracts_original_from_proxy_pattern(self):
         """Simulate the proxy pattern: dispatch(original, internal=wrapped).
@@ -1396,8 +1588,8 @@ class TestWrappedUnwrap:
         def original_func():
             return 'original'
 
-        def handler(target, *args, **kwargs):
-            return target(*args, **kwargs)
+        def handler(wrapped, *args, **kwargs):
+            return _utils.unwrap_apply(wrapped, *args, **kwargs)
 
         wrapped = _utils.wrapped_function(target=original_func, handler=handler)
         d = state.dispatch(original_func, internal=wrapped)

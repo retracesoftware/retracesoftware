@@ -10,6 +10,8 @@ Provides:
 import importlib
 import importlib.resources
 
+from retracesoftware.proxy.contexts import record_context, replay_context
+
 _pytest_runner = None
 _pytest_installed_modules = set()
 
@@ -25,8 +27,8 @@ def run_with_context(system,
     system : System
         The proxy system (new gate-based System from proxy/system.py).
     context : context manager
-        A ``system.record_context(writer)`` or
-        ``system.replay_context(reader)`` — any context manager that
+        A context built by ``record_context(system, writer)`` or
+        ``replay_context(system, reader)`` — any context manager that
         activates the system's gates for the duration.  Must be
         reusable (child threads enter the same context).
     argv : list[str]
@@ -142,21 +144,17 @@ def run_with_context(system,
 
     try:
         with context:
-            install_session.activate_callback_binding(system.bind)
+            for cls in sorted(system.patched_types, key=lambda c: c.__qualname__):
+                system._bind(cls)
             try:
-                for cls in sorted(system.patched_types, key=lambda c: c.__qualname__):
-                    system._bind(cls)
-                try:
-                    run_python_command(argv)
-                finally:
-                    if trace_shutdown:
-                        try:
-                            system.disable_for(threading._shutdown)()
-                            atexit._run_exitfuncs()
-                        except Exception as e:
-                            print(f"Error in atexit hook: {e}", file=sys.stderr)
+                run_python_command(argv)
             finally:
-                install_session.deactivate_callback_binding()
+                if trace_shutdown:
+                    try:
+                        system.disable_for(threading._shutdown)()
+                        atexit._run_exitfuncs()
+                    except Exception as e:
+                        print(f"Error in atexit hook: {e}", file=sys.stderr)
 
         if not trace_shutdown:
             try:
@@ -302,14 +300,16 @@ class TestRunner:
         from retracesoftware.testing.protocol_memory import MemoryWriter
         from retracesoftware.install.startthread import patch_thread_start
 
+        callback_binding_hooks = {}
+        if self._install_session is not None:
+            callback_binding_hooks = self._install_session.callback_binding_hooks(
+                self._system.bind
+            )
+
         writer = MemoryWriter(thread=threading.get_ident)
-        context = self._system.record_context(
+        context = record_context(self._system, 
             writer,
-            callback_normalize=(
-                self._install_session.normalize_record_callback
-                if self._install_session is not None
-                else None
-            ),
+            **callback_binding_hooks,
         )
         error = None
         result = None
@@ -336,16 +336,10 @@ class TestRunner:
 
         try:
             with context:
-                if self._install_session is not None:
-                    self._install_session.activate_callback_binding(self._system.bind)
                 try:
-                    try:
-                        result = fn(*args, **kwargs)
-                    except Exception as exc:
-                        error = exc
-                finally:
-                    if self._install_session is not None:
-                        self._install_session.deactivate_callback_binding()
+                    result = fn(*args, **kwargs)
+                except Exception as exc:
+                    error = exc
         finally:
             if uninstall_monitor:
                 uninstall_monitor()
@@ -378,15 +372,17 @@ class TestRunner:
         from retracesoftware.testing.protocol_memory import MemoryReader
         from retracesoftware.install.startthread import patch_thread_start
 
+        callback_binding_hooks = {}
+        if self._install_session is not None:
+            callback_binding_hooks = self._install_session.callback_binding_hooks(
+                self._system.bind
+            )
+
         reader = MemoryReader(recording.tape, timeout=timeout,
                               monitor_enabled=(monitor > 0))
-        context = self._system.replay_context(
+        context = replay_context(self._system, 
             reader,
-            callback_normalize=(
-                self._install_session.normalize_replay_callback
-                if self._install_session is not None
-                else None
-            ),
+            **callback_binding_hooks,
         )
 
         uninstall_monitor = None
@@ -414,25 +410,19 @@ class TestRunner:
         try:
             try:
                 with context:
-                    if self._install_session is not None:
-                        self._install_session.activate_callback_binding(self._system.bind)
                     try:
-                        try:
-                            replay_result = fn(*args, **kwargs)
-                        except ReplayDivergence:
-                            raise
-                        except Exception as exc:
-                            if recording.error is None:
-                                raise ReplayDivergence(
-                                    f"replay raised {type(exc).__name__} "
-                                    f"but record succeeded",
-                                    tape=recording.tape,
-                                ) from exc
-                            # Both raised — same code path, not divergence.
-                            raise recording.error
-                    finally:
-                        if self._install_session is not None:
-                            self._install_session.deactivate_callback_binding()
+                        replay_result = fn(*args, **kwargs)
+                    except ReplayDivergence:
+                        raise
+                    except Exception as exc:
+                        if recording.error is None:
+                            raise ReplayDivergence(
+                                f"replay raised {type(exc).__name__} "
+                                f"but record succeeded",
+                                tape=recording.tape,
+                            ) from exc
+                        # Both raised — same code path, not divergence.
+                        raise recording.error
             except ReplayDivergence:
                 raise
             except Exception as exc:

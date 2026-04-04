@@ -4,7 +4,7 @@ This is stricter than the Flask reproducer: it removes Flask and keeps only
 Werkzeug serving + threaded request handling shape that triggers the crash.
 
 Failure signature on affected builds:
-- subprocess exits with signal (-10/-4)
+- subprocess exits with signal / trap
 - request logs may appear, then process crashes during/after teardown
 """
 
@@ -15,13 +15,7 @@ from pathlib import Path
 import subprocess
 import sys
 
-import pytest
 
-
-@pytest.mark.skipif(
-    sys.version_info < (3, 12),
-    reason="regression observed on Python 3.12 path",
-)
 def test_werkzeug_record_teardown_does_not_crash(tmp_path: Path):
     script = tmp_path / "werkzeug_repro.py"
     script.write_text(
@@ -66,7 +60,6 @@ def test_werkzeug_record_teardown_does_not_crash(tmp_path: Path):
             str(recording),
             "--stacktraces",
             "--quit_on_error",
-            "--raw",
             "--",
             str(script),
         ],

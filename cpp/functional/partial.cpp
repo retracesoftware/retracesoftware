@@ -37,6 +37,49 @@ struct Partial : public PyVarObject {
         return PyObject_GetAttr(self->function.callable, name);
     }
 
+    static int normalize_index(Partial * self, Py_ssize_t index, Py_ssize_t * out) {
+        Py_ssize_t size = Py_SIZE(self);
+
+        if (index < 0) {
+            index += size;
+        }
+
+        if (index < 0 || index >= size) {
+            PyErr_SetString(PyExc_IndexError, "partial index out of range");
+            return -1;
+        }
+
+        *out = index;
+        return 0;
+    }
+
+    static Py_ssize_t length(Partial * self) {
+        return Py_SIZE(self);
+    }
+
+    static PyObject * item(Partial * self, Py_ssize_t index) {
+        if (normalize_index(self, index, &index) < 0) {
+            return nullptr;
+        }
+
+        return Py_NewRef(self->args[index]);
+    }
+
+    static int ass_item(Partial * self, Py_ssize_t index, PyObject * value) {
+        if (value == nullptr) {
+            PyErr_SetString(PyExc_TypeError, "partial does not support item deletion");
+            return -1;
+        }
+
+        if (normalize_index(self, index, &index) < 0) {
+            return -1;
+        }
+
+        PyObject * next = Py_NewRef(value);
+        Py_SETREF(self->args[index], next);
+        return 0;
+    }
+
     static PyObject * call(Partial * self, PyObject** args, size_t nargsf, PyObject* kwnames) {
 
         size_t nargs = PyVectorcall_NARGS(nargsf) + (kwnames ? PyTuple_GET_SIZE(kwnames) : 0);
@@ -117,6 +160,19 @@ struct Partial : public PyVarObject {
     }
 };
 
+static PySequenceMethods sequence_methods = {
+    .sq_length = (lenfunc)Partial::length,
+    .sq_concat = 0,
+    .sq_repeat = 0,
+    .sq_item = (ssizeargfunc)Partial::item,
+    .was_sq_slice = 0,
+    .sq_ass_item = (ssizeobjargproc)Partial::ass_item,
+    .was_sq_ass_slice = 0,
+    .sq_contains = 0,
+    .sq_inplace_concat = 0,
+    .sq_inplace_repeat = 0,
+};
+
 static PyObject * repr(Partial *self) {
 
     PyObject *result = PyObject_Repr(self->function.callable);
@@ -157,6 +213,7 @@ PyTypeObject Partial_Type = {
     .tp_call = PyVectorcall_Call,
     .tp_str = (reprfunc)repr,
     .tp_getattro = (getattrofunc)Partial::getattro,
+    .tp_as_sequence = &sequence_methods,
     .tp_flags = Py_TPFLAGS_DEFAULT | 
                 Py_TPFLAGS_HAVE_GC | 
                 Py_TPFLAGS_HAVE_VECTORCALL | 
@@ -208,4 +265,3 @@ PyObject * partial(PyObject * function, PyObject * const * args, size_t nargs) {
 
     return (PyObject *)self;
 }
-

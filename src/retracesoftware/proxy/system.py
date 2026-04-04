@@ -177,10 +177,10 @@ pinpoints the first call where internal code deviated.
         '''Reduce a value to something cheaply comparable.'''
         return (type(value).__name__, repr(value)[:100])
 
-    with system.record_context(writer, normalize=normalize):
+    with record_context(system, writer, normalize=normalize):
         ...
 
-    with system.replay_context(reader, normalize=normalize):
+    with replay_context(system, reader, normalize=normalize):
         ...  # reader.checkpoint raises on mismatch
 
 Usage
@@ -190,45 +190,136 @@ Usage
     system.immutable_types.update({int, str, bytes, bool, float})
     system.patch_type(some_c_type)
 
-    with system.record_context(writer):
+    with record_context(system, writer):
         ...  # all calls on patched types are recorded
 
-    with system.replay_context(reader):
+    with replay_context(system, reader):
         ...  # all calls on patched types are replayed from the stream
 """
 
+from ast import Call
+from typing import NamedTuple, Callable, Any
+from contextlib import contextmanager
 import retracesoftware.utils as utils
 import retracesoftware.functional as functional
 import types
-from types import SimpleNamespace
-from typing import Callable
-from retracesoftware.proxy.protocol import ReaderProtocol, WriterProtocol
-from ._system_adapters import (
-    _run_with_replay,
-    adapter,
-    input_adapter,
-    maybe_proxy,
-    output_transform,
-    proxy,
-)
-from ._system_context import _GateContext
-from ._system_patching import Patched, patch_type as _patch_type_impl
-from ._system_record import record_context as _record_context_impl
-from ._system_replay import _ReplayStubFactory, replay_context as _replay_context_impl
-from ._system_specs import (
-    create_context as _create_context_impl,
-    create_ext_spec as _create_ext_spec_impl,
-    create_int_spec as _create_int_spec_impl,
-)
-from ._system_threading import (
-    with_context,
-    wrap_start_new_thread as _wrap_start_new_thread_impl,
-)
+from retracesoftware.proxy.proxytype import dynamic_proxytype, method_names, superdict
+from retracesoftware.proxy.typeutils import WithoutFlags
 
+from retracesoftware.proxy.proxytype import DynamicProxy
+
+def proxy(proxytype_from):
+    """Create a callable that wraps a value in a proxy type."""
+
+    # cls = proxytype_from(type(value))
+    # wrapped = utils.create_wrapped(cls, value)
+    return functional.spread(
+        utils.create_wrapped,
+        functional.sequence(functional.typeof, proxytype_from),
+        functional.identity,
+    )
+
+class ProxyRef:
+    def __init__(self, cls):
+        self.cls = cls
+
+    def __call__(self):
+        return utils.create_wrapped(self.cls, None)
+
+def lookup(module, name):
+    import sys
+
+    if module in sys.modules:
+        if name in sys.modules[module].__dict__:
+            return sys.modules[module].__dict__[name]
+    return None
+
+def adapter(
+    function,
+    hooks,
+    proxy_input,
+    proxy_output,
+    unproxy_input=functional.identity,
+    unproxy_output=functional.identity,
+):
+    function = functional.mapargs(
+        transform=functional.walker(unproxy_input),
+        function = function,
+    )
+    
+    function = functional.sequence(function, proxy_output)
+
+    function = utils.observer(
+        function=function,
+        on_call = hooks.on_call,
+        on_result = hooks.on_result,
+        on_error = hooks.on_error,
+    )
+
+    function = functional.mapargs(
+        starting=1,
+        transform=functional.walker(proxy_input),
+        function = function,
+    )
+
+    function = functional.sequence(function, unproxy_output)
+
+    return function
+
+class LifecycleHooks(NamedTuple):
+    on_start: Callable[..., Any] | None = None
+    on_end: Callable[..., Any] | None = None
+
+class CallHooks(NamedTuple):
+    """Lifecycle callbacks for one side of the proxy boundary."""
+
+    on_call: Callable[..., Any] | None = None
+    on_result: Callable[..., Any] | None = None
+    on_error: Callable[..., Any] | None = None
 
 class _PassthroughExternalCall(Exception):
     """Signal that an external call should bypass retrace and run live."""
 
+def get_all_subtypes(cls):
+    """Recursively find all subtypes of a given class."""
+
+    subclasses = set(cls.__subclasses__())
+    for subclass in cls.__subclasses__():
+        subclasses.update(get_all_subtypes(subclass))
+    return subclasses
+
+def when_instanceof(cls, on_then, on_else = functional.identity):
+    return functional.if_then_else(functional.isinstanceof(cls), on_then, on_else)
+
+def with_type_of(func):
+    return functional.sequence(functional.typeof, func)
+
+def _ext_proxytype_from_spec(system, module, name, methods):
+
+        spec = {
+            '__module__': module,        
+        }
+
+        cls = lookup(module, name)
+
+        def unbound_function(name):
+            return lambda instance, *args, **kwargs: getattr(instance, name)(*args, **kwargs)
+
+        def proxy(name):
+            if cls is not None and isinstance(cls, type) and hasattr(cls, name):
+                return getattr(cls, name)
+            
+            return unbound_function(name)
+
+        for method in methods:
+            spec[method] = system._wrapped_function(handler = system._ext_handler, target = proxy(method))
+        
+        proxytype = type(name, (utils.ExternalWrapped, DynamicProxy,), spec)
+
+        system.on_bind(proxytype)
+        system.on_bind(system.proxy_ref(proxytype))
+
+        return proxytype
 
 class System:
     """Gate-based record/replay kernel.
@@ -243,11 +334,8 @@ class System:
                           the gates.  Python subclasses are automatically
                           patched as internal.
 
-    record_context(w)     Context manager.  Inside it, external calls are
-                          executed and recorded via the writer ``w``.
-
-    replay_context(r)     Context manager.  Inside it, external calls are
-                          skipped — results are read from the reader ``r``.
+    context(...)          Build a runnable context from a frozen set of
+                          handler values.
 
     immutable_types       Set of types that should never be proxied (their
                           values pass through the boundary as-is).
@@ -263,6 +351,21 @@ class System:
     _out_sandbox()        True when the internal gate has an executor.
     """
 
+    def _observeable_thread_function(self, function):
+        def on_start(*args, **kwargs):
+            if hasattr(self, "on_start") and callable(self.on_start):
+                self.on_start()    
+
+        def on_end(*args, **kwargs):
+            if hasattr(self, "on_end") and callable(self.on_end):
+                self.on_end()
+            
+        return utils.observer(
+            function = function,
+            on_call = on_start, 
+            on_result = on_end,
+            on_error = on_end)
+
     def wrap_start_new_thread(self, original_start_new_thread):
         """Wrap ``start_new_thread`` so child threads inherit active retrace context.
 
@@ -270,7 +373,17 @@ class System:
         at spawn time and, when retrace is active, rewrites the child target
         so it enters that same context before executing user code.
         """
-        return _wrap_start_new_thread_impl(self, original_start_new_thread)
+        def wrap_thread_function(function):
+            if self.enabled():
+                return self.thread_wrapper(function)
+            else:
+                return function
+
+        return functional.positional_param_transform(
+            function=original_start_new_thread,
+            index=0,
+            transform=wrap_thread_function,
+        )
 
     def patch_function(self, fn):
         """Return a wrapper that routes *fn* through the external gate.
@@ -286,7 +399,11 @@ class System:
         ``time.time``, ``os.getpid``) that need to be recorded and
         replayed.
         """
+        self.bind(fn)
         return self._external.bind(fn)
+        # wrapped = utils.wrapped_function(handler = self._ext_handler, target = fn)
+        # self.bind(wrapped)
+        # return wrapped
 
     def patch(self, obj, install_session=None):
         """Patch *obj* for proxying — dispatches by type.
@@ -321,17 +438,21 @@ class System:
         The ``apply_with(None)`` calls are nested so that each one
         treats the *next* step as the function to run, preserving the
         original arguments for *function*.
+
+        ``function`` may itself be a ``wrapped_function``. In that case we
+        still want to execute its underlying target rather than re-entering
+        the wrapper/handler path with both gates cleared, so the disabled
+        call goes through ``self.fallback`` rather than invoking *function*
+        directly.
         """
         apply_ext = self._external.apply_with(None)
         apply_int = self._internal.apply_with(None)
 
-        return functional.partial(apply_ext, functional.partial(apply_int, function))
-
-        # def wrapper(*args, **kwargs):
-        #     return apply_ext(apply_int, function, *args, **kwargs)
-
-        # return wrapper
-
+        return functional.partial(
+            apply_ext,
+            functional.partial(apply_int, self.fallback),
+            function,
+        )
 
     def create_dispatch(self, disabled, external, internal):
         return functional.cond(
@@ -367,6 +488,22 @@ class System:
         """
         return utils.Gate(self.create_dispatch(disabled, external, internal))
 
+    @property
+    def on_bind(self):
+        return self.on_bind_wrapper.get()
+
+    @on_bind.setter
+    def on_bind(self, value):
+        self.on_bind_wrapper.set(value if value else utils.noop)
+
+    @property
+    def on_async_new_patched(self):
+        return self.on_async_new_patched_wrapper.get()
+
+    @on_async_new_patched.setter
+    def on_async_new_patched(self, value):
+        self.on_async_new_patched_wrapper.set(value if value else utils.noop)
+
     def __init__(self) -> None:
         # ── Primary gates ──────────────────────────────────────────
         #
@@ -385,10 +522,13 @@ class System:
         # Both gates are thread-local: each thread has its own
         # executor slot, so recording on one thread does not affect
         # another.
+
+        self.patched_types = set()
+        self.immutable_types = set()
+
         self._internal = utils.Gate()
         self._external = utils.Gate()
         
-        self.current_context = utils.ThreadLocal(None)
 
         # ── Binding / allocation gates ────────────────────────────
         #
@@ -402,8 +542,8 @@ class System:
         #               the concrete type from the live object.
         # _bind:        generic binding hook kept separate from
         #               allocation-origin semantics.
-        self._async_new_patched = utils.Gate(default = utils.noop)
-        self._bind = utils.Gate(default = utils.noop)
+        # self._async_new_patched = utils.Gate(default = utils.noop)
+        # self._bind = utils.Gate(default = utils.noop)
 
         # ── Bound / unretraced sets ───────────────────────────────
         #
@@ -411,19 +551,20 @@ class System:
         # It uses a native hybrid weak set: weakrefable objects auto-evict,
         # others are held strongly for the lifetime of the System.
         self.is_bound = utils.WeakSet()
+        
+        self.on_bind_wrapper = utils.mutable_function_wrapper(utils.noop)
+        self.on_async_new_patched_wrapper = utils.mutable_function_wrapper(utils.noop)
 
-        # ── Type tracking ──────────────────────────────────────────
-        self.patched_types = set()        # types already patched in-place
-        self.immutable_types = set()      # types that pass through as-is
-        self.base_to_patched = {}         # base cls → user-defined Patched subclass
-        self.replay_materialize = set()   # functions safe to call for real on replay
+        self.bind = utils.runall(self.is_bound.add, self.on_bind_wrapper)
+        self.async_new_patched = utils.runall(self.is_bound.add, self.on_async_new_patched_wrapper)
 
-        # should_proxy(value) → bool: given a value, check its type
-        # and decide whether it needs a dynamic proxy wrapper.
-        # Memoized so each type is only checked once.
-        self.should_proxy = functional.sequence(
-            functional.typeof, 
-            functional.memoize_one_arg(self._should_proxy_type))
+        self.thread_wrapper = functional.identity
+
+        # Execute wrapped callables via their underlying target while leaving
+        # plain callables on the normal fast path.
+        self.fallback = functional.mapargs(
+            transform = functional.walker(utils.try_unwrap),
+            function = functional.apply)
 
         # Return True if *obj* is bound or is a dynamic proxy wrapper.
         self.is_retraced = functional.or_predicate(self.is_bound, utils.is_wrapped)
@@ -431,20 +572,13 @@ class System:
             (isinstance(obj, type) and obj in self.patched_types)
             or type(obj) in self.patched_types
         )
-        self.passthrough = functional.or_predicate(
-            utils.FastTypePredicate(
-                lambda cls: issubclass(cls, tuple(self.immutable_types))
-            ).istypeof,
-            self.is_bound,
-        )
-        self.ext_passthrough = functional.or_predicate(
-            self.passthrough,
-            functional.isinstanceof(utils.ExternalWrapped),
-        )
-        self.int_passthrough = functional.or_predicate(
-            self.passthrough,
-            functional.isinstanceof(utils.InternalWrapped),
-        )
+
+        self.is_patched_type = utils.FastTypePredicate(lambda cls: cls in self.patched_types).istypeof
+
+        # def bind_unbound(obj):
+        #     writer.async_new_patched(type(obj))
+        #     remember_bind(obj)
+
 
         # ── Sandbox predicates ─────────────────────────────────────
         #
@@ -478,9 +612,13 @@ class System:
         # (ext→int callbacks) dispatch to the executor when active, or
         # pass through when disabled.
         self._ext_handler = functional.catch_exception(
-            self._external,
+            self.create_dispatch(
+                disabled=self.fallback,
+                external=self._external,
+                internal=self.fallback,
+            ),
             _PassthroughExternalCall,
-            functional.apply,
+            self.fallback,
         )
 
         # Internal overrides always route through the internal gate while
@@ -488,12 +626,12 @@ class System:
         # naturally passthroughs to the original target.
         self._int_handler = self._internal
         self._override_handler = self.create_dispatch(
-            disabled=functional.apply,
+            disabled=self.fallback,
             # Direct in-sandbox calls to Python overrides should behave like
             # normal Python method calls. Only true outside->inside callbacks
             # (which run while the external gate is temporarily cleared) should
             # route through the internal gate.
-            external=functional.apply,
+            external=self.fallback,
             internal=self._int_handler,
         )
 
@@ -519,15 +657,245 @@ class System:
         #   - Otherwise: utils.noop keeps the object unbound, so later
         #     patched method calls passthrough.
         self._on_alloc = functional.cond(
-            self._external.is_set, utils.runall(self._bind, self.is_bound.add),
-            self._internal.is_set, utils.runall(self._async_new_patched, self._bind, self.is_bound.add),
+            self._external.is_set, self.bind,
+            self._internal.is_set, self.async_new_patched,
             utils.noop)
 
-    def bind(self, obj):
-        self.is_bound.add(obj)
-        self._bind(obj)
+        self.ext_proxytype_from_spec = self._wrapped_function(
+            self._int_handler, 
+            _ext_proxytype_from_spec)
 
-    @property
+        # self.bind(System.ext_proxytype_from_spec)
+        self.bind(self)
+
+        self.bind(utils.create_stub_object)
+
+        self.proxy_ref = functional.memoize_one_arg(ProxyRef)
+
+        self.passthrough = functional.or_predicate(
+            utils.FastTypePredicate(
+                lambda cls: issubclass(cls, tuple(self.immutable_types))
+            ).istypeof,
+            self.is_bound,
+        )
+
+        self.passthrough_call = functional.spread_and(self.passthrough)
+
+        self.ext_passthrough = functional.or_predicate(
+            self.passthrough,
+            functional.isinstanceof(utils.InternalWrapped),
+        )
+
+        self.int_passthrough = functional.or_predicate(
+            self.passthrough,
+            functional.isinstanceof(utils.ExternalWrapped),
+        )
+
+        self.serialize_ext_wrapped = functional.walker(
+            when_instanceof(utils.ExternalWrapped, with_type_of(self.proxy_ref)))
+
+        self.unproxy_ext = functional.walker(
+            when_instanceof(utils.ExternalWrapped, utils.unwrap))
+
+        self.unproxy_int = functional.walker(
+            when_instanceof(utils.InternalWrapped, utils.unwrap))
+
+    def _ext_proxy(self, passthrough_proxyref):
+        ext_leaf_proxy = \
+            functional.if_then_else(
+                self.ext_passthrough,
+                functional.identity,
+                functional.if_then_else(
+                    self.is_patched_type,
+                    functional.side_effect(self.async_new_patched),
+                    proxy(functional.memoize_one_arg(self.ext_proxytype))))
+
+        if not passthrough_proxyref:
+            ext_leaf_proxy = \
+                functional.if_then_else(
+                    functional.isinstanceof(ProxyRef),
+                    lambda ref: ref(),
+                    ext_leaf_proxy)
+
+        return functional.walker(ext_leaf_proxy)
+
+    def _int_proxy(self):
+        leaf_int_proxy = functional.if_then_else(
+            self.int_passthrough,
+            functional.identity,
+            functional.sequence(
+                proxy(functional.memoize_one_arg(self.int_proxytype)), 
+                functional.side_effect(self.async_new_patched)))
+            
+        return functional.if_then_else(
+            self.int_passthrough,
+            functional.identity,
+            functional.walker(leaf_int_proxy))
+
+    def ext_executor(self, *, int_proxy, ext_proxy, hooks, execute, passthrough_proxyref):
+        
+        with_generic_ext_result = \
+            functional.sequence(
+                ext_proxy,
+                functional.side_effect(
+                      functional.sequence(
+                          self.serialize_ext_wrapped,
+                          hooks.on_result)),
+                self.unproxy_int)
+
+        if passthrough_proxyref:
+            with_ext_result = functional.if_then_else(
+                self.passthrough,
+                functional.side_effect(hooks.on_result),
+                with_generic_ext_result)
+        else:
+            with_ext_result = with_generic_ext_result
+
+        _run_external = functional.partial(
+            self._external.apply_with(None),
+            execute if execute else utils.try_unwrap_apply,
+        )
+
+        external_executor = functional.sequence(_run_external, with_ext_result)
+
+        def observe(function):
+            return utils.observer(
+                on_call = hooks.on_call,
+                on_error = hooks.on_error,
+                function = function)
+
+        with_complex_ext_call = \
+            functional.mapargs(
+                transform = functional.if_then_else(
+                    self.int_passthrough,
+                    functional.identity,
+                    functional.walker(int_proxy)),
+                function = observe(
+                    functional.mapargs(
+                        starting = 1,
+                        function = external_executor,
+                        transform = utils.try_unwrap)))
+                    # functional.mapargs(
+                    #     transform = self.unproxy_ext,
+                    #     function = external_executor)))
+
+        return functional.if_then_else(
+            self.passthrough_call,
+            observe(external_executor),
+            with_complex_ext_call)
+
+
+    def int_executor(self, *, int_proxy, ext_proxy, hooks, external_executor):
+        return functional.mapargs(
+            transform = functional.if_then_else(
+                self.ext_passthrough,
+                functional.identity,
+                ext_proxy),
+            function = utils.observer(
+                on_call = hooks.on_call,
+                on_error = hooks.on_error,
+                function = functional.mapargs(
+                    starting = 1,
+                    function = functional.sequence(
+                        functional.partial(
+                            self._external.apply_with(external_executor),
+                            utils.try_unwrap_apply),
+                        int_proxy,
+                        functional.side_effect(
+                            functional.sequence(
+                                self.serialize_ext_wrapped,
+                                hooks.on_result)),
+                        self.unproxy_ext,
+                    ),
+                    transform = self.unproxy_int)))
+
+    def build_executors(self, *, internal_hooks, external_hooks, execute, passthrough_proxyref):
+
+        int_proxy = self._int_proxy()
+        ext_proxy = self._ext_proxy(passthrough_proxyref = passthrough_proxyref)
+
+        external_executor = self.ext_executor(
+            int_proxy = int_proxy,
+            ext_proxy = ext_proxy,
+            hooks = external_hooks,
+            execute = execute,
+            passthrough_proxyref = passthrough_proxyref)
+
+        internal_executor = self.int_executor(
+            int_proxy = int_proxy,
+            ext_proxy = ext_proxy,
+            hooks = internal_hooks,
+            external_executor = external_executor)
+
+        return internal_executor, external_executor
+
+    @contextmanager
+    def context(self, 
+        primary_hooks : CallHooks, 
+        secondary_hooks : CallHooks,
+        lifecycle_hooks : LifecycleHooks,
+        execute : None | Callable = None,
+        on_bind = None,
+        passthrough_proxyref = False):
+        
+        internal_executor, external_executor = self.build_executors(
+            internal_hooks = CallHooks(
+                on_call = primary_hooks.on_call if primary_hooks else None,
+                on_result = secondary_hooks.on_result if secondary_hooks else None,
+                on_error = secondary_hooks.on_error if secondary_hooks else None),
+            external_hooks = CallHooks(
+                on_call = secondary_hooks.on_call if secondary_hooks else None,
+                on_result = primary_hooks.on_result if primary_hooks else None,
+                on_error = primary_hooks.on_error if primary_hooks else None),
+            execute = execute,
+            passthrough_proxyref = passthrough_proxyref)
+                
+        saved_bind = self.on_bind
+        saved_async_new_patched = self.on_async_new_patched
+        saved_internal_executor = self._internal.executor
+        saved_external_executor = self._external.executor
+
+        self.on_bind = on_bind if on_bind else functional.noop
+
+        def on_async_new_patched(obj):
+            if primary_hooks:
+                # this doesn't trigger the call on record, this is for replay
+                primary_hooks.on_call(utils.create_stub_object, type(obj))
+                        
+            on_bind(obj)
+
+            if secondary_hooks.on_result:
+                secondary_hooks.on_result(obj)
+
+        self.on_async_new_patched = on_async_new_patched
+
+        def with_gate(gate, executor,function):
+            return functional.partial(gate.apply_with(executor), function)
+
+        def observe(function):
+            return utils.observer(
+                            on_call = functional.repeatedly(lifecycle_hooks.on_start),
+                            on_result = functional.repeatedly(lifecycle_hooks.on_end),
+                            on_error = functional.repeatedly(lifecycle_hooks.on_end),
+                            function = function)
+
+        self.thread_wrapper = lambda function: with_gate(self._external, external_executor, 
+                        with_gate(self._internal, internal_executor, observe(function)))
+                        
+
+        try:
+            self._internal.executor = internal_executor
+            self._external.executor = external_executor
+            lifecycle_hooks.on_start()
+            yield
+        finally:
+            lifecycle_hooks.on_end()
+            self._internal.executor = saved_internal_executor  
+            self._external.executor = saved_external_executor
+            self.on_bind = saved_bind
+            self.on_async_new_patched = saved_async_new_patched
+            self.thread_wrapper = None
+        
     def enabled(self):
         return self._external.is_set or self._internal.is_set
 
@@ -559,23 +927,6 @@ class System:
     # unpredictable contexts; __dict__ is a data descriptor needed by
     # the interpreter itself.
     _patch_type_blacklist = frozenset(['__new__', '__getattribute__', '__del__', '__dict__'])
-
-    def _context(self, **kwargs):
-        """Build a reusable, thread-safe context manager for gate executors.
-
-        Each keyword argument names a private gate attribute on self
-        (e.g. ``_internal``, ``_external``, ``_async_new_patched``, ``_bind``).
-        The corresponding gate's executor is saved on ``__enter__``,
-        replaced with the given value, then restored on ``__exit__``.
-
-        The returned ``_GateContext`` can be entered from multiple
-        threads concurrently — each thread's saved state is isolated
-        via ``_thread._local()``.
-
-        This is the primitive that record_context and replay_context
-        are built on.
-        """
-        return _GateContext(self, **kwargs)
 
     def _should_proxy_type(self, cls):
         """Decide whether values of *cls* need a dynamic proxy wrapper.
@@ -658,313 +1009,172 @@ class System:
             # override routed through the internal gate.
         """
 
-        return _patch_type_impl(self, cls, install_session=install_session)
+        assert isinstance(cls, type)
+        assert not issubclass(cls, BaseException)
+
+        existing = getattr(cls, "__retrace_system__", None)
+        if existing is not None and existing is not self:
+            raise RuntimeError(
+                f"patch_type: {cls.__qualname__} is already patched by another System instance"
+            )
+
+        assert cls not in self.patched_types
+
+        missing = object()
+        alloc_patch_undo = None
+        patched_attrs = {}
+        patched_subtypes = []
+        subtype_alloc_undos = []
+        subtype_attrs = {}
+        original_init_subclass = cls.__dict__.get("__init_subclass__", missing)
+        original_retrace = cls.__dict__.get("__retrace__", missing)
+        original_retrace_system = cls.__dict__.get("__retrace_system__", missing)
+        bound_types = []
+
+        def restore_attr(target, name, original):
+            if original is missing:
+                if name in target.__dict__:
+                    delattr(target, name)
+            else:
+                setattr(target, name, original)
+
+        def bind_patched_type(target):
+            self.bind(target)
+            bound_types.append(target)
+
+        def proxy_attrs(target_cls, attr_dict, handler, originals):
+            blacklist = self._patch_type_blacklist
+
+            def proxy_function(func):
+                return self._wrapped_function(handler=handler, target=func)
+
+            def proxy_member(member):
+                return utils.wrapped_member(handler=handler, target=member)
+
+            for name, value in attr_dict.items():
+                if name in blacklist:
+                    continue
+                if name not in originals:
+                    originals[name] = getattr(target_cls, name)
+
+                def with_proxied(proxied):
+                    setattr(target_cls, name, proxied)
+                    if install_session is not None:
+                        install_session.register_wrapped_attr(
+                            owner=target_cls,
+                            name=name,
+                            target=value,
+                            wrapped=proxied,
+                        )
+
+                if type(value) in [types.MemberDescriptorType, types.GetSetDescriptorType]:
+                    with_proxied(proxy_member(value))
+                elif callable(value) and not isinstance(value, type):
+                    with_proxied(proxy_function(value))
+
+        try:
+            with WithoutFlags(cls, "Py_TPFLAGS_IMMUTABLETYPE"):
+                alloc_patch_undo = utils.set_on_alloc(cls, self._on_alloc)
+                self.patched_types.add(cls)
+
+                base_methods = superdict(cls)
+                proxy_attrs(cls, attr_dict=base_methods, handler=self._ext_handler, originals=patched_attrs)
+
+                cls.__retrace_system__ = self
+
+                if utils.is_extendable(cls):
+                    base_method_names = frozenset(base_methods.keys())
+
+                    def init_subclass(subtype, patch_alloc=True, **kwargs):
+                        self.patched_types.add(subtype)
+                        patched_subtypes.append(subtype)
+                        bind_patched_type(subtype)
+
+                        if patch_alloc:
+                            alloc_undo = utils.set_on_alloc(subtype, self._on_alloc)
+                            subtype_alloc_undos.append(alloc_undo)
+
+                        overrides = {
+                            name: value
+                            for name, value in subtype.__dict__.items()
+                            if name in base_method_names
+                        }
+                        originals = subtype_attrs.setdefault(subtype, {})
+                        proxy_attrs(
+                            subtype,
+                            attr_dict=overrides,
+                            handler=self._override_handler,
+                            originals=originals,
+                        )
+
+                    cls.__init_subclass__ = classmethod(init_subclass)
+
+                    for subtype in get_all_subtypes(cls):
+                        with WithoutFlags(subtype, "Py_TPFLAGS_IMMUTABLETYPE"):
+                            init_subclass(subtype, patch_alloc=False)
+
+                cls.__retrace__ = self
+
+            bind_patched_type(cls)
+        except Exception:
+            for undo in reversed(subtype_alloc_undos):
+                undo()
+
+            if alloc_patch_undo is not None:
+                alloc_patch_undo()
+
+            for subtype in reversed(patched_subtypes):
+                originals = subtype_attrs.get(subtype, {})
+                with WithoutFlags(subtype, "Py_TPFLAGS_IMMUTABLETYPE"):
+                    for name, original in reversed(list(originals.items())):
+                        restore_attr(subtype, name, original)
+                self.patched_types.discard(subtype)
+
+            with WithoutFlags(cls, "Py_TPFLAGS_IMMUTABLETYPE"):
+                for name, original in reversed(list(patched_attrs.items())):
+                    restore_attr(cls, name, original)
+                restore_attr(cls, "__init_subclass__", original_init_subclass)
+                restore_attr(cls, "__retrace_system__", original_retrace_system)
+                restore_attr(cls, "__retrace__", original_retrace)
+
+            for bound_type in reversed(bound_types):
+                self.is_bound.discard(bound_type)
+
+            self.patched_types.discard(cls)
+            raise
+
+        return cls
 
     def _throw_passthrough(self, _value):
         raise _PassthroughExternalCall
 
-    def _proxyfactory(self, proxytype):
-        """Build a per-value transformer that dynamically proxies when needed.
+    def _wrapped_function(self, handler, target):
+        wrapped = utils.wrapped_function(handler = handler, target = target)
+        self.bind(wrapped)
+        return wrapped
 
-        The returned callable handles a single value. Callers compose it under
-        ``functional.walker(...)`` and layer any direction-specific passthrough
-        or patched-object policy around it.
+    def int_proxytype(self, cls):
+        from retracesoftware.proxy.proxytype import dynamic_int_proxytype
 
-        The *proxytype* callable is run with both gates disabled (via
-        ``disable_for``) to prevent re-entrancy during proxy class
-        construction.
-        """
+        assert not self.is_patched_type(cls)
+        assert not issubclass(cls, utils._WrappedBase)
 
-        return functional.if_then_else(
-            self.should_proxy,
-            maybe_proxy(proxytype),
-            functional.identity,
-        )
+        return dynamic_int_proxytype(
+            handler = self.int_handler,
+            cls = cls,
+            bind = self.bind)
 
-    def _create_context(self, int_spec, ext_spec, ext_runner = None, replay_bind_materialized = None, **args):
-        """Build the executor pair and enter a gate context.
+    # have the ext proxytype as a tracked external method
+    # it takes the shape of the class, inside we bind the generated proxytype
+    # this mean when we call the ext proxytype from inside the system, its tracked
+    # as an async call, which will be replayed and bound. Dont need any stub refs.
 
-        This is the core wiring that record_context and replay_context
-        both delegate to.  It builds two executors and loads them into
-        the gates via ``_context``.
+    def ext_proxytype(self, cls):
+        blacklist = ['__getattribute__', '__hash__', '__del__', '__call__', '__new__']
 
-        Parameters
-        ----------
-        int_spec : SimpleNamespace
-            Specification for the internal (ext→int) side.  Fields:
-            ``proxy`` (value transformer), ``on_call``, ``on_result``,
-            ``on_error`` (observers).
+        methods = [method for method in method_names(cls) if method not in blacklist]
 
-        ext_spec : SimpleNamespace
-            Specification for the external (int→ext) side.  Same fields.
+        return self.ext_proxytype_from_spec(self, module = cls.__module__, name = cls.__qualname__, methods = methods)
+        # return self._internal(System.ext_proxytype_from_spec, self, 
+        #                       module = cls.__module__, name = cls.__qualname__, methods = methods)
 
-        ext_runner : callable, optional
-            If provided, external calls are replaced with
-            ``ext_runner()`` (used for replay — reads from the stream
-            instead of executing the real function).
-
-        **args
-            Additional gate executors to set (e.g. ``_async_new_patched``,
-            ``_bind``).
-
-        Executor construction
-        ---------------------
-
-        ext_executor (loaded onto _external gate):
-            The full int→ext adapter pipeline:
-
-                on_call(ext_spec) → proxy_input(int_spec) → function → proxy_output(ext_spec) → on_result(ext_spec)
-
-            *function* is either:
-              - ``self._external.apply_with(None)`` for record — execute
-                the real function with the external gate temporarily
-                cleared (prevents the adapter from re-entering itself
-                on nested external calls).
-              - ``_run_with_replay(ext_runner)`` for replay — ignore the
-                real function and return the recorded result.
-
-        int_executor (loaded onto _internal gate):
-            Handles ext→int callbacks with a re-entrancy check:
-
-              - ``self._external.test(None)`` checks if the external
-                gate's executor is currently None.  This is True when
-                we are already inside an external call (the ext_executor
-                cleared it with apply_with(None)).  In that case, the
-                callback is a nested internal call — just pass through
-                with ``functional.apply``.
-
-              - Otherwise (external gate still has an executor), this is
-                a genuine ext→int callback.  Wrap it with the full
-                adapter pipeline in the reverse direction:
-
-                    on_call(int_spec) → proxy_input(ext_spec) → function → proxy_output(int_spec) → on_result(int_spec)
-
-                *function* here is ``self._external.apply_with(ext_executor)``
-                which temporarily restores the ext_executor on the
-                external gate so that if the callback makes an outbound
-                call, it goes through the full ext adapter again.
-
-            Known issue — passthrough gap
-            ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-
-            The test(None) check conflates two cases:
-
-              1. A nested internal call during an external call where
-                 no boundary crossing occurs — passthrough is correct.
-
-              2. C base class code calling a Python override during an
-                 external call — a genuine ext→int callback.  The
-                 passthrough means:
-                   (a) The callback is not recorded (async_call skipped).
-                   (b) The external gate stays None, so outbound calls
-                       from within the override (e.g. super().recv())
-                       bypass the external pipeline — also unrecorded.
-
-            The adapter branch would be correct for case 2: it records
-            the callback and restores the external gate via
-            apply_with(ext_executor) so outbound calls are intercepted.
-            Fixing this requires a way to distinguish case 1 from
-            case 2 — e.g. tracking whether the caller is C code or
-            Python code, or using a depth counter.
-        """
-
-        return _create_context_impl(
-            self,
-            int_spec=int_spec,
-            ext_spec=ext_spec,
-            ext_runner=ext_runner,
-            replay_bind_materialized=replay_bind_materialized,
-            adapter_fn=adapter,
-            replay_runner_fn=_run_with_replay,
-            **args,
-        )
-
-    def _create_int_spec(self, bind, on_call : Callable = None,
-                         on_result : Callable = None,
-                         on_error : Callable = None) -> SimpleNamespace:
-        """Build the internal (ext→int) specification.
-
-        Parameters
-        ----------
-        bind : callable
-            Called when a new internal proxy object is created.  During
-            record this is ``writer.bind``; during replay this is
-            ``reader.bind``.
-        on_call : callable or None
-            Observer called when an ext→int callback fires.  During
-            record this is ``writer.async_call``; during replay this
-            is None (callbacks are re-invoked, not read from stream).
-        on_result : callable or None
-            Observer called when an ext→int callback returns.  Used by
-            normalize to checkpoint the result for divergence detection.
-        on_error : callable or None
-            Observer called when an ext→int callback raises.  Used by
-            normalize to checkpoint the error for divergence detection.
-
-        Returns
-        -------
-        SimpleNamespace with fields:
-            proxy     — value transformer for the internal domain
-            on_call   — observer (or None)
-            on_result — result observer (or None)
-            on_error  — error observer (or None)
-        """
-
-        return _create_int_spec_impl(
-            self,
-            bind=bind,
-            on_call=on_call,
-            on_result=on_result,
-            on_error=on_error,
-        )
-
-    def _create_ext_spec(self, sync : Callable, 
-                         on_result : Callable, 
-                         on_error : Callable,
-                         track : Callable,
-                         on_passthrough_result : Callable = None,
-                         on_new_proxytype : Callable = None,
-                         disabled_handler : Callable = None,
-                         internal_handler : Callable = None) -> SimpleNamespace:
-        """Build the external (int→ext) specification.
-
-        Parameters
-        ----------
-        sync : callable
-            Called before the external function executes (no arguments).
-            During record this is ``writer.sync`` (flushes the stream).
-            During replay this is ``reader.sync``.
-        on_result : callable or None
-            Observer called on success.  During record this is
-            ``writer.write_result``; during replay this is None.
-        on_error : callable or None
-            Observer called on exception.  During record this is
-            ``writer.write_error``; during replay this is None.
-        on_passthrough_result : callable or None
-            Observer called when the adapter fast-path returns a value
-            without crossing the proxy boundary.
-        on_new_proxytype : callable or None
-            Called as ``on_new_proxytype(proxytype, cls)`` whenever
-            ``ext_proxytype`` creates a new DynamicProxy class.  During
-            record this registers a ``type_serializer`` on the writer
-            so that DynamicProxy instances are stored as StubRefs.
-            During replay this is None.
-
-        Returns
-        -------
-        SimpleNamespace with fields:
-            proxy     — value transformer for the external domain
-            on_call   — sync observer
-            on_result — result observer (or None)
-            on_error  — error observer (or None)
-        """
-
-        return _create_ext_spec_impl(
-            self,
-            sync=sync,
-            on_result=on_result,
-            on_error=on_error,
-            track=track,
-            on_passthrough_result=on_passthrough_result,
-            on_new_proxytype=on_new_proxytype,
-            disabled_handler=disabled_handler,
-            internal_handler=internal_handler,
-        )
-
-    def record_context(
-        self,
-        writer: WriterProtocol,
-        normalize=None,
-        stacktraces=False,
-        callback_normalize=None,
-    ):
-        """Context manager for recording.
-
-        Inside this context, all calls to methods on patched types go
-        through the adapter pipeline.  External calls execute normally
-        and their results are written to *writer*.  Callbacks from
-        external code into internal code are also recorded.
-
-        Parameters
-        ----------
-        writer : object
-            Must provide: ``bind(obj)``, ``intern(obj)``, ``async_new_patched(obj)``,
-            ``async_call(*a, **kw)``, ``sync()``,
-            ``write_result(*a, **kw)``, ``write_error(*a, **kw)``.
-            If *normalize* is set, must also provide
-            ``checkpoint(value)``.
-            If *stacktraces* is True, must also provide
-            ``stacktrace()``.
-
-        normalize : callable or None
-            Optional function that reduces a value to a canonical form
-            for divergence detection.  When set, every external result
-            and internal callback result/error is normalized and
-            written as a checkpoint via ``writer.checkpoint``.  During
-            replay the same normalization runs and
-            ``reader.checkpoint`` compares against the stored value.
-
-        stacktraces : bool
-            When True, ``writer.stacktrace()`` is called at each call
-            boundary — before every external call and before every
-            internal callback.  The writer owns the capture strategy
-            (e.g. ``StackFactory.delta()``); the system just calls it.
-
-        Usage
-        -----
-            with system.record_context(writer):
-                s = socket.socket(...)
-                s.connect(addr)
-                data = s.recv(1024)
-
-            # With stack traces:
-            with system.record_context(writer, stacktraces=True):
-                ...
-        """
-        return _record_context_impl(
-            self,
-            writer,
-            normalize=normalize,
-            stacktraces=stacktraces,
-            callback_normalize=callback_normalize,
-        )
-
-    def replay_context(self, reader: ReaderProtocol, normalize = None, callback_normalize=None):
-        """Context manager for replay.
-
-        Inside this context, external calls are never executed.
-        Instead, results are read from *reader* and returned directly.
-        The customer's code runs identically to the recording because
-        from its perspective the outside world produces the same values.
-
-        Parameters
-        ----------
-        reader : object
-            Must provide: ``bind(obj)``, ``sync()``,
-            ``read_result() -> value``.
-            If *normalize* is set, must also provide
-            ``checkpoint(value)``.
-            May provide ``type_deserializer`` dict for custom
-            deserialization (e.g. StubRef → stub instance).
-
-        normalize : callable or None
-            Optional function that reduces a value to a canonical form
-            for divergence detection.  When set, every external result
-            and internal callback result/error is normalized and
-            compared against the checkpoint stored during recording
-            via ``reader.checkpoint``.  A mismatch indicates that
-            replay has diverged from the original execution.
-
-        Usage
-        -----
-            with system.replay_context(reader):
-                s = socket.socket(...)      # returns recorded value
-                s.connect(addr)             # returns recorded value
-                data = s.recv(1024)         # returns recorded data
-        """
-        return _replay_context_impl(
-            self,
-            reader,
-            normalize=normalize,
-            callback_normalize=callback_normalize,
-        )

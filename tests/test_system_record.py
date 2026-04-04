@@ -28,8 +28,10 @@ import pytest
 pytest.importorskip("retracesoftware.stream")
 
 import retracesoftware.stream as stream
+import retracesoftware.utils as utils
 import retracesoftware.proxy.system as proxy_system
 from retracesoftware.install import stream_writer
+from retracesoftware.proxy.contexts import record_context, replay_context
 from retracesoftware.proxy.messagestream import ReplayReader
 
 
@@ -66,7 +68,7 @@ class SystemRecordHarness:
     """Small writer-like object for ``System.record_context`` tests.
 
     ``System.record_context`` expects a writer with methods such as ``bind``,
-    ``async_new_patched``, ``sync``, and ``write_result``.  The real high-level
+    ``async_new_patched``, ``write_call``, and ``write_result``.  The real high-level
     stream writer carries much more behavior than these tests need, so this
     harness delegates the binding/allocation operations to the native
     ``stream.ObjectWriter`` while keeping the other callbacks as simple
@@ -100,6 +102,9 @@ class SystemRecordHarness:
 
     def sync(self):
         self.calls.append(("sync",))
+
+    def write_call(self, *args, **kwargs):
+        self.calls.append(("write_call", args, kwargs))
 
     def async_call(self, *args, **kwargs):
         self.calls.append(("async_call", args, kwargs))
@@ -177,7 +182,7 @@ def test_system_record_binds_allocations_in_sandbox():
 
     system.patch_type(Patched)
 
-    with system.record_context(writer):
+    with record_context(system, writer):
         obj = Patched()
         assert system.is_bound(obj)
 
@@ -188,14 +193,14 @@ def test_system_record_binds_allocations_in_sandbox():
 
 
 def test_system_record_uses_async_new_patched_during_external_phase_allocation():
-    """Allocations during an external call should emit ``new_patched`` then ``bind``.
+    """Allocations during an external call should emit async callback + bind.
 
     After entering ``record_context``, calling a patched base-type method moves
     execution into the temporary external-call phase.  If a new patched object
-    is allocated there, replay needs a stronger signal than ``bind`` so it can
-    reconstruct the object by type.  Once the object exists, it should still
-    enter the normal binding lifecycle, so the queue-visible effect is
-    ``NEW_PATCHED`` protocol writes followed by ``push_bind``.
+    is allocated there, the allocation is recorded using the normal async
+    callback protocol: ``async_call(create_stub_object, type(obj))`` followed
+    by the usual bind for the concrete instance. The legacy
+    ``ASYNC_NEW_PATCHED`` queue payload should not be emitted.
     """
 
     system = proxy_system.System()
@@ -208,16 +213,23 @@ def test_system_record_uses_async_new_patched_during_external_phase_allocation()
 
     system.patch_type(Patched)
 
-    with system.record_context(writer):
+    with record_context(system, writer):
         root = Patched()
         queue.clear()
+        writer.calls.clear()
         peer = root.make_peer()
         assert peer is not None
 
-    assert len(queue.named("push_intern")) == 1
-    assert len(queue.named("push_ref")) == 1
-    assert len(queue.named("push_obj")) == 1
     assert len(queue.named("push_bind")) == 1
+    assert queue.named("push_intern") == []
+    assert queue.named("push_ref") == []
+    assert queue.named("push_obj") == []
+    assert any(
+        call[0] == "async_call"
+        and call[1][0] is utils.create_stub_object
+        and call[1][1] is Patched
+        for call in writer.calls
+    )
 
 
 def test_system_record_passthroughs_unbound_instances():
@@ -245,7 +257,7 @@ def test_system_record_passthroughs_unbound_instances():
     obj = Patched()
     assert not system.is_bound(obj)
 
-    with system.record_context(writer):
+    with record_context(system, writer):
         queue.clear()
         assert obj.ping() == "pong"
 
@@ -264,7 +276,7 @@ def test_system_record_bind_reaches_python_persister_via_native_queue():
     system.patch_type(Patched)
 
     try:
-        with system.record_context(writer):
+        with record_context(system, writer):
             obj = Patched()
             assert system.is_bound(obj)
     finally:
@@ -274,7 +286,7 @@ def test_system_record_bind_reaches_python_persister_via_native_queue():
 
 
 def test_system_record_async_new_patched_reaches_python_persister_via_native_queue():
-    """External-phase allocations should survive native Queue -> Python persister dispatch."""
+    """External-phase allocations should survive via async callback + bind."""
 
     system = proxy_system.System()
     writer = QueueBackedDebugHarness()
@@ -286,22 +298,31 @@ def test_system_record_async_new_patched_reaches_python_persister_via_native_que
     system.patch_type(Patched)
 
     try:
-        with system.record_context(writer):
+        with record_context(system, writer):
             root = Patched()
             writer.events.clear()
+            writer.calls.clear()
             peer = root.make_peer()
             assert peer is not None
     finally:
         writer.close()
 
     assert any(
+        call[0] == "async_call"
+        and call[1][0] is utils.create_stub_object
+        and call[1][1] is Patched
+        for call in writer.calls
+    )
+    assert any(
+        event[0] == "command" and event[1][0] == "bind"
+        for event in writer.events
+    )
+    assert not any(
         event[0] == "command"
         and event[1][0] == "intern"
         and event[1][1][1] == ("object", "ASYNC_NEW_PATCHED")
         for event in writer.events
     )
-    assert any(event[0] == "bound_ref" for event in writer.events)
-    assert any(event[0] == "object" and event[1].__name__ == "Patched" for event in writer.events)
 
 
 def test_system_record_memoryview_result_roundtrips_through_unframed_binary_replay(tmp_path):
@@ -324,7 +345,7 @@ def test_system_record_memoryview_result_roundtrips_through_unframed_binary_repl
 
     with stream.writer(path, flush_interval=999, format="unframed_binary") as raw_writer:
         writer = stream_writer(raw_writer)
-        with system.record_context(writer):
+        with record_context(system, writer):
             obj = Patched()
             result = obj.payload()
             assert isinstance(result, memoryview)
@@ -344,7 +365,7 @@ def test_system_record_memoryview_result_roundtrips_through_unframed_binary_repl
             stub_factory=getattr(raw_reader, "stub_factory", None),
         )
 
-        with system.replay_context(replay_reader):
+        with replay_context(system, replay_reader):
             obj = Patched()
             replayed = obj.payload()
             assert bytes(replayed) == b"payload"

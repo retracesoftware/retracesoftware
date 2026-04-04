@@ -41,6 +41,29 @@ class TestAndPredicate:
         assert pred(42) is True
 
 
+class TestSpreadAnd:
+    def test_returns_true_when_predicate_matches_every_argument(self):
+        pred = fn.spread_and(lambda x: x > 0)
+
+        assert pred(1, 2, 3) is True
+
+    def test_returns_false_when_any_argument_fails(self):
+        pred = fn.spread_and(lambda x: x > 0)
+
+        assert pred(1, -2, 3) is False
+
+    def test_includes_keyword_argument_values(self):
+        pred = fn.spread_and(lambda x: isinstance(x, int))
+
+        assert pred(1, 2, left=3, right=4) is True
+        assert pred(1, 2, left=3, right="4") is False
+
+    def test_empty_call_returns_true(self):
+        pred = fn.spread_and(lambda x: False)
+
+        assert pred() is True
+
+
 class TestOrPredicate:
     def test_returns_true_when_any_predicate_passes(self):
         is_zero = lambda x: x == 0
@@ -75,6 +98,29 @@ class TestOrPredicate:
     def test_empty_predicate_list_returns_false(self):
         pred = fn.or_predicate()
         assert pred(42) is False
+
+
+class TestSpreadOr:
+    def test_returns_true_when_predicate_matches_any_argument(self):
+        pred = fn.spread_or(lambda x: x < 0)
+
+        assert pred(1, -2, 3) is True
+
+    def test_returns_false_when_all_arguments_fail(self):
+        pred = fn.spread_or(lambda x: x < 0)
+
+        assert pred(1, 2, 3) is False
+
+    def test_includes_keyword_argument_values(self):
+        pred = fn.spread_or(lambda x: isinstance(x, str))
+
+        assert pred(1, 2, left=3, right="4") is True
+        assert pred(1, 2, left=3, right=4) is False
+
+    def test_empty_call_returns_false(self):
+        pred = fn.spread_or(lambda x: True)
+
+        assert pred() is False
 
 
 class TestNotPredicate:
@@ -165,6 +211,13 @@ class TestIsinstanceof:
         assert is_exception(ValueError("test")) is True
         assert is_exception(Exception("test")) is True
 
+    def test_accepts_multiple_types_and_builds_or_predicate(self):
+        is_textual = fn.isinstanceof(str, bytes)
+
+        assert is_textual("hello") is True
+        assert is_textual(b"hello") is True
+        assert is_textual(42) is False
+
     @pytest.mark.skip(reason="andnot logic returns InstanceTest object instead of bool")
     def test_andnot_excludes_subclass(self):
         # Match Exception but not ValueError
@@ -199,4 +252,3 @@ class TestNotinstanceTest:
         test = fn.notinstance_test(str)
         
         assert test("hello") is None
-

@@ -11,7 +11,7 @@ def test_install_session_binds_wrapped_function_callbacks_and_records_wrapped_id
 
     wrapped = utils.wrapped_function(
         target=original,
-        handler=lambda fn, *args, **kwargs: fn(*args, **kwargs),
+        handler=lambda fn, *args, **kwargs: utils.unwrap_apply(fn, *args, **kwargs),
     )
 
     bound = []
@@ -53,7 +53,10 @@ def test_install_session_binds_new_targets_immediately_while_active():
     def original():
         return None
 
-    wrapped = utils.wrapped_function(target=original, handler=lambda fn, *args, **kwargs: fn(*args, **kwargs))
+    wrapped = utils.wrapped_function(
+        target=original,
+        handler=lambda fn, *args, **kwargs: utils.unwrap_apply(fn, *args, **kwargs),
+    )
     session.register_wrapped_attr(owner=type("Owner", (), {}), name="callback", target=original, wrapped=wrapped)
 
     assert bound == [wrapped]
@@ -65,7 +68,10 @@ def test_install_session_rebinds_targets_on_next_activation():
     def original():
         return None
 
-    wrapped = utils.wrapped_function(target=original, handler=lambda fn, *args, **kwargs: fn(*args, **kwargs))
+    wrapped = utils.wrapped_function(
+        target=original,
+        handler=lambda fn, *args, **kwargs: utils.unwrap_apply(fn, *args, **kwargs),
+    )
     session.register_wrapped_attr(owner=type("Owner", (), {}), name="callback", target=original, wrapped=wrapped)
 
     first = []
@@ -77,3 +83,18 @@ def test_install_session_rebinds_targets_on_next_activation():
 
     assert first == [wrapped]
     assert second == [wrapped]
+
+
+def test_install_session_callback_binding_hooks_activate_then_deactivate():
+    session = InstallSession()
+    bound = []
+    marker = object()
+
+    hooks = session.callback_binding_hooks(bound.append)
+
+    assert session._bind is None
+    hooks["on_start"]()
+    session._bind(marker)
+    assert bound == [marker]
+    hooks["on_end"]()
+    assert session._bind is None

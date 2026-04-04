@@ -13,6 +13,7 @@ import hashlib
 
 from retracesoftware.threadid import ThreadId
 
+from retracesoftware.proxy.contexts import record_context, replay_context
 from retracesoftware.proxy.system import System
 
 from retracesoftware.install import run_with_context, stream_writer
@@ -196,13 +197,15 @@ def record(system, options, args):
             traceback.print_stack(file=sys.stderr)
             os._exit(1)
 
-        pw = stream_writer(writer=writer, stackfactory=stackfactory, 
+        pw = stream_writer(writer=writer, 
+                           stackfactory=stackfactory, 
                            on_write_error = system.disable_for(on_write_error) if options.quit_on_error else None)
         
-        context = system.record_context(
-            writer=pw, 
-            stacktraces = options.stacktraces,
-            callback_normalize=install_session.normalize_record_callback)
+        context = record_context(system, 
+            writer = pw,
+            debug = options.stacktraces,
+            **install_session.callback_binding_hooks(system.bind),
+        )
 
         on_weakref_start = writer.handle('ON_WEAKREF_CALLBACK_START')
         on_weakref_end = writer.handle('ON_WEAKREF_CALLBACK_END')
@@ -271,7 +274,7 @@ def make_replay_fork(proxied_fork, reader, fork_path):
     """Wrap a proxied os.fork to handle PID switching on replay.
 
     The orphaned RESULT(0) left in the child's stream is naturally
-    skipped by ReplayReader.sync() on the next proxy call.
+    skipped by ReplayReader.write_call() on the next proxy call.
     """
     fork_index = [0]
     def replay_fork():
@@ -397,9 +400,9 @@ def replay(system, args):
                     controller.on_new_message(None)
                 msg_stream.sync = _sync
 
-            context = system.replay_context(
+            context = replay_context(system, 
                 reader=msg_stream,
-                callback_normalize=install_session.normalize_replay_callback,
+                **install_session.callback_binding_hooks(system.bind),
             )
 
             if monitor_level > 0:

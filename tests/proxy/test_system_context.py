@@ -1,8 +1,8 @@
 """
-Tests for System record_context and replay_context.
+Tests for record/replay contexts built on top of ``System``.
 
-Verifies that record_context and replay_context correctly manage
-gate lifecycle and route external calls through the pipeline.
+Verifies that record/replay contexts correctly manage gate lifecycle
+and route external calls through the pipeline.
 """
 import os
 import io
@@ -18,10 +18,16 @@ from types import SimpleNamespace
 import pytest
 
 import retracesoftware.utils as utils
-import retracesoftware.proxy.system as system_mod
+import retracesoftware.proxy.context as context_mod
+from retracesoftware.protocol import StacktraceMessage
+from retracesoftware.proxy.contexts import record_context, replay_context
+from retracesoftware.proxy.context import CallHooks, LifecycleHooks
+from retracesoftware.proxy.mode import Mode, RecordMode, ReplayMode
+from retracesoftware.proxy._system_context import _GateContext, Handler
+from retracesoftware.proxy._system_specs import create_context
 from retracesoftware.proxy.system import System
-from retracesoftware.proxy.messagestream import MemoryWriter, MemoryReader, HandleMessage
-from retracesoftware.stream import BindingCreate
+from retracesoftware.proxy.messagestream import MemoryWriter, MemoryReader
+from retracesoftware.stream import BindingCreate, BindingLookup
 
 _PATCHED_TYPE_KEEPALIVE = []
 
@@ -47,7 +53,7 @@ def test_system_record_replay_context():
     assert not system._in_sandbox()
     assert not system._out_sandbox()
 
-    with system.record_context(w):
+    with record_context(system, w):
         assert system._in_sandbox()
         assert system._out_sandbox()
 
@@ -55,7 +61,7 @@ def test_system_record_replay_context():
     assert not system._in_sandbox()
     assert not system._out_sandbox()
 
-    with system.replay_context(w.reader()):
+    with replay_context(system, w.reader()):
         assert system._in_sandbox()
         assert system._out_sandbox()
 
@@ -64,9 +70,55 @@ def test_system_record_replay_context():
     assert not system._out_sandbox()
 
 
+def test_record_and_replay_modes_are_mode_subclasses():
+    system = System()
+    writer = MemoryWriter()
+
+    record_mode = RecordMode(system, writer)
+    replay_mode = ReplayMode(system, writer.reader())
+
+    assert isinstance(record_mode, Mode)
+    assert isinstance(replay_mode, Mode)
+
+    with record_mode.context():
+        assert system._in_sandbox()
+
+    with replay_mode.context():
+        assert system._in_sandbox()
+
+
+def test_context_on_bind_hook_sees_future_binds_only():
+    system = System()
+    seen = []
+
+    class Thing:
+        pass
+
+    first = Thing()
+    second = Thing()
+    third = Thing()
+
+    context = context_mod.Context(
+        system,
+        internal_hooks=CallHooks(),
+        external_hooks=CallHooks(),
+        lifecycle_hooks=LifecycleHooks(),
+        on_bind=seen.append,
+    )
+
+    system.bind(first)
+    system.bind(first)
+
+    with context:
+        system.bind(second)
+    system.bind(third)
+
+    assert seen == [second]
+
+
 def test_gate_context_restores_current_context_per_thread():
     system = System()
-    context = system._context(_internal=utils.noop)
+    context = _GateContext(system, internal=Handler(utils.noop))
 
     main_parent = object()
     child_parent = object()
@@ -97,6 +149,36 @@ def test_gate_context_restores_current_context_per_thread():
     assert child_restored["value"] is child_parent
 
 
+def test_gate_context_runs_on_start_and_on_end_around_installed_handlers():
+    system = System()
+    events = []
+
+    def on_start():
+        events.append(("start", system._internal.executor))
+
+    def on_end():
+        events.append(("end", system._internal.executor))
+
+    context = _GateContext(
+        system,
+        internal=Handler(utils.noop),
+        on_start=on_start,
+        on_end=on_end,
+    )
+
+    with context:
+        events.append(("body", system._internal.executor))
+
+    events.append(("after", system._internal.executor))
+
+    assert events == [
+        ("start", utils.noop),
+        ("body", utils.noop),
+        ("end", utils.noop),
+        ("after", None),
+    ]
+
+
 def test_system_active_allocations_bind_after_async_new_patched_outside_sandbox():
     """Inside retrace but outside the sandbox, allocations emit async_new_patched then bind."""
     system = System()
@@ -114,7 +196,12 @@ def test_system_active_allocations_bind_after_async_new_patched_outside_sandbox(
     def on_async_new_patched(obj):
         events.append(("async_new_patched", obj))
 
-    with system._context(_bind=bind, _async_new_patched=on_async_new_patched, _external=utils.noop):
+    with _GateContext(
+        system,
+        bind=bind,
+        async_new_patched=on_async_new_patched,
+        external=Handler(utils.noop),
+    ):
         external_obj = Patched()
 
     assert events == [("bind", external_obj)]
@@ -122,7 +209,12 @@ def test_system_active_allocations_bind_after_async_new_patched_outside_sandbox(
 
     events.clear()
 
-    with system._context(_bind=bind, _async_new_patched=on_async_new_patched, _internal=utils.noop):
+    with _GateContext(
+        system,
+        bind=bind,
+        async_new_patched=on_async_new_patched,
+        internal=Handler(utils.noop),
+    ):
         internal_obj = Patched()
 
     assert events == [
@@ -170,7 +262,7 @@ def test_patch_type_leaves_subclass_only_methods_as_plain_python():
 
     writer = MemoryWriter()
 
-    with system.record_context(writer):
+    with record_context(system, writer):
         obj = Sub()
         recorded = obj.extra()
 
@@ -180,7 +272,7 @@ def test_patch_type_leaves_subclass_only_methods_as_plain_python():
     assert writer.tape[0].index == 0
 
     calls = 100
-    with system.replay_context(writer.reader()):
+    with replay_context(system, writer.reader()):
         obj = Sub()
         replayed = obj.extra()
 
@@ -207,12 +299,12 @@ def test_system_preexisting_instance_stays_live_in_record_and_replay():
 
     assert not system.is_bound(db)
 
-    with system.record_context(writer):
+    with record_context(system, writer):
         assert db.query() == 1
 
     assert writer.tape == []
 
-    with system.replay_context(writer.reader()):
+    with replay_context(system, writer.reader()):
         assert db.query() == 2
 
 
@@ -222,7 +314,7 @@ def test_system_location_property():
 
     assert system.location == "disabled"
 
-    with system.record_context(writer):
+    with record_context(system, writer):
         assert system.location == "internal"
         # ext_executor runs with external gate cleared while the call body runs.
         apply_external = system._external.apply_with(None)
@@ -250,8 +342,6 @@ def test_system_context_constructs_passthrough_for_immutable_and_bound(monkeypat
         return utils.noop
 
     monkeypatch.setattr(utils, "FastTypePredicate", SpyFastTypePredicate)
-    monkeypatch.setattr(system_mod, "adapter", spy_adapter)
-
     system = System()
     system.immutable_types.update({int})
 
@@ -267,7 +357,9 @@ def test_system_context_constructs_passthrough_for_immutable_and_bound(monkeypat
         on_error = None,
     )
 
-    system._create_context(spec, spec)
+    monkeypatch.setattr(context_mod, "adapter", spy_adapter)
+
+    create_context(system, spec, spec)
 
     assert len(predicates) == 1
     assert len(passthroughs) == 2
@@ -342,7 +434,7 @@ def test_system_record_replay_socket_time():
         server_thread.start()
         ready.wait(timeout=2.0)
 
-        with system.record_context(writer):
+        with record_context(system, writer):
             s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             s.connect(("127.0.0.1", port))
             data = s.recv(64)
@@ -351,7 +443,7 @@ def test_system_record_replay_socket_time():
 
         server_thread.join(timeout=2.0)
 
-        with system.replay_context(writer.reader()):
+        with replay_context(system, writer.reader()):
             s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             s.connect(("127.0.0.1", port))
             data = s.recv(64)
@@ -403,7 +495,7 @@ def test_system_ext_to_int_callback():
     items = [Tracked(3), Tracked(1), Tracked(2)]
 
     # Record — list.sort() is C code, __lt__ fires through the internal gate
-    with system.record_context(writer):
+    with record_context(system, writer):
         items.sort()
 
     assert [t.val for t in items] == [1, 2, 3]
@@ -412,7 +504,7 @@ def test_system_ext_to_int_callback():
 
     # Replay — same sort, __lt__ callbacks should fire again
     items = [Tracked(3), Tracked(1), Tracked(2)]
-    with system.replay_context(writer.reader()):
+    with replay_context(system, writer.reader()):
         items.sort()
 
     assert [t.val for t in items] == [1, 2, 3]
@@ -450,7 +542,7 @@ def test_system_external_method_replays_async_callback_automatically():
 
     writer = MemoryWriter()
 
-    with system.record_context(writer):
+    with record_context(system, writer):
         recorded = Child().run(5)
 
     assert recorded == 11
@@ -459,11 +551,96 @@ def test_system_external_method_replays_async_callback_automatically():
 
     callback_calls.clear()
 
-    with system.replay_context(writer.reader()):
+    with replay_context(system, writer.reader()):
         replayed = Child().run(5)
 
     assert replayed == 11
     assert callback_calls == [5]
+
+
+def test_system_records_dynamic_int_proxy_callback_identity_as_binding_lookup():
+    """Dynamic int-proxy method callbacks record wrapped identity, not raw target.
+
+    An internal object crosses out to an external method, which then calls one
+    of its named methods. The callback fn written in ASYNC_CALL should be the
+    bound wrapped method identity (BindingLookup), not the raw underlying
+    function object.
+    """
+
+    callback_calls = []
+
+    class External:
+        def run(self, callback_obj):
+            return callback_obj.readable() + 1
+
+    class Callback:
+        def readable(self):
+            callback_calls.append("called")
+            return 10
+
+    system = System()
+    system.immutable_types.update({int, str, bytes, bool, type, type(None), float})
+    system.patch_type(External)
+
+    writer = MemoryWriter()
+
+    with record_context(system, writer):
+        recorded = External().run(Callback())
+
+    assert recorded == 11
+    assert callback_calls == ["called"]
+
+    idx = writer.tape.index("ASYNC_CALL")
+    assert "CHECKPOINT" not in writer.tape
+    assert isinstance(writer.tape[idx + 1], BindingLookup)
+
+    callback_calls.clear()
+
+    with replay_context(system, writer.reader()):
+        replayed = External().run(Callback())
+
+    assert replayed == 11
+    assert callback_calls == ["called"]
+
+
+def test_system_records_dynamic_int_proxy_callback_receiver_as_binding_lookup():
+    """Dynamic int-proxy callback args should record by binding lookup too.
+
+    Recording the live proxy receiver object into the in-memory tape reuses the
+    record-phase object during replay, which is especially toxic for stateful
+    objects like ``socket.SocketIO`` that are closed at the end of record.
+    """
+
+    class External:
+        def run(self, callback_obj):
+            return callback_obj.readable() + 1
+
+    class Callback:
+        def __init__(self):
+            self.closed = False
+
+        def readable(self):
+            if self.closed:
+                raise ValueError("closed")
+            return 10
+
+    system = System()
+    system.immutable_types.update({int, str, bytes, bool, type, type(None), float})
+    system.patch_type(External)
+
+    writer = MemoryWriter()
+
+    callback = Callback()
+    with record_context(system, writer):
+        recorded = External().run(callback)
+    callback.closed = True
+
+    assert recorded == 11
+
+    idx = writer.tape.index("ASYNC_CALL")
+    assert isinstance(writer.tape[idx + 1], BindingLookup)
+    assert isinstance(writer.tape[idx + 2], tuple)
+    assert isinstance(writer.tape[idx + 2][0], BindingLookup)
 
 
 def test_system_init_subclass_only_wraps_overrides():
@@ -521,16 +698,16 @@ def test_system_replay_runs_python_subclass_init_for_patched_base():
 
     writer = MemoryWriter()
 
-    with system.record_context(writer):
+    with record_context(system, writer):
         recorded = Child()
 
     assert recorded.child_ran is True
     assert len(writer.tape) == 4
     assert isinstance(writer.tape[0], BindingCreate)
     assert writer.tape[0].index == 0
-    assert writer.tape[1:] == ["SYNC", "RESULT", None]
+    assert writer.tape[1:] == ["CALL", "RESULT", None]
 
-    with system.replay_context(writer.reader()):
+    with replay_context(system, writer.reader()):
         replayed = Child()
 
     assert replayed.child_ran is True
@@ -589,7 +766,7 @@ def test_system_direct_override_call_stays_live_inside_sandbox():
             recorded_results.append(value)
             super().write_result(value)
 
-    with system.record_context(TrackingWriter()):
+    with record_context(system, TrackingWriter()):
         result = Sub().compute()
 
     assert result == 100
@@ -646,7 +823,7 @@ def test_system_ext_int_ext_callback():
             recorded_results.append(a[0] if a else kw.get('result'))
             super().write_result(*a, **kw)
 
-    with system.record_context(TrackingWriter()):
+    with record_context(system, TrackingWriter()):
         obj = Sub()
         result = obj.process()
 
@@ -702,7 +879,7 @@ def test_system_ext_int_ext_callback_should_record_nested_external():
             recorded_results.append(a[0] if a else kw.get("result"))
             super().write_result(*a, **kw)
 
-    with system.record_context(TrackingWriter()):
+    with record_context(system, TrackingWriter()):
         obj = Sub()
         result = obj.process()
 
@@ -737,7 +914,7 @@ def test_system_normalize_checkpoint():
     writer = MemoryWriter()
 
     # Record with normalize — checkpoints are stored
-    with system.record_context(writer, normalize=normalize):
+    with record_context(system, writer, normalize=normalize):
         obj = Base(42)
         val = obj.fetch()
 
@@ -746,7 +923,7 @@ def test_system_normalize_checkpoint():
     assert 'CHECKPOINT' in writer.tape, "normalize should have produced checkpoints"
 
     # Replay with normalize — checkpoints are compared
-    with system.replay_context(writer.reader(), normalize=normalize):
+    with replay_context(system, writer.reader(), normalize=normalize):
         obj = Base(42)
         val = obj.fetch()
 
@@ -776,13 +953,13 @@ def test_system_normalize_skips_direct_call_on_live_override_instance():
     writer = MemoryWriter()
     obj = Sub()
 
-    with system.record_context(writer, normalize=normalize):
+    with record_context(system, writer, normalize=normalize):
         result = obj.compute()
     assert result == 200
     assert writer.tape == []
 
     diverge = True
-    with system.replay_context(writer.reader(), normalize=normalize):
+    with replay_context(system, writer.reader(), normalize=normalize):
         assert obj.compute() == 999
 
 
@@ -817,14 +994,14 @@ def test_system_proxied_return_value():
 
     writer = MemoryWriter()
 
-    with system.record_context(writer):
+    with record_context(system, writer):
         db = Repo()
         result = db.query()
 
     assert result == [1, 2, 3]
     assert len(writer.tape) > 0, "query() result should be recorded"
 
-    with system.replay_context(writer.reader()):
+    with replay_context(system, writer.reader()):
         db = Repo()
         result2 = db.query()
 
@@ -855,7 +1032,7 @@ def test_system_error_replay():
 
     writer = MemoryWriter()
 
-    with system.record_context(writer):
+    with record_context(system, writer):
         svc = MyService()
         try:
             svc.fail()
@@ -866,7 +1043,7 @@ def test_system_error_replay():
     assert recorded_msg == "service down"
     assert 'ERROR' in writer.tape, "exception should be recorded"
 
-    with system.replay_context(writer.reader()):
+    with replay_context(system, writer.reader()):
         svc = MyService()
         try:
             svc.fail()
@@ -904,7 +1081,7 @@ def test_system_error_then_success():
 
     writer = MemoryWriter()
 
-    with system.record_context(writer):
+    with record_context(system, writer):
         obj = MyFlaky()
         try:
             obj.attempt()
@@ -916,7 +1093,7 @@ def test_system_error_then_success():
 
     # Replay — counter does NOT advance, values come from stream
     call_count = 0
-    with system.replay_context(writer.reader()):
+    with replay_context(system, writer.reader()):
         obj = MyFlaky()
         try:
             obj.attempt()
@@ -952,13 +1129,13 @@ def test_system_direct_instantiation_inside_context():
 
     writer = MemoryWriter()
 
-    with system.record_context(writer):
+    with record_context(system, writer):
         s = Sensor(42)
         val = s.read()
 
     assert val == 42
 
-    with system.replay_context(writer.reader()):
+    with replay_context(system, writer.reader()):
         s = Sensor(42)
         val2 = s.read()
 
@@ -983,7 +1160,7 @@ def test_system_multiple_patch_functions():
 
     writer = MemoryWriter()
 
-    with system.record_context(writer):
+    with record_context(system, writer):
         t1 = patched_time()
         m1 = patched_mono()
         t2 = patched_time()
@@ -992,7 +1169,7 @@ def test_system_multiple_patch_functions():
     assert t1 <= t2
     assert m1 <= m2
 
-    with system.replay_context(writer.reader()):
+    with replay_context(system, writer.reader()):
         t1_r = patched_time()
         m1_r = patched_mono()
         t2_r = patched_time()
@@ -1043,7 +1220,7 @@ def test_system_deep_proxy_chain():
     writer = MemoryWriter()
     obj = MyOuter()
 
-    with system.record_context(writer):
+    with record_context(system, writer):
         mid = obj.make()
         inner = mid.descend()
         val = inner.value()
@@ -1051,7 +1228,7 @@ def test_system_deep_proxy_chain():
     assert val == 11
 
     obj = MyOuter()
-    with system.replay_context(writer.reader()):
+    with replay_context(system, writer.reader()):
         mid_r = obj.make()
         inner_r = mid_r.descend()
         val_r = inner_r.value()
@@ -1094,7 +1271,7 @@ def test_system_proxied_multiple_methods():
     writer = MemoryWriter()
     f = MyFactory()
 
-    with system.record_context(writer):
+    with record_context(system, writer):
         box = f.create(7)
         v1 = box.get()
         v2 = box.get()
@@ -1107,7 +1284,7 @@ def test_system_proxied_multiple_methods():
     assert dbl == 14
 
     f = MyFactory()
-    with system.replay_context(writer.reader()):
+    with replay_context(system, writer.reader()):
         box_r = f.create(7)
         v1_r = box_r.get()
         v2_r = box_r.get()
@@ -1152,7 +1329,7 @@ def test_system_immutable_passthrough():
     writer = MemoryWriter()
     c = MyCalc()
 
-    with system.record_context(writer):
+    with record_context(system, writer):
         i = c.add(3, 4)
         s = c.name()
         b = c.data()
@@ -1162,7 +1339,7 @@ def test_system_immutable_passthrough():
     assert b == b"raw" and type(b) is bytes
 
     c = MyCalc()
-    with system.replay_context(writer.reader()):
+    with replay_context(system, writer.reader()):
         i_r = c.add(3, 4)
         s_r = c.name()
         b_r = c.data()
@@ -1200,7 +1377,7 @@ def test_system_disable_for():
 
     writer = MemoryWriter()
 
-    with system.record_context(writer):
+    with record_context(system, writer):
         obj = MyLogger()
         # Normal patched call — goes through adapter, recorded
         r1 = obj.log("recorded")
@@ -1250,7 +1427,7 @@ def test_system_patch_function():
 
     writer = MemoryWriter()
 
-    with system.record_context(writer):
+    with record_context(system, writer):
         recorded = patched()
 
     assert recorded == 3
@@ -1258,7 +1435,7 @@ def test_system_patch_function():
 
     # Replay — counter should NOT advance
     old_counter = counter
-    with system.replay_context(writer.reader()):
+    with replay_context(system, writer.reader()):
         replayed = patched()
 
     assert replayed == 3, f"replay should return 3, got {replayed}"
@@ -1286,7 +1463,7 @@ def test_system_none_return():
     writer = MemoryWriter()
     obj = MyVoid()
 
-    with system.record_context(writer):
+    with record_context(system, writer):
         r1 = obj.noop()
         r2 = obj.noop()
 
@@ -1294,7 +1471,7 @@ def test_system_none_return():
     assert r2 is None
 
     obj = MyVoid()
-    with system.replay_context(writer.reader()):
+    with replay_context(system, writer.reader()):
         r1_r = obj.noop()
         r2_r = obj.noop()
 
@@ -1342,7 +1519,7 @@ def test_system_interleaved_patched_types():
     c = MyClock()
     n = MyCounter()
 
-    with system.record_context(writer):
+    with record_context(system, writer):
         t1 = c.tick()
         n1 = n.inc()
         t2 = c.tick()
@@ -1352,7 +1529,7 @@ def test_system_interleaved_patched_types():
 
     c = MyClock()
     n = MyCounter()
-    with system.replay_context(writer.reader()):
+    with replay_context(system, writer.reader()):
         t1_r = c.tick()
         n1_r = n.inc()
         t2_r = c.tick()
@@ -1364,7 +1541,7 @@ def test_system_interleaved_patched_types():
 # ── Stack trace tests ─────────────────────────────────────────
 
 def test_system_record_with_stacktraces():
-    """record_context(stacktraces=True) writes STACKTRACE handle messages."""
+    """record_context(stacktraces=True) writes StacktraceMessage entries."""
     system = System()
     system.immutable_types.update({int, str, float, bytes, bool, type(None)})
 
@@ -1376,21 +1553,36 @@ def test_system_record_with_stacktraces():
 
     system.patch_type(Clock)
 
-    with system.record_context(writer, stacktraces=True):
+    with record_context(system, writer, stacktraces=True):
         c = Clock()
         result = c.tick()
 
     assert result == 42
 
-    # Verify STACKTRACE handle messages were written to the tape
-    stack_messages = [m for m in writer.tape if isinstance(m, HandleMessage) and m.name == 'STACKTRACE']
-    assert len(stack_messages) > 0, "Expected at least one STACKTRACE handle message"
+    stack_messages = [m for m in writer.tape if isinstance(m, StacktraceMessage)]
+    assert len(stack_messages) > 0, "Expected at least one StacktraceMessage"
 
-    # Each stack delta should be a (pop_count, frames_to_add) tuple
     for msg in stack_messages:
-        pop_count, frames = msg.value
-        assert isinstance(pop_count, int)
-        assert isinstance(frames, tuple)
+        assert isinstance(msg.stacktrace, tuple)
+
+
+def test_system_bind_writes_stacktrace_before_binding_when_enabled():
+    """Object binds emit a preceding StacktraceMessage when enabled."""
+    system = System()
+
+    sf = utils.StackFactory()
+    writer = MemoryWriter(stackfactory=sf)
+
+    class Patched:
+        pass
+
+    system.patch_type(Patched)
+
+    with record_context(system, writer, stacktraces=True):
+        obj = Patched()
+
+    assert isinstance(writer.tape[0], StacktraceMessage)
+    assert isinstance(writer.tape[1], BindingCreate)
 
 
 def test_system_stacktraces_disabled_by_default():
@@ -1406,23 +1598,28 @@ def test_system_stacktraces_disabled_by_default():
 
     system.patch_type(Clock)
 
-    with system.record_context(writer):
+    with record_context(system, writer):
         c = Clock()
         result = c.tick()
 
     assert result == 42
 
-    stack_messages = [m for m in writer.tape if isinstance(m, HandleMessage)]
+    stack_messages = [m for m in writer.tape if isinstance(m, StacktraceMessage)]
     assert len(stack_messages) == 0
 
 
-def test_system_stacktraces_replay_skips_handles():
-    """Replay correctly skips HandleMessage entries on the tape."""
+def test_system_stacktraces_replay_skips_messages():
+    """Replay correctly skips StacktraceMessage entries on the tape."""
     system = System()
     system.immutable_types.update({int, str, float, bytes, bool, type(None)})
 
-    sf = utils.StackFactory()
-    writer = MemoryWriter(stackfactory=sf)
+    delta = (0, ((("/tmp/replay_stack.py", 10),),))
+
+    class ConstantStackFactory:
+        def delta(self):
+            return delta
+
+    writer = MemoryWriter(stackfactory=ConstantStackFactory())
 
     class Clock:
         def tick(self): return 42
@@ -1430,7 +1627,7 @@ def test_system_stacktraces_replay_skips_handles():
 
     system.patch_type(Clock)
 
-    with system.record_context(writer, stacktraces=True):
+    with record_context(system, writer, stacktraces=True):
         c = Clock()
         r1 = c.tick()
         r2 = c.tock()
@@ -1438,12 +1635,11 @@ def test_system_stacktraces_replay_skips_handles():
     assert r1 == 42
     assert r2 == 99
 
-    # Verify handles are present
-    stack_messages = [m for m in writer.tape if isinstance(m, HandleMessage)]
+    stack_messages = [m for m in writer.tape if isinstance(m, StacktraceMessage)]
     assert len(stack_messages) > 0
 
     # Replay should work correctly despite the HandleMessage entries
-    with system.replay_context(writer.reader()):
+    with replay_context(system, writer.reader(stacktrace_factory=ConstantStackFactory())):
         c2 = Clock()
         r1_replay = c2.tick()
         r2_replay = c2.tock()
@@ -1466,20 +1662,19 @@ def test_system_stacktraces_exclude():
 
     system.patch_type(Clock)
 
-    with system.record_context(writer, stacktraces=True):
+    with record_context(system, writer, stacktraces=True):
         c = Clock()
         result = c.tick()
 
     assert result == 42
 
     # Check that no stack frame references the excluded function
-    stack_messages = [m for m in writer.tape if isinstance(m, HandleMessage) and m.name == 'STACKTRACE']
+    stack_messages = [m for m in writer.tape if isinstance(m, StacktraceMessage)]
     assert len(stack_messages) > 0
 
     for msg in stack_messages:
-        _pop_count, frames = msg.value
-        for frame in frames:
-            assert frame.func is not test_system_stacktraces_exclude
+        for filename, _lineno in msg.stacktrace:
+            assert "test_system_stacktraces_exclude" not in filename
 
 
 # ---------------------------------------------------------------------------
@@ -1528,7 +1723,7 @@ def test_factory_function_replay_preserves_proxy():
 
     # ── Record ──
     call_count = 0
-    with system.record_context(writer):
+    with record_context(system, writer):
         conn = patched_connect("db://test")
         r1 = conn.execute("SELECT 1")
         r2 = conn.execute("SELECT 2")
@@ -1540,7 +1735,7 @@ def test_factory_function_replay_preserves_proxy():
 
     # ── Replay ──
     call_count = 0
-    with system.replay_context(writer.reader()):
+    with replay_context(system, writer.reader()):
         conn_r = patched_connect("db://test")
         r1_r = conn_r.execute("SELECT 1")
         r2_r = conn_r.execute("SELECT 2")
@@ -1593,14 +1788,14 @@ def test_system_callback_raises():
 
     writer = MemoryWriter()
 
-    with system.record_context(writer):
+    with record_context(system, writer):
         obj = Sub()
         result = obj.api()
 
     assert result == 99  # -1 + 100
 
     error_log.clear()
-    with system.replay_context(writer.reader()):
+    with replay_context(system, writer.reader()):
         obj = Sub()
         replayed = obj.api()
 
@@ -1648,7 +1843,7 @@ def test_system_different_result_types():
 
     writer = MemoryWriter()
 
-    with system.record_context(writer):
+    with record_context(system, writer):
         shop = MyShop()
         d = shop.adopt("dog")
         dog_speak = d.speak()
@@ -1659,7 +1854,7 @@ def test_system_different_result_types():
     assert cat_speak == "meow from cat-2"
 
     call_count = 0
-    with system.replay_context(writer.reader()):
+    with replay_context(system, writer.reader()):
         shop = MyShop()
         d_r = shop.adopt("dog")
         dog_speak_r = d_r.speak()
@@ -1684,12 +1879,12 @@ def test_system_proxy_time_roundtrip():
     patched = system.patch_function(time.time)
     writer = MemoryWriter()
 
-    with system.record_context(writer):
+    with record_context(system, writer):
         recorded = patched()
 
     assert isinstance(recorded, float)
 
-    with system.replay_context(writer.reader()):
+    with replay_context(system, writer.reader()):
         replayed = patched()
 
     assert replayed == recorded
@@ -1703,14 +1898,14 @@ def test_system_proxy_multiple_sequential_calls():
     patched = system.patch_function(time.time)
     writer = MemoryWriter()
 
-    with system.record_context(writer):
+    with record_context(system, writer):
         r1 = patched()
         r2 = patched()
         r3 = patched()
 
     assert r1 <= r2 <= r3
 
-    with system.replay_context(writer.reader()):
+    with replay_context(system, writer.reader()):
         p1 = patched()
         p2 = patched()
         p3 = patched()
@@ -1739,7 +1934,7 @@ def test_system_factory_returns_object():
     patched = system.patch_function(make_box)
     writer = MemoryWriter()
 
-    with system.record_context(writer):
+    with record_context(system, writer):
         box = patched(42)
         val = box.get()
         lbl = box.label()
@@ -1747,7 +1942,7 @@ def test_system_factory_returns_object():
     assert val == 42
     assert lbl == "box-42"
 
-    with system.replay_context(writer.reader()):
+    with replay_context(system, writer.reader()):
         box_r = patched(42)
         val_r = box_r.get()
         lbl_r = box_r.label()
@@ -1783,7 +1978,7 @@ def test_system_factory_two_hop_proxy():
     patched = system.patch_function(make_pair)
     writer = MemoryWriter()
 
-    with system.record_context(writer):
+    with record_context(system, writer):
         pair = patched(10, 20)
         first = pair.first()
         v1 = first.get()
@@ -1793,7 +1988,7 @@ def test_system_factory_two_hop_proxy():
     assert v1 == 10
     assert v2 == 20
 
-    with system.replay_context(writer.reader()):
+    with replay_context(system, writer.reader()):
         pair_r = patched(10, 20)
         first_r = pair_r.first()
         v1_r = first_r.get()
@@ -1824,7 +2019,7 @@ def test_system_factory_interleaved_objects():
     patched = system.patch_function(make_box)
     writer = MemoryWriter()
 
-    with system.record_context(writer):
+    with record_context(system, writer):
         a = patched(100)
         b = patched(200)
         va = a.get()
@@ -1837,7 +2032,7 @@ def test_system_factory_interleaved_objects():
     assert la == "box-100"
     assert lb == "box-200"
 
-    with system.replay_context(writer.reader()):
+    with replay_context(system, writer.reader()):
         a_r = patched(100)
         b_r = patched(200)
         va_r = a_r.get()
@@ -1873,7 +2068,7 @@ def test_system_mixed_immutable_and_mutable():
     make = system.patch_function(make_box)
     writer = MemoryWriter()
 
-    with system.record_context(writer):
+    with record_context(system, writer):
         t1 = clock()
         box = make(42)
         t2 = clock()
@@ -1884,7 +2079,7 @@ def test_system_mixed_immutable_and_mutable():
     assert val == 42
     assert lbl == "box-42"
 
-    with system.replay_context(writer.reader()):
+    with replay_context(system, writer.reader()):
         t1_r = clock()
         box_r = make(42)
         t2_r = clock()
@@ -1909,7 +2104,7 @@ def test_system_error_replayed_standalone():
     patched = system.patch_function(always_raises)
     writer = MemoryWriter()
 
-    with system.record_context(writer):
+    with record_context(system, writer):
         try:
             patched("boom")
             assert False, "should have raised"
@@ -1918,7 +2113,7 @@ def test_system_error_replayed_standalone():
 
     assert recorded_msg == "boom"
 
-    with system.replay_context(writer.reader()):
+    with replay_context(system, writer.reader()):
         try:
             patched("boom")
             assert False, "should have raised on replay"
@@ -1941,14 +2136,14 @@ def test_system_error_then_success_standalone():
     clock = system.patch_function(time.time)
     writer = MemoryWriter()
 
-    with system.record_context(writer):
+    with record_context(system, writer):
         try:
             raises("fail")
         except ValueError:
             pass
         t = clock()
 
-    with system.replay_context(writer.reader()):
+    with replay_context(system, writer.reader()):
         try:
             raises("fail")
         except ValueError:

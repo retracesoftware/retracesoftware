@@ -38,3 +38,46 @@ def test_weakset_non_weakrefable_objects_fallback_to_strong_refs():
     gc.collect()
 
     assert len(weakset) == 1
+
+
+def test_weakset_tracks_insertion_index_and_order_for_mixed_entries():
+    class Weakrefable:
+        pass
+
+    class NonWeakrefable:
+        __slots__ = ()
+
+    weak = Weakrefable()
+    strong = NonWeakrefable()
+    weak2 = Weakrefable()
+
+    weakset = utils.WeakSet()
+    assert weakset.add(weak) is True
+    assert weakset.add(strong) is True
+    assert weakset.add(weak2) is True
+
+    assert weakset.index(weak) == 0
+    assert weakset.index(strong) == 1
+    assert weakset.index(weak2) == 2
+    assert weakset.ordered() == (weak, strong, weak2)
+
+
+def test_weakset_ordered_snapshot_skips_evicted_entries_but_preserves_order():
+    class Weakrefable:
+        pass
+
+    first = Weakrefable()
+    second = Weakrefable()
+    third = Weakrefable()
+
+    weakset = utils.WeakSet()
+    assert weakset.add(first) is True
+    assert weakset.add(second) is True
+    assert weakset.add(third) is True
+
+    del second
+    gc.collect()
+
+    assert weakset.ordered() == (first, third)
+    assert weakset.index(first) == 0
+    assert weakset.index(third) == 2

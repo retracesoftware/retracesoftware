@@ -35,6 +35,18 @@ namespace retracesoftware_stream {
         return reinterpret_cast<PyObject*>(self);
     }
 
+    static PyObject* binding_ref_tp_new(PyTypeObject* type, PyObject* args, PyObject* kwargs) {
+        static char* kwlist[] = {
+            const_cast<char*>("index"),
+            nullptr,
+        };
+        unsigned long long index = 0;
+        if (!PyArg_ParseTupleAndKeywords(args, kwargs, "K", kwlist, &index)) {
+            return nullptr;
+        }
+        return binding_ref_new(type, static_cast<uint64_t>(index));
+    }
+
     PyTypeObject BindingRef_Type = {
         .ob_base = PyVarObject_HEAD_INIT(NULL, 0)
         .tp_name = MODULE "BindingRef",
@@ -45,7 +57,7 @@ namespace retracesoftware_stream {
         .tp_doc = "Base type for tape binding reference records.",
         .tp_members = binding_ref_members,
         .tp_repr = (reprfunc)binding_ref_repr,
-        .tp_new = PyType_GenericNew,
+        .tp_new = binding_ref_tp_new,
     };
 
     PyTypeObject BindingRefCreate_Type = {
@@ -59,7 +71,7 @@ namespace retracesoftware_stream {
         .tp_members = binding_ref_members,
         .tp_repr = (reprfunc)binding_ref_repr,
         .tp_base = &BindingRef_Type,
-        .tp_new = PyType_GenericNew,
+        .tp_new = binding_ref_tp_new,
     };
 
     PyTypeObject BindingRefLookup_Type = {
@@ -73,7 +85,7 @@ namespace retracesoftware_stream {
         .tp_members = binding_ref_members,
         .tp_repr = (reprfunc)binding_ref_repr,
         .tp_base = &BindingRef_Type,
-        .tp_new = PyType_GenericNew,
+        .tp_new = binding_ref_tp_new,
     };
 
     PyTypeObject BindingRefDelete_Type = {
@@ -87,7 +99,7 @@ namespace retracesoftware_stream {
         .tp_members = binding_ref_members,
         .tp_repr = (reprfunc)binding_ref_repr,
         .tp_base = &BindingRef_Type,
-        .tp_new = PyType_GenericNew,
+        .tp_new = binding_ref_tp_new,
     };
 
 }

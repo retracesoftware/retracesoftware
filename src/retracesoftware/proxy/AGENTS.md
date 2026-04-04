@@ -54,7 +54,7 @@ the `System`-based implementation used by the current top-level runtime.
   active gates while reconstructing proxyable objects.
 - File-backed replay and in-memory replay share the same semantics but use
   different plumbing. Keep both paths in mind when changing thread or message logic.
-- Proxyable external objects may be stored as `StubRef` metadata and recreated
+- Proxyable external objects may be recorded as lightweight proxy metadata and recreated
   through replay-side materialization. Do not "simplify" this without tracing
   the object-identity consequences.
 - Wrapped arguments seen inside external method bodies are part of the contract.

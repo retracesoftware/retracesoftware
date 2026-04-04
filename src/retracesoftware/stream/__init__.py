@@ -522,7 +522,6 @@ class ObjectWriter:
         if isinstance(queue, getattr(_backend_mod, "Queue")):
             self._native = _backend_mod.ObjectWriter(
                 queue,
-                utils.ExternalWrapped,
                 verbose=verbose,
                 quit_on_error=quit_on_error,
             )
@@ -744,7 +743,8 @@ class writer(_backend_mod.ObjectWriter):
                  queue_capacity=None,
                  quit_on_error=False,
                  serialize_errors=True,
-                 validate_bindings=False):
+                 validate_bindings=False,
+                 intern_serializer=None):
 
         if format not in {"binary", "unframed_binary", "json"}:
             raise ValueError(f"unsupported writer format: {format!r}")
@@ -788,6 +788,7 @@ class writer(_backend_mod.ObjectWriter):
                 output = _backend_mod.Persister(
                     fw,
                     serializer=self.serialize,
+                    intern_serializer=intern_serializer,
                 )
             else:
                 output = JsonPersister(
@@ -824,7 +825,7 @@ class writer(_backend_mod.ObjectWriter):
         if quit_on_error:
             kwargs['quit_on_error'] = quit_on_error
 
-        super().__init__(self._queue, utils.ExternalWrapped, **kwargs)
+        super().__init__(self._queue, **kwargs)
 
         if path is not None:
             self.path = path
@@ -865,11 +866,6 @@ class writer(_backend_mod.ObjectWriter):
         serializer = self.type_serializer.get(type(obj))
         if serializer is not None:
             return serializer(obj)
-
-        if utils.is_wrapped(obj):
-            from retracesoftware.proxy.stubfactory import StubRef
-
-            return StubRef(type(utils.unwrap(obj)))
 
         return pickle.dumps(obj)
 
@@ -1015,7 +1011,6 @@ class reader1(_backend_mod.ObjectStreamReader):
             deserialize=self.deserialize,
             stub_factory=self._call_stub_factory,
             on_thread_switch=ThreadSwitch,
-            create_stack_delta=lambda to_drop, frames: None,
             read_timeout=read_timeout,
             verbose=verbose,
             on_heartbeat=Heartbeat,
@@ -1050,7 +1045,6 @@ class TapeReader(_backend_mod.TapeReader):
         super().__init__(
             path=str(path),
             deserialize=self.deserialize,
-            create_stack_delta=lambda to_drop, frames: None,
             on_thread_switch=ThreadSwitch,
             read_timeout=read_timeout,
             verbose=verbose,

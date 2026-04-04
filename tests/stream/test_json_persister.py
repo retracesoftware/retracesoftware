@@ -58,21 +58,10 @@ lock.release()
     return _read_json_lines(trace_path)
 
 
-def _assert_thread_lock_proxy_events(events, *, expect_stubref):
-    serialized_stubrefs = [
-        event
-        for event in events
-        if event["event"] == "object"
-        and isinstance(event.get("value"), dict)
-        and event["value"].get("kind") == "serialized"
-        and isinstance(event["value"].get("value"), dict)
-        and event["value"]["value"].get("type") == "retracesoftware.proxy.stubfactory.StubRef"
-    ]
+def _assert_thread_lock_proxy_events(events):
     true_results = [event for event in events if event["event"] == "object" and event.get("value") is True]
     none_results = [event for event in events if event["event"] == "object" and event.get("value") is None]
 
-    if expect_stubref:
-        assert serialized_stubrefs, "expected proxied _thread lock allocation to record a serialized StubRef"
     assert len(true_results) >= 2, "expected acquire() calls to record True results"
     assert len(none_results) >= 2, "expected release() calls to record None results"
 
@@ -149,7 +138,7 @@ def test_json_persister_records_thread_lock_proxy_events(tmp_path):
         script_name="thread_lock_script.py",
         trace_name="thread_lock_trace.jsonl",
     )
-    _assert_thread_lock_proxy_events(events, expect_stubref=True)
+    _assert_thread_lock_proxy_events(events)
 
 def test_json_persister_records_thread_rlock_proxy_events(tmp_path):
     events = _record_thread_lock_trace(
@@ -158,4 +147,4 @@ def test_json_persister_records_thread_rlock_proxy_events(tmp_path):
         script_name="thread_rlock_script.py",
         trace_name="thread_rlock_trace.jsonl",
     )
-    _assert_thread_lock_proxy_events(events, expect_stubref=False)
+    _assert_thread_lock_proxy_events(events)

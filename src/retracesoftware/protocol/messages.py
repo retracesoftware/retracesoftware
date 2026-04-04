@@ -5,6 +5,12 @@ layer. They are intentionally small transport-neutral containers.
 """
 
 
+class StacktraceMessage:
+    __slots__ = ("stacktrace",)
+
+    def __init__(self, stacktrace):
+        self.stacktrace = stacktrace
+
 class ResultMessage:
     __slots__ = ("result",)
 

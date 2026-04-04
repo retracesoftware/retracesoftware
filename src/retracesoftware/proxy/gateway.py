@@ -150,6 +150,7 @@ def record_context(gates : Gates, bind):
     return create_context(
         gates = gates,
         sync = sync,
+        checkpoint = checkpoint,
         int_proxytype = int_proxytype,
         ext_proxytype = ext_proxytype,
         on_int_call = on_int_call, 

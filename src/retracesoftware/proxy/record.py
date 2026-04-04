@@ -8,7 +8,7 @@ from retracesoftware.proxy.proxysystem import ProxySystem
 from retracesoftware.proxy.thread import write_thread_switch, ThreadSwitch, thread_id
 from retracesoftware.install.tracer import Tracer
 from retracesoftware.install.patchfindspec import patch_find_spec
-from retracesoftware.proxy.stubfactory import StubRef, ExtendedRef
+from retracesoftware.proxy.stubfactory import ExtendedRef
 from retracesoftware.proxy.globalref import GlobalRef
 
 import sys
@@ -151,13 +151,22 @@ class RecordProxySystem(ProxySystem):
         self.extended_types = {}
 
         sync_handle = self.writer.handle('SYNC')
+        write_call_handle = self.writer.handle('CALL')
 
-        self.on_ext_call = functional.lazy(utils.runall(maybe_collect, sync_handle) if maybe_collect else sync_handle) 
+        self.on_ext_call = functional.lazy(
+            utils.runall(maybe_collect, write_call_handle)
+            if maybe_collect else write_call_handle
+        )
 
         write_sync = thread_state.dispatch(utils.noop, internal = functional.lazy(sync_handle))
+        write_call = thread_state.dispatch(
+            utils.noop, internal=functional.lazy(write_call_handle)
+        )
 
         self.sync = lambda function: \
             utils.observer(on_call = write_sync, function = function)
+        self.write_call = lambda function: \
+            utils.observer(on_call = write_call, function = function)
         error = self.writer.handle('ERROR')
 
         def write_error(cls, val, traceback):
@@ -214,12 +223,29 @@ class RecordProxySystem(ProxySystem):
                          immutable_types = immutable_types)
 
     def ext_proxytype(self, cls):
-        
-        proxytype = super().ext_proxytype(cls)
+        return super().ext_proxytype(cls)
 
-        ref = self.writer.handle(StubRef(proxytype))
+from retracesoftware.proxy.system import System, CallHooks, LifecycleHooks
 
-        self.writer.type_serializer[proxytype] = functional.constantly(ref)
+def record_context(system: System, writer: Writer, debug: bool = False, stacktraces: bool = False, on_start: None | Callable = None, on_end: None | Callable = None):
 
-        return proxytype
+    for bound in system.is_bound.ordered():
+        writer.bind(bound)
 
+    return system.context(
+        internal_hooks = CallHooks(
+            on_call = writer.write_call,
+            on_result = writer.checkpoint,
+            on_error = writer.checkpoint,
+        ),
+        external_hooks = CallHooks(
+            on_call = writer.checkpoint,
+            on_result = writer.write_result,
+            on_error = writer.write_error,
+        ),
+        lifecycle_hooks = LifecycleHooks(
+            on_start = writer.context_start,
+            on_end = writer.context_end,
+        ),
+        on_bind = writer.bind,
+    )

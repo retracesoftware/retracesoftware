@@ -6,6 +6,7 @@ directives to a module namespace and that record/replay works end-to-end.
 """
 import time
 
+from retracesoftware.proxy.contexts import record_context, replay_context
 from retracesoftware.proxy.system import System
 from retracesoftware.install.patcher import patch
 from retracesoftware.proxy.messagestream import MemoryWriter
@@ -32,7 +33,7 @@ def test_patch_proxy_type_record_replay():
 
     writer = MemoryWriter()
 
-    with system.record_context(writer):
+    with record_context(system, writer):
         obj = Timer()
         t = obj.now()
 
@@ -106,12 +107,12 @@ def test_patch_combined_spec():
     writer = MemoryWriter()
     obj = NetType()
 
-    with system.record_context(writer):
+    with record_context(system, writer):
         result = obj.connect('localhost')
 
     assert result == 'connected to localhost'
 
-    with system.replay_context(writer.reader()):
+    with replay_context(system, writer.reader()):
         result2 = obj.connect('localhost')
 
     assert result2 == result
@@ -143,7 +144,7 @@ def test_unbound_instance_passthrough():
     unbound = Sensor()
     writer = MemoryWriter()
 
-    with system.record_context(writer):
+    with record_context(system, writer):
         result = unbound.read()
 
     assert result == 42, "unbound instance should call real method"
@@ -171,7 +172,7 @@ def test_bound_instance_recorded():
 
     writer = MemoryWriter()
 
-    with system.record_context(writer):
+    with record_context(system, writer):
         bound = Sensor()
         result = bound.read()
 
@@ -205,7 +206,7 @@ def test_mixed_bound_and_unbound_patched_args_passthrough():
     live = Sensor("live")
     writer = MemoryWriter()
 
-    with system.record_context(writer):
+    with record_context(system, writer):
         bound = Sensor("bound")
         tape_before_call = len(writer.tape)
         result = bound.combine(live)
@@ -239,7 +240,7 @@ def test_mixed_bound_and_unbound_unhashable_patched_args_passthrough():
     live = Sensor("live")
     writer = MemoryWriter()
 
-    with system.record_context(writer):
+    with record_context(system, writer):
         bound = Sensor("bound")
         tape_before_call = len(writer.tape)
         result = bound.combine(live)
@@ -292,7 +293,7 @@ def test_pathparam_predicate_false_returns_unbound():
 
     writer = MemoryWriter()
 
-    with system.record_context(writer):
+    with record_context(system, writer):
         # Path NOT on whitelist → predicate returns False → passthrough
         f = fake_module['open'](file='/tmp/foo.txt')
         data = f.read()
@@ -339,7 +340,7 @@ def test_pathparam_predicate_true_returns_bound():
 
     writer = MemoryWriter()
 
-    with system.record_context(writer):
+    with record_context(system, writer):
         # Path ON whitelist → predicate returns True → retraced
         f = fake_module['open'](file='/dev/null')
         data = f.read()
@@ -379,7 +380,7 @@ def test_patch_proxy_function_record_replay():
     writer = MemoryWriter()
 
     # Record — get_count goes through the gate, result is stored
-    with system.record_context(writer):
+    with record_context(system, writer):
         recorded = fake_module['get_count']()
 
     assert recorded == 3
@@ -387,7 +388,7 @@ def test_patch_proxy_function_record_replay():
 
     # Replay — get_count returns stored value, counter does NOT advance
     old_counter = counter
-    with system.replay_context(writer.reader()):
+    with replay_context(system, writer.reader()):
         replayed = fake_module['get_count']()
 
     assert replayed == recorded, f"replay should return {recorded}, got {replayed}"

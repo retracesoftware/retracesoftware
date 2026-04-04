@@ -15,6 +15,75 @@ namespace retracesoftware {
         vectorcallfunc vectorcall;
     };
 
+    static int set_callable_member(
+        PyObject ** slot,
+        PyObject * value,
+        const char * name,
+        bool allow_none
+    ) {
+        if (value == nullptr) {
+            PyErr_Format(PyExc_AttributeError, "cannot delete %s", name);
+            return -1;
+        }
+
+        PyObject * normalized = value;
+        if (normalized == Py_None) {
+            if (!allow_none) {
+                PyErr_Format(PyExc_TypeError, "%s must be callable, got None", name);
+                return -1;
+            }
+            normalized = nullptr;
+        } else if (!PyCallable_Check(normalized)) {
+            PyErr_Format(PyExc_TypeError, "%s must be callable or None, got %S", name, value);
+            return -1;
+        }
+
+        PyObject * next = normalized ? Py_NewRef(normalized) : nullptr;
+        Py_XDECREF(*slot);
+        *slot = next;
+        return 0;
+    }
+
+    static PyObject * get_function(Observer * self, void * closure) {
+        return Py_NewRef(self->func);
+    }
+
+    static int set_function(Observer * self, PyObject * value, void * closure) {
+        if (set_callable_member(&self->func, value, "function", false) < 0) {
+            return -1;
+        }
+        self->func_vectorcall = extract_vectorcall(self->func);
+        return 0;
+    }
+
+    static PyObject * get_on_call(Observer * self, void * closure) {
+        return self->on_call ? Py_NewRef(self->on_call) : Py_NewRef(Py_None);
+    }
+
+    static int set_on_call(Observer * self, PyObject * value, void * closure) {
+        return set_callable_member(&self->on_call, value, "on_call", true);
+    }
+
+    static PyObject * get_on_result(Observer * self, void * closure) {
+        return self->on_result ? Py_NewRef(self->on_result) : Py_NewRef(Py_None);
+    }
+
+    static int set_on_result(Observer * self, PyObject * value, void * closure) {
+        if (set_callable_member(&self->on_result, value, "on_result", true) < 0) {
+            return -1;
+        }
+        self->on_result_vectorcall = self->on_result ? extract_vectorcall(self->on_result) : nullptr;
+        return 0;
+    }
+
+    static PyObject * get_on_error(Observer * self, void * closure) {
+        return self->on_error ? Py_NewRef(self->on_error) : Py_NewRef(Py_None);
+    }
+
+    static int set_on_error(Observer * self, PyObject * value, void * closure) {
+        return set_callable_member(&self->on_error, value, "on_error", true);
+    }
+
     static inline bool call_void(vectorcallfunc vectorcall, PyObject * callable, PyObject* const * args, size_t nargsf, PyObject* kwnames) {
         assert (!PyErr_Occurred());
 
@@ -77,6 +146,7 @@ namespace retracesoftware {
     }
 
     static int traverse(Observer* self, visitproc visit, void* arg) {
+        Py_VISIT(self->func);
         Py_VISIT(self->on_call);
         Py_VISIT(self->on_result);
         Py_VISIT(self->on_error);
@@ -85,6 +155,7 @@ namespace retracesoftware {
     }
 
     static int clear(Observer* self) {
+        Py_CLEAR(self->func);
         Py_CLEAR(self->on_call);
         Py_CLEAR(self->on_result);
         Py_CLEAR(self->on_error);
@@ -140,11 +211,11 @@ namespace retracesoftware {
         return 0;
     }
 
-    static PyMemberDef members[] = {
-        {"on_call", T_OBJECT, OFFSET_OF_MEMBER(Observer, on_call), READONLY, "TODO"},
-        {"on_result", T_OBJECT, OFFSET_OF_MEMBER(Observer, on_result), READONLY, "TODO"},
-        {"on_error", T_OBJECT, OFFSET_OF_MEMBER(Observer, on_error), READONLY, "TODO"},
-        {"function", T_OBJECT, OFFSET_OF_MEMBER(Observer, func), READONLY, "TODO"},
+    static PyGetSetDef getset[] = {
+        {"function", (getter)get_function, (setter)set_function, "wrapped function", NULL},
+        {"on_call", (getter)get_on_call, (setter)set_on_call, "call hook", NULL},
+        {"on_result", (getter)get_on_result, (setter)set_on_result, "result hook", NULL},
+        {"on_error", (getter)get_on_error, (setter)set_on_error, "error hook", NULL},
         {NULL}  /* Sentinel */
     };
 
@@ -168,7 +239,7 @@ namespace retracesoftware {
         .tp_traverse = (traverseproc)traverse,
         .tp_clear = (inquiry)clear,
         // .tp_methods = methods,
-        .tp_members = members,
+        .tp_getset = getset,
         .tp_descr_get = tp_descr_get,
         .tp_init = (initproc)init,
         .tp_new = PyType_GenericNew,
