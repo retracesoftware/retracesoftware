@@ -1,4 +1,5 @@
 from retracesoftware.install.patcher import patch
+from retracesoftware.install.installation import Installation
 from retracesoftware.proxy.system import System, _run_with_replay
 
 
@@ -16,7 +17,11 @@ def test_patch_registers_replay_materialize_callables_and_undoes():
         "allocate_lock": allocate_lock,
         "MemoryBIO": MemoryBIO,
     }
-    undo = patch(namespace, {"replay_materialize": ["allocate_lock", "MemoryBIO"]}, system)
+    undo = patch(
+        namespace,
+        {"replay_materialize": ["allocate_lock", "MemoryBIO"]},
+        Installation(system),
+    )
 
     assert allocate_lock in system.replay_materialize
     assert MemoryBIO in system.replay_materialize
@@ -40,7 +45,7 @@ def test_patch_registers_original_callable_when_proxy_and_replay_materialize_ove
     undo = patch(
         namespace,
         {"proxy": ["allocate_lock"], "replay_materialize": ["allocate_lock"]},
-        system,
+        Installation(system),
     )
 
     assert allocate_lock in system.replay_materialize

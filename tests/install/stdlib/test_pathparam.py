@@ -8,6 +8,7 @@ import retracesoftware.utils as utils
 from retracesoftware.proxy.contexts import record_context
 from retracesoftware.proxy.system import System
 from retracesoftware.proxy.messagestream import MemoryWriter
+from retracesoftware.install.installation import Installation
 from retracesoftware.install.patcher import patch
 
 
@@ -34,7 +35,7 @@ def test_open_non_whitelisted_path_not_retraced():
         'proxy': ['open'],
         'pathparam': {'open': 'file'},
     }
-    patch(ns, spec, system, pathpredicate=pathpredicate)
+    patch(ns, spec, Installation(system), pathpredicate=pathpredicate)
     patched_open = ns['open']
 
     writer = MemoryWriter(thread=threading.get_ident)
@@ -69,7 +70,7 @@ def test_open_whitelisted_path_is_retraced():
         'proxy': ['open'],
         'pathparam': {'open': 'file'},
     }
-    patch(ns, spec, system, pathpredicate=pathpredicate)
+    patch(ns, spec, Installation(system), pathpredicate=pathpredicate)
     patched_open = ns['open']
 
     writer = MemoryWriter(thread=threading.get_ident)
@@ -99,7 +100,7 @@ def test_is_bound_true_for_whitelisted_open(system):
         'proxy': ['open'],
         'pathparam': {'open': 'file'},
     }
-    patch(ns, spec, system, pathpredicate=pathpredicate)
+    patch(ns, spec, Installation(system), pathpredicate=pathpredicate)
     patched_open = ns['open']
 
     writer = MemoryWriter(thread=threading.get_ident)
@@ -129,7 +130,7 @@ def test_is_bound_false_for_non_whitelisted_open():
         'proxy': ['open'],
         'pathparam': {'open': 'file'},
     }
-    patch(ns, spec, system, pathpredicate=pathpredicate)
+    patch(ns, spec, Installation(system), pathpredicate=pathpredicate)
     patched_open = ns['open']
 
     writer = MemoryWriter(thread=threading.get_ident)

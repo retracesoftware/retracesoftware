@@ -189,6 +189,7 @@ namespace retracesoftware {
     };
 
     PyObject * set_on_alloc(PyTypeObject *type, PyObject * callback);
+    PyObject * clear_on_alloc(PyTypeObject *type);
     bool is_alloc_patched(allocfunc func);
 
     bool intercept_dict_set(PyObject * dict, PyObject * on_set);

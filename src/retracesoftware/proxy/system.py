@@ -316,10 +316,95 @@ def _ext_proxytype_from_spec(system, module, name, methods):
         
         proxytype = type(name, (utils.ExternalWrapped, DynamicProxy,), spec)
 
-        system.on_bind(proxytype)
-        system.on_bind(system.proxy_ref(proxytype))
+        system.bind(proxytype)
+        system.bind(system.proxy_ref(proxytype))
 
         return proxytype
+
+def _is_patch_generated_init_subclass(value):
+    if not isinstance(value, classmethod):
+        return False
+
+    func = value.__func__
+    code = getattr(func, "__code__", None)
+    if code is None or func.__name__ != "init_subclass":
+        return False
+
+    freevars = set(code.co_freevars)
+    return {"self", "proxy_attrs", "subtype_attrs"} <= freevars
+
+_MISSING = object()
+
+def _restore_attr(target, name, original):
+    if original is _MISSING:
+        if name in target.__dict__:
+            delattr(target, name)
+    else:
+        setattr(target, name, original)
+
+def _unwrap_patched_attr(cls, name, value):
+    target = utils.unwrap(value)
+
+    for base in cls.__mro__[1:]:
+        if base.__dict__.get(name) is target:
+            delattr(cls, name)
+            return value
+
+    setattr(cls, name, target)
+    return value
+
+def _unpatch_type_one(
+    cls,
+    *,
+    original_attrs=None,
+    original_init_subclass=_MISSING,
+    original_retrace_system=_MISSING,
+    original_retrace=_MISSING,
+):
+    with WithoutFlags(cls, "Py_TPFLAGS_IMMUTABLETYPE"):
+        utils.clear_on_alloc(cls)
+
+        if original_attrs is None:
+            for name, value in tuple(cls.__dict__.items()):
+                if isinstance(value, (utils.wrapped_function, utils.wrapped_member)):
+                    _unwrap_patched_attr(cls, name, value)
+        else:
+            for name, original in reversed(list(original_attrs.items())):
+                _restore_attr(cls, name, original)
+
+        if original_init_subclass is _MISSING:
+            init_subclass = cls.__dict__.get("__init_subclass__")
+            if _is_patch_generated_init_subclass(init_subclass):
+                delattr(cls, "__init_subclass__")
+        else:
+            _restore_attr(cls, "__init_subclass__", original_init_subclass)
+
+        if original_retrace_system is _MISSING:
+            if "__retrace_system__" in cls.__dict__:
+                delattr(cls, "__retrace_system__")
+        else:
+            _restore_attr(cls, "__retrace_system__", original_retrace_system)
+
+        if original_retrace is _MISSING:
+            if "__retrace__" in cls.__dict__:
+                delattr(cls, "__retrace__")
+        else:
+            _restore_attr(cls, "__retrace__", original_retrace)
+
+def unpatch_type(cls):
+    assert isinstance(cls, type)
+
+    system = getattr(cls, "__retrace_system__", None)
+
+    for subtype in tuple(cls.__subclasses__()):
+        if getattr(subtype, "__retrace_system__", None) is system:
+            unpatch_type(subtype)
+
+    _unpatch_type_one(cls)
+
+    return cls
+
+_module_unpatch_type = unpatch_type
 
 class System:
     """Gate-based record/replay kernel.
@@ -488,23 +573,14 @@ class System:
         """
         return utils.Gate(self.create_dispatch(disabled, external, internal))
 
-    @property
-    def on_bind(self):
-        return self.on_bind_wrapper.get()
-
-    @on_bind.setter
-    def on_bind(self, value):
-        self.on_bind_wrapper.set(value if value else utils.noop)
-
-    @property
-    def on_async_new_patched(self):
-        return self.on_async_new_patched_wrapper.get()
-
-    @on_async_new_patched.setter
-    def on_async_new_patched(self, value):
-        self.on_async_new_patched_wrapper.set(value if value else utils.noop)
-
-    def __init__(self) -> None:
+    def __init__(
+        self,
+        primary_hooks : CallHooks, 
+        secondary_hooks : CallHooks,
+        lifecycle_hooks : LifecycleHooks,
+        execute : None | Callable = None,
+        on_bind = None,
+        passthrough_proxyref = False) -> None:
         # ── Primary gates ──────────────────────────────────────────
         #
         # _internal: ambient "retrace is enabled on this thread" gate.
@@ -523,6 +599,7 @@ class System:
         # executor slot, so recording on one thread does not affect
         # another.
 
+        self.lifecycle_hooks = lifecycle_hooks
         self.patched_types = set()
         self.immutable_types = set()
 
@@ -552,13 +629,18 @@ class System:
         # others are held strongly for the lifetime of the System.
         self.is_bound = utils.WeakSet()
         
-        self.on_bind_wrapper = utils.mutable_function_wrapper(utils.noop)
-        self.on_async_new_patched_wrapper = utils.mutable_function_wrapper(utils.noop)
+        def on_async_new_patched(obj):
+            if primary_hooks:
+                # this doesn't trigger the call on record, this is for replay
+                primary_hooks.on_call(utils.create_stub_object, type(obj))
+                        
+            on_bind(obj)
 
-        self.bind = utils.runall(self.is_bound.add, self.on_bind_wrapper)
-        self.async_new_patched = utils.runall(self.is_bound.add, self.on_async_new_patched_wrapper)
+            if secondary_hooks.on_result:
+                secondary_hooks.on_result(obj)
 
-        self.thread_wrapper = functional.identity
+        self.bind = utils.runall(self.is_bound.add, on_bind)
+        self.async_new_patched = utils.runall(self.is_bound.add, on_async_new_patched)
 
         # Execute wrapped callables via their underlying target while leaving
         # plain callables on the normal fast path.
@@ -700,6 +782,32 @@ class System:
         self.unproxy_int = functional.walker(
             when_instanceof(utils.InternalWrapped, utils.unwrap))
 
+        self.internal_executor, self.external_executor = self.build_executors(
+            internal_hooks = CallHooks(
+                on_call = primary_hooks.on_call if primary_hooks else None,
+                on_result = secondary_hooks.on_result if secondary_hooks else None,
+                on_error = secondary_hooks.on_error if secondary_hooks else None),
+            external_hooks = CallHooks(
+                on_call = secondary_hooks.on_call if secondary_hooks else None,
+                on_result = primary_hooks.on_result if primary_hooks else None,
+                on_error = primary_hooks.on_error if primary_hooks else None),
+            execute = execute,
+            passthrough_proxyref = passthrough_proxyref)
+
+        def with_gate(gate, executor,function):
+            return functional.partial(gate.apply_with(executor), function)
+
+        def observe(function):
+            return utils.observer(
+                            on_call = functional.repeatedly(lifecycle_hooks.on_start),
+                            on_result = functional.repeatedly(lifecycle_hooks.on_end),
+                            on_error = functional.repeatedly(lifecycle_hooks.on_end),
+                            function = function)
+
+        self.thread_wrapper = lambda function: with_gate(self._external, self.external_executor, 
+                        with_gate(self._internal, self.internal_executor, observe(function)))
+
+
     def _ext_proxy(self, passthrough_proxyref):
         ext_leaf_proxy = \
             functional.if_then_else(
@@ -830,71 +938,16 @@ class System:
         return internal_executor, external_executor
 
     @contextmanager
-    def context(self, 
-        primary_hooks : CallHooks, 
-        secondary_hooks : CallHooks,
-        lifecycle_hooks : LifecycleHooks,
-        execute : None | Callable = None,
-        on_bind = None,
-        passthrough_proxyref = False):
-        
-        internal_executor, external_executor = self.build_executors(
-            internal_hooks = CallHooks(
-                on_call = primary_hooks.on_call if primary_hooks else None,
-                on_result = secondary_hooks.on_result if secondary_hooks else None,
-                on_error = secondary_hooks.on_error if secondary_hooks else None),
-            external_hooks = CallHooks(
-                on_call = secondary_hooks.on_call if secondary_hooks else None,
-                on_result = primary_hooks.on_result if primary_hooks else None,
-                on_error = primary_hooks.on_error if primary_hooks else None),
-            execute = execute,
-            passthrough_proxyref = passthrough_proxyref)
-                
-        saved_bind = self.on_bind
-        saved_async_new_patched = self.on_async_new_patched
-        saved_internal_executor = self._internal.executor
-        saved_external_executor = self._external.executor
-
-        self.on_bind = on_bind if on_bind else functional.noop
-
-        def on_async_new_patched(obj):
-            if primary_hooks:
-                # this doesn't trigger the call on record, this is for replay
-                primary_hooks.on_call(utils.create_stub_object, type(obj))
-                        
-            on_bind(obj)
-
-            if secondary_hooks.on_result:
-                secondary_hooks.on_result(obj)
-
-        self.on_async_new_patched = on_async_new_patched
-
-        def with_gate(gate, executor,function):
-            return functional.partial(gate.apply_with(executor), function)
-
-        def observe(function):
-            return utils.observer(
-                            on_call = functional.repeatedly(lifecycle_hooks.on_start),
-                            on_result = functional.repeatedly(lifecycle_hooks.on_end),
-                            on_error = functional.repeatedly(lifecycle_hooks.on_end),
-                            function = function)
-
-        self.thread_wrapper = lambda function: with_gate(self._external, external_executor, 
-                        with_gate(self._internal, internal_executor, observe(function)))
-                        
-
+    def context(self):        
         try:
-            self._internal.executor = internal_executor
-            self._external.executor = external_executor
-            lifecycle_hooks.on_start()
+            self._internal.executor = self.internal_executor
+            self._external.executor = self.external_executor
+            self.lifecycle_hooks.on_start()
             yield
         finally:
-            lifecycle_hooks.on_end()
-            self._internal.executor = saved_internal_executor  
-            self._external.executor = saved_external_executor
-            self.on_bind = saved_bind
-            self.on_async_new_patched = saved_async_new_patched
-            self.thread_wrapper = None
+            self.lifecycle_hooks.on_end()
+            self._internal.executor = None
+            self._external.executor = None
         
     def enabled(self):
         return self._external.is_set or self._internal.is_set
@@ -1020,23 +1073,15 @@ class System:
 
         assert cls not in self.patched_types
 
-        missing = object()
         alloc_patch_undo = None
         patched_attrs = {}
         patched_subtypes = []
         subtype_alloc_undos = []
         subtype_attrs = {}
-        original_init_subclass = cls.__dict__.get("__init_subclass__", missing)
-        original_retrace = cls.__dict__.get("__retrace__", missing)
-        original_retrace_system = cls.__dict__.get("__retrace_system__", missing)
+        original_init_subclass = cls.__dict__.get("__init_subclass__", _MISSING)
+        original_retrace = cls.__dict__.get("__retrace__", _MISSING)
+        original_retrace_system = cls.__dict__.get("__retrace_system__", _MISSING)
         bound_types = []
-
-        def restore_attr(target, name, original):
-            if original is missing:
-                if name in target.__dict__:
-                    delattr(target, name)
-            else:
-                setattr(target, name, original)
 
         def bind_patched_type(target):
             self.bind(target)
@@ -1085,6 +1130,11 @@ class System:
                 if utils.is_extendable(cls):
                     base_method_names = frozenset(base_methods.keys())
 
+                    # Bind the base before retro-patching existing subclasses so
+                    # replay sees the same binding order as record-time patching
+                    # followed by later subclass definition.
+                    bind_patched_type(cls)
+
                     def init_subclass(subtype, patch_alloc=True, **kwargs):
                         self.patched_types.add(subtype)
                         patched_subtypes.append(subtype)
@@ -1115,7 +1165,8 @@ class System:
 
                 cls.__retrace__ = self
 
-            bind_patched_type(cls)
+            if cls not in bound_types:
+                bind_patched_type(cls)
         except Exception:
             for undo in reversed(subtype_alloc_undos):
                 undo()
@@ -1124,18 +1175,19 @@ class System:
                 alloc_patch_undo()
 
             for subtype in reversed(patched_subtypes):
-                originals = subtype_attrs.get(subtype, {})
-                with WithoutFlags(subtype, "Py_TPFLAGS_IMMUTABLETYPE"):
-                    for name, original in reversed(list(originals.items())):
-                        restore_attr(subtype, name, original)
+                _unpatch_type_one(
+                    subtype,
+                    original_attrs=subtype_attrs.get(subtype, {}),
+                )
                 self.patched_types.discard(subtype)
 
-            with WithoutFlags(cls, "Py_TPFLAGS_IMMUTABLETYPE"):
-                for name, original in reversed(list(patched_attrs.items())):
-                    restore_attr(cls, name, original)
-                restore_attr(cls, "__init_subclass__", original_init_subclass)
-                restore_attr(cls, "__retrace_system__", original_retrace_system)
-                restore_attr(cls, "__retrace__", original_retrace)
+            _unpatch_type_one(
+                cls,
+                original_attrs=patched_attrs,
+                original_init_subclass=original_init_subclass,
+                original_retrace_system=original_retrace_system,
+                original_retrace=original_retrace,
+            )
 
             for bound_type in reversed(bound_types):
                 self.is_bound.discard(bound_type)
@@ -1144,6 +1196,41 @@ class System:
             raise
 
         return cls
+
+    def unpatch_type(self, cls):
+        tracked_types = []
+        tracked_wrapped = []
+
+        def visit(target):
+            if getattr(target, "__retrace_system__", None) is not self:
+                return
+
+            tracked_types.append(target)
+            tracked_wrapped.extend(
+                value
+                for value in target.__dict__.values()
+                if isinstance(value, utils.wrapped_function)
+            )
+
+            for subtype in target.__subclasses__():
+                visit(subtype)
+
+        visit(cls)
+        _module_unpatch_type(cls)
+
+        for target in tracked_types:
+            self.patched_types.discard(target)
+            self.is_bound.discard(target)
+
+        for wrapped in tracked_wrapped:
+            self.is_bound.discard(wrapped)
+
+        return cls
+
+    def unpatch_types(self):
+        for cls in sorted(tuple(self.patched_types), key=lambda cls: len(cls.__mro__), reverse=True):
+            if cls in self.patched_types:
+                self.unpatch_type(cls)
 
     def _throw_passthrough(self, _value):
         raise _PassthroughExternalCall
@@ -1177,4 +1264,3 @@ class System:
         return self.ext_proxytype_from_spec(self, module = cls.__module__, name = cls.__qualname__, methods = methods)
         # return self._internal(System.ext_proxytype_from_spec, self, 
         #                       module = cls.__module__, name = cls.__qualname__, methods = methods)
-

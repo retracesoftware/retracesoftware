@@ -462,4 +462,17 @@ namespace retracesoftware {
         state->alloc_owner = state;
         return Py_NewRef((PyObject *)state);
     }
+
+    PyObject * clear_on_alloc(PyTypeObject *type) {
+        assert(type);
+
+        TypePatchState *state = get_type_patch(type);
+        if (!state)
+            Py_RETURN_NONE;
+
+        Py_INCREF((PyObject *)state);
+        clear_type_patch(state);
+        Py_DECREF((PyObject *)state);
+        Py_RETURN_NONE;
+    }
 }

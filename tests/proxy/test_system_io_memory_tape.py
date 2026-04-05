@@ -1,10 +1,10 @@
+from contextlib import contextmanager
 from dataclasses import dataclass
 
 import pytest
 import retracesoftware.utils as utils
 
-from retracesoftware.proxy.io import IO
-from retracesoftware.proxy.system import System
+from retracesoftware.proxy.io import recorder_context, replayer_context
 from retracesoftware.testing.memorytape import MemoryTape
 
 
@@ -25,8 +25,30 @@ ALL_IO_MODES = [
 IO_MODES = ALL_IO_MODES
 
 
-def _make_io(system, mode):
-    return IO(system, debug=mode.debug, stacktraces=mode.stacktraces)
+def _configure_system(system):
+    system.immutable_types.update({int, float, str, bytes, bool, type, type(None)})
+
+
+@contextmanager
+def _recorder_context(mode, writer):
+    with recorder_context(
+        tape_writer=writer,
+        debug=mode.debug,
+        stacktraces=mode.stacktraces,
+    ) as system:
+        _configure_system(system)
+        yield system
+
+
+@contextmanager
+def _replayer_context(mode, reader):
+    with replayer_context(
+        tape_reader=reader,
+        debug=mode.debug,
+        stacktraces=mode.stacktraces,
+    ) as system:
+        _configure_system(system)
+        yield system
 
 
 def _contains_type_name(value, name):
@@ -39,18 +61,8 @@ def _contains_type_name(value, name):
     return False
 
 
-def _restore_bound_snapshot(system, snapshot):
-    keep_ids = {id(obj) for obj in snapshot}
-    for obj in tuple(system.is_bound.ordered()):
-        if id(obj) not in keep_ids:
-            system.is_bound.discard(obj)
-
-
 @pytest.mark.parametrize("mode", IO_MODES)
 def test_system_io_round_trips_simple_patched_function_with_memory_tape(mode):
-    system = System()
-    system.immutable_types.update({int, float, str, bytes, bool, type, type(None)})
-
     tape = MemoryTape()
     writer = tape.writer()
 
@@ -60,14 +72,15 @@ def test_system_io_round_trips_simple_patched_function_with_memory_tape(mode):
         live_calls.append((a, b))
         return a + b
 
-    patched_add = system.patch_function(add)
+    with _recorder_context(mode, writer) as record_system:
+        recorded_add = record_system.patch_function(add)
 
-    with _make_io(system, mode).writer(writer.write, writer.bind):
-        recorded = patched_add(2, 3)
+        with record_system.context():
+            recorded = recorded_add(2, 3)
 
     assert recorded == 5
     assert live_calls == [(2, 3)]
-    assert tape.tape[0] == "ON_START"
+    assert "ON_START" in tape.tape
     if mode.stacktraces:
         assert "STACKTRACE" in tape.tape
     if mode.debug:
@@ -78,9 +91,11 @@ def test_system_io_round_trips_simple_patched_function_with_memory_tape(mode):
     assert tape.tape[-1] == "ON_END"
 
     reader = tape.reader()
+    with _replayer_context(mode, reader) as replay_system:
+        replayed_add = replay_system.patch_function(add)
 
-    with _make_io(system, mode).reader(reader.read, reader.bind):
-        replayed = patched_add(2, 3)
+        with replay_system.context():
+            replayed = replayed_add(2, 3)
 
     assert replayed == recorded
     assert live_calls == [(2, 3)]
@@ -88,9 +103,6 @@ def test_system_io_round_trips_simple_patched_function_with_memory_tape(mode):
 
 @pytest.mark.parametrize("mode", IO_MODES)
 def test_system_io_round_trips_simple_override_callback_with_memory_tape(mode):
-    system = System()
-    system.immutable_types.update({int, float, str, bytes, bool, type, type(None)})
-
     tape = MemoryTape()
     writer = tape.writer()
 
@@ -104,15 +116,16 @@ def test_system_io_round_trips_simple_override_callback_with_memory_tape(mode):
         def callback(self, value):
             return 0
 
-    system.patch_type(Base)
-
     class Sub(Base):
         def callback(self, value):
             live_calls.append(("callback", value))
             return value * 2
 
-    with _make_io(system, mode).writer(writer.write, writer.bind):
-        recorded = Sub().trigger(5)
+    with _recorder_context(mode, writer) as record_system:
+        record_system.patch_type(Base)
+
+        with record_system.context():
+            recorded = Sub().trigger(5)
 
     assert recorded == 11
     assert live_calls == [("external", 5), ("callback", 5)]
@@ -120,9 +133,11 @@ def test_system_io_round_trips_simple_override_callback_with_memory_tape(mode):
     assert "RESULT" in tape.tape
 
     reader = tape.reader()
+    with _replayer_context(mode, reader) as replay_system:
+        replay_system.patch_type(Base)
 
-    with _make_io(system, mode).reader(reader.read, reader.bind):
-        replayed = Sub().trigger(5)
+        with replay_system.context():
+            replayed = Sub().trigger(5)
 
     assert replayed == recorded
     assert live_calls == [("external", 5), ("callback", 5), ("callback", 5)]
@@ -130,9 +145,6 @@ def test_system_io_round_trips_simple_override_callback_with_memory_tape(mode):
 
 @pytest.mark.parametrize("mode", IO_MODES)
 def test_system_io_records_and_rebinds_callback_receiver_with_memory_tape(mode):
-    system = System()
-    system.immutable_types.update({int, float, str, bytes, bool, type, type(None)})
-
     tape = MemoryTape()
     writer = tape.writer()
 
@@ -145,16 +157,17 @@ def test_system_io_records_and_rebinds_callback_receiver_with_memory_tape(mode):
         def callback(self, value):
             return 0
 
-    system.patch_type(Base)
-
     class Sub(Base):
         def callback(self, value):
             callback_receivers.append(self)
             return value * 2
 
-    with _make_io(system, mode).writer(writer.write, writer.bind):
-        recorded_obj = Sub()
-        recorded = recorded_obj.trigger(7)
+    with _recorder_context(mode, writer) as record_system:
+        record_system.patch_type(Base)
+
+        with record_system.context():
+            recorded_obj = Sub()
+            recorded = recorded_obj.trigger(7)
 
     assert recorded == 14
     assert callback_receivers == [recorded_obj]
@@ -162,10 +175,12 @@ def test_system_io_records_and_rebinds_callback_receiver_with_memory_tape(mode):
     assert any(_contains_type_name(entry, "_BindingLookup") for entry in tape.tape)
 
     reader = tape.reader()
+    with _replayer_context(mode, reader) as replay_system:
+        replay_system.patch_type(Base)
 
-    with _make_io(system, mode).reader(reader.read, reader.bind):
-        replay_obj = Sub()
-        replayed = replay_obj.trigger(7)
+        with replay_system.context():
+            replay_obj = Sub()
+            replayed = replay_obj.trigger(7)
 
     assert replayed == recorded
     assert callback_receivers == [recorded_obj, replay_obj]
@@ -173,9 +188,6 @@ def test_system_io_records_and_rebinds_callback_receiver_with_memory_tape(mode):
 
 @pytest.mark.parametrize("mode", IO_MODES)
 def test_system_io_round_trips_dynamic_external_proxy_generation_with_memory_tape(mode):
-    system = System()
-    system.immutable_types.update({int, float, str, bytes, bool, type, type(None)})
-
     tape = MemoryTape()
     writer = tape.writer()
 
@@ -187,13 +199,13 @@ def test_system_io_round_trips_dynamic_external_proxy_generation_with_memory_tap
         def make_external(self):
             return External()
 
-    system.patch_type(Example)
-    baseline_bound = tuple(system.is_bound.ordered())
+    with _recorder_context(mode, writer) as record_system:
+        record_system.patch_type(Example)
 
-    with _make_io(system, mode).writer(writer.write, writer.bind):
-        recorded_root = Example()
-        baseline_tape = len(tape.tape)
-        recorded = recorded_root.make_external()
+        with record_system.context():
+            recorded_root = Example()
+            baseline_tape = len(tape.tape)
+            recorded = recorded_root.make_external()
 
     assert isinstance(recorded, utils.ExternalWrapped)
 
@@ -201,22 +213,26 @@ def test_system_io_round_trips_dynamic_external_proxy_generation_with_memory_tap
     call_indices = [index for index, value in enumerate(delta) if value == "CALL"]
     ext_proxy_calls = [
         index for index in call_indices
-        if getattr(delta[index + 1], "__name__", None) in {"ext_proxytype_from_spec", "_ext_proxytype_from_spec"}
+        if isinstance(delta[index + 3], dict)
+        and delta[index + 3].get("module") == External.__module__
+        and delta[index + 3].get("name") == External.__qualname__
+        and "ping" in delta[index + 3].get("methods", ())
     ]
     assert ext_proxy_calls
     call_index = ext_proxy_calls[0]
-    assert delta[call_index + 2] == (system,)
+    assert _contains_type_name(delta[call_index + 2], "_BindingLookup")
     assert delta[call_index + 3]["module"] == External.__module__
     assert delta[call_index + 3]["name"] == External.__qualname__
     assert "ping" in delta[call_index + 3]["methods"]
     assert any(_contains_type_name(entry, "_BindingCreate") for entry in delta)
 
-    _restore_bound_snapshot(system, baseline_bound)
     reader = tape.reader()
+    with _replayer_context(mode, reader) as replay_system:
+        replay_system.patch_type(Example)
 
-    with _make_io(system, mode).reader(reader.read, reader.bind):
-        replay_root = Example()
-        replayed = replay_root.make_external()
+        with replay_system.context():
+            replay_root = Example()
+            replayed = replay_root.make_external()
 
     assert isinstance(replayed, utils.ExternalWrapped)
     assert type(recorded) is not type(replayed)

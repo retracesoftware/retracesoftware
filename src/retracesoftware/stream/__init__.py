@@ -544,6 +544,18 @@ class ObjectWriter:
         self._queue.push_bind(self._bind_token(obj))
         return None
 
+    def write(self, *values):
+        if self._native is not None:
+            self._native(*values)
+            return None
+
+        for value in values:
+            serializer = self.type_serializer.get(type(value), self._serializer)
+            if serializer is not None:
+                value = serializer(value)
+            self._queue.push_obj(value)
+        return None
+
     def intern(self, obj):
         if self._native is not None:
             return self._native.intern(obj)
@@ -697,6 +709,11 @@ def read_process_info(path, raw=False):
 
 
 class writer(_backend_mod.ObjectWriter):
+
+    def write(self, *values):
+        for value in values:
+            self(value)
+        return None
 
     def handle(self, obj):
         self.intern(obj)
@@ -1094,6 +1111,9 @@ class reader(reader_stack.ObjectReader):
 
     def close(self):
         self._tape_reader.close()
+
+    def read(self):
+        return self.next()
 
     def _default_stub_factory(self, cls):
         return utils.create_stub_object(cls)

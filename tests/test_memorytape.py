@@ -1,11 +1,14 @@
 import pytest
 
+from retracesoftware.proxy.tape import TapeReader, TapeWriter
 from retracesoftware.testing.memorytape import MemoryTape
 
 
 def test_memory_tape_write_is_just_a_flat_append_surface():
     tape = MemoryTape()
     writer = tape.writer()
+
+    assert isinstance(writer, TapeWriter)
 
     writer.write("CALL", "fn", (1, 2), {"scale": 3})
 
@@ -16,6 +19,9 @@ def test_memory_tape_bind_and_read_round_trip_nested_bound_values():
     tape = MemoryTape()
     writer = tape.writer()
     reader = tape.reader()
+
+    assert isinstance(writer, TapeWriter)
+    assert isinstance(reader, TapeReader)
 
     original = object()
     replayed = object()

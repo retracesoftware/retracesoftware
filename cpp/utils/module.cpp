@@ -489,6 +489,15 @@ static PyObject * set_on_alloc(PyObject * module, PyObject * args, PyObject *kwa
     return retracesoftware::set_on_alloc(cls, on_alloc);
 }
 
+static PyObject * clear_on_alloc(PyObject * module, PyObject * obj) {
+    if (!PyType_Check(obj)) {
+        PyErr_SetString(PyExc_TypeError, "clear_on_alloc takes a type as a parameter");
+        return nullptr;
+    }
+
+    return retracesoftware::clear_on_alloc(reinterpret_cast<PyTypeObject *>(obj));
+}
+
 static PyObject * intercept_dict_set(PyObject * module, PyObject * args, PyObject *kwargs) {
     PyObject * dict;
     PyObject * on_set;
@@ -603,6 +612,7 @@ static PyMethodDef module_methods[] = {
     {"intercept_dict_set", (PyCFunction)intercept_dict_set, METH_VARARGS | METH_KEYWORDS, "TODO"},
     {"stack_functions", (PyCFunction)stack_functions, METH_NOARGS, "Returns list of functions in current stack"},
     {"set_on_alloc", (PyCFunction)set_on_alloc, METH_VARARGS | METH_KEYWORDS, "TODO"},
+    {"clear_on_alloc", clear_on_alloc, METH_O, "TODO"},
     {"intercept_frame_eval", (PyCFunction)intercept_frame_eval, METH_O, "TODO"},
     {"intercept__new__", (PyCFunction)intercept__new__, METH_VARARGS | METH_KEYWORDS, "TODO"},
     {"extend_type", extend_type, METH_O, "TODO"},

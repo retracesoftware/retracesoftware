@@ -15,10 +15,11 @@ from retracesoftware.threadid import ThreadId
 
 from retracesoftware.proxy.contexts import record_context, replay_context
 from retracesoftware.proxy.system import System
-
+from retracesoftware.proxy.tape import TapeWriter
 from retracesoftware.install import run_with_context, stream_writer
 from retracesoftware.install.session import InstallSession
 from retracesoftware.exceptions import RecordingNotFoundError, VersionMismatchError
+from retracesoftware.proxy.io import recorder
 
 def expand_recording_path(path):
     return datetime.datetime.now().strftime(path.format(pid = os.getpid()))
@@ -114,24 +115,10 @@ def _write_shebang(trace_path, replay_bin):
 
 thread_id = ThreadId()
 
-def record(system, options, args):
+def create_tape_writer(options, args) -> TapeWriter:
     recording_format = getattr(options, 'format', 'binary')
-    install_session = InstallSession()
-
-    if options.recording is None:
-        options.recording = '{script}.retrace'
-
-    if '{script}' in options.recording:
-        stem = Path(args[0]).stem if args else 'recording'
-        options.recording = options.recording.replace('{script}', stem)
 
     recording_disabled = (options.recording == 'disable')
-    
-    if options.verbose:
-        if recording_disabled:
-            print("Retrace enabled, recording DISABLED (performance testing mode)", file=sys.stderr)
-        else:
-            print(f"Retrace enabled, recording to {options.recording}", file=sys.stderr)
 
     if recording_disabled:
         trace_path = None
@@ -167,7 +154,76 @@ def record(system, options, args):
             'env': dict(os.environ),
         }
 
-            
+    return stream.writer(path = trace_path,
+                       thread = thread_id.id.get,
+                       format = recording_format,
+                       verbose = options.verbose,
+                       preamble = preamble,
+                       inflight_limit = options.inflight_limit,
+                       consumer_wait_timeout_ms = options.consumer_wait_timeout_ms,
+                       queue_capacity = options.queue_capacity,
+                       flush_interval = options.flush_interval,
+                       quit_on_error = options.quit_on_error,
+                       serialize_errors = not options.quit_on_error)
+
+def record(system, options, args):
+    recording_format = getattr(options, 'format', 'binary')
+    install_session = InstallSession()
+
+    if options.recording is None:
+        options.recording = '{script}.retrace'
+
+    if '{script}' in options.recording:
+        stem = Path(args[0]).stem if args else 'recording'
+        options.recording = options.recording.replace('{script}', stem)
+
+    recording_disabled = (options.recording == 'disable')
+    
+    if options.verbose:
+        if recording_disabled:
+            print("Retrace enabled, recording DISABLED (performance testing mode)", file=sys.stderr)
+        else:
+            print(f"Retrace enabled, recording to {options.recording}", file=sys.stderr)
+
+    if recording_disabled:
+        trace_path = None
+    else:
+        trace_path = Path(expand_recording_path(options.recording))
+        trace_path.parent.mkdir(parents=True, exist_ok=True)
+        replay_bin = _find_replay_bin(getattr(options, 'replay_bin', None))
+        # FIFOs must stay open for the full recording; pre-writing the shebang
+        # would close the pipe early, causing the reader to see EOF before the
+        # FramedWriter starts streaming the actual trace.
+        if recording_format == 'binary' and not is_fifo_path(trace_path):
+            _write_shebang(trace_path, replay_bin)
+
+    # preamble = None
+    # if trace_path:
+    #     path_info = stream.get_path_info()
+    #     settings = {
+    #         'argv': args,
+    #         'executable': sys.executable,
+    #         'trace_inputs': options.trace_inputs,
+    #         'trace_shutdown': options.trace_shutdown,
+    #         'monitor': getattr(options, 'monitor', 0),
+    #         'python_version': sys.version,
+    #         'cwd': path_info['cwd'],
+    #         'sys_path': path_info['sys_path'],
+    #     }
+    #     recorded_checksums = checksums()
+        
+    #     preamble = {
+    #         'type': 'exec',
+    #         **settings,
+    #         'checksums': recorded_checksums,
+    #         'env': dict(os.environ),
+    #     }
+
+    system = recorder(tape_writer = create_tape_writer(options, args), 
+                      debug = options.stacktraces,
+                      stacktraces = options.stacktraces)
+
+
     with stream.writer(path = trace_path,
                        thread = thread_id.id.get,
                        format = recording_format,
@@ -197,15 +253,15 @@ def record(system, options, args):
             traceback.print_stack(file=sys.stderr)
             os._exit(1)
 
-        pw = stream_writer(writer=writer, 
-                           stackfactory=stackfactory, 
-                           on_write_error = system.disable_for(on_write_error) if options.quit_on_error else None)
+        # pw = stream_writer(writer=writer, 
+        #                    stackfactory=stackfactory, 
+        #                    on_write_error = system.disable_for(on_write_error) if options.quit_on_error else None)
         
-        context = record_context(system, 
-            writer = pw,
-            debug = options.stacktraces,
-            **install_session.callback_binding_hooks(system.bind),
-        )
+        # context = record_context(system, 
+        #     writer = pw,
+        #     debug = options.stacktraces,
+        #     **install_session.callback_binding_hooks(system.bind),
+        # )
 
         on_weakref_start = writer.handle('ON_WEAKREF_CALLBACK_START')
         on_weakref_end = writer.handle('ON_WEAKREF_CALLBACK_END')
@@ -227,7 +283,6 @@ def record(system, options, args):
             monitor_fn = None
 
         run_with_context(system = system, 
-                         context = context,
                          argv = args, 
                          wrap_callback = wrap_callback,
                          thread_id=thread_id,

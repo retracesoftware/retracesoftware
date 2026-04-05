@@ -1,4 +1,5 @@
 from retracesoftware import functional
+from retracesoftware.proxy.tape import TapeReader, TapeWriter
 
 
 class _BindingCreate:
@@ -99,10 +100,10 @@ class MemoryTape:
     def __init__(self, tape=None):
         self.tape = [] if tape is None else list(tape)
 
-    def writer(self):
+    def writer(self) -> TapeWriter:
         return _MemoryTapeWriter(self.tape.append)
 
-    def reader(self):
+    def reader(self) -> TapeReader:
         return _MemoryTapeReader(iter(self.tape).__next__)
 
 

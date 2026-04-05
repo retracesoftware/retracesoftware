@@ -10,16 +10,20 @@ Provides:
 import importlib
 import importlib.resources
 
-from retracesoftware.proxy.contexts import record_context, replay_context
-
 _pytest_runner = None
 _pytest_installed_modules = set()
 
 def run_with_context(system,
                      thread_id,
-                     context, argv, wrap_callback, trace_shutdown=False, on_ready=None,
-                     monitor_level=0, monitor_fn=None, retrace_file_patterns=None,
-                     verbose=False, install_session=None):
+                     argv, 
+                     wrap_callback, 
+                     trace_shutdown=False, 
+                     on_ready=None,
+                     monitor_level=0, 
+                     monitor_fn=None, 
+                     retrace_file_patterns=None,
+                     verbose=False,
+                     install_session=None):
     """Run a Python command inside a System context (record or replay).
 
     Parameters
@@ -61,6 +65,7 @@ def run_with_context(system,
     import retracesoftware.utils as utils
     from retracesoftware.run import run_python_command
     from retracesoftware.modules import ModuleConfigResolver
+    from retracesoftware.install.installation import Installation
     from retracesoftware.install.patcher import patch, install_hash_patching
     from retracesoftware.install.importhook import install_import_hooks, patch_already_loaded
     from retracesoftware.install.hooks import install_weakref_hooks, init_weakref
@@ -130,9 +135,17 @@ def run_with_context(system,
     def module_patcher(namespace, update_refs, module_name=None):
         name = module_name or namespace.get('__name__')
         if name and name in module_config:
-            undo = patch(namespace, module_config[name], system, update_refs,
-                         pathpredicate=pathpredicate,
-                         install_session=install_session)
+            installation = Installation(
+                system,
+                install_session=install_session,
+                update_refs=update_refs,
+            )
+            undo = patch(
+                namespace,
+                module_config[name],
+                installation,
+                pathpredicate=pathpredicate,
+            )
             patch_undos.append(undo)
 
     # ── patch already-loaded modules, install hooks, run ──────
@@ -143,7 +156,7 @@ def run_with_context(system,
         on_ready()
 
     try:
-        with context:
+        with system.context():
             for cls in sorted(system.patched_types, key=lambda c: c.__qualname__):
                 system._bind(cls)
             try:
@@ -299,6 +312,7 @@ class TestRunner:
         import retracesoftware.functional as functional
         from retracesoftware.testing.protocol_memory import MemoryWriter
         from retracesoftware.install.startthread import patch_thread_start
+        from retracesoftware.proxy.contexts import record_context
 
         callback_binding_hooks = {}
         if self._install_session is not None:
@@ -371,6 +385,7 @@ class TestRunner:
         import retracesoftware.functional as functional
         from retracesoftware.testing.protocol_memory import MemoryReader
         from retracesoftware.install.startthread import patch_thread_start
+        from retracesoftware.proxy.contexts import replay_context
 
         callback_binding_hooks = {}
         if self._install_session is not None:
@@ -551,6 +566,7 @@ def install_for_pytest(modules=None):
 
     from retracesoftware.proxy.system import System
     from retracesoftware.modules import ModuleConfigResolver
+    from retracesoftware.install.installation import Installation
     from retracesoftware.install.patcher import patch, install_hash_patching
     from retracesoftware.install.importhook import install_import_hooks, patch_already_loaded
     from retracesoftware.install.hooks import init_weakref
@@ -580,12 +596,15 @@ def install_for_pytest(modules=None):
     def module_patcher(namespace, update_refs, module_name=None):
         name = module_name or namespace.get('__name__')
         if name and name in module_config:
+            installation = Installation(
+                system,
+                install_session=install_session,
+                update_refs=update_refs,
+            )
             patch(
                 namespace,
                 module_config[name],
-                system,
-                update_refs,
-                install_session=install_session,
+                installation,
             )
 
     # ── patch already-loaded modules, install import hooks ────

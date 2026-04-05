@@ -160,6 +160,21 @@ def test_objectwriter_bind_uses_python_queue_fallback():
     assert isinstance(bind_calls[0][0], int)
 
 
+def test_objectwriter_write_uses_python_queue_fallback_and_serializer():
+    """``ObjectWriter.write`` should use ``push_obj`` on Python queues."""
+
+    queue = RecordingQueue()
+    writer = stream.ObjectWriter(queue, lambda obj: ("serialized", obj))
+
+    writer.write("hello", 123)
+
+    obj_calls = queue.named("push_obj")
+    assert obj_calls == [
+        (("serialized", "hello"),),
+        (("serialized", 123),),
+    ]
+
+
 def test_system_record_binds_allocations_in_sandbox():
     """Allocations in the normal sandbox phase should emit ``bind``.
 

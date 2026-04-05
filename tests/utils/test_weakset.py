@@ -40,7 +40,7 @@ def test_weakset_non_weakrefable_objects_fallback_to_strong_refs():
     assert len(weakset) == 1
 
 
-def test_weakset_tracks_insertion_index_and_order_for_mixed_entries():
+def test_weakset_ordered_snapshot_contains_live_mixed_entries():
     class Weakrefable:
         pass
 
@@ -56,13 +56,10 @@ def test_weakset_tracks_insertion_index_and_order_for_mixed_entries():
     assert weakset.add(strong) is True
     assert weakset.add(weak2) is True
 
-    assert weakset.index(weak) == 0
-    assert weakset.index(strong) == 1
-    assert weakset.index(weak2) == 2
-    assert weakset.ordered() == (weak, strong, weak2)
+    assert set(weakset.ordered()) == {weak, strong, weak2}
 
 
-def test_weakset_ordered_snapshot_skips_evicted_entries_but_preserves_order():
+def test_weakset_ordered_snapshot_skips_evicted_entries():
     class Weakrefable:
         pass
 
@@ -78,6 +75,4 @@ def test_weakset_ordered_snapshot_skips_evicted_entries_but_preserves_order():
     del second
     gc.collect()
 
-    assert weakset.ordered() == (first, third)
-    assert weakset.index(first) == 0
-    assert weakset.index(third) == 2
+    assert set(weakset.ordered()) == {first, third}

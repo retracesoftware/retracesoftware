@@ -1,13 +1,14 @@
 """
 Tests for the patch() function from retracesoftware.install.patcher.
 
-Verifies that patch(module, spec, system) correctly applies TOML-derived
+Verifies that patch(module, spec, installation) correctly applies TOML-derived
 directives to a module namespace and that record/replay works end-to-end.
 """
 import time
 
 from retracesoftware.proxy.contexts import record_context, replay_context
 from retracesoftware.proxy.system import System
+from retracesoftware.install.installation import Installation
 from retracesoftware.install.patcher import patch
 from retracesoftware.proxy.messagestream import MemoryWriter
 
@@ -27,7 +28,7 @@ def test_patch_proxy_type_record_replay():
     system.immutable_types.update({int, float, str, bytes, bool, type, type(None)})
 
     # Patch using the new patch() function
-    patch(fake_module, {'proxy': ['Timer']}, system)
+    patch(fake_module, {'proxy': ['Timer']}, Installation(system))
 
     assert Timer in system.patched_types
 
@@ -51,7 +52,7 @@ def test_patch_immutable():
     }
 
     system = System()
-    patch(fake_module, {'immutable': ['MyError', 'MyTimeout']}, system)
+    patch(fake_module, {'immutable': ['MyError', 'MyTimeout']}, Installation(system))
 
     assert ValueError in system.immutable_types
     assert TimeoutError in system.immutable_types
@@ -71,7 +72,7 @@ def test_patch_disable():
     fake_module = {'loud_print': loud_print, '__name__': 'fake_io'}
 
     system = System()
-    patch(fake_module, {'disable': ['loud_print']}, system)
+    patch(fake_module, {'disable': ['loud_print']}, Installation(system))
 
     # Should be replaced with a disable_for wrapper
     assert fake_module['loud_print'] is not loud_print
@@ -98,7 +99,7 @@ def test_patch_combined_spec():
         'immutable': ['error'],
     }
 
-    patch(fake_module, spec, system)
+    patch(fake_module, spec, Installation(system))
 
     assert NetType in system.patched_types
     assert OSError in system.immutable_types
@@ -136,7 +137,7 @@ def test_unbound_instance_passthrough():
     system = System()
     system.immutable_types.update({int, float, str, bytes, bool, type, type(None)})
 
-    patch(fake_module, {'proxy': ['Sensor']}, system)
+    patch(fake_module, {'proxy': ['Sensor']}, Installation(system))
 
     assert Sensor in system.patched_types
 
@@ -168,7 +169,7 @@ def test_bound_instance_recorded():
     system = System()
     system.immutable_types.update({int, float, str, bytes, bool, type, type(None)})
 
-    patch(fake_module, {'proxy': ['Sensor']}, system)
+    patch(fake_module, {'proxy': ['Sensor']}, Installation(system))
 
     writer = MemoryWriter()
 
@@ -201,7 +202,7 @@ def test_mixed_bound_and_unbound_patched_args_passthrough():
     system = System()
     system.immutable_types.update({int, float, str, bytes, bool, type, type(None)})
 
-    patch(fake_module, {'proxy': ['Sensor']}, system)
+    patch(fake_module, {'proxy': ['Sensor']}, Installation(system))
 
     live = Sensor("live")
     writer = MemoryWriter()
@@ -235,7 +236,7 @@ def test_mixed_bound_and_unbound_unhashable_patched_args_passthrough():
     system = System()
     system.immutable_types.update({int, float, str, bytes, bool, type, type(None)})
 
-    patch(fake_module, {'proxy': ['Sensor']}, system)
+    patch(fake_module, {'proxy': ['Sensor']}, Installation(system))
 
     live = Sensor("live")
     writer = MemoryWriter()
@@ -286,10 +287,15 @@ def test_pathparam_predicate_false_returns_unbound():
 
     predicate = lambda path: str(path).startswith('/dev/')
 
-    patch(fake_module, {
-        'proxy': ['FakeFileIO', 'open'],
-        'pathparam': {'open': 'file'},
-    }, system, pathpredicate=predicate)
+    patch(
+        fake_module,
+        {
+            'proxy': ['FakeFileIO', 'open'],
+            'pathparam': {'open': 'file'},
+        },
+        Installation(system),
+        pathpredicate=predicate,
+    )
 
     writer = MemoryWriter()
 
@@ -333,10 +339,15 @@ def test_pathparam_predicate_true_returns_bound():
 
     predicate = lambda path: str(path).startswith('/dev/')
 
-    patch(fake_module, {
-        'proxy': ['FakeFileIO', 'open'],
-        'pathparam': {'open': 'file'},
-    }, system, pathpredicate=predicate)
+    patch(
+        fake_module,
+        {
+            'proxy': ['FakeFileIO', 'open'],
+            'pathparam': {'open': 'file'},
+        },
+        Installation(system),
+        pathpredicate=predicate,
+    )
 
     writer = MemoryWriter()
 
@@ -368,7 +379,7 @@ def test_patch_proxy_function_record_replay():
     system = System()
     system.immutable_types.update({int, float, str, bytes, bool, type, type(None)})
 
-    patch(fake_module, {'proxy': ['get_count']}, system)
+    patch(fake_module, {'proxy': ['get_count']}, Installation(system))
 
     # Should be replaced with a patch_function wrapper
     assert fake_module['get_count'] is not get_count

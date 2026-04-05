@@ -8,6 +8,7 @@ import sys
 import retracesoftware.utils as utils
 import retracesoftware.functional as functional
 import importlib
+from retracesoftware.install.installation import Installation
 
 
 # ── Hash patching ──────────────────────────────────────────────────
@@ -60,7 +61,7 @@ def install_hash_patching(system):
 
 # ── Lightweight patcher for System ─────────────────────────────────
 #
-# patch(module, spec, system) applies a TOML-derived patch spec to a
+# patch(module, spec, installation) applies a TOML-derived patch spec to a
 # module using the new System class (proxy/system.py).  Each TOML
 # directive maps to a System method — no closures, no thread_state.
 #
@@ -96,8 +97,8 @@ def param_predicate(signature, param_name, predicate):
     extractor = functional.param(str(param_name), idx)
     return functional.sequence(extractor, predicate) 
 
-def patch(module, spec, system, update_refs = False, pathpredicate = None, install_session = None):
-    """Apply a TOML-derived patch spec to *module* using *system*.
+def patch(module, spec, installation, update_refs = None, pathpredicate = None):
+    """Apply a TOML-derived patch spec to *module* using *installation*.
 
     Parameters
     ----------
@@ -109,9 +110,10 @@ def patch(module, spec, system, update_refs = False, pathpredicate = None, insta
         Resolved TOML config for this module.  Keys are directive names
         (``proxy``, ``immutable``, ``disable``, etc.), values are lists
         of names or nested dicts.
-    system : System
-        The proxy system that owns the gates and patching machinery.
-    update_refs : bool
+    installation : Installation
+        The installation that owns the system and install session for this
+        patch application.
+    update_refs : bool or None
         If True, globally replace old references with new values via
         ``gc.get_referrers`` (needed for already-imported modules).
     pathpredicate : callable or None
@@ -124,9 +126,20 @@ def patch(module, spec, system, update_refs = False, pathpredicate = None, insta
     -------
     callable
         An undo function that restores the namespace to its pre-patch
-        state.  Types that were ``patch_type``'d in-place are tracked
-        for later ``system.unpatch_type`` by the caller.
+        state.  Types that were ``patch_type``'d in-place are still tracked
+        on the installation's system for later ``system.unpatch_type`` by the
+        caller.
     """
+    if not isinstance(installation, Installation):
+        raise TypeError(
+            f"expected Installation, got {type(installation).__name__!r}"
+        )
+
+    system = installation.system
+    install_session = installation.install_session
+    if update_refs is None:
+        update_refs = installation.update_refs
+
     namespace = module.__dict__ if hasattr(module, '__dict__') and not isinstance(module, dict) else module
 
     # Record every mutation so we can undo them.
