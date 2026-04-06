@@ -368,7 +368,7 @@ def _unpatch_type_one(
 
         if original_attrs is None:
             for name, value in tuple(cls.__dict__.items()):
-                if isinstance(value, (utils.wrapped_function, utils.wrapped_member)):
+                if isinstance(value, utils._WrappedBase):
                     _unwrap_patched_attr(cls, name, value)
         else:
             for name, original in reversed(list(original_attrs.items())):
@@ -800,6 +800,9 @@ class System:
 
         self.checkpoint = utils.noop
 
+        self.descriptor_proxytype = functional.memoize_one_arg(self.descriptor_proxytype)        
+        self.ext_proxy = proxy(functional.memoize_one_arg(self.ext_proxytype))
+
     def wrap_async(self, function):
         return self._wrapped_function(self._int_handler, function)
 
@@ -811,7 +814,7 @@ class System:
                 functional.if_then_else(
                     self.is_patched_type,
                     functional.side_effect(self.async_new_patched),
-                    proxy(functional.memoize_one_arg(self.ext_proxytype))))
+                    self.ext_proxy))
 
         if not self.passthrough_proxyref:
             ext_leaf_proxy = \
@@ -893,6 +896,7 @@ class System:
 
     def int_executor(self, *, int_proxy, ext_proxy, hooks, external_executor):
         return functional.mapargs(
+            starting = 1,
             transform = functional.if_then_else(
                 self.ext_passthrough,
                 functional.identity,
@@ -1015,6 +1019,15 @@ class System:
                 cls not in (types.MemberDescriptorType, types.GetSetDescriptorType) and \
                 cls not in self.patched_types
 
+    def descriptor_proxytype(self, cls):
+        slots = {}
+
+        for name in ['__get__', '__set__', '__delete__']:
+            if name in cls.__dict__:
+                slots[name] = self._wrapped_function(self._ext_handler, cls.__dict__[name])
+
+        return type('FOOBAR', (utils.ExternalWrapped,), slots)
+
     def patch_type(self, cls, install_session=None):
         """Patch *cls* in-place so its methods route through the gates.
 
@@ -1105,6 +1118,7 @@ class System:
             self.bind(target)
             bound_types.append(target)
 
+
         def proxy_attrs(target_cls, attr_dict, handler, originals):
             blacklist = self._patch_type_blacklist
 
@@ -1112,7 +1126,7 @@ class System:
                 return self._wrapped_function(handler=handler, target=func)
 
             def proxy_member(member):
-                return utils.wrapped_member(handler=handler, target=member)
+                return self.descriptor_proxytype(type(member))(member)
 
             for name, value in attr_dict.items():
                 if name in blacklist:
@@ -1227,7 +1241,7 @@ class System:
             tracked_wrapped.extend(
                 value
                 for value in target.__dict__.values()
-                if isinstance(value, utils.wrapped_function)
+                if isinstance(value, utils._WrappedBase)
             )
 
             for subtype in target.__subclasses__():

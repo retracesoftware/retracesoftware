@@ -290,6 +290,29 @@ def test_system_io_replays_dynamic_internal_proxy_callback_side_effect_with_memo
     assert replay_calls == ["called"]
 
 
+@pytest.mark.xfail(
+    strict=True,
+    reason="ext_proxytype(member_descriptor) currently recurses through WrappedFunction/Gate fallback and segfaults",
+)
+def test_system_ext_proxytype_can_build_for_socket_family_descriptor_type():
+    import _socket
+    import os
+    from retracesoftware.proxy.system import System
+
+    pid = os.fork()
+    if pid == 0:
+        system = System()
+        _configure_system(system)
+        descriptor_type = type(_socket.socket.__dict__["family"])
+        system.ext_proxytype(descriptor_type)
+        os._exit(0)
+
+    _, status = os.waitpid(pid, 0)
+
+    assert os.WIFEXITED(status)
+    assert os.WEXITSTATUS(status) == 0
+
+
 @pytest.mark.parametrize("mode", ALL_IO_MODES)
 def test_system_io_round_trips_dynamic_external_proxy_generation_with_tape(mode, tape):
     writer = tape.writer()
