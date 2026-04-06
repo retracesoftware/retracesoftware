@@ -203,10 +203,12 @@ from contextlib import contextmanager
 import retracesoftware.utils as utils
 import retracesoftware.functional as functional
 import types
+import gc
 from retracesoftware.proxy.proxytype import dynamic_proxytype, method_names, superdict
 from retracesoftware.proxy.typeutils import WithoutFlags
 
 from retracesoftware.proxy.proxytype import DynamicProxy
+from retracesoftware.install.patcher import install_hash_patching
 
 def proxy(proxytype_from):
     """Create a callable that wraps a value in a proxy type."""
@@ -573,14 +575,7 @@ class System:
         """
         return utils.Gate(self.create_dispatch(disabled, external, internal))
 
-    def __init__(
-        self,
-        primary_hooks : CallHooks, 
-        secondary_hooks : CallHooks,
-        lifecycle_hooks : LifecycleHooks,
-        execute : None | Callable = None,
-        on_bind = None,
-        passthrough_proxyref = False) -> None:
+    def __init__(self, on_bind = None) -> None:
         # ── Primary gates ──────────────────────────────────────────
         #
         # _internal: ambient "retrace is enabled on this thread" gate.
@@ -599,7 +594,26 @@ class System:
         # executor slot, so recording on one thread does not affect
         # another.
 
-        self.lifecycle_hooks = lifecycle_hooks
+        self.passthrough_proxyref = False
+        self.ext_execute = utils.try_unwrap_apply
+        self.int_execute = utils.try_unwrap_apply
+
+        self.primary_hooks = CallHooks(
+            on_call = None,
+            on_result = None,
+            on_error = None,
+        )
+        self.secondary_hooks = CallHooks(
+            on_call = None,
+            on_result = None,
+            on_error = None,
+        )
+
+        self.lifecycle_hooks = LifecycleHooks(
+            on_start = None,
+            on_end = None,
+        )
+
         self.patched_types = set()
         self.immutable_types = set()
 
@@ -629,19 +643,22 @@ class System:
         # others are held strongly for the lifetime of the System.
         self.is_bound = utils.WeakSet()
         
-        def on_async_new_patched(obj):
-            if primary_hooks:
-                # this doesn't trigger the call on record, this is for replay
-                primary_hooks.on_call(utils.create_stub_object, type(obj))
+        # def on_async_new_patched(obj):
+        #     if self.primary_hooks:
+        #         # this doesn't trigger the call on record, this is for replay
+        #         self.primary_hooks.on_call(utils.create_stub_object, type(obj))
                         
-            on_bind(obj)
+        #     on_bind(obj)
 
-            if secondary_hooks.on_result:
-                secondary_hooks.on_result(obj)
+        #     if self.secondary_hooks.on_result:
+        #         self.secondary_hooks.on_result(obj)
 
         self.bind = utils.runall(self.is_bound.add, on_bind)
-        self.async_new_patched = utils.runall(self.is_bound.add, on_async_new_patched)
 
+        # self.async_new_patched = utils.runall(self.is_bound.add, on_async_new_patched)
+        self.async_new_patched = utils.noop
+
+        self.create_stub_object = utils.runall(self.is_bound.add, utils.create_stub_object)
         # Execute wrapped callables via their underlying target while leaving
         # plain callables on the normal fast path.
         self.fallback = functional.mapargs(
@@ -743,14 +760,13 @@ class System:
             self._internal.is_set, self.async_new_patched,
             utils.noop)
 
-        self.ext_proxytype_from_spec = self._wrapped_function(
-            self._int_handler, 
-            _ext_proxytype_from_spec)
+        # self._on_alloc = functional.cond(
+        #     self._external.is_set, self.bind,
+        #     utils.noop)
 
-        # self.bind(System.ext_proxytype_from_spec)
+        self.ext_proxytype_from_spec = self.wrap_async(_ext_proxytype_from_spec)
+        
         self.bind(self)
-
-        self.bind(utils.create_stub_object)
 
         self.proxy_ref = functional.memoize_one_arg(ProxyRef)
 
@@ -782,33 +798,12 @@ class System:
         self.unproxy_int = functional.walker(
             when_instanceof(utils.InternalWrapped, utils.unwrap))
 
-        self.internal_executor, self.external_executor = self.build_executors(
-            internal_hooks = CallHooks(
-                on_call = primary_hooks.on_call if primary_hooks else None,
-                on_result = secondary_hooks.on_result if secondary_hooks else None,
-                on_error = secondary_hooks.on_error if secondary_hooks else None),
-            external_hooks = CallHooks(
-                on_call = secondary_hooks.on_call if secondary_hooks else None,
-                on_result = primary_hooks.on_result if primary_hooks else None,
-                on_error = primary_hooks.on_error if primary_hooks else None),
-            execute = execute,
-            passthrough_proxyref = passthrough_proxyref)
+        self.checkpoint = utils.noop
 
-        def with_gate(gate, executor,function):
-            return functional.partial(gate.apply_with(executor), function)
+    def wrap_async(self, function):
+        return self._wrapped_function(self._int_handler, function)
 
-        def observe(function):
-            return utils.observer(
-                            on_call = functional.repeatedly(lifecycle_hooks.on_start),
-                            on_result = functional.repeatedly(lifecycle_hooks.on_end),
-                            on_error = functional.repeatedly(lifecycle_hooks.on_end),
-                            function = function)
-
-        self.thread_wrapper = lambda function: with_gate(self._external, self.external_executor, 
-                        with_gate(self._internal, self.internal_executor, observe(function)))
-
-
-    def _ext_proxy(self, passthrough_proxyref):
+    def _ext_proxy(self):
         ext_leaf_proxy = \
             functional.if_then_else(
                 self.ext_passthrough,
@@ -818,7 +813,7 @@ class System:
                     functional.side_effect(self.async_new_patched),
                     proxy(functional.memoize_one_arg(self.ext_proxytype))))
 
-        if not passthrough_proxyref:
+        if not self.passthrough_proxyref:
             ext_leaf_proxy = \
                 functional.if_then_else(
                     functional.isinstanceof(ProxyRef),
@@ -828,19 +823,25 @@ class System:
         return functional.walker(ext_leaf_proxy)
 
     def _int_proxy(self):
+
+        create_proxy = functional.sequence(
+            proxy(functional.memoize_one_arg(self.int_proxytype)),
+            functional.side_effect(self.bind))
+
         leaf_int_proxy = functional.if_then_else(
             self.int_passthrough,
             functional.identity,
-            functional.sequence(
-                proxy(functional.memoize_one_arg(self.int_proxytype)), 
-                functional.side_effect(self.async_new_patched)))
+            functional.if_then_else(
+                self.is_patched_type,
+                functional.side_effect(self.async_new_patched),
+                create_proxy))
             
         return functional.if_then_else(
             self.int_passthrough,
             functional.identity,
             functional.walker(leaf_int_proxy))
 
-    def ext_executor(self, *, int_proxy, ext_proxy, hooks, execute, passthrough_proxyref):
+    def ext_executor(self, *, int_proxy, ext_proxy, hooks):
         
         with_generic_ext_result = \
             functional.sequence(
@@ -851,7 +852,7 @@ class System:
                           hooks.on_result)),
                 self.unproxy_int)
 
-        if passthrough_proxyref:
+        if self.passthrough_proxyref:
             with_ext_result = functional.if_then_else(
                 self.passthrough,
                 functional.side_effect(hooks.on_result),
@@ -861,7 +862,7 @@ class System:
 
         _run_external = functional.partial(
             self._external.apply_with(None),
-            execute if execute else utils.try_unwrap_apply,
+            self.ext_execute,
         )
 
         external_executor = functional.sequence(_run_external, with_ext_result)
@@ -874,24 +875,21 @@ class System:
 
         with_complex_ext_call = \
             functional.mapargs(
+                starting = 1,
                 transform = functional.if_then_else(
                     self.int_passthrough,
                     functional.identity,
-                    functional.walker(int_proxy)),
+                    int_proxy),
                 function = observe(
                     functional.mapargs(
                         starting = 1,
                         function = external_executor,
-                        transform = utils.try_unwrap)))
-                    # functional.mapargs(
-                    #     transform = self.unproxy_ext,
-                    #     function = external_executor)))
+                        transform = self.unproxy_ext)))
 
         return functional.if_then_else(
             self.passthrough_call,
             observe(external_executor),
             with_complex_ext_call)
-
 
     def int_executor(self, *, int_proxy, ext_proxy, hooks, external_executor):
         return functional.mapargs(
@@ -907,7 +905,7 @@ class System:
                     function = functional.sequence(
                         functional.partial(
                             self._external.apply_with(external_executor),
-                            utils.try_unwrap_apply),
+                            self.int_execute),
                         int_proxy,
                         functional.side_effect(
                             functional.sequence(
@@ -917,35 +915,55 @@ class System:
                     ),
                     transform = self.unproxy_int)))
 
-    def build_executors(self, *, internal_hooks, external_hooks, execute, passthrough_proxyref):
-
+    @contextmanager
+    def context(self):        
         int_proxy = self._int_proxy()
-        ext_proxy = self._ext_proxy(passthrough_proxyref = passthrough_proxyref)
+        ext_proxy = self._ext_proxy()
 
         external_executor = self.ext_executor(
             int_proxy = int_proxy,
             ext_proxy = ext_proxy,
-            hooks = external_hooks,
-            execute = execute,
-            passthrough_proxyref = passthrough_proxyref)
+            hooks = CallHooks(
+                on_call = self.secondary_hooks.on_call if self.secondary_hooks else None,
+                on_result = self.primary_hooks.on_result if self.primary_hooks else None,
+                on_error = self.primary_hooks.on_error if self.primary_hooks else None))
 
         internal_executor = self.int_executor(
             int_proxy = int_proxy,
             ext_proxy = ext_proxy,
-            hooks = internal_hooks,
+            hooks = CallHooks(
+                on_call = self.primary_hooks.on_call if self.primary_hooks else None,
+                on_result = self.secondary_hooks.on_result if self.secondary_hooks else None,
+                on_error = self.secondary_hooks.on_error if self.secondary_hooks else None),
             external_executor = external_executor)
 
-        return internal_executor, external_executor
+        def with_gate(gate, executor,function):
+            return functional.partial(gate.apply_with(executor), function)
 
-    @contextmanager
-    def context(self):        
+        self.thread_wrapper = lambda function: with_gate(
+            self._external,
+            external_executor,
+            with_gate(self._internal, internal_executor, observe(function)),
+        )
+
+        def observe(function):
+            return utils.observer(
+                            on_call = functional.repeatedly(self.lifecycle_hooks.on_start),
+                            on_result = functional.repeatedly(self.lifecycle_hooks.on_end),
+                            on_error = functional.repeatedly(self.lifecycle_hooks.on_end),
+                            function = function)
+
+        self._internal.executor = internal_executor
+        self._external.executor = external_executor
+
+        gc.collect()
+
         try:
-            self._internal.executor = self.internal_executor
-            self._external.executor = self.external_executor
             self.lifecycle_hooks.on_start()
             yield
-        finally:
+        finally:            
             self.lifecycle_hooks.on_end()
+            self.thread_wrapper = None
             self._internal.executor = None
             self._external.executor = None
         
@@ -1246,6 +1264,8 @@ class System:
         assert not self.is_patched_type(cls)
         assert not issubclass(cls, utils._WrappedBase)
 
+        # return dynamic_proxytype(handler = self.int_handler, cls = cls, wrapped_base = utils.InternalWrapped)
+
         return dynamic_int_proxytype(
             handler = self.int_handler,
             cls = cls,
@@ -1264,3 +1284,20 @@ class System:
         return self.ext_proxytype_from_spec(self, module = cls.__module__, name = cls.__qualname__, methods = methods)
         # return self._internal(System.ext_proxytype_from_spec, self, 
         #                       module = cls.__module__, name = cls.__qualname__, methods = methods)
+
+    def install(self):
+        import _thread
+        import threading
+        original_start_new_thread = _thread.start_new_thread
+
+        _thread.start_new_thread = self.wrap_start_new_thread(_thread.start_new_thread)
+        threading._start_new_thread = _thread.start_new_thread
+
+        uninstall_hash_patching = install_hash_patching(self)
+
+        def uninstall():
+            _thread.start_new_thread = original_start_new_thread
+            threading._start_new_thread = original_start_new_thread
+            uninstall_hash_patching()
+
+        return uninstall

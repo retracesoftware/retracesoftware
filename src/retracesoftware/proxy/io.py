@@ -5,7 +5,7 @@ import retracesoftware.utils as utils
 
 from retracesoftware.proxy.system import CallHooks, LifecycleHooks, System
 from retracesoftware.proxy.tape import TapeReader, TapeWriter
-
+import gc
 
 class ReplayException(Exception):
     pass
@@ -35,10 +35,14 @@ def _secondary_hooks(sync, checkpoint):
             on_error=sync,
         )
 
-def recorder(*, tape_writer: TapeWriter, debug: bool = False, stacktraces: bool = False) -> System:
+def recorder(*, tape_writer: TapeWriter, 
+    debug: bool = False,
+    stacktraces: bool = False,
+    gc_collect_multiplier: int = None) -> System:
     write = tape_writer.write
     bind = tape_writer.bind
 
+    
     checkpoint = functional.partial(write, "CHECKPOINT")
 
     sync = functional.repeatedly(write, "SYNC")
@@ -65,26 +69,47 @@ def recorder(*, tape_writer: TapeWriter, debug: bool = False, stacktraces: bool 
         sync = with_stacktrace(sync)
         checkpoint = with_stacktrace(checkpoint)
 
+    system = System(on_bind)
+
+    create_stub_object = system.wrap_async(utils.create_stub_object)
+    collect = system.wrap_async(gc.collect)
+
+    system.checkpoint = functional.if_then_else(
+        functional.repeatedly(system._in_sandbox),
+        checkpoint, utils.noop)
+
+    system.lifecycle_hooks = LifecycleHooks(
+            on_start = on_start,
+            on_end = functional.repeatedly(write, "ON_END"))
+            
     on_call = functional.pack_call(1, functional.partial(write, "CALL"))
     on_result = functional.partial(write, "RESULT")
     on_error = functional.sequence(functional.positional_param(1), functional.partial(write, "ERROR"))
 
-    return System(
-        primary_hooks=CallHooks(
+    if gc_collect_multiplier:
+        gc_collector = utils.Collector(multiplier = gc_collect_multiplier, collect = collect)
+        on_result = utils.observer(on_call = gc_collector, function = on_result)
+        
+    system.primary_hooks = CallHooks(
             on_call = on_call,
             on_result = on_result,
-            on_error = on_error,
-        ),
-        secondary_hooks = _secondary_hooks(
+            on_error = on_error)
+
+    system.secondary_hooks = _secondary_hooks(
             sync = sync,
             checkpoint = checkpoint if debug else None,
-        ),
-        lifecycle_hooks=LifecycleHooks(
-            on_start=on_start,
-            on_end=functional.repeatedly(write, "ON_END")),
-        on_bind=on_bind,
-        passthrough_proxyref=True,
-    )
+        )
+
+    def async_new_patched(obj):
+        system.primary_hooks.on_call(create_stub_object, type(obj))
+        system.bind(obj)
+        system.secondary_hooks.on_result(obj)
+
+    system.async_new_patched = async_new_patched
+
+    system.passthrough_proxyref = True
+
+    return system
 
 @contextmanager
 def recorder_context(**kwargs):
@@ -188,19 +213,31 @@ def replayer(*, tape_reader: TapeReader, on_desync = None, debug: bool = False, 
 
         bind = functional.sequence(next_stacktrace, bind)
 
-    return System(
-        primary_hooks = None,
-        secondary_hooks = _secondary_hooks(
-            sync = functional.repeatedly(expect, "SYNC"),
-            checkpoint = checkpoint if debug else None,
-        ),
-        lifecycle_hooks=LifecycleHooks(
-            on_start=functional.repeatedly(expect, "ON_START"),
-            on_end=functional.repeatedly(expect, "ON_END")),
+    system = System(bind)
 
-        execute=functional.repeatedly(utils.striptraceback(next_result)),
-        on_bind=bind,
-    )
+    system.wrap_async(utils.create_stub_object)
+    system.wrap_async(gc.collect)
+
+    system.checkpoint = functional.if_then_else(
+        functional.repeatedly(system._in_sandbox),
+        checkpoint, utils.noop)
+
+    system.primary_hooks = None
+
+    system.secondary_hooks = _secondary_hooks(
+        sync = functional.repeatedly(expect, "SYNC"),
+        checkpoint = checkpoint if debug else None)
+
+    system.lifecycle_hooks=LifecycleHooks(
+        on_start=functional.repeatedly(expect, "ON_START"),
+        on_end=functional.repeatedly(expect, "ON_END"))
+
+    system.ext_execute = functional.repeatedly(utils.striptraceback(next_result))
+
+    # system.async_new_patched = utils.noop
+
+    return system
+
 
 @contextmanager
 def replayer_context(**kwargs):

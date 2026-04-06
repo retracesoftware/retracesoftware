@@ -8,7 +8,8 @@ Many bugs that look like proxy or replay bugs are actually install-layer bugs.
 ## Current Core Files
 
 - `__init__.py`
-  Bootstraps retrace inside a live Python process via `run_with_context`.
+  Bootstraps retrace inside a live Python process via `install_retrace` and
+  `install_and_run`.
 - `session.py`
   Tracks install-time wrapped callback identity and binds canonical callback
   targets when record/replay contexts become active.
@@ -30,8 +31,9 @@ Many bugs that look like proxy or replay bugs are actually install-layer bugs.
 
 - The install layer is the bridge between the abstract record/replay boundary
   and the live Python interpreter.
-- `run_with_context()` sets up the runtime, enters the active record/replay
-  context, runs the target command, then tears everything back down.
+- `install_retrace()` installs the process-global runtime, and
+  `install_and_run()` executes user code inside the active record/replay
+  context.
 - Thread ids are hierarchical tuples built through thread middleware; changes
   to startup/wrapping can break replay routing even if the program still runs.
 - Module patching is driven by `src/retracesoftware/modules/*.toml`.
@@ -87,8 +89,9 @@ Many bugs that look like proxy or replay bugs are actually install-layer bugs.
 - Prefer fixing interception coverage in `modules/*.toml` or `patcher.py`
   before changing deeper runtime semantics.
 - Be explicit about lifecycle: install, patch, run, uninstall.
-- `run_with_context()` also owns thread-id initialization, hook installation,
-  module patching order, and teardown order. Treat it as a lifecycle coordinator.
+- `install_retrace()` / `install_and_run()` own thread-id initialization, hook
+  installation, module patching order, and teardown order. Treat them as the
+  lifecycle coordinators.
 - Any hook that can recurse into Python execution must be reviewed for gate
   bypass and re-entrancy behavior.
 - Treat `InstallSession`, callback normalization, and wrapped-attr registration

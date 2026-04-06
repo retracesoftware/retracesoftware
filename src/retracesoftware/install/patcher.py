@@ -43,7 +43,14 @@ def install_hash_patching(system):
         disabled = functional.constantly(None),
         external = utils.counter(),
         internal = utils.counter())
-    utils.patch_hashes(hashfunc, object, types.FunctionType)
+    for cls in (object, types.FunctionType):
+        try:
+            utils.patch_hashes(hashfunc, cls)
+        except TypeError:
+            # Hash patching is process-global and currently not truly
+            # uninstallable. Repeated installs in one process should
+            # therefore be harmless rather than failing.
+            pass
 
     def uninstall():
         # The hash types were already patched during install, and the C API
@@ -137,13 +144,14 @@ def patch(module, spec, installation, update_refs = None, pathpredicate = None):
 
     system = installation.system
     install_session = installation.install_session
+    replay_materialize = getattr(system, "replay_materialize", None)
     if update_refs is None:
         update_refs = installation.update_refs
 
     namespace = module.__dict__ if hasattr(module, '__dict__') and not isinstance(module, dict) else module
 
     # Record every mutation so we can undo them.
-    ns_undos = []       # (name, old_value) for namespace replacements
+    ns_undos = []       # (name, old_value, new_value, ref_update_mode) for namespace replacements
     originals = {}      # name → first (pre-patch) value
     added_immutables = []  # types added to system.immutable_types
     added_replay_materialize = []  # callables added to system.replay_materialize
@@ -167,9 +175,10 @@ def patch(module, spec, installation, update_refs = None, pathpredicate = None):
         """Replace *name* in the namespace and optionally update refs."""
         if old is not new:
             namespace[name] = new
-            ns_undos.append((name, old))
+            ns_undos.append((name, old, new, "all" if update_refs else None))
             originals.setdefault(name, old)
             if update_refs:
+                update_module_refs(old, new)
                 update(old, new)
 
     for directive, config in spec.items():
@@ -187,6 +196,8 @@ def patch(module, spec, installation, update_refs = None, pathpredicate = None):
                     raise RuntimeError(
                         f"failed to patch {module_name}.{name}"
                     ) from exc
+                if isinstance(value, type):
+                    installation._track_type(value)
                 _apply(name, value, patched)
 
         elif directive == 'patch_types':
@@ -196,6 +207,7 @@ def patch(module, spec, installation, update_refs = None, pathpredicate = None):
                 value = namespace[name]
                 if isinstance(value, type):
                     system.patch_type(value, install_session=install_session)
+                    installation._track_type(value)
 
         elif directive == 'immutable':
             for name in config:
@@ -213,9 +225,9 @@ def patch(module, spec, installation, update_refs = None, pathpredicate = None):
                 value = namespace[name]
                 if isinstance(value, type) and issubclass(value, enum.Enum):
                     for member in value:
-                        system._bind(member)
+                        system.bind(member)
                 else:
-                    system._bind(value)
+                    system.bind(value)
 
         elif directive == 'disable':
             for name in config:
@@ -235,12 +247,14 @@ def patch(module, spec, installation, update_refs = None, pathpredicate = None):
                 _apply(name, value, new)
 
         elif directive == 'replay_materialize':
+            if replay_materialize is None:
+                continue
             for name in config:
                 if name not in namespace:
                     continue
                 value = originals.get(name, namespace[name])
                 if callable(value):
-                    system.replay_materialize.add(value)
+                    replay_materialize.add(value)
                     added_replay_materialize.append(value)
 
         elif directive == 'patch_class':
@@ -260,18 +274,19 @@ def patch(module, spec, installation, update_refs = None, pathpredicate = None):
                     continue
                 cls = namespace[name]
                 with modify(cls):
-                    for sub_directive, sub_names in sub_spec.items():
-                        # Recurse: sub_spec is e.g. {"proxy": ["now", "utcnow"]}
-                        # but targets are attributes on the class, not the module
-                        cls_ns = {attr: getattr(cls, attr)
-                                  for attr in (sub_names if isinstance(sub_names, list) else sub_names.keys())
-                                  if hasattr(cls, attr)}
-                        patch(
-                            cls_ns,
-                            {sub_directive: sub_names},
-                            system,
-                            install_session=install_session,
-                        )
+                        for sub_directive, sub_names in sub_spec.items():
+                            # Recurse: sub_spec is e.g. {"proxy": ["now", "utcnow"]}
+                            # but targets are attributes on the class, not the module
+                            cls_ns = {attr: getattr(cls, attr)
+                                      for attr in (sub_names if isinstance(sub_names, list) else sub_names.keys())
+                                      if hasattr(cls, attr)}
+                            patch(
+                                cls_ns,
+                                {sub_directive: sub_names},
+                                installation,
+                                update_refs=update_refs,
+                                pathpredicate=pathpredicate,
+                            )
                         for attr, new_val in cls_ns.items():
                             old_val = getattr(cls, attr, None)
                             if old_val is not new_val:
@@ -290,7 +305,7 @@ def patch(module, spec, installation, update_refs = None, pathpredicate = None):
 
                         wrapped = functional.if_then_else(should_retrace, patched, system.disable_for(patched))
                         namespace[name] = wrapped
-                        ns_undos.append((name, patched))
+                        ns_undos.append((name, patched, wrapped, "module"))
                         originals.setdefault(name, patched)
                         if update_refs:
                             update_module_refs(patched, wrapped)
@@ -304,13 +319,19 @@ def patch(module, spec, installation, update_refs = None, pathpredicate = None):
     def undo():
         """Reverse all namespace mutations made by this patch call."""
         # Restore namespace entries in reverse order.
-        for name, old_value in reversed(ns_undos):
+        for name, old_value, new_value, ref_update_mode in reversed(ns_undos):
             namespace[name] = old_value
+            if ref_update_mode == "module":
+                update_module_refs(new_value, old_value)
+            elif ref_update_mode == "all":
+                update_module_refs(new_value, old_value)
+                update(new_value, old_value)
         # Remove types we added to the immutable set.
         for cls in added_immutables:
             system.immutable_types.discard(cls)
-        for fn in added_replay_materialize:
-            system.replay_materialize.discard(fn)
+        if replay_materialize is not None:
+            for fn in added_replay_materialize:
+                replay_materialize.discard(fn)
 
     return undo
 

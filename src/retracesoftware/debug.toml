@@ -28,5 +28,12 @@ stacktraces = true
 trace_shutdown = false
 trace_inputs = false
 
+# Trigger gc.collect at intercepted safe points when GC pressure is due.
+# 0 disables this entirely. Larger values make collection more eager,
+# because the underlying predicate checks count * multiplier > threshold.
+# This is useful for making weakref/finalizer timing more reproducible
+# during debugging without depending on ambient GC timing.
+gc_collect_multiplier = 0
+
 # Terminate on serialization errors instead of silently dropping them.
 quit_on_error = true

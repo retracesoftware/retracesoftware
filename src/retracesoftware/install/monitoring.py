@@ -19,7 +19,7 @@ Usage::
 
     from retracesoftware.install.monitoring import install_monitoring
 
-    uninstall = install_monitoring(system, checkpoint_fn, level=1)
+    uninstall = install_monitoring(checkpoint_fn, level=1)
     # ... run ...
     uninstall()
 """
@@ -29,7 +29,7 @@ import os
 import _thread
 
 if sys.version_info < (3, 12):
-    def install_monitoring(system, checkpoint_fn, level):
+    def install_monitoring(checkpoint_fn, level):
         raise RuntimeError(
             f"--monitor requires Python 3.12+ (have {sys.version})")
 else:
@@ -67,20 +67,16 @@ else:
                         dirs.add(d)
         return tuple(sorted(dirs))
 
-    def install_monitoring(system, checkpoint_fn, level):
+    def install_monitoring(checkpoint_fn, level):
         """Register ``sys.monitoring`` callbacks for divergence detection.
 
         Parameters
         ----------
-        system : System
-            The proxy system — ``system._in_sandbox`` is used to guard
-            callbacks so they only fire inside a record/replay context.
         checkpoint_fn : callable(str)
             Called with a compact event string (e.g. ``"PY_START:foo"``).
             During recording this writes a MONITOR message; during replay
             it verifies against the next MONITOR message in the stream.
-            Must already be wrapped with ``system.disable_for`` by the
-            caller.
+            Must already be a no-op outside the active sandbox/context.
         level : int
             Granularity level (1–3).  Level 0 should never reach here.
 
@@ -94,7 +90,6 @@ else:
 
         events = MONITOR_LEVELS[level]
         retrace_dirs = _build_retrace_dirs()
-        in_sandbox = system._in_sandbox
 
         # Thread-local reentrancy guard.
         _guard = _thread._local()
@@ -109,8 +104,6 @@ else:
                 return sys.monitoring.DISABLE
             if getattr(_guard, 'active', False):
                 return
-            if not in_sandbox():
-                return
             _guard.active = True
             try:
                 checkpoint_fn('S:' + code.co_qualname)
@@ -121,8 +114,6 @@ else:
             if _is_retrace(code.co_filename):
                 return sys.monitoring.DISABLE
             if getattr(_guard, 'active', False):
-                return
-            if not in_sandbox():
                 return
             _guard.active = True
             try:
@@ -137,8 +128,6 @@ else:
                 return sys.monitoring.DISABLE
             if getattr(_guard, 'active', False):
                 return
-            if not in_sandbox():
-                return
             _guard.active = True
             try:
                 qn = getattr(callable_obj, '__qualname__',
@@ -151,8 +140,6 @@ else:
             if _is_retrace(code.co_filename):
                 return sys.monitoring.DISABLE
             if getattr(_guard, 'active', False):
-                return
-            if not in_sandbox():
                 return
             _guard.active = True
             try:
@@ -168,8 +155,6 @@ else:
             if _is_retrace(code.co_filename):
                 return sys.monitoring.DISABLE
             if getattr(_guard, 'active', False):
-                return
-            if not in_sandbox():
                 return
             _guard.active = True
             try:

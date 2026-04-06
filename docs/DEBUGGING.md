@@ -43,6 +43,7 @@ RETRACE_DEBUG=1 python -m retracesoftware \
 |---|---|
 | `--verbose` | Prints every message the writer emits to stdout, tagged with PID, message index, and byte offset. |
 | `--stacktraces` | Captures a stack delta for every proxied call and writes it to the trace as a `STACKTRACE` message.  Invaluable for identifying *where* a particular message originates. |
+| `--gc_collect_multiplier N` | Triggers `gc.collect(gen)` at intercepted safe points when GC pressure is due. `0` disables it. Larger values make collection more eager because retrace checks `count * multiplier > threshold`. Useful for reducing weakref/finalizer timing drift. |
 | `--write_timeout N` | Backpressure timeout in seconds.  `0` = drop immediately, omit = wait forever. |
 | `--workspace PATH` | Generate a VS Code workspace directory with sidecar files (`settings.json`, `.env`, checksums, launch config). |
 | `--monitor N` | Enable `sys.monitoring` divergence detection (Python 3.12+).  `0` = off (default), `1` = Python calls/returns, `2` = + C calls, `3` = + line events.  See [Monitor mode](#7-using-monitor-mode) below. |

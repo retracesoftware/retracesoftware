@@ -781,6 +781,7 @@ PyMODINIT_FUNC CONCAT(PyInit_, MODULE_NAME)(void) {
         &retracesoftware::Observer_Type,
         &retracesoftware::PerThread_Type,
         &retracesoftware::CollectPred_Type,
+        &retracesoftware::Collector_Type,
         &retracesoftware::RunAll_Type,
         &retracesoftware::StackFactory_Type,
         &retracesoftware::Stack_Type,

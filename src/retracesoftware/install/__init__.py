@@ -2,119 +2,90 @@
 
 Provides:
 
-- ``run_with_context`` for bootstrapping the retrace hook machinery.
+- ``install_retrace`` / ``install_and_run`` for bootstrapping retrace.
 - ``install_for_pytest`` for in-process testing with a ``TestRunner``
   that records then replays a function call, raising on divergence.
 """
 
 import importlib
 import importlib.resources
+import atexit
+import os
+from contextlib import contextmanager
+from retracesoftware import functional
+from retracesoftware import utils
 
 _pytest_runner = None
 _pytest_installed_modules = set()
 
-def run_with_context(system,
-                     thread_id,
-                     argv, 
-                     wrap_callback, 
-                     trace_shutdown=False, 
-                     on_ready=None,
-                     monitor_level=0, 
-                     monitor_fn=None, 
-                     retrace_file_patterns=None,
-                     verbose=False,
-                     install_session=None):
-    """Run a Python command inside a System context (record or replay).
+def install_retrace(*, system, retrace_file_patterns=None, monitor_level=0, verbose=False, retrace_shutdown=True):
+    """Install process-global retrace hooks for a configured ``System``.
 
-    Parameters
-    ----------
-    system : System
-        The proxy system (new gate-based System from proxy/system.py).
-    context : context manager
-        A context built by ``record_context(system, writer)`` or
-        ``replay_context(system, reader)`` — any context manager that
-        activates the system's gates for the duration.  Must be
-        reusable (child threads enter the same context).
-    argv : list[str]
-        Command-line arguments: ``['-m', 'module', ...]`` or
-        ``['script.py', ...]``.
-    wrap_callback : callable(callback) → callback
-        Wraps a weakref callback for recording/replaying.  Built by
-        the caller using ``utils.observer`` and the appropriate
-        adapter hooks (``on_weakref_callback_start/end``).
-    trace_shutdown : bool
-        If True, atexit hooks run inside the context so their I/O
-        is recorded/replayed.  If False, atexit hooks run after
-        the context exits.
-    monitor_level : int
-        ``sys.monitoring`` granularity (0=off, 1–3=increasingly fine).
-    monitor_fn : callable or None
-        Checkpoint function for monitoring events, already wrapped
-        with ``system.disable_for``.  None when ``monitor_level`` is 0.
-    retrace_file_patterns : str or None
-        Path to an extra file of regex patterns for path-based
-        retrace filtering.  ``None`` uses shipped defaults only.
-    verbose : bool
-        If True, enable verbose logging (e.g. path predicate decisions).
+    Returns an uninstall callable that removes import/thread/monitoring hooks
+    and undoes any module/type mutations tracked through the installation.
     """
-    import sys
     import atexit
-    import _thread
+    import functools
     import threading
-    import retracesoftware.functional as functional
-    import retracesoftware.utils as utils
-    from retracesoftware.run import run_python_command
     from retracesoftware.modules import ModuleConfigResolver
     from retracesoftware.install.installation import Installation
-    from retracesoftware.install.patcher import patch, install_hash_patching
+    from retracesoftware.install.patcher import patch
     from retracesoftware.install.importhook import install_import_hooks, patch_already_loaded
-    from retracesoftware.install.hooks import install_weakref_hooks, init_weakref
-    from retracesoftware.install.session import InstallSession
-
-    if install_session is None:
-        install_session = InstallSession()
-
-    # counter = utils.ThreadLocal(0)
-
-    # thread_id.set(())
-
-    # def inc(x): return x + 1
-
-    # def next_thread_id():
-    #     current = thread_id.get()
-    #     if current is not None and system._out_sandbox():
-    #         new_id = current + (counter.update(inc),)
-    #         return new_id
-    #     return None
-
-    # utils.add_thread_middleware(lambda: thread_id.context(next_thread_id()))
-    original_start_new_thread = _thread.start_new_thread
-
-    _thread.start_new_thread = functional.if_then_else(
-        functional.repeatedly(system.enabled),
-        thread_id.wrap_start_new_thread(_thread.start_new_thread),
-        _thread.start_new_thread)
-
-    _thread.start_new_thread = system.wrap_start_new_thread(_thread.start_new_thread)
-    threading._start_new_thread = _thread.start_new_thread
-
-    def uninstall_thread_start():
-        _thread.start_new_thread = original_start_new_thread
-        threading._start_new_thread = original_start_new_thread
 
     uninstallers = []
-
-    # ── one-time system setup ─────────────────────────────────
-    uninstallers.append(uninstall_thread_start)
-    uninstallers.append(install_hash_patching(system))
-    uninstallers.append(install_weakref_hooks(system, wrap_callback))
-    init_weakref()
+    patch_undos = []
 
     if monitor_level > 0:
         from retracesoftware.install.monitoring import install_monitoring
-        uninstallers.append(install_monitoring(system, monitor_fn, monitor_level))
+        uninstallers.append(install_monitoring(system.checkpoint, monitor_level))
 
-    # ── preload commonly-used modules before patching ─────────
+    uninstallers.append(system.install())
+
+    if retrace_shutdown:
+        original_atexit_register = atexit.register
+        original_atexit_unregister = atexit.unregister
+        original_threading_register_atexit = threading._register_atexit
+        shutdown_tracing_enabled = True
+        wrapped_atexit_callbacks = {}
+
+        def traced_shutdown_callback(function, args, kwargs):
+            if shutdown_tracing_enabled:
+                with system.context():
+                    return function(*args, **kwargs)
+            return function(*args, **kwargs)
+
+        def register_atexit(function, *args, **kwargs):
+            wrapped = functools.partial(traced_shutdown_callback, function, args, kwargs)
+            wrapped_atexit_callbacks.setdefault(function, []).append(wrapped)
+            original_atexit_register(wrapped)
+            return function
+
+        def unregister_atexit(function):
+            for wrapped in wrapped_atexit_callbacks.pop(function, ()):
+                original_atexit_unregister(wrapped)
+            return original_atexit_unregister(function)
+
+        def register_threading_atexit(function, *args, **kwargs):
+            return original_threading_register_atexit(
+                traced_shutdown_callback,
+                function,
+                args,
+                kwargs,
+            )
+
+        atexit.register = register_atexit
+        atexit.unregister = unregister_atexit
+        threading._register_atexit = register_threading_atexit
+
+        def uninstall_shutdown_tracing():
+            nonlocal shutdown_tracing_enabled
+            shutdown_tracing_enabled = False
+            atexit.register = original_atexit_register
+            atexit.unregister = original_atexit_unregister
+            threading._register_atexit = original_threading_register_atexit
+
+        uninstallers.append(uninstall_shutdown_tracing)
+
     try:
         preload = importlib.resources.files("retracesoftware").joinpath("preload.txt").read_bytes()
     except (FileNotFoundError, TypeError):
@@ -125,9 +96,8 @@ def run_with_context(system,
         except ModuleNotFoundError:
             pass
 
-    # ── build the module patcher ──────────────────────────────
     module_config = ModuleConfigResolver()
-    patch_undos = []
+    installation = Installation(system)
 
     from retracesoftware.install.pathpredicate import load_patterns, make_pathpredicate
     pathpredicate = make_pathpredicate(load_patterns(retrace_file_patterns), verbose=verbose)
@@ -135,59 +105,81 @@ def run_with_context(system,
     def module_patcher(namespace, update_refs, module_name=None):
         name = module_name or namespace.get('__name__')
         if name and name in module_config:
-            installation = Installation(
-                system,
-                install_session=install_session,
-                update_refs=update_refs,
-            )
             undo = patch(
                 namespace,
                 module_config[name],
                 installation,
+                update_refs=update_refs,
                 pathpredicate=pathpredicate,
             )
-            patch_undos.append(undo)
+            if undo is not None:
+                patch_undos.append(undo)
 
-    # ── patch already-loaded modules, install hooks, run ──────
     patch_already_loaded(module_patcher, module_config)
     uninstallers.append(install_import_hooks(system.disable_for, module_patcher))
 
-    if on_ready:
-        on_ready()
+    uninstalled = False
 
-    try:
-        with system.context():
-            for cls in sorted(system.patched_types, key=lambda c: c.__qualname__):
-                system._bind(cls)
-            try:
-                run_python_command(argv)
-            finally:
-                if trace_shutdown:
-                    try:
-                        system.disable_for(threading._shutdown)()
-                        atexit._run_exitfuncs()
-                    except Exception as e:
-                        print(f"Error in atexit hook: {e}", file=sys.stderr)
-
-        if not trace_shutdown:
-            try:
-                system.disable_for(threading._shutdown)()
-                atexit._run_exitfuncs()
-            except Exception as e:
-                print(f"Error in atexit hook: {e}", file=sys.stderr)
-    finally:
-        # Undo module patches in reverse order (namespace + immutables).
+    def uninstall():
+        nonlocal uninstalled
+        if uninstalled:
+            return
+        uninstalled = True
         for undo in reversed(patch_undos):
             undo()
+        installation.uninstall()
+        for uninstall_one in reversed(uninstallers):
+            uninstall_one()
 
-        # Unpatch all types that were modified in-place.
-        if hasattr(system, 'unpatch_type'):
-            for cls in list(system.patched_types):
-                system.unpatch_type(cls)
+    return uninstall
 
-        # Uninstall hooks in reverse order.
-        for uninstall in reversed(uninstallers):
+def install_and_run(*, system, options, function, args = (), kwargs = {}, post_install = None):
+    uninstall = install_retrace(
+        system = system, 
+        monitor_level=getattr(options, 'monitor', 0),
+        retrace_file_patterns=getattr(options, 'retrace_file_patterns', None),
+        verbose=options.verbose,
+        retrace_shutdown=options.trace_shutdown)
+
+    if post_install is not None:
+        uninstall = utils.runall(post_install, uninstall)
+
+    if options.trace_shutdown:
+        atexit.register(uninstall)
+        with system.context():
+            return function(*args, **kwargs)  
+    else:
+        try:
+            with system.context():
+                return function(*args, **kwargs)  
+        finally:
             uninstall()
+
+def patch_fork_for_replay(disable_for):
+    _gate_fork = os.fork
+
+    def post_fork_replay(recorded_result):
+        if recorded_result == 0:
+            pid = disable_for(_gate_fork)()
+            if pid != 0:
+                disable_for(os._exit)(0)
+        return recorded_result
+
+    os.fork = functional.sequence(_gate_fork, post_fork_replay)
+
+    def uninstall_fork():
+        os.fork = _gate_fork
+        
+    return uninstall_fork
+
+
+def install_checkpoint_hooks(checkpoint_fn, monitor_level):
+    if monitor_level <= 0:
+        return utils.noop
+
+    from retracesoftware.install.monitoring import install_monitoring
+
+    return install_monitoring(checkpoint_fn, monitor_level)
 
 
 # ── Divergence exception ──────────────────────────────────────
@@ -238,6 +230,112 @@ class Recording:
         self.tape = tape
         self.result = result
         self.error = error
+
+
+@contextmanager
+def _temporary_runner_context(
+    system,
+    *,
+    bind,
+    primary_hooks,
+    secondary_hooks,
+    lifecycle_hooks,
+    checkpoint,
+    ext_execute=None,
+):
+    from retracesoftware.proxy.system import CallHooks, LifecycleHooks
+
+    old_bind = system.bind
+    old_async_new_patched = system.async_new_patched
+    old_primary_hooks = system.primary_hooks
+    old_secondary_hooks = system.secondary_hooks
+    old_lifecycle_hooks = system.lifecycle_hooks
+    old_checkpoint = system.checkpoint
+    old_ext_execute = system.ext_execute
+
+    def on_async_new_patched(obj):
+        if system.primary_hooks and system.primary_hooks.on_call:
+            system.primary_hooks.on_call(utils.create_stub_object, type(obj))
+
+        bind(obj)
+
+        if system.secondary_hooks and system.secondary_hooks.on_result:
+            system.secondary_hooks.on_result(obj)
+
+    system.bind = utils.runall(system.is_bound.add, bind)
+    system.async_new_patched = utils.runall(system.is_bound.add, on_async_new_patched)
+    system.primary_hooks = CallHooks(*primary_hooks)
+    system.secondary_hooks = CallHooks(*secondary_hooks)
+    system.lifecycle_hooks = LifecycleHooks(*lifecycle_hooks)
+    system.checkpoint = checkpoint
+
+    if ext_execute is not None:
+        system.ext_execute = ext_execute
+
+    try:
+        with system.context():
+            yield
+    finally:
+        system.bind = old_bind
+        system.async_new_patched = old_async_new_patched
+        system.primary_hooks = old_primary_hooks
+        system.secondary_hooks = old_secondary_hooks
+        system.lifecycle_hooks = old_lifecycle_hooks
+        system.checkpoint = old_checkpoint
+        system.ext_execute = old_ext_execute
+
+
+def _record_context_for_runner(system, writer, *, on_start=None, on_end=None):
+    checkpoint_call = functional.pack_call(
+        1,
+        lambda fn, args, kwargs: writer.checkpoint(
+            {
+                "function": fn,
+                "args": args,
+                "kwargs": kwargs,
+            }
+        ),
+    )
+
+    return _temporary_runner_context(
+        system,
+        bind=writer.bind,
+        primary_hooks=(writer.write_call, writer.write_result, writer.write_error),
+        secondary_hooks=(
+            checkpoint_call,
+            writer.checkpoint,
+            functional.sequence(functional.positional_param(1), writer.checkpoint),
+        ),
+        lifecycle_hooks=(utils.runall(on_start), utils.runall(on_end)),
+        checkpoint=writer.checkpoint,
+    )
+
+
+def _replay_context_for_runner(system, reader, *, on_start=None, on_end=None):
+    checkpoint_call = functional.pack_call(
+        1,
+        lambda fn, args, kwargs: reader.checkpoint(
+            {
+                "function": fn,
+                "args": args,
+                "kwargs": kwargs,
+            }
+        ),
+    )
+
+    return _temporary_runner_context(
+        system,
+        bind=reader.bind,
+        primary_hooks=(reader.write_call, None, None),
+        secondary_hooks=(
+            checkpoint_call,
+            reader.checkpoint,
+            functional.sequence(functional.positional_param(1), reader.checkpoint),
+        ),
+        lifecycle_hooks=(utils.runall(on_start), utils.runall(on_end)),
+        checkpoint=reader.checkpoint,
+        ext_execute=functional.repeatedly(reader.read_result),
+    )
 
 
 # ── Test runner ───────────────────────────────────────────────
@@ -312,7 +410,6 @@ class TestRunner:
         import retracesoftware.functional as functional
         from retracesoftware.testing.protocol_memory import MemoryWriter
         from retracesoftware.install.startthread import patch_thread_start
-        from retracesoftware.proxy.contexts import record_context
 
         callback_binding_hooks = {}
         if self._install_session is not None:
@@ -321,19 +418,17 @@ class TestRunner:
             )
 
         writer = MemoryWriter(thread=threading.get_ident)
-        context = record_context(self._system, 
+        context = _record_context_for_runner(self._system,
             writer,
             **callback_binding_hooks,
         )
         error = None
         result = None
 
-        uninstall_monitor = None
-        if monitor > 0:
-            from retracesoftware.install.monitoring import install_monitoring
-            monitor_fn = self._system.disable_for(writer.monitor_event)
-            uninstall_monitor = install_monitoring(
-                self._system, monitor_fn, monitor)
+        uninstall_monitor = install_checkpoint_hooks(
+            self._system.disable_for(writer.monitor_event),
+            monitor,
+        )
 
         def wrapper(fn):
             def wrapped(*a, **kw):
@@ -346,7 +441,7 @@ class TestRunner:
             internal=functional.identity,
             disabled=functional.identity)
 
-        patch_thread_start(dispatch)
+        uninstall_thread_patch = patch_thread_start(dispatch)
 
         try:
             with context:
@@ -355,8 +450,8 @@ class TestRunner:
                 except Exception as exc:
                     error = exc
         finally:
-            if uninstall_monitor:
-                uninstall_monitor()
+            uninstall_thread_patch()
+            uninstall_monitor()
 
         return Recording(writer.tape, result, error)
 
@@ -385,7 +480,6 @@ class TestRunner:
         import retracesoftware.functional as functional
         from retracesoftware.testing.protocol_memory import MemoryReader
         from retracesoftware.install.startthread import patch_thread_start
-        from retracesoftware.proxy.contexts import replay_context
 
         callback_binding_hooks = {}
         if self._install_session is not None:
@@ -395,19 +489,18 @@ class TestRunner:
 
         reader = MemoryReader(recording.tape, timeout=timeout,
                               monitor_enabled=(monitor > 0))
-        context = replay_context(self._system, 
+        context = _replay_context_for_runner(self._system,
             reader,
             **callback_binding_hooks,
         )
 
-        uninstall_monitor = None
-        if monitor > 0:
-            from retracesoftware.install.monitoring import install_monitoring
-            def _verify(value):
-                reader.monitor_checkpoint(value)
-            monitor_fn = self._system.disable_for(_verify)
-            uninstall_monitor = install_monitoring(
-                self._system, monitor_fn, monitor)
+        def _verify(value):
+            reader.monitor_checkpoint(value)
+
+        uninstall_monitor = install_checkpoint_hooks(
+            self._system.disable_for(_verify),
+            monitor,
+        )
 
         def wrapper(fn):
             def wrapped(*a, **kw):
@@ -420,7 +513,7 @@ class TestRunner:
             internal=functional.identity,
             disabled=functional.identity)
 
-        patch_thread_start(dispatch)
+        uninstall_thread_patch = patch_thread_start(dispatch)
 
         try:
             try:
@@ -474,8 +567,8 @@ class TestRunner:
 
             return recording.result
         finally:
-            if uninstall_monitor:
-                uninstall_monitor()
+            uninstall_thread_patch()
+            uninstall_monitor()
 
     # ── convenience: record + replay in one call ──────────────
 

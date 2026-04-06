@@ -51,6 +51,7 @@ _ENV_OVERRIDES = {
     "RETRACE_STACKTRACES":    ("record", "stacktraces", bool),
     "RETRACE_SHUTDOWN":       ("record", "trace_shutdown", bool),
     "RETRACE_TRACE_INPUTS":   ("record", "trace_inputs", bool),
+    "RETRACE_GC_COLLECT_MULTIPLIER": ("record", "gc_collect_multiplier", str),
     "RETRACE_RECORDING":      ("record", "recording", str),
     "RETRACE_WORKSPACE_PATH": ("record", "workspace", str),
     "RETRACE_FILE_PATTERNS":  ("record", "retrace_file_patterns", str),
@@ -112,6 +113,8 @@ def config_to_argv(config):
         argv.append("--trace_shutdown")
     if record.get("trace_inputs"):
         argv.append("--trace_inputs")
+    if "gc_collect_multiplier" in record:
+        argv.extend(["--gc_collect_multiplier", str(record["gc_collect_multiplier"])])
     if record.get("quit_on_error"):
         argv.append("--quit_on_error")
     if "workspace" in record:

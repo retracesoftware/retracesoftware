@@ -102,9 +102,10 @@ class Installation:
 
     @staticmethod
     def _apply_ref_updates(old, new, *, module_refs_only):
-        if module_refs_only:
-            update_module_refs(old, new)
-        else:
+        # Module namespace aliases are a core install surface and must be
+        # restored deterministically even when their dicts are GC-untracked.
+        update_module_refs(old, new)
+        if not module_refs_only:
             update(old, new)
 
     def replace(self, module, name, new, *, update_refs=None, module_refs_only=None):

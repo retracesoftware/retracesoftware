@@ -38,5 +38,13 @@ trace_shutdown = false
 # Record call arguments for every proxied call (large traces).
 trace_inputs = false
 
+# Trigger gc.collect at intercepted safe points when GC pressure is due.
+# 0 disables this entirely. Larger values make collection more eager,
+# because the underlying predicate checks count * multiplier > threshold.
+# Safe-point-driven GC reduces the chance of weakref/finalizer timing
+# diverging from replay, while leaving the interpreter's normal GC as a
+# fallback.
+gc_collect_multiplier = 0
+
 # Silently drop serialization errors to avoid crashing the application.
 quit_on_error = false

@@ -1,3 +1,4 @@
+import gc
 import sys
 import threading
 from pathlib import Path
@@ -1615,6 +1616,37 @@ class TestPatchedMarker:
 
         assert issubclass(Derived, _utils.Patched)
         assert isinstance(inst, _utils.Patched)
+
+
+class TestCollectHelpers:
+    def test_collector_requires_callable_collect(self):
+        with pytest.raises(TypeError):
+            _utils.Collector(multiplier=1, collect=object())
+
+    def test_collector_returns_none_and_ignores_inputs_when_nothing_is_due(self):
+        calls = []
+        collector = _utils.Collector(multiplier=0, collect=lambda generation: calls.append(generation))
+
+        assert collector("ignored", answer=42) is None
+        assert calls == []
+
+    def test_collector_calls_collect_with_generation_when_due(self):
+        gc.collect()
+        pred = _utils.CollectPred(1 << 20)
+        junk = []
+
+        for _ in range(10_000):
+            junk.append({})
+            if pred() is not None:
+                break
+
+        calls = []
+        collector = _utils.Collector(multiplier=1 << 20, collect=lambda generation: calls.append(generation))
+
+        assert pred() is not None
+        assert collector() is None
+        assert len(calls) == 1
+        assert calls[0] in (0, 1, 2)
 
 
 class TestFastTypePredicate:

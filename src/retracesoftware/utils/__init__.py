@@ -139,6 +139,12 @@ def _chain(*funcs):
         return functional.firstof(*funcs)
 
 def runall(*funcs):
+    funcs = tuple(func for func in funcs if func is not None)
+    for func in funcs:
+        if not callable(func):
+            raise TypeError(f"runall item must be callable, got {func!r}")
+    if not funcs:
+        return noop
     return _backend_mod.runall(*funcs)
 
 _deprecated_local["return_none"] = _return_none

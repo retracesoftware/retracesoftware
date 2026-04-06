@@ -79,6 +79,7 @@ namespace retracesoftware {
     extern PyTypeObject FastTypePredicate_Type;
     extern PyTypeObject DictIntercept_Type;
     extern PyTypeObject CollectPred_Type;
+    extern PyTypeObject Collector_Type;
     extern PyTypeObject RunAll_Type;
     extern PyTypeObject StackFactory_Type;
     extern PyTypeObject Stack_Type;

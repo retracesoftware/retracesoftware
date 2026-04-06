@@ -80,7 +80,7 @@ class _MemoryTapeReader:
         if isinstance(value, _BindingLookup):
             return self._bindings[value.index]
         elif isinstance(value, _BindingCreate):
-            raise RuntimeError(f"expected BindingCreate, got {value!r}")
+            raise RuntimeError(f"unexpected BindingCreate, got {value!r}")
         else:
             return value
 
