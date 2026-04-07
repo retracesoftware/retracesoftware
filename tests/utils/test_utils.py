@@ -65,6 +65,15 @@ def test_runall_invokes_all_functions_in_order():
     ]
 
 
+def test_throw_raises_the_given_exception_instance():
+    error = RuntimeError("boom")
+
+    with pytest.raises(RuntimeError) as excinfo:
+        _utils.throw(error)
+
+    assert excinfo.value is error
+
+
 def test_runall_single_callable_returns_none():
     calls = []
 

@@ -2,7 +2,7 @@ import enum
 import inspect
 import types
 from retracesoftware.proxy.typeutils import modify
-from retracesoftware.install.replace import update, update_module_refs
+from retracesoftware.install.replace import restore_module_refs, update, update_module_refs
 import threading
 import sys
 import retracesoftware.utils as utils
@@ -151,7 +151,7 @@ def patch(module, spec, installation, update_refs = None, pathpredicate = None):
     namespace = module.__dict__ if hasattr(module, '__dict__') and not isinstance(module, dict) else module
 
     # Record every mutation so we can undo them.
-    ns_undos = []       # (name, old_value, new_value, ref_update_mode) for namespace replacements
+    ns_undos = []       # (name, old_value, new_value, ref_update_mode, module_ref_changes)
     originals = {}      # name → first (pre-patch) value
     added_immutables = []  # types added to system.immutable_types
     added_replay_materialize = []  # callables added to system.replay_materialize
@@ -175,10 +175,12 @@ def patch(module, spec, installation, update_refs = None, pathpredicate = None):
         """Replace *name* in the namespace and optionally update refs."""
         if old is not new:
             namespace[name] = new
-            ns_undos.append((name, old, new, "all" if update_refs else None))
+            module_ref_changes = []
+            if update_refs:
+                module_ref_changes = update_module_refs(old, new)
+            ns_undos.append((name, old, new, "all" if update_refs else None, module_ref_changes))
             originals.setdefault(name, old)
             if update_refs:
-                update_module_refs(old, new)
                 update(old, new)
 
     for directive, config in spec.items():
@@ -305,10 +307,11 @@ def patch(module, spec, installation, update_refs = None, pathpredicate = None):
 
                         wrapped = functional.if_then_else(should_retrace, patched, system.disable_for(patched))
                         namespace[name] = wrapped
-                        ns_undos.append((name, patched, wrapped, "module"))
-                        originals.setdefault(name, patched)
+                        module_ref_changes = []
                         if update_refs:
-                            update_module_refs(patched, wrapped)
+                            module_ref_changes = update_module_refs(patched, wrapped)
+                        ns_undos.append((name, patched, wrapped, "module", module_ref_changes))
+                        originals.setdefault(name, patched)
 
         elif directive == 'patch_hash':
             pass  # Deferred — requires deterministic hash counter
@@ -319,12 +322,12 @@ def patch(module, spec, installation, update_refs = None, pathpredicate = None):
     def undo():
         """Reverse all namespace mutations made by this patch call."""
         # Restore namespace entries in reverse order.
-        for name, old_value, new_value, ref_update_mode in reversed(ns_undos):
+        for name, old_value, new_value, ref_update_mode, module_ref_changes in reversed(ns_undos):
             namespace[name] = old_value
             if ref_update_mode == "module":
-                update_module_refs(new_value, old_value)
+                restore_module_refs(module_ref_changes)
             elif ref_update_mode == "all":
-                update_module_refs(new_value, old_value)
+                restore_module_refs(module_ref_changes)
                 update(new_value, old_value)
         # Remove types we added to the immutable set.
         for cls in added_immutables:

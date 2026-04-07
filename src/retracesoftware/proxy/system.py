@@ -204,11 +204,12 @@ import retracesoftware.utils as utils
 import retracesoftware.functional as functional
 import types
 import gc
-from retracesoftware.proxy.proxytype import dynamic_proxytype, method_names, superdict
+from retracesoftware.proxy.proxytype import method_names, superdict
 from retracesoftware.proxy.typeutils import WithoutFlags
 
 from retracesoftware.proxy.proxytype import DynamicProxy
 from retracesoftware.install.patcher import install_hash_patching
+from retracesoftware.install.edgecases import patchtype
 
 def proxy(proxytype_from):
     """Create a callable that wraps a value in a proxy type."""
@@ -318,6 +319,7 @@ def _ext_proxytype_from_spec(system, module, name, methods):
         
         proxytype = type(name, (utils.ExternalWrapped, DynamicProxy,), spec)
 
+        patchtype(module = module, name = name, cls = proxytype)
         system.bind(proxytype)
         system.bind(system.proxy_ref(proxytype))
 
@@ -720,10 +722,15 @@ class System:
             self.fallback,
         )
 
+        self._int_handler = self.create_dispatch(
+                disabled=self.fallback,
+                external=self.fallback,
+                internal=self._internal,
+            )
+
         # Internal overrides always route through the internal gate while
         # retrace is active. When retrace is disabled, ``self._internal``
-        # naturally passthroughs to the original target.
-        self._int_handler = self._internal
+        # naturally passthroughs to the original target.        self._int_handler = self._internal
         self._override_handler = self.create_dispatch(
             disabled=self.fallback,
             # Direct in-sandbox calls to Python overrides should behave like
@@ -804,7 +811,7 @@ class System:
         self.ext_proxy = proxy(functional.memoize_one_arg(self.ext_proxytype))
 
     def wrap_async(self, function):
-        return self._wrapped_function(self._int_handler, function)
+        return self._wrapped_function(self._internal, function)
 
     def _ext_proxy(self):
         ext_leaf_proxy = \
@@ -919,8 +926,7 @@ class System:
                     ),
                     transform = self.unproxy_int)))
 
-    @contextmanager
-    def context(self):        
+    def run(self, function, *args, **kwargs):
         int_proxy = self._int_proxy()
         ext_proxy = self._ext_proxy()
 
@@ -944,18 +950,18 @@ class System:
         def with_gate(gate, executor,function):
             return functional.partial(gate.apply_with(executor), function)
 
+        def observe(function):
+            return utils.observer(
+                            on_call = functional.repeatedly(self.lifecycle_hooks.on_start) if self.lifecycle_hooks.on_start else None,
+                            on_result = functional.repeatedly(self.lifecycle_hooks.on_end) if self.lifecycle_hooks.on_end else None,
+                            on_error = functional.repeatedly(self.lifecycle_hooks.on_end) if self.lifecycle_hooks.on_end else None,
+                            function = function)
+
         self.thread_wrapper = lambda function: with_gate(
             self._external,
             external_executor,
             with_gate(self._internal, internal_executor, observe(function)),
         )
-
-        def observe(function):
-            return utils.observer(
-                            on_call = functional.repeatedly(self.lifecycle_hooks.on_start),
-                            on_result = functional.repeatedly(self.lifecycle_hooks.on_end),
-                            on_error = functional.repeatedly(self.lifecycle_hooks.on_end),
-                            function = function)
 
         self._internal.executor = internal_executor
         self._external.executor = external_executor
@@ -964,12 +970,66 @@ class System:
 
         try:
             self.lifecycle_hooks.on_start()
-            yield
+            return function(*args, **kwargs)
         finally:            
-            self.lifecycle_hooks.on_end()
+            if callable(self.lifecycle_hooks.on_end):
+                self.lifecycle_hooks.on_end()
+                
             self.thread_wrapper = None
             self._internal.executor = None
             self._external.executor = None
+
+    # @contextmanager
+    # def context(self):        
+    #     int_proxy = self._int_proxy()
+    #     ext_proxy = self._ext_proxy()
+
+    #     external_executor = self.ext_executor(
+    #         int_proxy = int_proxy,
+    #         ext_proxy = ext_proxy,
+    #         hooks = CallHooks(
+    #             on_call = self.secondary_hooks.on_call if self.secondary_hooks else None,
+    #             on_result = self.primary_hooks.on_result if self.primary_hooks else None,
+    #             on_error = self.primary_hooks.on_error if self.primary_hooks else None))
+
+    #     internal_executor = self.int_executor(
+    #         int_proxy = int_proxy,
+    #         ext_proxy = ext_proxy,
+    #         hooks = CallHooks(
+    #             on_call = self.primary_hooks.on_call if self.primary_hooks else None,
+    #             on_result = self.secondary_hooks.on_result if self.secondary_hooks else None,
+    #             on_error = self.secondary_hooks.on_error if self.secondary_hooks else None),
+    #         external_executor = external_executor)
+
+    #     def with_gate(gate, executor,function):
+    #         return functional.partial(gate.apply_with(executor), function)
+
+    #     self.thread_wrapper = lambda function: with_gate(
+    #         self._external,
+    #         external_executor,
+    #         with_gate(self._internal, internal_executor, observe(function)),
+    #     )
+
+    #     def observe(function):
+    #         return utils.observer(
+    #                         on_call = functional.repeatedly(self.lifecycle_hooks.on_start),
+    #                         on_result = functional.repeatedly(self.lifecycle_hooks.on_end),
+    #                         on_error = functional.repeatedly(self.lifecycle_hooks.on_end),
+    #                         function = function)
+
+    #     self._internal.executor = internal_executor
+    #     self._external.executor = external_executor
+
+    #     gc.collect()
+
+    #     try:
+    #         self.lifecycle_hooks.on_start()
+    #         yield
+    #     finally:            
+    #         self.lifecycle_hooks.on_end()
+    #         self.thread_wrapper = None
+    #         self._internal.executor = None
+    #         self._external.executor = None
         
     def enabled(self):
         return self._external.is_set or self._internal.is_set
@@ -1131,6 +1191,7 @@ class System:
             for name, value in attr_dict.items():
                 if name in blacklist:
                     continue
+
                 if name not in originals:
                     originals[name] = getattr(target_cls, name)
 
@@ -1273,17 +1334,48 @@ class System:
         return wrapped
 
     def int_proxytype(self, cls):
-        from retracesoftware.proxy.proxytype import dynamic_int_proxytype
+
+        self.checkpoint(f'creating internal proxytype for {cls}')
 
         assert not self.is_patched_type(cls)
         assert not issubclass(cls, utils._WrappedBase)
+        assert not cls.__module__.startswith('retracesoftware')
+        assert not issubclass(cls, BaseException)
 
-        # return dynamic_proxytype(handler = self.int_handler, cls = cls, wrapped_base = utils.InternalWrapped)
+        blacklist = ['__getattribute__', '__hash__', '__del__', '__call__', '__new__']
 
-        return dynamic_int_proxytype(
-            handler = self.int_handler,
-            cls = cls,
-            bind = self.bind)
+        spec = {}
+
+        def wrap(func): return self._wrapped_function(handler = self._int_handler, target = func)
+        
+        for name in superdict(cls).keys():
+            if name not in blacklist:
+                try:
+                    value = getattr(cls, name)
+                except AttributeError:
+                    # Some metatype attributes listed in the MRO dicts are not
+                    # readable on the concrete class (for example `type` exposes
+                    # `__abstractmethods__` here on 3.12). Skip those slots.
+                    continue
+                
+                # if is_descriptor(value):
+                if utils.is_method_descriptor(value):
+                    spec[name] = wrap(value) 
+
+        spec['__getattr__'] = wrap(getattr)
+        spec['__setattr__'] = wrap(setattr)
+        
+        if utils.yields_callable_instances(cls):
+            spec['__call__'] = self._int_handler
+
+        spec['__class__'] = property(functional.constantly(cls))
+
+        spec['__name__'] = cls.__name__
+        spec['__module__'] = cls.__module__
+
+        proxytype = type(cls.__name__, (utils.InternalWrapped, DynamicProxy), spec)
+        self.bind(proxytype)
+        return proxytype
 
     # have the ext proxytype as a tracked external method
     # it takes the shape of the class, inside we bind the generated proxytype

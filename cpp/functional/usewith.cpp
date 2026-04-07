@@ -84,7 +84,7 @@ struct UseWith : public PyVarObject {
     static PyObject* create(PyTypeObject* type, PyObject* args, PyObject* kwds) {
 
         if (PyTuple_Size(args) < 2) {
-            PyErr_SetString(PyExc_TypeError, "use_with requires at least two positional arguments");
+            PyErr_SetString(PyExc_TypeError, "spread requires at least two positional arguments");
             return nullptr;
         }
 
@@ -141,14 +141,14 @@ static PyObject * repr(UseWith *self) {
         result = new_result;
     }
     
-    PyObject *final_repr = PyUnicode_FromFormat(MODULE "use_with(%S)", result);
+    PyObject *final_repr = PyUnicode_FromFormat(MODULE "spread(%S)", result);
     Py_DECREF(result);
     return final_repr;
 }
 
-PyTypeObject UseWith_Type = {
+PyTypeObject Spread_Type = {
     .ob_base = PyVarObject_HEAD_INIT(NULL, 0)
-    .tp_name = MODULE "use_with",
+    .tp_name = MODULE "spread",
     .tp_basicsize = sizeof(UseWith),
     .tp_itemsize = sizeof(retracesoftware::FastCall),
     .tp_dealloc = (destructor)UseWith::dealloc,
@@ -161,7 +161,7 @@ PyTypeObject UseWith_Type = {
                 Py_TPFLAGS_HAVE_VECTORCALL | 
                 Py_TPFLAGS_METHOD_DESCRIPTOR |
                 Py_TPFLAGS_BASETYPE,
-    .tp_doc = "use_with(target, *transforms)\n--\n\n"
+    .tp_doc = "spread(target, *transforms)\n--\n\n"
                "Apply transforms to args, then pass transformed args to target.\n\n"
                "Each transform is called with all original args; the results\n"
                "become the arguments to target.\n\n"
@@ -169,9 +169,9 @@ PyTypeObject UseWith_Type = {
                "    target: The function to call with transformed arguments.\n"
                "    *transforms: Functions to compute each argument for target.\n\n"
                "Returns:\n"
-               "    A callable: use_with(f, t1, t2)(x) == f(t1(x), t2(x))\n\n"
+               "    A callable: spread(f, t1, t2)(*args, **kwargs) == f(t1(*args, **kwargs), t2(*args, **kwargs))\n\n"
                "Example:\n"
-               "    >>> add_len_and_sum = use_with(lambda a,b: a+b, len, sum)\n"
+               "    >>> add_len_and_sum = spread(lambda a,b: a+b, len, sum)\n"
                "    >>> add_len_and_sum([1, 2, 3])  # 3 + 6 = 9",
     .tp_traverse = (traverseproc)UseWith::traverse,
     .tp_clear = (inquiry)UseWith::clear,
@@ -203,4 +203,3 @@ PyTypeObject UseWith_Type = {
 
 //     return (PyObject *)self;
 // }
-

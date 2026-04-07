@@ -1,6 +1,8 @@
 from argparse import Namespace
 import time
 
+import pytest
+
 from retracesoftware.__main__ import install_and_run
 from retracesoftware.proxy.io import recorder, replayer
 from retracesoftware.testing.memorytape import MemoryTape
@@ -94,3 +96,142 @@ def test_install_and_run_reads_socket_family_with_memory_tape():
     )
 
     assert result == _socket.AF_INET
+
+
+def test_install_and_run_round_trips_allocate_lock_with_memory_tape():
+    import _thread
+
+    tape = MemoryTape()
+
+    def allocate_and_check():
+        lock = _thread.allocate_lock()
+        assert lock.acquire(False)
+        try:
+            return lock.locked()
+        finally:
+            lock.release()
+
+    record_system = recorder(
+        tape_writer=tape.writer(),
+        debug=False,
+        stacktraces=False,
+    )
+    _configure_system(record_system)
+
+    recorded = install_and_run(
+        system=record_system,
+        options=_options(),
+        function=allocate_and_check,
+    )
+
+    replay_system = replayer(
+        tape_reader=tape.reader(),
+        debug=False,
+        stacktraces=False,
+    )
+    _configure_system(replay_system)
+
+    replayed = install_and_run(
+        system=replay_system,
+        options=_options(),
+        function=allocate_and_check,
+    )
+
+    assert recorded is True
+    assert replayed is recorded
+
+
+@pytest.mark.xfail(
+    strict=True,
+    reason="In-process Flask record/replay still diverges on the install_and_run + MemoryTape seam",
+)
+def test_install_and_run_replays_flask_request_from_unretraced_client_thread_with_memory_tape():
+    pytest.importorskip("flask")
+
+    import queue
+    import socket
+    import threading
+    from flask import Flask
+    from wsgiref.simple_server import make_server
+
+    tape = MemoryTape()
+    path = "/hello"
+    body = b"Hello from Flask!"
+
+    def http_get(port, path):
+        client = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        try:
+            client.connect(("127.0.0.1", port))
+            client.sendall(
+                f"GET {path} HTTP/1.0\r\nHost: 127.0.0.1\r\n\r\n".encode("ascii")
+            )
+            chunks = []
+            while True:
+                chunk = client.recv(4096)
+                if not chunk:
+                    break
+                chunks.append(chunk)
+            return b"".join(chunks)
+        finally:
+            client.close()
+
+    def make_roundtrip(port_queue, hits):
+        app = Flask(__name__)
+
+        @app.route(path)
+        def hello():
+            hits.append("hello")
+            return body.decode("ascii")
+
+        server = make_server("127.0.0.1", 0, app)
+        server.socket.settimeout(2.0)
+        port_queue.put(server.server_address[1])
+        try:
+            server._handle_request_noblock()
+            return list(hits)
+        finally:
+            server.server_close()
+
+    record_system = recorder(
+        tape_writer=tape.writer(),
+        debug=False,
+        stacktraces=True,
+    )
+    _configure_system(record_system)
+
+    record_port_queue = queue.Queue()
+    record_result = {}
+
+    def record_client():
+        record_result["response"] = http_get(record_port_queue.get(timeout=30), path)
+
+    record_thread = threading.Thread(target=record_client)
+    record_system.disable_for(record_thread.start)()
+
+    recorded_hits = install_and_run(
+        system=record_system,
+        options=_options(),
+        function=make_roundtrip,
+        args = (record_port_queue, []),
+    )
+
+    record_thread.join(timeout=5)
+    assert not record_thread.is_alive(), "client thread hung"
+    assert recorded_hits == ["hello"]
+    assert body in record_result["response"]
+
+    replay_system = replayer(
+        tape_reader=tape.reader(),
+        debug=False,
+        stacktraces=True,
+    )
+    _configure_system(replay_system)
+
+    replayed_hits = install_and_run(
+        system=replay_system,
+        options=_options(),
+        function=make_roundtrip,
+        args = (queue.Queue(), []),
+    )
+
+    assert replayed_hits == ["hello"]

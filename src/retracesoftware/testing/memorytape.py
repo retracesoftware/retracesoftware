@@ -1,3 +1,5 @@
+import traceback
+
 from retracesoftware import functional
 from retracesoftware.proxy.tape import TapeReader, TapeWriter
 
@@ -36,11 +38,11 @@ class _BindingState:
         self._bindings[obj_id] = index
         return _BindingCreate(index)
 
-    def __call__(self, obj):
+    def __call__(self, obj, fallback = None):
         if id(obj) in self._bindings:
             return _BindingLookup(self._bindings[id(obj)])
         else:
-            return obj
+            return fallback(obj) if fallback else obj
 
 
 class _MemoryTapeWriter:
@@ -48,11 +50,11 @@ class _MemoryTapeWriter:
 
     __slots__ = ("_tape_append", "_bindings", "_write_one")
 
-    def __init__(self, tape_append):
+    def __init__(self, tape_append, serializer = None):
         self._tape_append = tape_append
         self._bindings = _BindingState()
         self._write_one = functional.sequence(
-            functional.walker(self._bindings),
+            functional.walker(lambda obj: self._bindings(obj, serializer)),
             tape_append,
         )
 
@@ -64,7 +66,6 @@ class _MemoryTapeWriter:
     def bind(self, obj):
         self._tape_append(self._bindings.bind(obj))
         return None
-
 
 class _MemoryTapeReader:
     """Low-level reader surface used by ``proxy.io.IO`` tests."""
@@ -91,17 +92,51 @@ class _MemoryTapeReader:
         self._bindings[marker.index] = obj
         return None
 
+class TapeInvariantError(BaseException):
+    pass
+
+def _is_harness_frame(frame):
+    filename = frame.filename
+    return (
+        filename == "<frozen runpy>"
+        or "/site-packages/pytest/" in filename
+        or "/site-packages/_pytest/" in filename
+        or "/site-packages/pluggy/" in filename
+    )
+
+def _trim_stacktrace_frames(frames):
+    trimmed = [frame for frame in frames if not _is_harness_frame(frame)]
+    return trimmed or frames
+
+def _stacktrace_message():
+    frames = _trim_stacktrace_frames(traceback.extract_stack()[:-2])
+    return "".join(traceback.format_list(frames)).rstrip()
+
+def default_serializer(obj):
+    if obj is not None and not isinstance(obj, (int, bytes, str, bool, float)):
+        stacktrace = _stacktrace_message()
+        error = TapeInvariantError(
+            f"Unexpected object type for serialization: {type(obj)}\n"
+            f"Serialization stack:\n{stacktrace}"
+        )
+        error.stacktrace = stacktrace
+        error.value_type = type(obj)
+        error.value_repr = repr(obj)
+        raise error
+
+    return obj
 
 class MemoryTape:
     """Low-level in-memory tape with ``write/read`` + ``bind`` surfaces."""
 
-    __slots__ = ("tape",)
+    __slots__ = ("tape", "serializer")
 
-    def __init__(self, tape=None):
+    def __init__(self, tape=None, serializer = None):
         self.tape = [] if tape is None else list(tape)
+        self.serializer = serializer if serializer else default_serializer 
 
     def writer(self) -> TapeWriter:
-        return _MemoryTapeWriter(self.tape.append)
+        return _MemoryTapeWriter(self.tape.append, self.serializer)
 
     def reader(self) -> TapeReader:
         return _MemoryTapeReader(iter(self.tape).__next__)

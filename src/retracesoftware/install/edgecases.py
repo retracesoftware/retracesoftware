@@ -89,6 +89,11 @@ typewrappers = {
             'recvmsg_into': recvmsg_into
         }
     },
+    'socket': {
+        'SocketIO': {
+            'readinto': readinto
+        }
+    },
     '_ssl': {
         '_SSLSocket': {
             'read': read,

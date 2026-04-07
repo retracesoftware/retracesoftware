@@ -6,9 +6,73 @@ import retracesoftware.utils as utils
 from retracesoftware.proxy.system import CallHooks, LifecycleHooks, System
 from retracesoftware.proxy.tape import TapeReader, TapeWriter
 import gc
+import sys
+import os
+
 
 class ReplayException(Exception):
     pass
+
+
+def equal(a, b):
+    if a is b:
+        return True
+
+    if type(a) is not type(b):
+        return False
+    
+    cls = type(a)
+
+    if issubclass(cls, utils.ExternalWrapped):
+        return True
+
+    if cls is tuple or cls is list:
+        if len(a) != len(b):
+            return False            
+        return all(equal(a[i], b[i]) for i in range(len(a)))
+
+    if cls is dict:
+        if len(a) != len(b):
+            return False
+        if a.keys() != b.keys():
+            return False
+        return all(equal(a[k], b[k]) for k in a.keys())
+
+    return a == b
+
+def _safe_debug_value(value, depth=0):
+    if depth > 2:
+        return f"<{type(value).__name__}>"
+
+    if isinstance(value, (str, int, float, bool, type(None), bytes)):
+        return repr(value)
+
+    if isinstance(value, tuple):
+        inner = ", ".join(_safe_debug_value(v, depth + 1) for v in value[:4])
+        if len(value) > 4:
+            inner += ", ..."
+        return f"({inner})"
+
+    if isinstance(value, list):
+        inner = ", ".join(_safe_debug_value(v, depth + 1) for v in value[:4])
+        if len(value) > 4:
+            inner += ", ..."
+        return f"[{inner}]"
+
+    if isinstance(value, dict):
+        items = list(value.items())[:4]
+        inner = ", ".join(
+            f"{_safe_debug_value(k, depth + 1)}: {_safe_debug_value(v, depth + 1)}"
+            for k, v in items
+        )
+        if len(value) > 4:
+            inner += ", ..."
+        return "{" + inner + "}"
+
+    try:
+        return object.__repr__(value)
+    except Exception:
+        return f"<{type(value).__name__}>"
 
 
 def _on_call(fn, *args, **kwargs):
@@ -35,6 +99,10 @@ def _secondary_hooks(sync, checkpoint):
             on_error=sync,
         )
 
+def normalize_stack_delta(delta):
+    to_drop, frames = delta
+    return (to_drop, tuple(tuple(frame) for frame in frames))
+
 def recorder(*, tape_writer: TapeWriter, 
     debug: bool = False,
     stacktraces: bool = False,
@@ -44,23 +112,24 @@ def recorder(*, tape_writer: TapeWriter,
 
     
     checkpoint = functional.partial(write, "CHECKPOINT")
-
+    stacktrace = functional.partial(write, "STACKTRACE")
     sync = functional.repeatedly(write, "SYNC")
 
     stack = utils.StackFactory()
 
     def on_start():
-        stack() # reset the stack position for delta
+        stack.delta() # reset the stack position for delta
         write("ON_START")
 
     on_bind = bind
 
-    if stacktraces:
+    in_sandbox = functional.constantly(False)
 
-        write_stacktrace = \
-            functional.sequence(
-                functional.repeatedly(stack.delta),
-                functional.partial(write, "STACKTRACE"))
+    if stacktraces:
+        write_stacktrace = functional.repeatedly(functional.if_then_else(
+            lambda: in_sandbox(),        
+            functional.sequence(stack.delta, normalize_stack_delta, stacktrace),
+            utils.noop))
 
         def with_stacktrace(function):
             return utils.observer(on_call = write_stacktrace, function = function)
@@ -70,6 +139,7 @@ def recorder(*, tape_writer: TapeWriter,
         checkpoint = with_stacktrace(checkpoint)
 
     system = System(on_bind)
+    in_sandbox = system._in_sandbox
 
     create_stub_object = system.wrap_async(utils.create_stub_object)
     collect = system.wrap_async(gc.collect)
@@ -80,11 +150,18 @@ def recorder(*, tape_writer: TapeWriter,
 
     system.lifecycle_hooks = LifecycleHooks(
             on_start = on_start,
-            on_end = functional.repeatedly(write, "ON_END"))
+            on_end = None,
+            #functional.repeatedly(write, "ON_END")
+            )
             
     on_call = functional.pack_call(1, functional.partial(write, "CALL"))
     on_result = functional.partial(write, "RESULT")
-    on_error = functional.sequence(functional.positional_param(1), functional.partial(write, "ERROR"))
+    on_error = functional.sequence(
+        functional.positional_param(1), 
+        functional.if_then_else(
+            functional.isinstanceof(Exception),
+            functional.partial(write, "ERROR"),
+            utils.noop))
 
     if gc_collect_multiplier:
         gc_collector = utils.Collector(multiplier = gc_collect_multiplier, collect = collect)
@@ -119,12 +196,54 @@ def recorder_context(**kwargs):
     finally:
         system.unpatch_types()
 
-def replayer(*, tape_reader: TapeReader, on_desync = None, debug: bool = False, stacktraces: bool = False) -> System:
+def next_result(*, on_stacktrace, run_callback, on_unexpected, read):
+    actions = {
+        "STACKTRACE": utils.observer(on_call = on_stacktrace, function = utils.noop),
+        "CALL": utils.observer(on_call = run_callback, function = utils.noop),
+        "RESULT": read, 
+        "ERROR": functional.spread(utils.throw, read)
+    }
+
+    next = functional.spread(
+        functional.apply,
+        functional.spread(
+            functional.if_then_else(
+                actions.__contains__, 
+                actions.get,
+                on_unexpected),
+            read))
+    
+    actions["STACKTRACE"].function = next
+    actions["CALL"].function = next
+
+    return next
+
+def default_unexpected_handler(key):
+    print(f"Unexpected message: {key}, was expecting a result, error, or call", file=sys.stderr)
+    os._exit(1)
+
+def default_desync_handler(record, replay):
+    print(f"Checkpoint difference: {_safe_debug_value(record)} was expecting {_safe_debug_value(replay)}", file=sys.stderr)
+    os._exit(1)
+
+def replayer(*, tape_reader: TapeReader, 
+             on_unexpected = default_unexpected_handler,
+             on_desync = default_desync_handler,
+             debug: bool = False,
+             stacktraces: bool = False) -> System:
     read = tape_reader.read
     bind = tape_reader.bind
 
     stack = utils.StackFactory()
     current_stack = utils.ThreadLocal([])
+
+    def trim_replay_stack(replay, recorded):
+        if len(replay) >= len(recorded):
+            for start in range(len(replay) - len(recorded) + 1):
+                candidate = replay[start:start + len(recorded)]
+                if candidate == recorded:
+                    return candidate
+        return replay
 
     def on_stacktrace():
         to_drop, new_frames = read()
@@ -137,10 +256,9 @@ def replayer(*, tape_reader: TapeReader, on_desync = None, debug: bool = False, 
             for frame in new_frames
         ]
 
-        if on_desync:
-            replay = list(stack())[2:]
-            if replay[1:] != this_stack[1:]:
-                on_desync(replay, this_stack)
+        replay = trim_replay_stack(list(stack())[2:], this_stack)
+        if replay[1:] != this_stack[1:]:
+            on_desync(replay, this_stack)
         
     def expect(value):
         type = read()
@@ -153,67 +271,38 @@ def replayer(*, tape_reader: TapeReader, on_desync = None, debug: bool = False, 
                 run_callback()
                 expect(value)
             else:                    
-                if on_desync:
-                    on_desync(type, value)
-                else:
-                    raise ReplayException(f"Unexpected message: {type}, was expecting {value}")
+                on_desync(type, value)
 
     # sync = functional.repeatedly(expect, "SYNC")
 
-    def run_callback():
-        fn = read()
-        args = read()
-        kwargs = read()
-        try:
-            fn(*args, **kwargs)
-        except ReplayException:
-            raise
-        except Exception:
-            pass
+    run_callback = functional.catch_exception(functional.spread(functional.call, read, read, read), Exception, utils.noop)
             
+    # safeequal = system.disable_for(equal)
     def diff(record, replay):
-        if record != replay:
-            if on_desync:
-                on_desync(record, replay)
-            else:
-                raise ReplayException(f"Checkpoint difference: {record}, was expecting {replay}")
+        if not equal(record, replay):
+            on_desync(record, replay)
 
     def checkpoint(replay):
         expect('CHECKPOINT')
         diff(record = read(), replay = replay)
 
-    def next_result():
-        while True:
-            type = read()
-
-            if type == "STACKTRACE":
-                on_stacktrace()
-            elif type == "RESULT":
-                return read()
-            elif type == "ERROR":
-                raise read()
-            elif type == "CALL":
-                run_callback()
-            else:
-                if on_desync:
-                    on_desync(type, "RESULT", "ERROR", "CALL")
-                else:
-                    raise ReplayException(f"Unexpected message: {type}, was expecting a result, error, or call")
+    in_sandbox = functional.constantly(False)
 
     if stacktraces:
-
         def next_stacktrace(obj):
-            type = read()
-            if type == "STACKTRACE":
-                on_stacktrace()
-            else:
-                raise ReplayException(f"Unexpected message: {type}, was expecting a stacktrace")
-            
-            return obj
+            if in_sandbox():
+                type = read()
+                if type == "STACKTRACE":
+                    on_stacktrace()
+                else:
+                    raise ReplayException(f"Unexpected message: {type}, was expecting a stacktrace")
+                
+                return obj
 
         bind = functional.sequence(next_stacktrace, bind)
 
     system = System(bind)
+    in_sandbox = system._in_sandbox
 
     system.wrap_async(utils.create_stub_object)
     system.wrap_async(gc.collect)
@@ -228,13 +317,22 @@ def replayer(*, tape_reader: TapeReader, on_desync = None, debug: bool = False, 
         sync = functional.repeatedly(expect, "SYNC"),
         checkpoint = checkpoint if debug else None)
 
+    def on_start():
+        stack.delta() # reset the stack position for delta
+        expect("ON_START")
+
     system.lifecycle_hooks=LifecycleHooks(
-        on_start=functional.repeatedly(expect, "ON_START"),
-        on_end=functional.repeatedly(expect, "ON_END"))
+        on_start=on_start,
+        on_end=None
+        # on_end=functional.repeatedly(expect, "ON_END"),
+        )
 
-    system.ext_execute = functional.repeatedly(utils.striptraceback(next_result))
-
-    # system.async_new_patched = utils.noop
+    system.ext_execute = functional.repeatedly(
+        next_result(
+            on_stacktrace = on_stacktrace, 
+            run_callback = run_callback, 
+            on_unexpected = system.disable_for(on_unexpected),
+            read = read))
 
     return system
 
@@ -246,190 +344,3 @@ def replayer_context(**kwargs):
         yield system
     finally:
         system.unpatch_types()
-
-# class IO:
-#     """Build record/replay contexts for concrete writer/reader objects."""
-
-#     def __init__(self, system: System, *, 
-#                  stacktraces: bool = False, 
-#                  debug: bool = False):
-
-#         is_passthrough_type = utils.FastTypePredicate(
-#             lambda cls: cls in [int, float, str, bytes, bool]
-#         ).istypeof
-
-#         if debug:
-#             self.normalize = functional.walker(functional.if_then_else(
-#                 functional.or_predicate(is_passthrough_type, system.is_bound),
-#                 functional.identity,
-#                 lambda value: f'Could not normalize value of type: {type(value)}'))
-#         else:
-#             self.normalize = None
-
-#         self.stacktraces = stacktraces
-#         self.system = system
-#         self.stackfactory = utils.StackFactory()
-
-#     @property
-#     def debug(self):
-#         return self.normalize is not None
-
-
-#     def _secondary_hooks(self, sync, checkpoint):
-#         if self.debug:
-#             return CallHooks(
-#                 on_call=functional.sequence(self._on_call, checkpoint), 
-#                 on_result=functional.sequence(self._on_result, checkpoint),
-#                 on_error=functional.sequence(functional.positional_param(1), self._on_error, checkpoint))
-#         else:
-#             return CallHooks(
-#                 on_call=sync,
-#                 on_result=sync,
-#                 on_error=sync,
-#             )
-
-#     def writer(self, write, bind):
-
-#         checkpoint = functional.partial(write, "CHECKPOINT")
-
-#         sync = functional.repeatedly(write, "SYNC")
-
-#         on_bind = bind
-
-#         if self.stacktraces:
-
-#             write_stacktrace = \
-#                 functional.sequence(
-#                     functional.repeatedly(self.stackfactory.delta),
-#                     functional.partial(write, "STACKTRACE"))
-
-#             def with_stacktrace(function):
-#                 return utils.observer(on_call = write_stacktrace, function = function)
-
-#             on_bind = with_stacktrace(on_bind)
-#             sync = with_stacktrace(sync)
-#             checkpoint = with_stacktrace(checkpoint)
-
-#         on_call = functional.pack_call(1, functional.partial(write, "CALL"))
-#         on_result = functional.partial(write, "RESULT")
-#         on_error = functional.sequence(functional.positional_param(1), functional.partial(write, "ERROR"))
-
-#         return self.system.context(
-#             primary_hooks=CallHooks(
-#                 on_call = on_call,
-#                 on_result = on_result,
-#                 on_error = on_error,
-#             ),
-#             secondary_hooks = self._secondary_hooks(
-#                 sync = sync,
-#                 checkpoint = checkpoint,
-#             ),
-#             lifecycle_hooks=LifecycleHooks(
-#                 on_start=functional.repeatedly(write, "ON_START"),
-#                 on_end=functional.repeatedly(write, "ON_END")),
-#             on_bind=on_bind,
-#             passthrough_proxyref=True,
-#         )
-
-#     def reader(self, read, bind, on_desync = None):
-
-#         stack = utils.ThreadLocal([])
-
-#         def on_stacktrace():
-#             to_drop, new_frames = read()
-#             this_stack = stack.get()
-#             del this_stack[:to_drop]
-#             this_stack[:0] = [
-#                 (frame.filename, frame.lineno)
-#                 if isinstance(frame, utils.Stack)
-#                 else tuple(frame)
-#                 for frame in new_frames
-#             ]
-
-#             if on_desync:
-#                 replay = list(self.stackfactory())[2:]
-#                 if replay[1:] != this_stack[1:]:
-#                     on_desync(replay, this_stack)
-            
-#         def expect(value):
-#             type = read()
-
-#             if type != value:
-#                 if type == "STACKTRACE":
-#                     on_stacktrace()
-#                     expect(value)
-#                 elif type == "CALL":
-#                     run_callback()
-#                     expect(value)
-#                 else:                    
-#                     if on_desync:
-#                         on_desync(type, value)
-#                     else:
-#                         raise Exception(f"Unexpected message: {type}, was expecting {value}")
-
-#         # sync = functional.repeatedly(expect, "SYNC")
-
-#         def run_callback():
-#             fn = read()
-#             args = read()
-#             kwargs = read()
-#             try:
-#                 fn(*args, **kwargs)
-#             except Exception:
-#                 pass
-                
-#         def diff(record, replay):
-#             if record != replay:
-#                 if on_desync:
-#                     on_desync(record, replay)
-#                 else:
-#                     raise Exception(f"Checkpoint difference: {record}, was expecting {replay}")
-
-#         def checkpoint(replay):
-#             expect('CHECKPOINT')
-#             diff(record = read(), replay = replay)
-
-#         def next_result():
-#             while True:
-#                 type = read()
-
-#                 if type == "STACKTRACE":
-#                     on_stacktrace()
-#                 elif type == "RESULT":
-#                     return read()
-#                 elif type == "ERROR":
-#                     raise read()
-#                 elif type == "CALL":
-#                     run_callback()
-#                 else:
-#                     if on_desync:
-#                         on_desync(type, "RESULT", "ERROR", "CALL")
-#                     else:
-#                         raise Exception(f"Unexpected message: {type}, was expecting a result, error, or call")
-
-#         if self.stacktraces:
-
-#             def next_stacktrace(obj):
-#                 type = read()
-#                 if type == "STACKTRACE":
-#                     on_stacktrace()
-#                 else:
-#                     raise Exception(f"Unexpected message: {type}, was expecting a stacktrace")
-                
-#                 return obj
-
-#             bind = functional.sequence(next_stacktrace, bind)
-
-#         return self.system.context(
-#             primary_hooks = None,
-#             secondary_hooks = self._secondary_hooks(
-#                 sync = functional.repeatedly(expect, "SYNC"),
-#                 checkpoint = checkpoint,
-#             ),
-#             lifecycle_hooks=LifecycleHooks(
-#                 on_start=functional.repeatedly(expect, "ON_START"),
-#                 on_end=functional.repeatedly(expect, "ON_END")),
-
-#             execute=functional.repeatedly(utils.striptraceback(next_result)),
-#             on_bind=bind,
-#         )

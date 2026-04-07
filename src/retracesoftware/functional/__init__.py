@@ -59,7 +59,7 @@ _DEPRECATED = frozenset({
     "advice", "anyargs", "callall", "composeN", "deepwrap",
     "dropargs", "either", "first", "first_arg", "indexed", "instance_test",
     "method_invoker", "not_predicate", "notinstance_test",
-    "selfapply", "ternary_predicate", "use_with", "when_predicate",
+    "selfapply", "ternary_predicate", "when_predicate",
 })
 
 

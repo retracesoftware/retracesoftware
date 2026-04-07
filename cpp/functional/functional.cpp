@@ -16,6 +16,55 @@ static PyObject * apply_impl(PyObject *self, PyObject *const *args, Py_ssize_t n
     return result;
 }
 
+static PyObject * call_impl(PyObject *self, PyObject *const *args, Py_ssize_t nargsf, PyObject *kwnames) {
+    size_t nargs = PyVectorcall_NARGS(nargsf);
+
+    if (kwnames && PyTuple_GET_SIZE(kwnames) > 0) {
+        PyErr_SetString(PyExc_TypeError, "call() does not accept keyword arguments");
+        return nullptr;
+    }
+
+    if (nargs != 3) {
+        PyErr_Format(PyExc_TypeError, "call() expects exactly 3 positional arguments, got %zu", nargs);
+        return nullptr;
+    }
+
+    PyObject *func = args[0];
+    PyObject *arg_values = args[1];
+    PyObject *kwargs = args[2];
+
+    if (!PyCallable_Check(func)) {
+        PyErr_Format(PyExc_TypeError, "call() expects a callable, got %S", func);
+        return nullptr;
+    }
+
+    PyObject *arg_seq = PySequence_Fast(arg_values, "call() expects args to be a sequence or iterable");
+    if (!arg_seq) {
+        return nullptr;
+    }
+
+    PyObject *arg_tuple = PySequence_Tuple(arg_seq);
+    Py_DECREF(arg_seq);
+    if (!arg_tuple) {
+        return nullptr;
+    }
+
+    PyObject *kwargs_dict = nullptr;
+    if (kwargs == Py_None) {
+        kwargs_dict = nullptr;
+    } else if (PyDict_Check(kwargs)) {
+        kwargs_dict = kwargs;
+    } else {
+        Py_DECREF(arg_tuple);
+        PyErr_SetString(PyExc_TypeError, "call() expects kwargs to be a dict or None");
+        return nullptr;
+    }
+
+    PyObject *result = PyObject_Call(func, arg_tuple, kwargs_dict);
+    Py_DECREF(arg_tuple);
+    return result;
+}
+
 static PyObject * first_arg_impl(PyObject *self, PyObject *const *args, Py_ssize_t nargsf, PyObject *kwnames) {
     if (PyVectorcall_NARGS(nargsf) == 0) {
         PyErr_SetString(PyExc_TypeError, "first_arg() requires at least one positional argument");
@@ -129,6 +178,15 @@ static PyMethodDef module_methods[] = {
      "Args:\n"
      "    func: The callable to invoke.\n"
      "    *args, **kwargs: Arguments to pass to func.\n\n"
+     "Returns:\n"
+     "    The result of func(*args, **kwargs)."},
+    {"call", (PyCFunction)call_impl, METH_FASTCALL | METH_KEYWORDS,
+     "call(func, args, kwargs)\n--\n\n"
+     "Call func with packed positional args and kwargs.\n\n"
+     "Args:\n"
+     "    func: The callable to invoke.\n"
+     "    args: A sequence of positional arguments.\n"
+     "    kwargs: A dict of keyword arguments, or None.\n\n"
      "Returns:\n"
      "    The result of func(*args, **kwargs)."},
     {"first_arg", (PyCFunction)first_arg_impl, METH_FASTCALL | METH_KEYWORDS, 
@@ -245,6 +303,7 @@ PyMODINIT_FUNC CONCAT(PyInit_, MODULE_NAME)(void) {
         &Indexer_Type,
         &Param_Type,
         &PackCall_Type,
+        &ApplyList_Type,
         &PositionalParam_Type,
         &PositionalParamTransform_Type,
         &TernaryPredicate_Type,
@@ -258,7 +317,6 @@ PyMODINIT_FUNC CONCAT(PyInit_, MODULE_NAME)(void) {
         &Either_Type,
         &Compose2_Type,
         &Vector_Type,
-        &UseWith_Type,
         &DeepWrap_Type,
         &WhenNotNone_Type,
         &When_Type,

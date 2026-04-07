@@ -31,6 +31,14 @@ def apply(func: Callable[..., Any], *args: Any, **kwargs: Any) -> Any:
     return func(*args, **kwargs)
 
 
+def call(func: Callable[..., Any], args: Sequence[Any], kwargs: Mapping[str, Any] | None) -> Any:
+    """call(func, args, kwargs) -> func(*args, **kwargs)."""
+
+    if kwargs is None:
+        kwargs = {}
+    return func(*args, **kwargs)
+
+
 def catch_exception(
     function: Callable[..., Any], exception_type: Any, handler: Callable[..., Any]
 ) -> Callable[..., Any]:
@@ -133,20 +141,20 @@ def juxt(*funcs: Callable[..., Any]) -> Callable[..., Tuple[Any, ...]]:
     return _juxt
 
 
-def use_with(target: Callable[..., Any], *transforms: Callable[..., Any]) -> Callable[..., Any]:
-    """use_with(target, t1, t2)(*args, **kwargs) -> target(t1(*args, **kwargs), t2(*args, **kwargs))"""
+def spread(target: Callable[..., Any], *transforms: Callable[..., Any]) -> Callable[..., Any]:
+    """spread(target, t1, t2)(*args, **kwargs) -> target(t1(*args, **kwargs), t2(*args, **kwargs))"""
 
     if not callable(target):
-        raise TypeError("use_with() expects a callable target")
+        raise TypeError("spread() expects a callable target")
     for t in transforms:
         if not callable(t):
-            raise TypeError("use_with() expects callable transforms")
+            raise TypeError("spread() expects callable transforms")
 
-    def _use(*args: Any, **kwargs: Any) -> Any:
+    def _spread(*args: Any, **kwargs: Any) -> Any:
         vals = [t(*args, **kwargs) for t in transforms]
         return target(*vals)
 
-    return _use
+    return _spread
 
 
 def and_predicate(*preds: Callable[..., Any]) -> Callable[..., bool]:
@@ -482,22 +490,6 @@ def selfapply(factory: Callable[..., Callable[..., Any]]) -> Callable[..., Any]:
     return _selfapply
 
 
-def spread(target: Callable[..., Any], *transforms: Callable[[Any], Any] | None) -> Callable[[Any], Any]:
-    """spread(target, t1, t2)(x) -> target(t1(x), t2(x)); None transform means pass x unchanged."""
-
-    if not callable(target):
-        raise TypeError("spread() expects a callable target")
-    for t in transforms:
-        if t is not None and not callable(t):
-            raise TypeError("spread() expects transforms to be callable or None")
-
-    def _spread(x: Any) -> Any:
-        vals = [(x if t is None else t(x)) for t in transforms]
-        return target(*vals)
-
-    return _spread
-
-
 def dropargs(func: Callable[..., Any], n: int = 1) -> Callable[..., Any]:
     """dropargs(func, n=1)(*args, **kwargs) calls func(*args[n:], **kwargs)."""
 
@@ -585,6 +577,27 @@ def pack_call(loose: int, function: Callable[..., Any]) -> Callable[..., Any]:
     """pack_call(loose, function)(*args, **kwargs) -> function(*args[:loose], args[loose:], kwargs)."""
 
     return _PackCall(loose, function)
+
+
+class _ApplyList:
+    def __init__(self, function: Callable[..., Any], *initial: Any) -> None:
+        if not callable(function):
+            raise TypeError("apply_list() expects a callable")
+        self._function = function
+        self._initial = tuple(initial)
+        functools.update_wrapper(self, function)  # type: ignore[arg-type]
+
+    def __call__(self, items: Iterable[Any], *suffix: Any, **kwargs: Any) -> Any:
+        return self._function(*self._initial, *tuple(items), *suffix, **kwargs)
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._function, name)
+
+
+def apply_list(function: Callable[..., Any], *initial: Any) -> Callable[..., Any]:
+    """apply_list(function, *initial)(items, *suffix, **kwargs) -> function(*initial, *items, *suffix, **kwargs)."""
+
+    return _ApplyList(function, *initial)
 
 
 class _PositionalParamTransform:
@@ -904,7 +917,9 @@ __all__ = [
     "and_predicate",
     "anyargs",
     "apply",
+    "apply_list",
     "callall",
+    "call",
     "compose",
     "composeN",
     "constantly",
@@ -939,7 +954,6 @@ __all__ = [
     "spread",
     "ternary_predicate",
     "typeof",
-    "use_with",
     "walker",
     "when_not_none",
     "when_predicate",

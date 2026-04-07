@@ -17,18 +17,6 @@ class TestSpread:
         # add(min([1,2,3]), max([1,2,3])) = add(1, 3) = 4
         assert spread([1, 2, 3]) == 4
 
-    def test_none_transform_passes_original_value(self):
-        def combine(a, b):
-            return (a, b)
-        
-        double = lambda x: x * 2
-        
-        # None means pass x unchanged
-        spread = fn.spread(combine, double, None)
-        
-        # combine(double(5), 5) = combine(10, 5)
-        assert spread(5) == (10, 5)
-
     def test_all_transforms_receive_same_input(self):
         calls = []
         
@@ -50,6 +38,25 @@ class TestSpread:
         
         assert calls == [('t1', 10), ('t2', 10), ('t3', 10)]
         assert result == 10 + 20 + 30
+
+    def test_transforms_receive_all_args(self):
+        calls = []
+
+        def target(a, b):
+            return a + b
+
+        def t1(*args):
+            calls.append(("t1", args))
+            return sum(args)
+
+        def t2(*args):
+            calls.append(("t2", args))
+            return max(args)
+
+        spread = fn.spread(target, t1, t2)
+
+        assert spread(1, 2, 3) == 9
+        assert calls == [("t1", (1, 2, 3)), ("t2", (1, 2, 3))]
 
 
 class TestDropArgs:
@@ -303,3 +310,43 @@ class TestPackCall:
         packed = fn.pack_call(2, target)
 
         assert packed("x") == ("x", (), {})
+
+
+class TestCall:
+    def test_calls_function_with_packed_args_and_kwargs(self):
+        def target(a, b=0):
+            return (a, b)
+
+        assert fn.call(target, (1,), {"b": 2}) == (1, 2)
+
+    def test_treats_none_kwargs_as_empty(self):
+        def target(*args):
+            return args
+
+        assert fn.call(target, [1, 2], None) == (1, 2)
+
+
+class TestApplyList:
+    def test_expands_items_into_positional_arguments(self):
+        def target(a, b, c):
+            return (a, b, c)
+
+        caller = fn.apply_list(target)
+
+        assert caller([1, 2, 3]) == (1, 2, 3)
+
+    def test_prepends_initial_arguments(self):
+        def target(prefix, a, b):
+            return (prefix, a, b)
+
+        caller = fn.apply_list(target, "x")
+
+        assert caller((1, 2)) == ("x", 1, 2)
+
+    def test_preserves_suffix_args_and_kwargs(self):
+        def target(prefix, a, b, *, scale=1):
+            return (prefix, a, b, scale)
+
+        caller = fn.apply_list(target, "x")
+
+        assert caller([1], 2, scale=3) == ("x", 1, 2, 3)

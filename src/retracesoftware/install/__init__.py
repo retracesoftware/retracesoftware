@@ -50,8 +50,7 @@ def install_retrace(*, system, retrace_file_patterns=None, monitor_level=0, verb
 
         def traced_shutdown_callback(function, args, kwargs):
             if shutdown_tracing_enabled:
-                with system.context():
-                    return function(*args, **kwargs)
+                return system.run(function, *args, **kwargs)
             return function(*args, **kwargs)
 
         def register_atexit(function, *args, **kwargs):
@@ -146,12 +145,10 @@ def install_and_run(*, system, options, function, args = (), kwargs = {}, post_i
 
     if options.trace_shutdown:
         atexit.register(uninstall)
-        with system.context():
-            return function(*args, **kwargs)  
+        return system.run(function, *args, **kwargs)
     else:
         try:
-            with system.context():
-                return function(*args, **kwargs)  
+            return system.run(function, *args, **kwargs)
         finally:
             uninstall()
 

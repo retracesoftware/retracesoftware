@@ -23,7 +23,7 @@ def proxy(proxytype):
     return functional.spread(
         utils.create_wrapped,
         functional.sequence(functional.typeof, proxytype),
-        None)
+        functional.identity)
 
 def maybe_proxy(proxytype):
     return functional.if_then_else(

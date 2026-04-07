@@ -1,6 +1,6 @@
 from dataclasses import dataclass
 
-from retracesoftware.install.replace import update, update_module_refs
+from retracesoftware.install.replace import restore_module_refs, update, update_module_refs
 from retracesoftware.install.session import InstallSession
 
 
@@ -23,6 +23,7 @@ class _NamespaceChange:
     new: object
     update_refs: bool
     module_refs_only: bool
+    module_ref_changes: tuple
 
 
 class Installation:
@@ -104,9 +105,10 @@ class Installation:
     def _apply_ref_updates(old, new, *, module_refs_only):
         # Module namespace aliases are a core install surface and must be
         # restored deterministically even when their dicts are GC-untracked.
-        update_module_refs(old, new)
+        module_ref_changes = tuple(update_module_refs(old, new))
         if not module_refs_only:
             update(old, new)
+        return module_ref_changes
 
     def replace(self, module, name, new, *, update_refs=None, module_refs_only=None):
         namespace = self._namespace(module)
@@ -129,11 +131,20 @@ class Installation:
                 new=new,
                 update_refs=update_refs,
                 module_refs_only=module_refs_only,
+                module_ref_changes=(),
             )
         )
 
         if update_refs:
-            self._apply_ref_updates(old, new, module_refs_only=module_refs_only)
+            self._changes[-1] = _NamespaceChange(
+                namespace=namespace,
+                name=name,
+                old=old,
+                new=new,
+                update_refs=update_refs,
+                module_refs_only=module_refs_only,
+                module_ref_changes=self._apply_ref_updates(old, new, module_refs_only=module_refs_only),
+            )
 
         return new
 
@@ -173,11 +184,20 @@ class Installation:
                     new=new,
                     update_refs=update_refs,
                     module_refs_only=module_refs_only,
+                    module_ref_changes=(),
                 )
             )
 
             if update_refs:
-                self._apply_ref_updates(value, new, module_refs_only=module_refs_only)
+                self._changes[-1] = _NamespaceChange(
+                    namespace=namespace,
+                    name=name,
+                    old=value,
+                    new=new,
+                    update_refs=update_refs,
+                    module_refs_only=module_refs_only,
+                    module_ref_changes=self._apply_ref_updates(value, new, module_refs_only=module_refs_only),
+                )
 
         return new
 
@@ -196,11 +216,9 @@ class Installation:
         for change in reversed(self._changes):
             change.namespace[change.name] = change.old
             if change.update_refs and change.old is not change.new:
-                self._apply_ref_updates(
-                    change.new,
-                    change.old,
-                    module_refs_only=change.module_refs_only,
-                )
+                restore_module_refs(change.module_ref_changes)
+                if not change.module_refs_only:
+                    update(change.new, change.old)
 
         for cls in sorted(self._patched_types, key=lambda cls: len(cls.__mro__), reverse=True):
             if getattr(cls, "__retrace_system__", None) is self.system:

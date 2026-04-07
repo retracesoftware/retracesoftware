@@ -69,8 +69,6 @@ py.install_sources(
   _py_root / 'proxy/_system_adapters.py',
   _py_root / 'proxy/_system_context.py',
   _py_root / 'proxy/_system_patching.py',
-  _py_root / 'proxy/_system_record.py',
-  _py_root / 'proxy/_system_replay.py',
   _py_root / 'proxy/_system_specs.py',
   _py_root / 'proxy/_system_threading.py',
   _py_root / 'proxy/gateway.py',

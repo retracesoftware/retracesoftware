@@ -137,7 +137,6 @@ class TestModuleImports:
         assert hasattr(fn, 'composeN')
         assert hasattr(fn, 'callall')
         assert hasattr(fn, 'juxt')
-        assert hasattr(fn, 'use_with')
 
     def test_predicate_types(self):
         assert hasattr(fn, 'and_predicate')
@@ -163,6 +162,8 @@ class TestModuleImports:
     def test_arg_manipulation_types(self):
         assert hasattr(fn, 'spread')
         assert hasattr(fn, 'pack_call')
+        assert hasattr(fn, 'apply_list')
+        assert hasattr(fn, 'call')
         assert hasattr(fn, 'dropargs')
         assert hasattr(fn, 'mapargs')
         assert hasattr(fn, 'mapcall')

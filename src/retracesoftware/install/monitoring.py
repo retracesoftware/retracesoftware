@@ -9,7 +9,7 @@ Granularity levels control which ``sys.monitoring`` events are enabled:
 
     0  — off (default, zero overhead)
     1  — PY_START + PY_RETURN
-    2  — + CALL + C_RETURN
+    2  — + CALL + C_RETURN + C_RAISE
     3  — + LINE
 
 Each install function returns an **uninstall** callable, following the
@@ -38,10 +38,11 @@ else:
     MONITOR_LEVELS = {
         1: sys.monitoring.events.PY_START | sys.monitoring.events.PY_RETURN,
         2: (sys.monitoring.events.PY_START | sys.monitoring.events.PY_RETURN |
-            sys.monitoring.events.CALL | sys.monitoring.events.C_RETURN),
+            sys.monitoring.events.CALL | sys.monitoring.events.C_RETURN |
+            sys.monitoring.events.C_RAISE),
         3: (sys.monitoring.events.PY_START | sys.monitoring.events.PY_RETURN |
             sys.monitoring.events.CALL | sys.monitoring.events.C_RETURN |
-            sys.monitoring.events.LINE),
+            sys.monitoring.events.C_RAISE | sys.monitoring.events.LINE),
     }
 
     def _build_retrace_dirs():
@@ -97,6 +98,19 @@ else:
         def _is_retrace(filename):
             return filename.startswith(retrace_dirs)
 
+        def _callable_name(callable_obj):
+            try:
+                name = getattr(callable_obj, '__qualname__', None) or getattr(callable_obj, '__name__', None)
+                if isinstance(name, str) and name:
+                    return name
+            except Exception:
+                pass
+
+            try:
+                return object.__repr__(callable_obj)
+            except Exception:
+                return f'<{type(callable_obj).__name__}>'
+
         # ── PY_START / PY_RETURN callbacks ────────────────────────
 
         def _py_start(code, instruction_offset):
@@ -121,31 +135,38 @@ else:
             finally:
                 _guard.active = False
 
-        # ── CALL / C_RETURN callbacks (level 2+) ─────────────────
+        # ── CALL / C_RETURN / C_RAISE callbacks (level 2+) ───────
 
         def _call(code, instruction_offset, callable_obj, arg0):
             if _is_retrace(code.co_filename):
-                return sys.monitoring.DISABLE
+                return
             if getattr(_guard, 'active', False):
                 return
             _guard.active = True
             try:
-                qn = getattr(callable_obj, '__qualname__',
-                             getattr(callable_obj, '__name__', repr(callable_obj)))
-                checkpoint_fn('C:' + qn)
+                checkpoint_fn('C:' + _callable_name(callable_obj))
             finally:
                 _guard.active = False
 
         def _c_return(code, instruction_offset, callable_obj, arg0):
             if _is_retrace(code.co_filename):
-                return sys.monitoring.DISABLE
+                return
             if getattr(_guard, 'active', False):
                 return
             _guard.active = True
             try:
-                qn = getattr(callable_obj, '__qualname__',
-                             getattr(callable_obj, '__name__', repr(callable_obj)))
-                checkpoint_fn('CR:' + qn)
+                checkpoint_fn('CR:' + _callable_name(callable_obj))
+            finally:
+                _guard.active = False
+
+        def _c_raise(code, instruction_offset, callable_obj, arg0):
+            if _is_retrace(code.co_filename):
+                return
+            if getattr(_guard, 'active', False):
+                return
+            _guard.active = True
+            try:
+                checkpoint_fn('CX:' + _callable_name(callable_obj))
             finally:
                 _guard.active = False
 
@@ -178,6 +199,9 @@ else:
         if events & sys.monitoring.events.C_RETURN:
             sys.monitoring.register_callback(
                 _TOOL_ID, sys.monitoring.events.C_RETURN, _c_return)
+        if events & sys.monitoring.events.C_RAISE:
+            sys.monitoring.register_callback(
+                _TOOL_ID, sys.monitoring.events.C_RAISE, _c_raise)
         if events & sys.monitoring.events.LINE:
             sys.monitoring.register_callback(
                 _TOOL_ID, sys.monitoring.events.LINE, _line)
@@ -192,6 +216,7 @@ else:
                         sys.monitoring.events.PY_RETURN,
                         sys.monitoring.events.CALL,
                         sys.monitoring.events.C_RETURN,
+                        sys.monitoring.events.C_RAISE,
                         sys.monitoring.events.LINE):
                 sys.monitoring.register_callback(_TOOL_ID, evt, None)
             sys.monitoring.free_tool_id(_TOOL_ID)

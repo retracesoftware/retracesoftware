@@ -124,6 +124,10 @@ def update(obj, name, f, *args, **kwargs):
     setattr(obj, name, f(value, *args, **kwargs))
 
 
+def throw(exc):
+    raise exc
+
+
 def _return_none(func):
     return functional.sequence(func, functional.constantly(None))
 

@@ -1,4 +1,4 @@
-"""Tests for function composition: compose, composeN, callall, juxt, use_with."""
+"""Tests for function composition: compose, composeN, callall, juxt, spread."""
 import pytest
 import retracesoftware.functional as fn
 
@@ -122,14 +122,14 @@ class TestJuxt:
         assert calls == [('f1', (1, 2, 3)), ('f2', (1, 2, 3))]
 
 
-class TestUseWith:
+class TestSpreadVariadic:
     def test_transforms_args_before_calling_target(self):
-        # use_with(f, t1, t2)(x) == f(t1(x), t2(x))
+        # spread(f, t1, t2)(x) == f(t1(x), t2(x))
         add = lambda a, b: a + b
         double = lambda x: x * 2
         triple = lambda x: x * 3
         
-        use = fn.use_with(add, double, triple)
+        use = fn.spread(add, double, triple)
         
         # add(double(5), triple(5)) = add(10, 15) = 25
         assert use(5) == 25
@@ -148,7 +148,7 @@ class TestUseWith:
             calls.append(('t2', args))
             return max(args)
         
-        use = fn.use_with(target, t1, t2)
+        use = fn.spread(target, t1, t2)
         result = use(1, 2, 3)
         
         assert calls == [('t1', (1, 2, 3)), ('t2', (1, 2, 3))]
@@ -187,4 +187,3 @@ class TestEither:
         either(42)
         
         assert calls == ['first']
-
