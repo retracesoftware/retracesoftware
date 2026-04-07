@@ -3,9 +3,11 @@
 import functools
 
 from retracesoftware.install import globals
+import retracesoftware.utils as utils
 
 def recvfrom_into(target):
     @functools.wraps(target)
+    @utils.exclude_from_stacktrace
     def wrapper(self, buffer, nbytes = 0, flags = 0):
         data, address = self.recvfrom(len(buffer) if nbytes == 0 else nbytes, flags)
         buffer[0:len(data)] = data
@@ -14,6 +16,7 @@ def recvfrom_into(target):
 
 def recv_into(target):
     @functools.wraps(target)
+    @utils.exclude_from_stacktrace
     def wrapper(self, buffer, nbytes = 0, flags = 0):
         data = self.recv(len(buffer) if nbytes == 0 else nbytes, flags)
         buffer[0:len(data)] = data
@@ -22,12 +25,14 @@ def recv_into(target):
 
 def recvmsg_into(target):
     @functools.wraps(target)
+    @utils.exclude_from_stacktrace
     def wrapper(self, buffers, ancbufsize = 0, flags = 0):
         raise NotImplementedError('TODO')
     return wrapper
 
 def read(target):
     @functools.wraps(target)
+    @utils.exclude_from_stacktrace
     def wrapper(self, *args):
         # super_type = super(type(self), self)
 
@@ -52,6 +57,7 @@ def read(target):
 
 def write(target):
     @functools.wraps(target)
+    @utils.exclude_from_stacktrace
     def wrapper(self, byteslike):
         return target(byteslike.tobytes())
 
@@ -59,6 +65,7 @@ def write(target):
 
 def readinto(target):
     @functools.wraps(target)
+    @utils.exclude_from_stacktrace
     def wrapper(self, buffer):
         bytes = self.read(buffer.nbytes)
         buffer[:len(bytes)] = bytes
@@ -67,6 +74,7 @@ def readinto(target):
 
 def readinto1(target):
     @functools.wraps(target)
+    @utils.exclude_from_stacktrace
     def wrapper(self, buffer):
         bytes = self.read1(buffer.nbytes)
         buffer[:len(bytes)] = bytes
@@ -75,6 +83,7 @@ def readinto1(target):
 
 def mmap_readinto(target):
     @functools.wraps(target)
+    @utils.exclude_from_stacktrace
     def wrapper(self, buffer):
         data = self.read(len(buffer))
         buffer[:len(data)] = data

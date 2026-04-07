@@ -1649,12 +1649,11 @@ def test_system_stacktraces_replay_skips_messages():
 
 
 def test_system_stacktraces_exclude():
-    """StackFactory.exclude filters functions from the stack trace."""
+    """StackFactory exclude predicate filters functions from the stack trace."""
     system = System()
     system.immutable_types.update({int, str, float, bytes, bool, type(None)})
 
-    sf = utils.StackFactory()
-    sf.exclude.add(test_system_stacktraces_exclude)
+    sf = utils.StackFactory(exclude=lambda func: func is test_system_stacktraces_exclude)
     writer = MemoryWriter(stackfactory=sf)
 
     class Clock:

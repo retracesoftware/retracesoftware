@@ -187,10 +187,9 @@ class MemoryWriter:
         self.type_serializer = {}
         self._binding_state = _BindingState()
         self._interned = {}
-        self._checkpoint_stackfactory = utils.StackFactory()
+        exclude = getattr(stackfactory, "exclude", None) if stackfactory is not None else None
+        self._checkpoint_stackfactory = utils.StackFactory(exclude=exclude)
         self._stacktrace_message_factory = StacktraceFactory()
-        if stackfactory is not None and hasattr(stackfactory, "exclude"):
-            self._checkpoint_stackfactory.exclude.update(stackfactory.exclude)
 
     def _maybe_switch(self):
         if self._thread is not None:

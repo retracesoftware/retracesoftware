@@ -1374,7 +1374,11 @@ class System:
         spec['__module__'] = cls.__module__
 
         proxytype = type(cls.__name__, (utils.InternalWrapped, DynamicProxy), spec)
+
         self.bind(proxytype)
+
+        patchtype(module = cls.__module__, name = cls.__qualname__, cls = proxytype)
+
         return proxytype
 
     # have the ext proxytype as a tracked external method

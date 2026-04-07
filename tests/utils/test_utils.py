@@ -361,15 +361,12 @@ class TestStackFactory:
 
     def test_factory_exclude_is_set(self):
         factory = _utils.StackFactory()
-        assert isinstance(factory.exclude, set)
-        assert len(factory.exclude) == 0
+        assert callable(factory.exclude)
 
-    def test_factory_exclude_is_mutable(self):
-        factory = _utils.StackFactory()
-        factory.exclude.add(len)  # add a builtin
-        assert len in factory.exclude
-        factory.exclude.discard(len)
-        assert len not in factory.exclude
+    def test_factory_accepts_exclude_predicate(self):
+        predicate = lambda func: func is len
+        factory = _utils.StackFactory(exclude=predicate)
+        assert factory.exclude is predicate
 
     def test_factory_call_returns_stack(self):
         factory = _utils.StackFactory()
@@ -568,7 +565,8 @@ class TestStackExclude:
     """Tests for StackFactory exclude filtering."""
 
     def test_exclude_removes_function(self):
-        factory = _utils.StackFactory()
+        excluded = set()
+        factory = _utils.StackFactory(exclude=excluded.__contains__)
 
         def excluded_func():
             return factory()
@@ -583,7 +581,7 @@ class TestStackExclude:
         assert excluded_func in funcs1
 
         # With exclude
-        factory.exclude.add(excluded_func)
+        excluded.add(excluded_func)
         s2 = excluded_func()
         funcs2 = []
         current = s2
@@ -592,6 +590,28 @@ class TestStackExclude:
             current = current.next
         assert excluded_func not in funcs2
         assert len(s2) == len(s1) - 1
+
+    def test_exclude_from_stacktrace_registers_function_globally(self):
+        @_utils.exclude_from_stacktrace
+        def excluded_func():
+            return None
+
+        try:
+            assert excluded_func in _utils.stacktrace_exclude
+        finally:
+            _utils.stacktrace_exclude.discard(excluded_func)
+
+    def test_stackfactory_seeds_global_stacktrace_exclude(self):
+        factory = _utils.StackFactory()
+
+        @_utils.exclude_from_stacktrace
+        def excluded_func():
+            return None
+
+        try:
+            assert factory.exclude(excluded_func) is True
+        finally:
+            _utils.stacktrace_exclude.discard(excluded_func)
 
 
 class TestStackChangesFrom:

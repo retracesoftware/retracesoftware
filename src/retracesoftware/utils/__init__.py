@@ -72,6 +72,19 @@ def _export_public(mod: ModuleType) -> None:
 
 _export_public(_backend_mod)
 
+_NativeStackFactory = _backend_mod.StackFactory
+stacktrace_exclude = set()
+
+
+def exclude_from_stacktrace(function):
+    stacktrace_exclude.add(function)
+    return function
+
+
+def StackFactory(*args, **kwargs):
+    kwargs.setdefault("exclude", stacktrace_exclude.__contains__)
+    return _NativeStackFactory(*args, **kwargs)
+
 _WrappedBase = _backend_mod.Wrapped
 
 

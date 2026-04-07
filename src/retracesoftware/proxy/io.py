@@ -101,7 +101,15 @@ def _secondary_hooks(sync, checkpoint):
 
 def normalize_stack_delta(delta):
     to_drop, frames = delta
-    return (to_drop, tuple(tuple(frame) for frame in frames))
+    return (
+        to_drop,
+        tuple(
+            (frame.filename, frame.lineno)
+            if isinstance(frame, utils.Stack)
+            else tuple(frame)
+            for frame in frames
+        ),
+    )
 
 def recorder(*, tape_writer: TapeWriter, 
     debug: bool = False,
@@ -125,6 +133,10 @@ def recorder(*, tape_writer: TapeWriter,
 
     in_sandbox = functional.constantly(False)
 
+    secondary_hooks = _secondary_hooks(
+        sync = sync,
+        checkpoint = checkpoint if debug else None)
+
     if stacktraces:
         write_stacktrace = functional.repeatedly(functional.if_then_else(
             lambda: in_sandbox(),        
@@ -135,8 +147,11 @@ def recorder(*, tape_writer: TapeWriter,
             return utils.observer(on_call = write_stacktrace, function = function)
 
         on_bind = with_stacktrace(on_bind)
-        sync = with_stacktrace(sync)
-        checkpoint = with_stacktrace(checkpoint)
+        secondary_hooks = CallHooks(
+            on_call = with_stacktrace(secondary_hooks.on_call),
+            on_result = secondary_hooks.on_result,
+            on_error = secondary_hooks.on_error,
+        )
 
     system = System(on_bind)
     in_sandbox = system._in_sandbox
@@ -172,11 +187,9 @@ def recorder(*, tape_writer: TapeWriter,
             on_result = on_result,
             on_error = on_error)
 
-    system.secondary_hooks = _secondary_hooks(
-            sync = sync,
-            checkpoint = checkpoint if debug else None,
-        )
+    system.secondary_hooks = secondary_hooks
 
+    @utils.exclude_from_stacktrace
     def async_new_patched(obj):
         system.primary_hooks.on_call(create_stub_object, type(obj))
         system.bind(obj)
@@ -198,7 +211,7 @@ def recorder_context(**kwargs):
 
 def next_result(*, on_stacktrace, run_callback, on_unexpected, read):
     actions = {
-        "STACKTRACE": utils.observer(on_call = on_stacktrace, function = utils.noop),
+        # "STACKTRACE": utils.observer(on_call = on_stacktrace, function = utils.noop),
         "CALL": utils.observer(on_call = run_callback, function = utils.noop),
         "RESULT": read, 
         "ERROR": functional.spread(utils.throw, read)
@@ -213,7 +226,7 @@ def next_result(*, on_stacktrace, run_callback, on_unexpected, read):
                 on_unexpected),
             read))
     
-    actions["STACKTRACE"].function = next
+    # actions["STACKTRACE"].function = next
     actions["CALL"].function = next
 
     return next
@@ -260,6 +273,7 @@ def replayer(*, tape_reader: TapeReader,
         if replay[1:] != this_stack[1:]:
             on_desync(replay, this_stack)
         
+    @utils.exclude_from_stacktrace
     def expect(value):
         type = read()
 
@@ -288,8 +302,14 @@ def replayer(*, tape_reader: TapeReader,
 
     in_sandbox = functional.constantly(False)
 
+    sync = functional.repeatedly(expect, "SYNC")
+
+    secondary_hooks = _secondary_hooks(
+        sync = sync,
+        checkpoint = checkpoint if debug else None)
+
     if stacktraces:
-        def next_stacktrace(obj):
+        def next_stacktrace(*args, **kwargs):
             if in_sandbox():
                 type = read()
                 if type == "STACKTRACE":
@@ -297,9 +317,12 @@ def replayer(*, tape_reader: TapeReader,
                 else:
                     raise ReplayException(f"Unexpected message: {type}, was expecting a stacktrace")
                 
-                return obj
-
-        bind = functional.sequence(next_stacktrace, bind)
+        bind = functional.sequence(functional.side_effect(next_stacktrace), bind)
+        secondary_hooks = CallHooks(
+            on_call = functional.sequence(functional.side_effect(next_stacktrace), secondary_hooks.on_call),
+            on_result = secondary_hooks.on_result,
+            on_error = secondary_hooks.on_error,
+        )
 
     system = System(bind)
     in_sandbox = system._in_sandbox
@@ -313,9 +336,7 @@ def replayer(*, tape_reader: TapeReader,
 
     system.primary_hooks = None
 
-    system.secondary_hooks = _secondary_hooks(
-        sync = functional.repeatedly(expect, "SYNC"),
-        checkpoint = checkpoint if debug else None)
+    system.secondary_hooks = secondary_hooks
 
     def on_start():
         stack.delta() # reset the stack position for delta

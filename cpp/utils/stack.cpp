@@ -16,15 +16,34 @@ static _PyInterpreterFrame * get_top_frame();
 static PyObject * get_func(_PyInterpreterFrame * frame);
 
 // Predicate: returns true if func should be included (not in exclude set)
-static inline bool is_included(PyObject * func, PyObject * exclude) {
-    return func && PySet_Contains(exclude, func) == 0;
+static inline int is_excluded(PyObject * func, PyObject * exclude) {
+    if (!func) {
+        return 1;
+    }
+
+    if (exclude == Py_None) {
+        return 0;
+    }
+
+    PyObject * result = PyObject_CallOneArg(exclude, func);
+    if (!result) {
+        return -1;
+    }
+
+    int truthy = PyObject_IsTrue(result);
+    Py_DECREF(result);
+    return truthy;
 }
 
 // Count included frames from this point down
 static int count_included_frames(_PyInterpreterFrame * frame, PyObject * exclude) {
     int count = 0;
     while (frame) {
-        if (is_included(get_func(frame), exclude)) count++;
+        int excluded = is_excluded(get_func(frame), exclude);
+        if (excluded < 0) {
+            return -1;
+        }
+        if (!excluded) count++;
         frame = frame->previous;
     }
     return count;
@@ -391,16 +410,22 @@ namespace retracesoftware {
 // ============================================================================
 
 struct StackFactory : public PyObject {
-    PyObject * exclude;   // Python set of functions to exclude
+    PyObject * exclude;   // Optional predicate: func -> truthy means exclude
     PyObject * cache_key; // Unique key for thread-local cache lookup
     
     static int tp_init(StackFactory * self, PyObject * args, PyObject * kwargs) {
-        static const char * kwlist[] = {nullptr};
-        if (!PyArg_ParseTupleAndKeywords(args, kwargs, "", const_cast<char**>(kwlist))) {
+        static const char * kwlist[] = {"exclude", nullptr};
+        PyObject * exclude = Py_None;
+        if (!PyArg_ParseTupleAndKeywords(args, kwargs, "|O", const_cast<char**>(kwlist), &exclude)) {
             return -1;
         }
-        self->exclude = PySet_New(nullptr);
-        if (!self->exclude) return -1;
+
+        if (exclude != Py_None && !PyCallable_Check(exclude)) {
+            PyErr_SetString(PyExc_TypeError, "exclude must be callable or None");
+            return -1;
+        }
+
+        self->exclude = Py_NewRef(exclude);
         
         // Create a unique cache key for this factory instance
         // Using a tuple of (module_name, id) as key
@@ -518,7 +543,7 @@ struct StackFactory : public PyObject {
         return result;
     }
     
-    // Get the exclude set (read-only property, user can modify the set directly)
+    // Get the exclude predicate
     static PyObject * get_exclude(StackFactory * self, void * closure) {
         return Py_NewRef(self->exclude);
     }
@@ -530,7 +555,7 @@ static PyMethodDef StackFactory_methods[] = {
 };
 
 static PyGetSetDef StackFactory_getset[] = {
-    {"exclude", (getter)StackFactory::get_exclude, nullptr, "Set of excluded functions", nullptr},
+    {"exclude", (getter)StackFactory::get_exclude, nullptr, "Optional predicate: func -> truthy means exclude", nullptr},
     {nullptr}
 };
 
@@ -589,7 +614,12 @@ Stack * Stack::create_from_frame(PyObject * exclude, _PyInterpreterFrame * frame
     // Get function, skip if excluded (don't increment index for excluded frames)
     PyObject * func = get_func(frame);
 
-    if (is_included(func, exclude)) {
+    int excluded = is_excluded(func, exclude);
+    if (excluded < 0) {
+        return nullptr;
+    }
+
+    if (!excluded) {
         uint16_t instr = _PyInterpreterFrame_LASTI(frame) * 2;
 
         if (reuse && index == reuse->index) {
@@ -618,6 +648,9 @@ Stack * Stack::create_from_frame(PyObject * exclude, _PyInterpreterFrame * frame
 // Wrapper that counts frames to determine starting index
 Stack * Stack::create_from_frame(PyObject * exclude, _PyInterpreterFrame * frame, Stack * reuse) {
     int count = count_included_frames(frame, exclude);
+    if (count < 0) {
+        return nullptr;
+    }
     
     // If reuse is longer than count, drop extra frames to align indices
     if (reuse) {

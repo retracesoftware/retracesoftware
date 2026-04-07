@@ -113,7 +113,9 @@ def _stacktrace_message():
     return "".join(traceback.format_list(frames)).rstrip()
 
 def default_serializer(obj):
-    if obj is not None and not isinstance(obj, (int, bytes, str, bool, float)):
+    import time
+
+    if obj is not None and not isinstance(obj, (int, bytes, str, bool, float, time.struct_time)):
         stacktrace = _stacktrace_message()
         error = TapeInvariantError(
             f"Unexpected object type for serialization: {type(obj)}\n"
