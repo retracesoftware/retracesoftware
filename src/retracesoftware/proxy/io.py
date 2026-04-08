@@ -115,46 +115,36 @@ def recorder(*, tape_writer: TapeWriter,
     debug: bool = False,
     stacktraces: bool = False,
     gc_collect_multiplier: int = None) -> System:
+
     write = tape_writer.write
     bind = tape_writer.bind
+    system = System(bind)
+    in_sandbox = system._in_sandbox
 
-    
     checkpoint = functional.partial(write, "CHECKPOINT")
-    stacktrace = functional.partial(write, "STACKTRACE")
-    sync = functional.repeatedly(write, "SYNC")
-
-    stack = utils.StackFactory()
-
-    def on_start():
-        stack.delta() # reset the stack position for delta
-        write("ON_START")
-
-    on_bind = bind
-
-    in_sandbox = functional.constantly(False)
-
-    secondary_hooks = _secondary_hooks(
-        sync = sync,
-        checkpoint = checkpoint if debug else None)
+    call = functional.sequence(_on_call, checkpoint) if debug else functional.repeatedly(write, "CALL")
+    on_start = functional.repeatedly(write, "ON_START")
 
     if stacktraces:
+        stack = utils.StackFactory()
+        stacktrace = functional.partial(write, "STACKTRACE")
+
         write_stacktrace = functional.repeatedly(functional.if_then_else(
-            lambda: in_sandbox(),        
+            lambda: in_sandbox(),
             functional.sequence(stack.delta, normalize_stack_delta, stacktrace),
             utils.noop))
 
-        def with_stacktrace(function):
-            return utils.observer(on_call = write_stacktrace, function = function)
+        call = utils.observer(on_call=system.disable_for(write_stacktrace), function=call)
+        on_start = functional.sequence(functional.repeatedly(stack.delta), on_start)
 
-        on_bind = with_stacktrace(on_bind)
-        secondary_hooks = CallHooks(
-            on_call = with_stacktrace(secondary_hooks.on_call),
-            on_result = secondary_hooks.on_result,
-            on_error = secondary_hooks.on_error,
-        )
+    def get_error(*funcs):
+        return functional.sequence(functional.positional_param(1), *funcs)
 
-    system = System(on_bind)
-    in_sandbox = system._in_sandbox
+    on_callback_result = functional.sequence(_on_result, checkpoint) \
+        if debug else functional.repeatedly(write, "CALLBACK_RESULT")
+
+    on_callback_error = get_error(_on_error, checkpoint) \
+        if debug else functional.repeatedly(write, "CALLBACK_ERROR")
 
     create_stub_object = system.wrap_async(utils.create_stub_object)
     collect = system.wrap_async(gc.collect)
@@ -169,7 +159,7 @@ def recorder(*, tape_writer: TapeWriter,
             #functional.repeatedly(write, "ON_END")
             )
             
-    on_call = functional.pack_call(1, functional.partial(write, "CALL"))
+    on_call = functional.pack_call(1, functional.partial(write, "CALLBACK"))
     on_result = functional.partial(write, "RESULT")
     on_error = functional.sequence(
         functional.positional_param(1), 
@@ -187,7 +177,10 @@ def recorder(*, tape_writer: TapeWriter,
             on_result = on_result,
             on_error = on_error)
 
-    system.secondary_hooks = secondary_hooks
+    system.secondary_hooks = CallHooks(
+        on_call=call, 
+        on_result=on_callback_result,
+        on_error=on_callback_error)
 
     @utils.exclude_from_stacktrace
     def async_new_patched(obj):
@@ -212,7 +205,7 @@ def recorder_context(**kwargs):
 def next_result(*, on_stacktrace, run_callback, on_unexpected, read):
     actions = {
         # "STACKTRACE": utils.observer(on_call = on_stacktrace, function = utils.noop),
-        "CALL": utils.observer(on_call = run_callback, function = utils.noop),
+        "CALLBACK": utils.observer(on_call = run_callback, function = utils.noop),
         "RESULT": read, 
         "ERROR": functional.spread(utils.throw, read)
     }
@@ -227,7 +220,7 @@ def next_result(*, on_stacktrace, run_callback, on_unexpected, read):
             read))
     
     # actions["STACKTRACE"].function = next
-    actions["CALL"].function = next
+    actions["CALLBACK"].function = next
 
     return next
 
@@ -246,6 +239,7 @@ def replayer(*, tape_reader: TapeReader,
              stacktraces: bool = False) -> System:
     read = tape_reader.read
     bind = tape_reader.bind
+    system = System(bind)
 
     stack = utils.StackFactory()
     current_stack = utils.ThreadLocal([])
@@ -278,10 +272,10 @@ def replayer(*, tape_reader: TapeReader,
         type = read()
 
         if type != value:
-            if type == "STACKTRACE":
-                on_stacktrace()
-                expect(value)
-            elif type == "CALL":
+            # if type == "STACKTRACE":
+            #     on_stacktrace()
+            #     expect(value)
+            if type == "CALLBACK":
                 run_callback()
                 expect(value)
             else:                    
@@ -300,32 +294,19 @@ def replayer(*, tape_reader: TapeReader,
         expect('CHECKPOINT')
         diff(record = read(), replay = replay)
 
-    in_sandbox = functional.constantly(False)
+    in_sandbox = system._in_sandbox
 
-    sync = functional.repeatedly(expect, "SYNC")
-
-    secondary_hooks = _secondary_hooks(
-        sync = sync,
-        checkpoint = checkpoint if debug else None)
+    call = functional.sequence(
+        _on_call, 
+        checkpoint) if debug else functional.repeatedly(expect, "CALL")
 
     if stacktraces:
         def next_stacktrace(*args, **kwargs):
             if in_sandbox():
-                type = read()
-                if type == "STACKTRACE":
-                    on_stacktrace()
-                else:
-                    raise ReplayException(f"Unexpected message: {type}, was expecting a stacktrace")
+                expect('STACKTRACE')
+                on_stacktrace()
                 
-        bind = functional.sequence(functional.side_effect(next_stacktrace), bind)
-        secondary_hooks = CallHooks(
-            on_call = functional.sequence(functional.side_effect(next_stacktrace), secondary_hooks.on_call),
-            on_result = secondary_hooks.on_result,
-            on_error = secondary_hooks.on_error,
-        )
-
-    system = System(bind)
-    in_sandbox = system._in_sandbox
+        call = functional.sequence(functional.side_effect(system.disable_for(next_stacktrace)), call)
 
     system.wrap_async(utils.create_stub_object)
     system.wrap_async(gc.collect)
@@ -336,7 +317,17 @@ def replayer(*, tape_reader: TapeReader,
 
     system.primary_hooks = None
 
-    system.secondary_hooks = secondary_hooks
+    on_callback_result = functional.sequence(
+        _on_result, checkpoint) if debug else functional.repeatedly(expect, "CALLBACK_RESULT")
+    on_callback_error = functional.sequence(
+        functional.positional_param(1), 
+        _on_error, 
+        checkpoint) if debug else functional.repeatedly(expect, "CALLBACK_ERROR")
+
+    system.secondary_hooks = CallHooks(
+        on_call=call, 
+        on_result=on_callback_result,
+        on_error=on_callback_error)
 
     def on_start():
         stack.delta() # reset the stack position for delta

@@ -1,7 +1,9 @@
 import traceback
+import weakref
 
 from retracesoftware import functional
 from retracesoftware.proxy.tape import TapeReader, TapeWriter
+import retracesoftware.utils as utils
 
 
 class _BindingCreate:
@@ -22,27 +24,81 @@ class _BindingLookup:
     def __repr__(self):
         return f"BindingRef({self.index})"
 
+class _BindingDelete:
+    __slots__ = ("index",)
+
+    def __init__(self, index):
+        self.index = index
+
+    def __repr__(self):
+        return f"BindingDelete({self.index})"
+
 class _BindingState:
-    __slots__ = ("_bindings", "_next_index")
+    __slots__ = (
+        "_binder",
+        "_indices",
+        "_fallback_bindings",
+        "_next_index",
+        "_tape_append",
+    )
 
-    def __init__(self):
-        self._bindings = {}
+    def __init__(self, tape_append):
+        self._binder = utils.Binder(on_delete=self._on_delete)
+        self._indices = {}
+        self._fallback_bindings = {}
         self._next_index = 0
+        self._tape_append = tape_append
 
-    def bind(self, obj):
-        obj_id = id(obj)
-        index = self._bindings.get(obj_id)
+    def _index_for_key(self, key):
+        index = self._indices.get(key)
         if index is None:
             index = self._next_index
             self._next_index += 1
-        self._bindings[obj_id] = index
+            self._indices[key] = index
+        return index
+
+    def _on_delete(self, binding):
+        index = self._indices.pop(("binding", binding.handle), None)
+        if index is not None:
+            self._tape_append(_BindingDelete(index))
+
+    def _on_collect(self, obj_id):
+        key = ("fallback", obj_id)
+        index = self._indices.pop(key, None)
+        self._fallback_bindings.pop(obj_id, None)
+        if index is not None:
+            self._tape_append(_BindingDelete(index))
+
+    def _bind_fallback(self, obj):
+        obj_id = id(obj)
+        index = self._fallback_bindings.get(obj_id)
+        if index is None:
+            key = ("fallback", obj_id)
+            index = self._index_for_key(key)
+            self._fallback_bindings[obj_id] = index
+            try:
+                weakref.finalize(obj, self._on_collect, obj_id)
+            except TypeError:
+                pass
         return _BindingCreate(index)
 
+    def bind(self, obj):
+        try:
+            binding = self._binder.bind(obj)
+        except TypeError:
+            return self._bind_fallback(obj)
+        return _BindingCreate(self._index_for_key(("binding", binding.handle)))
+
     def __call__(self, obj, fallback = None):
-        if id(obj) in self._bindings:
-            return _BindingLookup(self._bindings[id(obj)])
-        else:
-            return fallback(obj) if fallback else obj
+        binding = self._binder.lookup(obj)
+        if binding is not None:
+            index = self._indices.get(("binding", binding.handle))
+            if index is not None:
+                return _BindingLookup(index)
+        fallback_index = self._fallback_bindings.get(id(obj))
+        if fallback_index is not None:
+            return _BindingLookup(fallback_index)
+        return fallback(obj) if fallback else obj
 
 
 class _MemoryTapeWriter:
@@ -52,7 +108,7 @@ class _MemoryTapeWriter:
 
     def __init__(self, tape_append, serializer = None):
         self._tape_append = tape_append
-        self._bindings = _BindingState()
+        self._bindings = _BindingState(tape_append)
         self._write_one = functional.sequence(
             functional.walker(lambda obj: self._bindings(obj, serializer)),
             tape_append,
@@ -75,7 +131,14 @@ class _MemoryTapeReader:
     def __init__(self, next_from_tape):
         self._next_from_tape = next_from_tape
         self._bindings = {}
-        self.read = functional.sequence(next_from_tape, functional.walker(self._resolve))
+        self.read = functional.sequence(self._next_visible, functional.walker(self._resolve))
+
+    def _next_visible(self):
+        value = self._next_from_tape()
+        while isinstance(value, _BindingDelete):
+            self._bindings.pop(value.index, None)
+            value = self._next_from_tape()
+        return value
 
     def _resolve(self, value):
         if isinstance(value, _BindingLookup):
@@ -86,7 +149,7 @@ class _MemoryTapeReader:
             return value
 
     def bind(self, obj):
-        marker = self._next_from_tape()
+        marker = self._next_visible()
         if not isinstance(marker, _BindingCreate):
             raise RuntimeError(f"expected BindingCreate, got {marker!r}")
         self._bindings[marker.index] = obj

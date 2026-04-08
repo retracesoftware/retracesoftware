@@ -777,6 +777,8 @@ PyMODINIT_FUNC CONCAT(PyInit_, MODULE_NAME)(void) {
         &retracesoftware::ThreadSwitchMonitor_Type,
         &retracesoftware::IdSet_Type,
         &retracesoftware::IdDict_Type,
+        &retracesoftware::Binding_Type,
+        &retracesoftware::Binder_Type,
         &retracesoftware::StripTraceback_Type,
         &retracesoftware::Observer_Type,
         &retracesoftware::PerThread_Type,
