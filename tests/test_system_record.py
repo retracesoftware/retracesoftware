@@ -87,12 +87,12 @@ class SystemRecordHarness:
 
     def intern(self, obj):
         self.calls.append(("intern", obj))
-        return self.object_writer.intern(obj)
+        return self.object_writer._intern(obj)
 
     def async_new_patched(self, obj):
         self.calls.append(("async_new_patched", obj))
         tag = "ASYNC_NEW_PATCHED"
-        self.object_writer.intern(tag)
+        self.object_writer._intern(tag)
         if self.object_writer._native is not None:
             self.object_writer._native(tag, obj)
         else:

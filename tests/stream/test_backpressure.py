@@ -212,6 +212,9 @@ def test_push_fail_callback_disables_objectwriter():
 
     try:
         writer.bind(object())
+        assert callbacks == []
+
+        writer.bind(object())
         assert callbacks == ["fail"]
 
         writer.bind(object())

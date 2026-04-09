@@ -885,7 +885,7 @@ def test_raw_persister_non_bytes_serializer_emits_serialize_error(tmp_path):
         fw.close()
 
     raw = path.read_bytes()
-    assert raw[0] == 0xDE
+    assert raw[0] == 0xBE
 
     reader = _make_raw_native_reader(path)
     try:

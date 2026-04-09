@@ -242,8 +242,8 @@ def test_debug_persister_emits_intern_then_ref(monkeypatch):
     payload = "interned payload"
 
     with stream.writer(output=persister, flush_interval=999) as writer:
-        writer.intern(payload)
-        writer(payload)
+        handle = writer.handle(payload)
+        handle()
         writer.flush()
 
     assert ("command", ("intern", (0, ("object", payload)))) in events

@@ -58,14 +58,23 @@ static const char* get_utf8_if_exists(PyObject* op, Py_ssize_t* out_size) {
 // }
 
 namespace retracesoftware_stream {
+    namespace {
+        inline BindingHandle pointer_handle(PyObject* obj) {
+            return static_cast<BindingHandle>(reinterpret_cast<uintptr_t>(obj));
+        }
+
+        inline BindingHandle object_token_handle(PyObject* obj) {
+            return pointer_handle(obj);
+        }
+    }
+
     class Persister : public PyObject {
         PyObject* framed_writer_obj = nullptr;
         FramedWriter* fw = nullptr;
         PyObject* serializer = nullptr;
         PyObject* intern_serializer = nullptr;
-        map<PyObject*, int> bindings;
-        map<PyObject*, int> interns;
-        std::vector<PyObject*> owned_intern_keys;
+        map<BindingHandle, int> bindings;
+        map<BindingHandle, int> interns;
         int binding_counter = 0;
         int intern_counter = 0;
         size_t bytes_written = 0;
@@ -111,11 +120,11 @@ namespace retracesoftware_stream {
         void write_pickled_value(PyObject* bytes);
         void write_sized_int(int64_t value);
         PyObject* maybe_intern_payload(PyObject* value);
-        bool object_freed(PyObject* obj);
-        void remember_binding(PyObject* key, int index);
-        void remember_intern(PyObject* key, int index);
-        void remember_owned_intern(PyObject* key, int index);
-        void forget_binding(PyObject* key);
+        bool object_freed(BindingHandle key);
+        int binding_index(BindingHandle key) const;
+        void remember_binding(BindingHandle key, int index);
+        void remember_intern(BindingHandle key, int index);
+        void forget_binding(BindingHandle key);
 
     public:
         Persister() {}
@@ -125,7 +134,7 @@ namespace retracesoftware_stream {
         FramedWriter* native_writer() const { return fw; }
         void reset_state();
 
-        bool intern(PyObject* obj, Ref ref);
+        bool intern(PyObject* obj, BindingHandle handle);
         void flush();
         void shutdown();
         void prepare_resume();
@@ -133,9 +142,10 @@ namespace retracesoftware_stream {
 
         void start_collection(PyObject* type, size_t len);
         bool write_object(PyObject* obj);
-        void write_delete(Ref ref);
+        bool write_handle_ref(BindingHandle handle);
+        void write_delete(BindingHandle handle);
         bool write_thread_switch(PyObject* thread_handle);
-        void bind(Ref ref);
+        void bind(BindingHandle handle);
 
         void write_heartbeat();
         void write_pickled(PyObject* obj);
@@ -186,9 +196,6 @@ namespace retracesoftware_stream {
             Py_VISIT(self->framed_writer_obj);
             Py_VISIT(self->serializer);
             Py_VISIT(self->intern_serializer);
-            for (auto* key : self->owned_intern_keys) {
-                Py_VISIT(key);
-            }
             for (auto& [key, value] : self->interned_index) {
                 visit(key, arg);
             }
@@ -198,10 +205,6 @@ namespace retracesoftware_stream {
         static int clear(Persister* self) {
             Py_CLEAR(self->serializer);
             Py_CLEAR(self->intern_serializer);
-            for (auto* key : self->owned_intern_keys) {
-                Py_DECREF(key);
-            }
-            self->owned_intern_keys.clear();
             for (auto& [key, value] : self->interned_index) {
                 Py_DECREF(key);
             }
@@ -308,26 +311,24 @@ namespace retracesoftware_stream {
             PyObject* ref = nullptr;
             if (!PyArg_ParseTuple(args, "O|O", &obj, &ref)) return nullptr;
             PyObject* owned_obj = Py_NewRef(obj);
-            PyObject* owned_ref = ref ? Py_NewRef(ref) : Py_NewRef(owned_obj);
-            PyObject* result = call_persister_bool_method([&] { return self->intern(owned_obj, owned_ref); });
+            PyObject* token = ref ? ref : owned_obj;
+            const BindingHandle handle = object_token_handle(token);
+            PyObject* result = call_persister_bool_method([&] { return self->intern(owned_obj, handle); });
             Py_DECREF(owned_obj);
-            Py_DECREF(owned_ref);
             return result;
         }
 
         PyObject* Persister_py_bind(Persister* self, PyObject* obj) {
-            PyObject* owned = Py_NewRef(obj);
-            PyObject* result = call_persister_method([&] { self->bind(reinterpret_cast<Ref>(owned)); });
-            Py_DECREF(owned);
+            const BindingHandle handle = object_token_handle(obj);
+            PyObject* result = call_persister_method([&] { self->bind(handle); });
             return result;
         }
 
         PyObject* Persister_py_write_delete(Persister* self, PyObject* obj) {
-            PyObject* owned = Py_NewRef(obj);
+            const BindingHandle handle = object_token_handle(obj);
             PyObject* result = call_persister_method([&] {
-                self->write_delete(reinterpret_cast<Ref>(owned));
+                self->write_delete(handle);
             });
-            Py_DECREF(owned);
             return result;
         }
 
@@ -627,10 +628,10 @@ namespace retracesoftware_stream {
             return write_long(obj);
         } else if (Py_TYPE(obj) == &PyBytes_Type) {
             write_bytes_value(obj);
-        } else if (bindings.contains(obj)) {
-            write_binding_lookup(bindings[obj]);
-        } else if (interns.contains(obj)) {
-            write_intern_lookup(interns[obj]);
+        } else if (auto binding_it = bindings.find(pointer_handle(obj)); binding_it != bindings.end()) {
+            write_binding_lookup(binding_it->second);
+        } else if (auto intern_it = interns.find(pointer_handle(obj)); intern_it != interns.end()) {
+            write_intern_lookup(intern_it->second);
         } else {
             PyObject* interned = maybe_intern_payload(obj);
             if (!interned) {
@@ -640,12 +641,13 @@ namespace retracesoftware_stream {
             if (interned != Py_None) {
                 bool ok = true;
                 int index = intern_counter;
+                BindingHandle key = pointer_handle(obj);
 
                 emit_control(Intern);
                 try {
                     ok = write(interned);
                     if (ok) {
-                        remember_owned_intern(obj, index);
+                        remember_intern(key, index);
                         intern_counter++;
                         write_intern_lookup(index);
                     }
@@ -664,37 +666,35 @@ namespace retracesoftware_stream {
         return true;
     }
 
-    void Persister::remember_binding(PyObject* key, int index) {
+    void Persister::remember_binding(BindingHandle key, int index) {
         bindings[key] = index;
     }
 
-    void Persister::remember_intern(PyObject* key, int index) {
+    int Persister::binding_index(BindingHandle key) const {
+        auto it = bindings.find(key);
+        return it == bindings.end() ? -1 : it->second;
+    }
+
+    void Persister::remember_intern(BindingHandle key, int index) {
         interns[key] = index;
     }
 
-    void Persister::remember_owned_intern(PyObject* key, int index) {
-        PyObject* owned = Py_NewRef(key);
-        interns[owned] = index;
-        owned_intern_keys.push_back(owned);
-    }
-
-    void Persister::forget_binding(PyObject* key) {
+    void Persister::forget_binding(BindingHandle key) {
         bindings.erase(key);
         interns.erase(key);
     }
 
-    void Persister::bind(Ref ref) {
-        PyObject* key = reinterpret_cast<PyObject*>(ref);
+    void Persister::bind(BindingHandle key) {
         assert(!bindings.contains(key));
         assert(!interns.contains(key));
         emit_control(Bind);
         remember_binding(key, binding_counter++);
     }
 
-    bool Persister::object_freed(PyObject* obj) {
-        if (auto it = bindings.find(obj); it != bindings.end()) {
+    bool Persister::object_freed(BindingHandle key) {
+        if (auto it = bindings.find(key); it != bindings.end()) {
             write_unsigned_number(SizedTypes::BINDING_DELETE, it->second);
-            forget_binding(obj);
+            forget_binding(key);
             return true;
         }
 
@@ -705,8 +705,21 @@ namespace retracesoftware_stream {
         return write(obj);
     }
 
-    bool Persister::intern(PyObject* obj, Ref ref) {
-        PyObject* key = reinterpret_cast<PyObject*>(ref);
+    bool Persister::write_handle_ref(BindingHandle handle) {
+        int index = binding_index(handle);
+        if (index < 0) {
+            auto intern_it = interns.find(handle);
+            if (intern_it == interns.end()) {
+                return false;
+            }
+            write_intern_lookup(intern_it->second);
+            return true;
+        }
+        write_binding_lookup(index);
+        return true;
+    }
+
+    bool Persister::intern(PyObject* obj, BindingHandle key) {
         if (bindings.contains(key)) {
             write_binding_lookup(bindings[key]);
             return true;
@@ -759,14 +772,14 @@ namespace retracesoftware_stream {
         emit_control(Heartbeat);
     }
 
-    void Persister::write_delete(Ref ref) {
-        object_freed(reinterpret_cast<PyObject*>(ref));
+    void Persister::write_delete(BindingHandle handle) {
+        object_freed(handle);
     }
 
     bool Persister::write_thread_switch(PyObject* thread_handle) {
-        PyObject* key = thread_handle;
+        BindingHandle key = pointer_handle(thread_handle);
         if (!interns.contains(key)) {
-            if (!intern(thread_handle, thread_handle)) {
+            if (!intern(thread_handle, key)) {
                 return false;
             }
         }
@@ -838,36 +851,40 @@ namespace retracesoftware_stream {
         return true;
     }
     
-    bool Persister_write_delete(Persister * persister, Ref ref) {
-        // retracesoftware::GILGuard gstate;
-        persister->write_delete(ref);
+    bool Persister_write_delete_handle(Persister * persister, BindingHandle handle) {
+        persister->write_delete(handle);
+        return true;
+    }
+
+    bool Persister_write_binding_lookup(Persister * persister, BindingHandle handle) {
+        if (!persister->write_handle_ref(handle)) {
+            retracesoftware::GILGuard gstate;
+            PyErr_Format(PyExc_KeyError, "unknown binding handle: %llu",
+                         static_cast<unsigned long long>(handle));
+            return false;
+        }
         return true;
     }
     
     bool Persister_write_thread_switch(Persister * persister, PyObject * thread_handle) {
-        // retracesoftware::GILGuard gstate;
         return persister->write_thread_switch(thread_handle);
     }
 
     bool Persister_start_collection(Persister * persister, PyObject* type, size_t len) {
-        // retracesoftware::GILGuard gstate;
         persister->start_collection(type, len);
         return true;
     }
 
     bool Persister_write_object(Persister * persister, PyObject * obj) {
-        // retracesoftware::GILGuard gstate;
         return persister->write_object(obj);
     }
 
-    bool Persister_intern(Persister * persister, PyObject * obj, Ref ref) {
-        // retracesoftware::GILGuard gstate;
-        return persister->intern(obj, ref);
+    bool Persister_intern_handle(Persister * persister, PyObject * obj, BindingHandle handle) {
+        return persister->intern(obj, handle);
     }
 
-    bool Persister_bind(Persister * persister, Ref ref) {
-        // retracesoftware::GILGuard gstate;
-        persister->bind(ref);
+    bool Persister_bind_handle(Persister * persister, BindingHandle handle) {
+        persister->bind(handle);
         return true;
     }
 }

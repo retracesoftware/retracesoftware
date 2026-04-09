@@ -219,6 +219,12 @@ class DebugPersister:
     def _bound_ref_index(self, obj):
         return self._bindings.get(id(obj))
 
+    @staticmethod
+    def _binding_key(ref):
+        if isinstance(ref, int):
+            return ref
+        return id(ref)
+
     def reset_state(self):
         self._handle_indices = {}
         self._next_handle_index = 0
@@ -228,6 +234,8 @@ class DebugPersister:
 
     @staticmethod
     def _ref_key(ref):
+        if isinstance(ref, int):
+            return ref
         return id(ref)
 
     def write_object(self, obj):
@@ -237,7 +245,11 @@ class DebugPersister:
         return self._dispatch_event(_debug_object_event(obj))
 
     def write_handle_ref(self, ref):
-        return self._index_event("handle_ref", self._handle_index(self._ref_key(ref)))
+        ref_key = self._ref_key(ref)
+        index = self._bindings.get(ref_key)
+        if index is not None:
+            return self._index_event("bound_ref", index)
+        return self._index_event("handle_ref", self._handle_index(ref_key))
 
     def write_handle_delete(self, ref):
         delta = self._handle_delete_delta(self._ref_key(ref))
@@ -279,7 +291,12 @@ class DebugPersister:
         return self._command0("heartbeat")
 
     def write_delete(self, ref):
-        return self._command1("delete", self._ref_key(ref))
+        ref_key = self._ref_key(ref)
+        index = self._bindings.pop(ref_key, None)
+        if index is not None:
+            self._binding_values.pop(index, None)
+            return self._index_event("bound_ref_delete", index)
+        return self._command1("delete", ref_key)
 
     def write_thread_switch(self, thread_handle):
         return self._command1("thread_switch", thread_handle)
@@ -369,6 +386,12 @@ class JsonPersister:
     def _bound_ref_index(self, obj):
         return self._bindings.get(id(obj))
 
+    @staticmethod
+    def _ref_key(ref):
+        if isinstance(ref, int):
+            return ref
+        return id(ref)
+
     def _encode_value(self, value, use_serializer=True):
         if value is None or isinstance(value, (bool, int, float, str)):
             return value
@@ -436,22 +459,35 @@ class JsonPersister:
         self._write_event("object", value=self._encode_value(obj))
         return None
 
+    def write_handle_ref(self, ref):
+        ref_id = self._ref_key(ref)
+        index = self._bindings.get(ref_id)
+        if index is not None:
+            self._write_event("bound_ref", index=index)
+        else:
+            self._write_event("handle_ref", ref=ref_id)
+        return None
+
     def write_delete(self, ref):
-        ref_id = id(ref)
-        self._write_event("delete", ref=ref_id, index=self._forget_binding(ref_id))
+        ref_id = self._ref_key(ref)
+        index = self._forget_binding(ref_id)
+        if index is not None:
+            self._write_event("bound_ref_delete", index=index)
+        else:
+            self._write_event("delete", ref=ref_id, index=None)
         return None
 
     def intern(self, obj, ref):
-        ref_id = id(ref)
+        ref_id = self._ref_key(ref)
         index = self._bind_index(ref_id)
         self._remember_binding(ref_id, index, obj)
         self._write_event("intern", index=index, value=self._encode_value(obj))
         return None
 
     def write_async_new_patched(self, typ_ref, ref):
-        type_index = self._bindings.get(id(typ_ref))
+        type_index = self._bindings.get(self._ref_key(typ_ref))
         typ = self._binding_values.get(type_index, typ_ref)
-        ref_id = id(ref)
+        ref_id = self._ref_key(ref)
         index = self._bind_index(ref_id)
         self._remember_binding(ref_id, index)
         self._write_event(
@@ -488,7 +524,7 @@ class JsonPersister:
         return None
 
     def bind(self, ref):
-        ref_id = id(ref)
+        ref_id = self._ref_key(ref)
         index = self._bind_index(ref_id)
         self._remember_binding(ref_id, index)
         self._write_event("bind", index=index)
@@ -556,9 +592,9 @@ class ObjectWriter:
             self._queue.push_obj(value)
         return None
 
-    def intern(self, obj):
+    def _intern(self, obj):
         if self._native is not None:
-            return self._native.intern(obj)
+            return self._native._intern(obj)
         token = self._bind_token(obj)
         self._queue.push_intern(obj, token)
         return None
@@ -716,7 +752,7 @@ class writer(_backend_mod.ObjectWriter):
         return None
 
     def handle(self, obj):
-        self.intern(obj)
+        self._intern(obj)
         return functional.partial(self, obj)
 
     def async_new_patched(self, obj):

@@ -120,7 +120,7 @@ namespace retracesoftware_stream {
     class FramedWriter;
     FramedWriter* FramedWriter_get(PyObject* obj);
 
-    extern PyTypeObject WeakRefCallback_Type;
+    extern PyTypeObject BinderDeleteCallback_Type;
     // extern PyTypeObject ObjectReader_Type;
 
     inline void generic_gc_dealloc(PyObject *self) {

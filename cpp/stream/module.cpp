@@ -1,7 +1,7 @@
 #include "stream.h"
 #include "wireformat.h"
 
-static PyTypeObject * hidden_types[] = {    &retracesoftware_stream::WeakRefCallback_Type,
+static PyTypeObject * hidden_types[] = {    &retracesoftware_stream::BinderDeleteCallback_Type,
     nullptr
 };
 

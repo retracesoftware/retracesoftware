@@ -13,12 +13,13 @@ namespace retracesoftware_stream {
     class Persister;
 
     extern bool Persister_write_heartbeat(Persister* persister);
-    extern bool Persister_write_delete(Persister* persister, Ref ref);
+    extern bool Persister_write_delete_handle(Persister* persister, BindingHandle handle);
     extern bool Persister_write_thread_switch(Persister* persister, PyObject* thread_handle);
     extern bool Persister_start_collection(Persister* persister, PyObject* type, size_t len);
+    extern bool Persister_write_binding_lookup(Persister* persister, BindingHandle handle);
     extern bool Persister_write_object(Persister* persister, PyObject* obj);
-    extern bool Persister_intern(Persister* persister, PyObject* obj, Ref ref);
-    extern bool Persister_bind(Persister* persister, Ref ref);
+    extern bool Persister_intern_handle(Persister* persister, PyObject* obj, BindingHandle handle);
+    extern bool Persister_bind_handle(Persister* persister, BindingHandle handle);
 
     namespace {
         // The producer can prepend a 2-entry CMD_THREAD_SWITCH packet ahead of
@@ -52,8 +53,8 @@ namespace retracesoftware_stream {
             return PyLong_FromUnsignedLongLong(static_cast<unsigned long long>(len));
         }
 
-        inline bool ref_token_needs_release(Ref ref) {
-            return queue_is_weakref_token(ref);
+        PyObject* handle_to_pyobject(BindingHandle handle) {
+            return PyLong_FromUnsignedLongLong(static_cast<unsigned long long>(handle));
         }
 
         inline Persister* native_persister(PyObject* target) {
@@ -312,9 +313,9 @@ namespace retracesoftware_stream {
         }
     }
 
-    bool Queue::call_target_bind(Ref obj) {
+    bool Queue::call_target_bind(BindingHandle handle) {
         if (is_persister()) {
-            return Persister_bind(native_persister(target_obj), obj);
+            return Persister_bind_handle(native_persister(target_obj), handle);
         }
         retracesoftware::GILGuard gstate;
         PyObject* method = lookup_target_method(target_obj, "bind");
@@ -323,7 +324,14 @@ namespace retracesoftware_stream {
             capture_current_target_error();
             return false;
         }
-        PyObject* result = PyObject_CallFunctionObjArgs(method, obj, nullptr);
+        PyObject* handle_obj = handle_to_pyobject(handle);
+        if (!handle_obj) {
+            Py_DECREF(method);
+            capture_current_target_error();
+            return false;
+        }
+        PyObject* result = PyObject_CallFunctionObjArgs(method, handle_obj, nullptr);
+        Py_DECREF(handle_obj);
         Py_DECREF(method);
         if (!result) {
             capture_current_target_error();
@@ -333,9 +341,9 @@ namespace retracesoftware_stream {
         return true;
     }
 
-    bool Queue::call_target_delete(Ref ref) {
+    bool Queue::call_target_delete(BindingHandle handle) {
         if (is_persister()) {
-            return Persister_write_delete(native_persister(target_obj), ref);
+            return Persister_write_delete_handle(native_persister(target_obj), handle);
         }
         retracesoftware::GILGuard gstate;
         PyObject* method = lookup_target_method(target_obj, "write_delete");
@@ -344,7 +352,14 @@ namespace retracesoftware_stream {
             capture_current_target_error();
             return false;
         }
-        PyObject* result = PyObject_CallFunctionObjArgs(method, ref, nullptr);
+        PyObject* handle_obj = handle_to_pyobject(handle);
+        if (!handle_obj) {
+            Py_DECREF(method);
+            capture_current_target_error();
+            return false;
+        }
+        PyObject* result = PyObject_CallFunctionObjArgs(method, handle_obj, nullptr);
+        Py_DECREF(handle_obj);
         Py_DECREF(method);
         if (!result) {
             capture_current_target_error();
@@ -354,9 +369,9 @@ namespace retracesoftware_stream {
         return true;
     }
 
-    bool Queue::call_target_intern(PyObject* obj, Ref ref) {
+    bool Queue::call_target_intern(PyObject* obj, BindingHandle handle) {
         if (is_persister()) {
-            return Persister_intern(native_persister(target_obj), obj, ref);
+            return Persister_intern_handle(native_persister(target_obj), obj, handle);
         }
         retracesoftware::GILGuard gstate;
         PyObject* method = lookup_target_method(target_obj, "intern");
@@ -365,7 +380,42 @@ namespace retracesoftware_stream {
             capture_current_target_error();
             return false;
         }
-        PyObject* result = PyObject_CallFunctionObjArgs(method, obj, ref, nullptr);
+        PyObject* handle_obj = handle_to_pyobject(handle);
+        if (!handle_obj) {
+            Py_DECREF(method);
+            capture_current_target_error();
+            return false;
+        }
+        PyObject* result = PyObject_CallFunctionObjArgs(method, obj, handle_obj, nullptr);
+        Py_DECREF(handle_obj);
+        Py_DECREF(method);
+        if (!result) {
+            capture_current_target_error();
+            return false;
+        }
+        Py_DECREF(result);
+        return true;
+    }
+
+    bool Queue::call_target_write_handle_ref(BindingHandle handle) {
+        if (is_persister()) {
+            return Persister_write_binding_lookup(native_persister(target_obj), handle);
+        }
+        retracesoftware::GILGuard gstate;
+        PyObject* method = lookup_target_method(target_obj, "write_handle_ref");
+        if (!method) {
+            PyErr_SetString(PyExc_AttributeError, "target is missing 'write_handle_ref'");
+            capture_current_target_error();
+            return false;
+        }
+        PyObject* handle_obj = handle_to_pyobject(handle);
+        if (!handle_obj) {
+            Py_DECREF(method);
+            capture_current_target_error();
+            return false;
+        }
+        PyObject* result = PyObject_CallFunctionObjArgs(method, handle_obj, nullptr);
+        Py_DECREF(handle_obj);
         Py_DECREF(method);
         if (!result) {
             capture_current_target_error();
@@ -830,8 +880,14 @@ namespace retracesoftware_stream {
         return as_payload_obj(entry);
     }
 
-    Ref Queue::consume_ref() {
-        return reinterpret_cast<Ref>(consume_raw_ptr_payload());
+    BindingHandle Queue::consume_binding_handle(EntryKind expected_kind) {
+        QEntry entry = pop_entry();
+        if (!is_tagged_entry(entry) || kind_of(entry) != expected_kind) {
+            retracesoftware::GILGuard gstate;
+            PyErr_SetString(PyExc_RuntimeError, "expected binding handle payload");
+            throw nullptr;
+        }
+        return as_binding_handle(entry);
     }
 
     void Queue::release_consumed_obj(PyObject* obj) {
@@ -857,16 +913,6 @@ namespace retracesoftware_stream {
             std::this_thread::yield();
         }
         maybe_notify_return_thread(true);
-    }
-
-    void Queue::release_consumed_ref(Ref ref) {
-        if (!ref_token_needs_release(ref)) return;
-        release_consumed_obj(ref);
-    }
-
-    void Queue::finish_consumed_ref(Ref ref) {
-        if (!ref_token_needs_release(ref)) return;
-        finish_consumed_obj(ref);
     }
 
     void Queue::poison_returned_queue() {
@@ -962,34 +1008,14 @@ namespace retracesoftware_stream {
 
     bool Queue::dispatch_command(QEntry entry) {
         switch (cmd_of(entry)) {
-            case CMD_BIND: {
-                Ref ref = consume_ref();
-                if (!call_target_bind(ref)) {
-                    release_consumed_ref(ref);
-                    return false;
-                }
-                finish_consumed_ref(ref);
-                return true;
-            }
             case CMD_INTERN: {
                 PyObject* obj = consume_owned_payload();
-                Ref ref = consume_ref();
-                if (!call_target_intern(obj, ref)) {
+                BindingHandle handle = consume_binding_handle(ENTRY_BIND);
+                if (!call_target_intern(obj, handle)) {
                     release_consumed_obj(obj);
-                    release_consumed_ref(ref);
                     return false;
                 }
                 finish_consumed_obj(obj);
-                finish_consumed_ref(ref);
-                return true;
-            }
-            case CMD_DELETE: {
-                Ref ref = consume_ref();
-                if (!call_target_delete(ref)) {
-                    release_consumed_ref(ref);
-                    return false;
-                }
-                finish_consumed_ref(ref);
                 return true;
             }
             case CMD_THREAD_SWITCH: {
@@ -1122,38 +1148,41 @@ namespace retracesoftware_stream {
     }
 
     bool Queue::dispatch_entry(QEntry entry) {
-        if (!is_command_entry(entry)) {
+        if (is_pointer_entry(entry)) {
             PyObject* obj = as_object(entry);
             if (!call_target_write_object(obj)) {
-                if (!is_unowned_entry(entry)) {
-                    release_consumed_obj(obj);
-                }
+                release_consumed_obj(obj);
                 return false;
             }
-            if (!is_unowned_entry(entry)) {
-                finish_consumed_obj(obj);
-            }
+            finish_consumed_obj(obj);
             return true;
+        }
+        if (is_ref_entry(entry)) {
+            return call_target_write_handle_ref(as_binding_handle(entry));
+        }
+        if (is_bind_entry(entry)) {
+            return call_target_bind(as_binding_handle(entry));
+        }
+        if (is_delete_entry(entry)) {
+            return call_target_delete(as_binding_handle(entry));
         }
         return dispatch_command(entry);
     }
 
     void Queue::dispatch_release(QEntry entry) {
-        if (!is_command_entry(entry)) {
-            if (!is_unowned_entry(entry)) {
-                release_consumed_obj(as_object(entry));
-            }
+        if (is_pointer_entry(entry)) {
+            release_consumed_obj(as_object(entry));
+            return;
+        }
+
+        if (is_ref_entry(entry) || is_bind_entry(entry) || is_delete_entry(entry)) {
             return;
         }
 
         switch (cmd_of(entry)) {
-            case CMD_BIND:
-            case CMD_DELETE:
-                release_consumed_ref(consume_ref());
-                break;
             case CMD_INTERN:
                 release_consumed_obj(consume_owned_payload());
-                release_consumed_ref(consume_ref());
+                (void)consume_binding_handle(ENTRY_BIND);
                 break;
             case CMD_THREAD_SWITCH:
                 release_consumed_obj(consume_owned_payload());
