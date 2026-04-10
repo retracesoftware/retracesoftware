@@ -50,12 +50,33 @@ def record(options, args):
         else:
             print(f"Retrace enabled, recording to {options.recording}", file=sys.stderr)
 
-    system = recorder(tape_writer = create_tape_writer(options, args, thread_getter = thread_id.id.get), 
-                      debug = options.stacktraces,
-                      stacktraces = options.stacktraces,
-                      gc_collect_multiplier = getattr(options, "gc_collect_multiplier", 0))
+    tape_writer = create_tape_writer(options, args, thread_getter=thread_id.id.get)
 
-    install_and_run(system = system, options = options, function = run_python_command, args = args)
+    def close_tape_writer():
+        tape_writer.__exit__(None, None, None)
+
+    if options.trace_shutdown:
+        # Run writer shutdown after install_and_run()'s atexit uninstall so
+        # traced shutdown events still make it to disk before the queue closes.
+        atexit.register(close_tape_writer)
+
+    try:
+        system = recorder(
+            tape_writer=tape_writer,
+            debug=options.stacktraces,
+            stacktraces=options.stacktraces,
+            gc_collect_multiplier=getattr(options, "gc_collect_multiplier", 0),
+        )
+
+        install_and_run(
+            system=system,
+            options=options,
+            function=run_python_command,
+            args=(args,),
+        )
+    finally:
+        if not options.trace_shutdown:
+            close_tape_writer()
 
 def replay(args):
     chunk_ms = getattr(args, 'chunk_ms', None)
@@ -105,6 +126,9 @@ def replay(args):
             def bind(self, obj):
                 return self.reader.bind(obj)
 
+            def peek(self):
+                return self.reader.peek()
+
         stacktraces = header.get('stacktraces', False)
 
         system = replayer(
@@ -112,6 +136,8 @@ def replay(args):
             debug=stacktraces,
             stacktraces=stacktraces,
         )
+        if hasattr(reader, "stub_factory"):
+            reader.stub_factory = system.disable_for(reader.stub_factory)
 
         monitor_level = header.get('monitor', 0)
         replay_options = argparse.Namespace(
@@ -162,7 +188,7 @@ def replay(args):
                 system = system, 
                 options = replay_options, 
                 function = run_python_command,
-                args = header['argv'])
+                args = (header['argv'],))
         finally:
             if controller:
                 controller.on_replay_finished()

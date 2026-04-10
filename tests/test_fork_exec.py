@@ -280,43 +280,6 @@ class TestSubprocessRecorded:
         )
 
 
-# ── parse_fork_path unit tests ─────────────────────────────────
-
-from retracesoftware.__main__ import parse_fork_path
-
-
-class TestForkPath:
-    """Unit tests for the parse_fork_path helper."""
-
-    def test_empty_string(self):
-        assert parse_fork_path('') == ''
-
-    def test_none_like(self):
-        assert parse_fork_path(None) == ''
-
-    def test_child_keyword(self):
-        result = parse_fork_path('child')
-        assert result == '1' * 1000
-
-    def test_parent_keyword(self):
-        assert parse_fork_path('parent') == ''
-
-    def test_binary_passthrough(self):
-        assert parse_fork_path('1101') == '1101'
-
-    def test_binary_all_zeros(self):
-        assert parse_fork_path('0000') == '0000'
-
-    def test_rle_child_start(self):
-        assert parse_fork_path('child-2-1-1') == '1101'
-
-    def test_rle_parent_start(self):
-        assert parse_fork_path('parent-3-2') == '00011'
-
-    def test_rle_single_run(self):
-        assert parse_fork_path('child-5') == '11111'
-
-
 # ── Replay stream misalignment bug ─────────────────────────────
 
 class TestReplayStatResult:

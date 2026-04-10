@@ -16,6 +16,9 @@ class TapeReader(Protocol):
     def bind(self, obj: object) -> None:
         ...
 
+    def peek(self) -> object:
+        ...
+
 @runtime_checkable
 class Tape(Protocol):
     def writer(self) -> TapeWriter:

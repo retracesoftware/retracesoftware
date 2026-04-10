@@ -1,6 +1,6 @@
 """Record mode for the gate-based proxy system."""
 
-from retracesoftware.proxy.recorder import Recorder
+from retracesoftware.proxy.contexts import record_context
 
 from .base import Mode
 
@@ -15,11 +15,11 @@ class RecordMode(Mode):
         self.stacktraces = stacktraces
 
     def context(self):
-        return Recorder(
+        return record_context(
             self.system,
             self.writer,
             debug=self.debug,
             stacktraces=self.stacktraces,
             on_start=self.on_start,
             on_end=self.on_end,
-        ).context()
+        )

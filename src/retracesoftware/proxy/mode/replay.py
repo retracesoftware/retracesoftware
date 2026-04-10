@@ -1,6 +1,6 @@
 """Replay mode for the gate-based proxy system."""
 
-from retracesoftware.proxy.replayer import Replayer
+from retracesoftware.proxy.contexts import replay_context
 
 from .base import Mode
 
@@ -14,10 +14,10 @@ class ReplayMode(Mode):
         self.normalize = normalize
 
     def context(self):
-        return Replayer(
+        return replay_context(
             self.system,
             self.reader,
             normalize=self.normalize,
             on_start=self.on_start,
             on_end=self.on_end,
-        ).context()
+        )

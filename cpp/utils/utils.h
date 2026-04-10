@@ -169,6 +169,8 @@ namespace retracesoftware {
     bool Binding_Check(PyObject * obj);
     uint64_t Binding_Handle(PyObject * obj);
     PyObject * Binding_New(uint64_t handle);
+    bool AddBindSupport(PyTypeObject * type);
+    bool RemoveBindSupport(PyTypeObject * type);
     PyObject * Binder_Bind(PyObject * binder, PyObject * obj);
     PyObject * Binder_Lookup(PyObject * binder, PyObject * obj);
 

@@ -999,6 +999,28 @@ def test_gc_iteration_does_not_crash():
     print(f"Found {func_count} FunctionType objects out of {len(all_objects)} total")
 
 
+def test_gc_iteration_does_not_crash_with_live_system():
+    """A live System should not make isinstance(..., FunctionType) unsafe."""
+    import gc
+    import types
+    from retracesoftware.proxy.system import System
+
+    system = System()
+
+    all_objects = gc.get_objects()
+    assert len(all_objects) > 0
+
+    func_count = 0
+    for obj in all_objects:
+        if obj is None or type(obj) is None:
+            continue
+        if isinstance(obj, types.FunctionType):
+            func_count += 1
+
+    assert system is not None
+    assert func_count > 0
+
+
 # ============================================================================
 # patch_hash tests
 # ============================================================================

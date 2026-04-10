@@ -58,7 +58,8 @@ class _BindingState:
         return index
 
     def _on_delete(self, binding):
-        index = self._indices.pop(("binding", binding.handle), None)
+        handle = binding.handle if hasattr(binding, "handle") else binding
+        index = self._indices.pop(("binding", handle), None)
         if index is not None:
             self._tape_append(_BindingDelete(index))
 

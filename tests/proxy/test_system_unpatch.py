@@ -4,12 +4,11 @@ from retracesoftware.proxy.system import CallHooks, LifecycleHooks, System, unpa
 
 
 def make_system(*, on_bind=utils.noop):
-    return System(
-        primary_hooks=CallHooks(),
-        secondary_hooks=CallHooks(),
-        lifecycle_hooks=LifecycleHooks(on_start=utils.noop, on_end=utils.noop),
-        on_bind=on_bind,
-    )
+    system = System(on_bind=on_bind)
+    system.primary_hooks = CallHooks()
+    system.secondary_hooks = CallHooks()
+    system.lifecycle_hooks = LifecycleHooks(on_start=utils.noop, on_end=utils.noop)
+    return system
 
 
 def test_unpatch_type_restores_wrapped_attrs_and_markers():
@@ -117,6 +116,43 @@ def test_system_unpatch_type_updates_system_tracking():
     assert Sub not in system.patched_types
     assert base_wrapper not in system.is_bound
     assert sub_wrapper not in system.is_bound
+
+
+def test_system_unpatch_type_removes_bind_support(monkeypatch):
+    system = make_system()
+
+    class Base:
+        def read(self):
+            return "base"
+
+    class Sub(Base):
+        def read(self):
+            return "sub"
+
+    added = []
+    removed = []
+
+    original_add = utils.Binder.add_bind_support
+    original_remove = utils.Binder.remove_bind_support
+
+    def record_add(cls):
+        added.append(cls)
+        return original_add(cls)
+
+    def record_remove(cls):
+        removed.append(cls)
+        return original_remove(cls)
+
+    monkeypatch.setattr(utils.Binder, "add_bind_support", staticmethod(record_add))
+    monkeypatch.setattr(utils.Binder, "remove_bind_support", staticmethod(record_remove))
+
+    system.patch_type(Base)
+    system.unpatch_type(Base)
+
+    assert Base in added
+    assert Sub in added
+    assert Base in removed
+    assert Sub in removed
 
 
 def test_system_unpatch_types_clears_all_patched_types():

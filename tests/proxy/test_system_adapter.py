@@ -22,25 +22,26 @@ def adapter_runtime_shims(monkeypatch):
 
 def test_adapter_passthrough_skips_proxy_and_unproxy_without_observers():
     events = []
+    target = object()
 
     def passthrough(_value):
         return True
 
     def proxy_input(value):
         events.append(("proxy_input", value))
-        return f"proxy:{value}"
+        return f"proxy:{value}" if isinstance(value, str) else value
 
     def unproxy_input(value):
         events.append(("unproxy_input", value))
-        return value.removeprefix("proxy:")
+        return value.removeprefix("proxy:") if isinstance(value, str) else value
 
     def proxy_output(value):
         events.append(("proxy_output", value))
-        return f"proxy-out:{value}"
+        return f"proxy-out:{value}" if isinstance(value, str) else value
 
     def unproxy_output(value):
         events.append(("unproxy_output", value))
-        return value.removeprefix("proxy-out:")
+        return value.removeprefix("proxy-out:") if isinstance(value, str) else value
 
     def function(_fn, arg):
         events.append(("function", arg))
@@ -55,31 +56,37 @@ def test_adapter_passthrough_skips_proxy_and_unproxy_without_observers():
         unproxy_output=unproxy_output,
     )
 
-    assert wrapped(object(), "value") == "result:value"
-    assert events == [("function", "value")]
+    assert wrapped(target, "value") == "result:value"
+    assert events == [
+        ("proxy_input", "value"),
+        ("unproxy_input", target),
+        ("unproxy_input", "proxy:value"),
+        ("function", "value"),
+    ]
 
 
 def test_adapter_records_proxied_input_then_calls_function_with_unproxied_value():
     events = []
+    target = object()
 
     def passthrough(_value):
         return False
 
     def proxy_input(value):
         events.append(("proxy_input", value))
-        return f"proxy:{value}"
+        return f"proxy:{value}" if isinstance(value, str) else value
 
     def unproxy_input(value):
         events.append(("unproxy_input", value))
-        return value.removeprefix("proxy:")
+        return value.removeprefix("proxy:") if isinstance(value, str) else value
 
     def proxy_output(value):
         events.append(("proxy_output", value))
-        return f"proxy-out:{value}"
+        return f"proxy-out:{value}" if isinstance(value, str) else value
 
     def unproxy_output(value):
         events.append(("unproxy_output", value))
-        return value.removeprefix("proxy-out:")
+        return value.removeprefix("proxy-out:") if isinstance(value, str) else value
 
     def on_call(_fn, arg):
         events.append(("write_call", arg))
@@ -102,10 +109,11 @@ def test_adapter_records_proxied_input_then_calls_function_with_unproxied_value(
         on_result=on_result,
     )
 
-    assert wrapped(object(), "value") == "result:value"
+    assert wrapped(target, "value") == "result:value"
     assert events == [
         ("proxy_input", "value"),
         ("write_call", "proxy:value"),
+        ("unproxy_input", target),
         ("unproxy_input", "proxy:value"),
         ("function", "value"),
         ("proxy_output", "result:value"),
@@ -116,25 +124,26 @@ def test_adapter_records_proxied_input_then_calls_function_with_unproxied_value(
 
 def test_adapter_passthrough_writes_raw_result_without_proxying_output():
     events = []
+    target = object()
 
     def passthrough(_value):
         return True
 
     def proxy_input(value):
         events.append(("proxy_input", value))
-        return f"proxy:{value}"
+        return f"proxy:{value}" if isinstance(value, str) else value
 
     def unproxy_input(value):
         events.append(("unproxy_input", value))
-        return value.removeprefix("proxy:")
+        return value.removeprefix("proxy:") if isinstance(value, str) else value
 
     def proxy_output(value):
         events.append(("proxy_output", value))
-        return f"proxy-out:{value}"
+        return f"proxy-out:{value}" if isinstance(value, str) else value
 
     def unproxy_output(value):
         events.append(("unproxy_output", value))
-        return value.removeprefix("proxy-out:")
+        return value.removeprefix("proxy-out:") if isinstance(value, str) else value
 
     def on_call(_fn, arg):
         events.append(("write_call", arg))
@@ -157,10 +166,11 @@ def test_adapter_passthrough_writes_raw_result_without_proxying_output():
         on_result=on_result,
     )
 
-    assert wrapped(object(), "value") == "result:value"
+    assert wrapped(target, "value") == "result:value"
     assert events == [
         ("proxy_input", "value"),
         ("write_call", "proxy:value"),
+        ("unproxy_input", target),
         ("unproxy_input", "proxy:value"),
         ("function", "value"),
         ("write_result", "result:value"),

@@ -84,3 +84,4 @@ def test_proxied_return_value():
 
     result = test_runner.run(lambda: db.query())
     assert result == [1, 2, 3], f"run() should return [1, 2, 3], got {result}"
+    assert not system.is_bound(db), "run() should restore bound state after replay"

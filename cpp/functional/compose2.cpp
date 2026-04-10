@@ -12,13 +12,20 @@ struct Compose2 : public PyObject {
 
 static PyObject * vectorcall(Compose2 * self, PyObject** args, size_t nargsf, PyObject* kwnames) {
 
+    if (Py_EnterRecursiveCall(" while calling compose")) {
+        return nullptr;
+    }
+
     assert (!PyErr_Occurred());
 
     PyObject * g_res = self->g(args, nargsf, kwnames);
 
     assert ((g_res && !PyErr_Occurred()) || (!g_res && PyErr_Occurred()));
 
-    if (!g_res) return nullptr;
+    if (!g_res) {
+        Py_LeaveRecursiveCall();
+        return nullptr;
+    }
 
     PyObject * f_res = self->f(g_res);
 
@@ -26,6 +33,7 @@ static PyObject * vectorcall(Compose2 * self, PyObject** args, size_t nargsf, Py
 
     assert ((f_res && !PyErr_Occurred()) || (!f_res && PyErr_Occurred()));
 
+    Py_LeaveRecursiveCall();
     return f_res;
 }
 
@@ -49,27 +57,6 @@ static void dealloc(Compose2 *self) {
 
 static PyObject * repr(Compose2 *self) {
     return PyUnicode_FromFormat(MODULE "Compose(f = %S, g = %S)", self->f.callable, self->g.callable);
-}
-
-// static PyMemberDef members[] = {
-//     {"functions", T_OBJECT, offsetof(Compose, functions), READONLY, "TODO"},
-//     {NULL}  /* Sentinel */
-// };
-
-static PyObject * getattro(Compose2 *self, PyObject *name) {
-    PyObject * g_res = PyObject_GetAttr(self->g.callable, name);
-
-    if (!g_res) return nullptr;
-
-    PyObject * f_res = self->f(g_res);
-
-    Py_DECREF(g_res);
-
-    return f_res;
-}
-
-static int setattro(Compose2 *self, PyObject *name, PyObject * value) {
-    return PyObject_SetAttr(self->g.callable, name, value);
 }
 
 static int init(Compose2 *self, PyObject *args, PyObject *kwds) {
@@ -117,8 +104,6 @@ PyTypeObject Compose2_Type = {
     .tp_repr = (reprfunc)repr,
     .tp_call = PyVectorcall_Call,
     .tp_str = (reprfunc)repr,
-    .tp_getattro = (getattrofunc)getattro,
-    .tp_setattro = (setattrofunc)setattro,
     .tp_flags = Py_TPFLAGS_DEFAULT | 
                 Py_TPFLAGS_HAVE_GC | 
                 Py_TPFLAGS_HAVE_VECTORCALL | 
@@ -126,7 +111,7 @@ PyTypeObject Compose2_Type = {
     .tp_doc = "compose(f, g)\n--\n\n"
                "Compose two functions: compose(f, g)(x) == f(g(x)).\n\n"
                "An optimized two-function composition using cached vectorcall.\n"
-               "Attribute access is also composed: getattr(compose(f, g), 'x') == f(g.x).\n\n"
+               "Behaves like a normal callable object for attribute access.\n\n"
                "Args:\n"
                "    f: The outer function to apply to g's result.\n"
                "    g: The inner function to call with the arguments.\n\n"

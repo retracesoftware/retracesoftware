@@ -622,6 +622,12 @@ class System:
         self._internal = utils.Gate()
         self._external = utils.Gate()
         
+        self.enabled = functional.or_predicate(
+            self._external.is_set,
+            self._internal.is_set)
+
+        # def _enabled(self):        
+        #     return self._external.is_set() or self._internal.is_set()
 
         # ── Binding / allocation gates ────────────────────────────
         #
@@ -811,7 +817,8 @@ class System:
         self.ext_proxy = proxy(functional.memoize_one_arg(self.ext_proxytype))
 
     def wrap_async(self, function):
-        return self._wrapped_function(self._internal, function)
+        return self._wrapped_function(self._int_handler, function)
+        # return self._wrapped_function(self._internal, function)
 
     def _ext_proxy(self):
         ext_leaf_proxy = \
@@ -1031,8 +1038,8 @@ class System:
     #         self._internal.executor = None
     #         self._external.executor = None
         
-    def enabled(self):
-        return self._external.is_set or self._internal.is_set
+    # def enabled(self):        
+    #     return self._external.is_set() or self._internal.is_set()
 
     @property
     def location(self):
@@ -1175,6 +1182,7 @@ class System:
         bound_types = []
 
         def bind_patched_type(target):
+            utils.Binder.add_bind_support(target)
             self.bind(target)
             bound_types.append(target)
 
@@ -1283,6 +1291,7 @@ class System:
             )
 
             for bound_type in reversed(bound_types):
+                utils.Binder.remove_bind_support(bound_type)
                 self.is_bound.discard(bound_type)
 
             self.patched_types.discard(cls)
@@ -1312,6 +1321,7 @@ class System:
         _module_unpatch_type(cls)
 
         for target in tracked_types:
+            utils.Binder.remove_bind_support(target)
             self.patched_types.discard(target)
             self.is_bound.discard(target)
 

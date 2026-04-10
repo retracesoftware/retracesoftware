@@ -1,4 +1,7 @@
 import gc
+import os
+import subprocess
+import _socket
 import sys
 import weakref
 from pathlib import Path
@@ -65,23 +68,31 @@ def test_binder_emits_delete_for_weakrefable_object_without_keeping_it_alive():
     collect_garbage()
 
     assert obj_ref() is None
-    assert deleted == [binding]
+    assert deleted == [binding.handle]
 
 
-def test_binder_emits_delete_for_non_weakrefable_object():
+def test_binder_rejects_non_weakrefable_object_without_bind_support():
     deleted = []
     binder = utils.Binder(on_delete=deleted.append)
 
     class Value:
         __slots__ = ()
 
-    obj = Value()
-    binding = binder.bind(obj)
+    with pytest.raises(TypeError):
+        binder.bind(Value())
 
-    del obj
     collect_garbage()
+    assert deleted == []
 
-    assert deleted == [binding]
+
+def test_binder_lookup_does_not_unpack_tuple_after_weakref_fallback_initializes():
+    binder = utils.Binder()
+
+    with pytest.raises(TypeError):
+        binder.bind("x")
+
+    assert binder.lookup(("x", 1)) is None
+    assert binder.lookup(("x", ("y", 2))) is None
 
 
 def test_binder_callback_receives_binding_and_unbound_objects_do_not_emit_delete():
@@ -89,7 +100,7 @@ def test_binder_callback_receives_binding_and_unbound_objects_do_not_emit_delete
     binder = utils.Binder(on_delete=deleted.append)
 
     class Value:
-        __slots__ = ()
+        pass
 
     bound_obj = Value()
     binding = binder.bind(bound_obj)
@@ -100,8 +111,24 @@ def test_binder_callback_receives_binding_and_unbound_objects_do_not_emit_delete
     del unbound_obj
     collect_garbage()
 
-    assert deleted == [binding]
-    assert isinstance(deleted[0], utils.Binding)
+    assert deleted == [binding.handle]
+    assert isinstance(deleted[0], int)
+
+
+def test_binder_emits_delete_for_bind_supported_non_weakrefable_object():
+    deleted = []
+    binder = utils.Binder(on_delete=deleted.append)
+
+    utils.Binder.add_bind_support(_socket.socket)
+
+    sock = _socket.socket(_socket.AF_INET, _socket.SOCK_STREAM)
+    binding = binder.bind(sock)
+
+    sock.close()
+    del sock
+    collect_garbage()
+
+    assert deleted == [binding.handle]
 
 
 def test_multiple_binders_track_same_object_independently():
@@ -124,8 +151,8 @@ def test_multiple_binders_track_same_object_independently():
     del obj
     collect_garbage()
 
-    assert deleted_left == [left_binding]
-    assert deleted_right == [right_binding]
+    assert deleted_left == [left_binding.handle]
+    assert deleted_right == [right_binding.handle]
 
 
 def test_binder_on_delete_can_be_reassigned():
@@ -142,7 +169,7 @@ def test_binder_on_delete_can_be_reassigned():
     del obj
     collect_garbage()
 
-    assert deleted == [binding]
+    assert deleted == [binding.handle]
 
 
 def test_binder_swallows_callback_exceptions():
@@ -156,3 +183,95 @@ def test_binder_swallows_callback_exceptions():
 
     del obj
     collect_garbage()
+
+
+def test_system_patch_type_registers_bind_support(monkeypatch):
+    from retracesoftware.proxy.system import System
+
+    seen = []
+    original = utils.Binder.add_bind_support
+
+    def recording_add_bind_support(cls):
+        seen.append(cls)
+        return original(cls)
+
+    monkeypatch.setattr(utils.Binder, "add_bind_support", staticmethod(recording_add_bind_support))
+
+    system = System()
+    try:
+        system.patch_type(_socket.socket)
+    finally:
+        system.unpatch_types()
+
+    assert _socket.socket in seen
+
+
+@pytest.mark.parametrize("bind_order", ["base_first", "subtype_first"])
+def test_binder_handles_subclass_then_base_tp_dealloc_chain_without_recursing(tmp_path, bind_order):
+    script = tmp_path / "binder_socket_dealloc_repro.py"
+    script.write_text(
+        (
+            "import _socket\n"
+                "import gc\n"
+                "import socket\n"
+                "import retracesoftware.utils as utils\n"
+                "\n"
+                f"bind_order = {bind_order!r}\n"
+                "utils.Binder.add_bind_support(_socket.socket)\n"
+                "utils.Binder.add_bind_support(socket.socket)\n"
+                "binder = utils.Binder()\n"
+                "raw = _socket.socket(_socket.AF_UNIX, _socket.SOCK_STREAM)\n"
+                "fd = raw.detach()\n"
+                "wrapped = socket.socket(_socket.AF_UNIX, _socket.SOCK_STREAM, 0, fd)\n"
+            "if bind_order == 'base_first':\n"
+            "    binder.bind(raw)\n"
+            "    binder.bind(wrapped)\n"
+            "else:\n"
+            "    binder.bind(wrapped)\n"
+            "    binder.bind(raw)\n"
+            "wrapped.close()\n"
+            "del wrapped\n"
+            "gc.collect()\n"
+            "print('ok')\n"
+        ),
+        encoding="utf-8",
+    )
+
+    env = os.environ.copy()
+    env["PYTHONPATH"] = os.pathsep.join(
+        part
+        for part in [
+            env.get("PYTHONPATH", ""),
+            str(Path(__file__).resolve().parents[2]),
+            str(Path(__file__).resolve().parents[2] / "src"),
+        ]
+        if part
+    )
+
+    proc = subprocess.run(
+        [sys.executable, str(script)],
+        capture_output=True,
+        text=True,
+        timeout=10,
+        env=env,
+    )
+
+    assert proc.returncode == 0, proc.stderr
+    assert proc.stdout.strip() == "ok"
+
+
+def test_binder_remove_bind_support_disables_non_weakrefable_binding():
+    binder = utils.Binder()
+
+    utils.Binder.add_bind_support(_socket.socket)
+    try:
+        utils.Binder.remove_bind_support(_socket.socket)
+
+        sock = _socket.socket(_socket.AF_INET, _socket.SOCK_STREAM)
+        try:
+            with pytest.raises(TypeError):
+                binder.bind(sock)
+        finally:
+            sock.close()
+    finally:
+        utils.Binder.add_bind_support(_socket.socket)

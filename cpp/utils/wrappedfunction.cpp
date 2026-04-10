@@ -42,18 +42,25 @@ namespace retracesoftware {
         }
 
         PyObject * call(PyObject* const * args, size_t nargsf, PyObject* kwnames) {
+            if (Py_EnterRecursiveCall(" while calling wrapped_function")) {
+                return nullptr;
+            }
+
+            PyObject * result;
 
             if (nargsf & PY_VECTORCALL_ARGUMENTS_OFFSET) {
 
                 PyObject * saved = args[-1];
                 ((PyObject **)args)[-1] = reinterpret_cast<PyObject *>(this);
 
-                PyObject * result = handler_vectorcall(handler, args - 1, PyVectorcall_NARGS(nargsf) + 1, kwnames);
+                result = handler_vectorcall(handler, args - 1, PyVectorcall_NARGS(nargsf) + 1, kwnames);
                 ((PyObject **)args)[-1] = saved;
-                return result;
             } else {
-                return call_with_alloca(args, nargsf, kwnames);
+                result = call_with_alloca(args, nargsf, kwnames);
             }
+
+            Py_LeaveRecursiveCall();
+            return result;
         }
 
         static PyObject * py_vectorcall(PyObject * self, PyObject* const * args, size_t nargsf, PyObject* kwnames) {

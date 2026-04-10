@@ -155,6 +155,12 @@ class Context:
         if on_bind is not None:
             bind = on_bind if bind is None else utils.runall(on_bind, bind)
 
+        if bind is not None:
+            bind = utils.runall(system.is_bound.add, bind)
+
+        if async_new_patched is not None:
+            async_new_patched = utils.runall(system.is_bound.add, async_new_patched)
+
         function = _run_with_replay(ext_runner) if ext_runner else functional.partial(
             system._external.apply_with(None),
             system.execute,

@@ -34,20 +34,6 @@ int pid() {
 
 namespace retracesoftware_stream {
 
-    static void trace_bind_event(const char* stage, PyObject* obj, long a = -1, long b = -1) {
-        if (!bind_trace_enabled()) return;
-        fprintf(stderr,
-                "retrace-bind[%d] %s obj=%p label=%s type=%p a=%ld b=%ld\n",
-                pid(),
-                stage,
-                (void*)obj,
-                bind_label(obj),
-                obj ? (void*)Py_TYPE(obj) : nullptr,
-                a,
-                b);
-        fflush(stderr);
-    }
-
     struct ObjectWriter;
     class Persister;
 

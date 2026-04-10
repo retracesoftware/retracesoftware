@@ -56,6 +56,7 @@ def patch_type(system, cls, install_session=None):
             setattr(target, name, original)
 
     def bind_patched_type(target):
+        utils.Binder.add_bind_support(target)
         system.bind(target)
         bound_types.append(target)
 
@@ -156,6 +157,7 @@ def patch_type(system, cls, install_session=None):
             restore_attr(cls, "__retrace__", original_retrace)
 
         for bound_type in reversed(bound_types):
+            utils.Binder.remove_bind_support(bound_type)
             system.is_bound.discard(bound_type)
 
         system.patched_types.discard(cls)

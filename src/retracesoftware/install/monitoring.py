@@ -27,6 +27,35 @@ Usage::
 import sys
 import os
 import _thread
+from contextlib import contextmanager
+
+
+_monitor_state = _thread._local()
+
+
+def begin_suppress_monitoring():
+    count = getattr(_monitor_state, "suppressed", 0)
+    _monitor_state.suppressed = count + 1
+    return count
+
+
+def end_suppress_monitoring(previous_count):
+    if previous_count:
+        _monitor_state.suppressed = previous_count
+    else:
+        try:
+            del _monitor_state.suppressed
+        except AttributeError:
+            pass
+
+
+@contextmanager
+def suppress_monitoring():
+    count = begin_suppress_monitoring()
+    try:
+        yield
+    finally:
+        end_suppress_monitoring(count)
 
 if sys.version_info < (3, 12):
     def install_monitoring(checkpoint_fn, level):
@@ -92,11 +121,14 @@ else:
         events = MONITOR_LEVELS[level]
         retrace_dirs = _build_retrace_dirs()
 
-        # Thread-local reentrancy guard.
-        _guard = _thread._local()
-
         def _is_retrace(filename):
             return filename.startswith(retrace_dirs)
+
+        def _is_suppressed():
+            return getattr(_monitor_state, "suppressed", 0) > 0
+
+        def _is_active():
+            return getattr(_monitor_state, "active", False)
 
         def _callable_name(callable_obj):
             try:
@@ -116,72 +148,72 @@ else:
         def _py_start(code, instruction_offset):
             if _is_retrace(code.co_filename):
                 return sys.monitoring.DISABLE
-            if getattr(_guard, 'active', False):
+            if _is_suppressed() or _is_active():
                 return
-            _guard.active = True
+            _monitor_state.active = True
             try:
                 checkpoint_fn('S:' + code.co_qualname)
             finally:
-                _guard.active = False
+                _monitor_state.active = False
 
         def _py_return(code, instruction_offset, retval):
             if _is_retrace(code.co_filename):
                 return sys.monitoring.DISABLE
-            if getattr(_guard, 'active', False):
+            if _is_suppressed() or _is_active():
                 return
-            _guard.active = True
+            _monitor_state.active = True
             try:
                 checkpoint_fn('R:' + code.co_qualname)
             finally:
-                _guard.active = False
+                _monitor_state.active = False
 
         # ── CALL / C_RETURN / C_RAISE callbacks (level 2+) ───────
 
         def _call(code, instruction_offset, callable_obj, arg0):
             if _is_retrace(code.co_filename):
                 return
-            if getattr(_guard, 'active', False):
+            if _is_suppressed() or _is_active():
                 return
-            _guard.active = True
+            _monitor_state.active = True
             try:
                 checkpoint_fn('C:' + _callable_name(callable_obj))
             finally:
-                _guard.active = False
+                _monitor_state.active = False
 
         def _c_return(code, instruction_offset, callable_obj, arg0):
             if _is_retrace(code.co_filename):
                 return
-            if getattr(_guard, 'active', False):
+            if _is_suppressed() or _is_active():
                 return
-            _guard.active = True
+            _monitor_state.active = True
             try:
                 checkpoint_fn('CR:' + _callable_name(callable_obj))
             finally:
-                _guard.active = False
+                _monitor_state.active = False
 
         def _c_raise(code, instruction_offset, callable_obj, arg0):
             if _is_retrace(code.co_filename):
                 return
-            if getattr(_guard, 'active', False):
+            if _is_suppressed() or _is_active():
                 return
-            _guard.active = True
+            _monitor_state.active = True
             try:
                 checkpoint_fn('CX:' + _callable_name(callable_obj))
             finally:
-                _guard.active = False
+                _monitor_state.active = False
 
         # ── LINE callback (level 3) ──────────────────────────────
 
         def _line(code, line_number):
             if _is_retrace(code.co_filename):
                 return sys.monitoring.DISABLE
-            if getattr(_guard, 'active', False):
+            if _is_suppressed() or _is_active():
                 return
-            _guard.active = True
+            _monitor_state.active = True
             try:
                 checkpoint_fn('L:' + code.co_qualname + ':' + str(line_number))
             finally:
-                _guard.active = False
+                _monitor_state.active = False
 
         # ── Register ──────────────────────────────────────────────
 
