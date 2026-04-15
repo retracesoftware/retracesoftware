@@ -34,7 +34,6 @@ namespace retracesoftware_stream {
         int intern_counter = 0;
         int binding_counter = 0;
         PyObject * create_pickled = nullptr;
-        PyObject * create_thread_switch = nullptr;
         PyObject * create_dropped = nullptr;
         PyObject * create_heartbeat = nullptr;
         bool verbose = false;
@@ -42,7 +41,6 @@ namespace retracesoftware_stream {
         static int init(TapeReader * self, PyObject * args, PyObject * kwds) {
             PyObject * path;
             PyObject * create_pickled;
-            PyObject * create_thread_switch;
             PyObject * create_dropped = nullptr;
             PyObject * create_heartbeat = nullptr;
 
@@ -53,7 +51,6 @@ namespace retracesoftware_stream {
             static const char * kwlist[] = {
                 "path",
                 "deserialize",
-                "on_thread_switch",
                 "read_timeout",
                 "verbose",
                 "on_dropped",
@@ -65,11 +62,10 @@ namespace retracesoftware_stream {
             if (!PyArg_ParseTupleAndKeywords(
                     args,
                     kwds,
-                    "O!OOip|OOL",
+                    "O!Oip|OOL",
                     (char **)kwlist,
                     &PyUnicode_Type, &path,
                     &create_pickled,
-                    &create_thread_switch,
                     &read_timeout,
                     &verbose,
                     &create_dropped,
@@ -82,7 +78,6 @@ namespace retracesoftware_stream {
             new (&self->interns) map<int, PyObject *>();
 
             self->create_pickled = Py_NewRef(create_pickled);
-            self->create_thread_switch = Py_NewRef(create_thread_switch);
             self->create_dropped = Py_XNewRef(create_dropped);
             self->create_heartbeat = Py_XNewRef(create_heartbeat);
             self->read_timeout = read_timeout;
@@ -121,7 +116,6 @@ namespace retracesoftware_stream {
         static int traverse(TapeReader * self, visitproc visit, void * arg) {
             Py_VISIT(self->path);
             Py_VISIT(self->create_pickled);
-            Py_VISIT(self->create_thread_switch);
             Py_VISIT(self->create_dropped);
             Py_VISIT(self->create_heartbeat);
             return 0;
@@ -140,7 +134,6 @@ namespace retracesoftware_stream {
 
             Py_CLEAR(self->path);
             Py_CLEAR(self->create_pickled);
-            Py_CLEAR(self->create_thread_switch);
             Py_CLEAR(self->create_dropped);
             Py_CLEAR(self->create_heartbeat);
 
@@ -484,16 +477,6 @@ namespace retracesoftware_stream {
                     binding_counter++;
                     return created;
                 }
-                case FixedSizeTypes::THREAD_SWITCH: {
-                    PyObject * thread = read();
-                    if (!thread) {
-                        return nullptr;
-                    }
-                    PyObject * result = PyObject_CallOneArg(create_thread_switch, thread);
-                    Py_DECREF(thread);
-                    return result;
-                }
-
                 case FixedSizeTypes::HEARTBEAT:
                     return create_heartbeat ? PyObject_CallNoArgs(create_heartbeat)
                                             : Py_NewRef(Py_None);

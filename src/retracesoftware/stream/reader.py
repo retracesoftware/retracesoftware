@@ -4,8 +4,9 @@ This module keeps the reader pipeline split into small layers:
 
 - ``HeartbeatReader`` strips heartbeat control messages while remembering the
   most recent one.
-- ``WithThreadReader`` converts a flat tape stream plus ``ThreadSwitch``
-  markers into ``(thread_id, obj)`` tuples.
+- ``WithThreadReader`` converts a flat tape stream into ``(thread_id, obj)``
+  tuples. It understands both legacy ``ThreadSwitch`` control records and the
+  newer protocol-level ``"THREAD_SWITCH", <thread_id>`` message pair.
 - ``PeekableReader`` buffers future ``(thread_id, obj)`` tuples.
 - ``DemuxReader`` routes those tuples by thread.
 - ``ResolvingReader`` resolves ``BindingLookup`` records against a live
@@ -68,8 +69,9 @@ class WithThreadReader:
     """Attach the current thread id to plain tape objects.
 
     The wrapped source emits plain record-domain objects, including
-    ``ThreadSwitch`` markers. This adapter consumes those markers and yields
-    ``(thread_id, obj)`` tuples for the current thread.
+    legacy ``ThreadSwitch`` markers or protocol-level ``"THREAD_SWITCH"``
+    messages. This adapter consumes those markers and yields ``(thread_id,
+    obj)`` tuples for the current thread.
     """
 
     __slots__ = ["source", "thread_id"]
@@ -87,6 +89,11 @@ class WithThreadReader:
             if isinstance(item, ThreadSwitch):
                 if item.value is not None:
                     self.thread_id = item.value
+                continue
+            if item == "THREAD_SWITCH":
+                next_thread_id = self.source()
+                if next_thread_id is not None:
+                    self.thread_id = next_thread_id
                 continue
             return (self.thread_id, item)
 

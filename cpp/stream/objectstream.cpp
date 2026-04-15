@@ -34,7 +34,6 @@ namespace retracesoftware_stream {
         int binding_counter = 0;
         PyObject * create_pickled = nullptr;
         PyObject * stub_factory = nullptr;
-        PyObject * create_thread_switch;
         PyObject * create_dropped = nullptr;
         PyObject * create_heartbeat = nullptr;
         bool verbose = false;
@@ -44,7 +43,6 @@ namespace retracesoftware_stream {
             PyObject * path;
             PyObject * create_pickled;
             PyObject * stub_factory;
-            PyObject * create_thread_switch;
             PyObject * create_dropped = nullptr;
             PyObject * create_heartbeat = nullptr;
 
@@ -56,7 +54,6 @@ namespace retracesoftware_stream {
                 "path", 
                 "deserialize",
                 "stub_factory",
-                "on_thread_switch",
                 "read_timeout",
                 "verbose",
                 "on_dropped",
@@ -64,11 +61,10 @@ namespace retracesoftware_stream {
                 "start_offset",
                 nullptr};
 
-            if (!PyArg_ParseTupleAndKeywords(args, kwds, "O!OOOip|OOL", (char **)kwlist, 
+            if (!PyArg_ParseTupleAndKeywords(args, kwds, "O!OOip|OOL", (char **)kwlist, 
                 &PyUnicode_Type, &path, 
                 &create_pickled,
                 &stub_factory,
-                &create_thread_switch,
                 &read_timeout,
                 &verbose,
                 &create_dropped,
@@ -82,7 +78,6 @@ namespace retracesoftware_stream {
 
             self->create_pickled = Py_NewRef(create_pickled);
             self->stub_factory = Py_NewRef(stub_factory);
-            self->create_thread_switch = Py_NewRef(create_thread_switch);
             self->create_dropped = Py_XNewRef(create_dropped);
             self->create_heartbeat = Py_XNewRef(create_heartbeat);
             self->read_timeout = read_timeout;
@@ -124,7 +119,6 @@ namespace retracesoftware_stream {
             Py_VISIT(self->path);
             Py_VISIT(self->create_pickled);
             Py_VISIT(self->stub_factory);
-            Py_VISIT(self->create_thread_switch);
             Py_VISIT(self->create_dropped);
             Py_VISIT(self->create_heartbeat);
 
@@ -146,7 +140,6 @@ namespace retracesoftware_stream {
             Py_CLEAR(self->path);
             Py_CLEAR(self->create_pickled);
             Py_CLEAR(self->stub_factory);
-            Py_CLEAR(self->create_thread_switch);
             Py_CLEAR(self->create_dropped);
             Py_CLEAR(self->create_heartbeat);
 
@@ -458,16 +451,6 @@ namespace retracesoftware_stream {
                 case FixedSizeTypes::INT64:
                     return PyLong_FromLongLong(read<int64_t>());
 
-                case FixedSizeTypes::THREAD_SWITCH: {
-                    PyObject* thread = read();
-                    if (!thread) {
-                        return nullptr;
-                    }
-                    PyObject* result = PyObject_CallOneArg(create_thread_switch, thread);
-                    Py_DECREF(thread);
-                    return result;
-                }
-
                 case FixedSizeTypes::HEARTBEAT:
                     return create_heartbeat ? PyObject_CallNoArgs(create_heartbeat)
                                             : Py_NewRef(Py_None);
@@ -697,20 +680,6 @@ namespace retracesoftware_stream {
             size_t start;
             Control control = consume(start);
 
-            if (control == ThreadSwitch) {
-
-                PyObject * thread = read();
-
-                if (verbose) {
-                    PyObject * s = PyObject_Str(thread);
-                    printf("Retrace - ObjectStream[%lu, %lu] - Consumed THREAD_SWITCH(%s)\n", messages_read, start, PyUnicode_AsUTF8(s));
-                    Py_DECREF(s);
-                }
-                messages_read++;
-                PyObject * result = PyObject_CallOneArg(create_thread_switch, thread);
-                Py_DECREF(thread);
-                return result;
-            }
             if (control == Dropped) {
                 PyObject * count = read();
                 if (verbose) {

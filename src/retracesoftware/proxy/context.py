@@ -163,7 +163,7 @@ class Context:
 
         function = _run_with_replay(ext_runner) if ext_runner else functional.partial(
             system._external.apply_with(None),
-            system.execute,
+            system.ext_execute,
         )
 
         unproxy_int = functional.if_then_else(
@@ -194,7 +194,7 @@ class Context:
         int_executor = adapter(
             function=functional.partial(
                 system._external.apply_with(ext_executor),
-                system.execute,
+                system.int_execute,
             ),
             passthrough=system.passthrough,
             proxy_input=ext_spec.proxy,

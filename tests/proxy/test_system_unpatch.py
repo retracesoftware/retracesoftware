@@ -1,5 +1,6 @@
 import retracesoftware.utils as utils
 
+from retracesoftware.proxy.contexts import record_context
 from retracesoftware.proxy.system import CallHooks, LifecycleHooks, System, unpatch_type
 
 
@@ -67,15 +68,31 @@ def test_unpatch_type_restores_inherited_methods_by_deleting_shadow():
 
 def test_unpatch_type_clears_alloc_hook():
     created = []
-    system = make_system(on_bind=created.append)
+    system = make_system()
 
     class Example:
         def ping(self):
             return "pong"
 
+    class Writer:
+        def bind(self, obj):
+            created.append(obj)
+
+        def write_call(self, *args, **kwargs):
+            return None
+
+        def async_call(self, *args, **kwargs):
+            return None
+
+        def write_result(self, value):
+            return None
+
+        def write_error(self, exc_type, exc_value, exc_tb):
+            return None
+
     system.patch_type(Example)
 
-    with system.context():
+    with record_context(system, Writer()):
         Example()
 
     assert created
@@ -83,7 +100,7 @@ def test_unpatch_type_clears_alloc_hook():
     created.clear()
     unpatch_type(Example)
 
-    with system.context():
+    with record_context(system, Writer()):
         Example()
 
     assert created == []

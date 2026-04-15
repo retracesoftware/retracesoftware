@@ -3321,3 +3321,67 @@ class TestSetOnAlloc:
         assert freed == []
         del ev
         assert freed == ["freed"]
+
+
+def test_thread_switch_direct_wrapper_preserves_result_and_fires_on_thread_change():
+    events = []
+
+    def on_thread_switch():
+        events.append(("switch", threading.get_ident()))
+
+    def target(value):
+        events.append(("target", threading.get_ident(), value))
+        return value + 1
+
+    wrapped = _utils.thread_switch(target, on_thread_switch=on_thread_switch)
+
+    first = wrapped(10)
+    second = wrapped(20)
+
+    worker_result = []
+
+    def in_worker():
+        worker_result.append(wrapped(30))
+
+    thread = threading.Thread(target=in_worker)
+    thread.start()
+    thread.join()
+
+    third = wrapped(40)
+
+    assert first == 11
+    assert second == 21
+    assert worker_result == [31]
+    assert third == 41
+    assert [event[0] for event in events].count("switch") == 2
+    assert events[0][0] == "target"
+    assert events[2][0] == "switch"
+    assert events[3] == ("target", events[2][1], 30)
+    assert events[4][0] == "switch"
+    assert events[5][0] == "target"
+
+
+def test_thread_switch_supports_decorator_form():
+    events = []
+
+    def on_thread_switch():
+        events.append("switch")
+
+    @_utils.thread_switch(on_thread_switch=on_thread_switch)
+    def target(value):
+        events.append(("target", value))
+        return value * 2
+
+    assert target(5) == 10
+    assert events == [("target", 5)]
+
+
+def test_thread_switch_validates_callback_and_target():
+    def callback():
+        return None
+
+    with pytest.raises(TypeError):
+        _utils.thread_switch(object(), on_thread_switch=callback)
+
+    with pytest.raises(TypeError):
+        _utils.thread_switch(lambda: None, on_thread_switch=object())

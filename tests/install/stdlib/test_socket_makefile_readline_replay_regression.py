@@ -1,35 +1,66 @@
-"""Minimal in-process replay repro for server-side socket makefile reads.
-
-This keeps the same install-for-pytest harness shape used in the Flask
-investigation, but strips everything down to the smallest server-side path
-that still fails today:
-
-- create the server socket inside ``runner.record(...)`` / ``runner.replay(...)``
-- accept one real client connection during record
-- wrap the accepted socket with ``makefile("rb", buffering=8192)``
-- read one HTTP request line via ``readline(65537)``
-
-Current failure signature:
-- record returns the first request line correctly
-- replay diverges inside the buffered file path before returning that line
-"""
+"""Minimal in-process replay repros for server-side socket makefile reads."""
 
 from __future__ import annotations
 
+import gc
 import socket
 import threading
 
 import pytest
+from retracesoftware.testing.memorytape import record_then_replay
 
 
-@pytest.fixture
-def socket_runtime(runner, system):
-    return runner, system
+@pytest.fixture(scope="session", autouse=True)
+def _install_runtime():
+    yield None
 
 
-def test_server_socket_makefile_readline_replays_recorded_request_line(socket_runtime):
-    runner, system = socket_runtime
+def _configure_system(system):
+    system.immutable_types.update({int, float, str, bytes, bool, type, type(None)})
 
+
+def _record_and_replay_via_io(fn, *, after_record=None, after_replay=None):
+    result = record_then_replay(
+        fn,
+        configure_system=_configure_system,
+        after_record=after_record,
+        after_replay=after_replay,
+        debug=False,
+        stacktraces=False,
+        inject_system=True,
+    )
+    return result.recorded, result.replayed, result.remaining
+
+
+def test_socket_makefile_replay_leaves_buffered_reader_tail():
+    """Minimal lower-level replay repro: makefile() leaves tape unconsumed."""
+
+    def work(_system):
+        left, right = socket.socketpair()
+        rfile = None
+        try:
+            rfile = left.makefile("rb", buffering=8192)
+            return type(rfile).__name__
+        finally:
+            if rfile is not None:
+                rfile.close()
+            left.close()
+            right.close()
+
+    recorded, replayed, remaining = _record_and_replay_via_io(
+        work,
+        after_record=gc.collect,
+        after_replay=gc.collect,
+    )
+
+    gc.collect()
+
+    assert recorded == "BufferedReader"
+    assert replayed == "BufferedReader"
+    assert remaining == []
+
+
+def test_server_socket_makefile_readline_replays_recorded_request_line():
     ready = threading.Event()
     port_box: list[int] = []
     request_line = b"GET /health HTTP/1.1\r\n"
@@ -44,7 +75,7 @@ def test_server_socket_makefile_readline_replays_recorded_request_line(socket_ru
         finally:
             client_socket.close()
 
-    def server_work():
+    def server_work(system):
         server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         server_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         server_socket.bind(("127.0.0.1", 0))
@@ -65,21 +96,20 @@ def test_server_socket_makefile_readline_replays_recorded_request_line(socket_ru
                 conn.close()
             server_socket.close()
 
-    client_thread = threading.Thread(
-        target=system.disable_for(client),
-        name="socket-makefile-unretraced-client",
-        daemon=True,
-    )
+    def run_record(system):
+        client_thread = threading.Thread(
+            target=system.disable_for(client),
+            name="socket-makefile-unretraced-client",
+            daemon=True,
+        )
+        try:
+            client_thread.start()
+            return server_work(system)
+        finally:
+            client_thread.join(timeout=5)
+            assert not client_thread.is_alive(), "client thread failed to finish"
 
-    try:
-        client_thread.start()
-        recording = runner.record(server_work)
-    finally:
-        client_thread.join(timeout=5)
-        assert not client_thread.is_alive(), "client thread failed to finish"
-
-    assert recording.result == request_line
-
-    replay_result = runner.replay(recording, server_work)
-
-    assert replay_result == request_line
+    recorded, replayed, remaining = _record_and_replay_via_io(run_record)
+    assert recorded == request_line
+    assert replayed == request_line
+    assert remaining == []

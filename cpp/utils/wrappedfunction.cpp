@@ -1,6 +1,5 @@
 #include "utils.h"
 #include <structmember.h>
-
 #if defined(__GNUC__) || defined(__clang__)
 #include <alloca.h>
 #elif defined(_MSC_VER)

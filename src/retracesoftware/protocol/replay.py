@@ -168,31 +168,40 @@ class ReplayReader:
         raise TypeError(f"expected stacktrace delta, got {value!r}")
 
     def _diff_stacktrace(self, recorded_msg, *, context):
-        recorded_msg = self._coerce_recorded_stacktrace(recorded_msg)
-        replay_msg = self._capture_replay_stack_delta()
-
-        recorded = _normalize_stack_for_compare(recorded_msg.stacktrace)
-        replay = _normalize_stack_for_compare(replay_msg.stacktrace)
-        if recorded == replay:
-            return
-
-        from retracesoftware.install import ReplayDivergence
-
-        detail = ""
-        if os.getenv("RETRACE_DEBUG_STACK_DIFF") == "1":
-            index, recorded_frame, replay_frame = _first_stack_difference(recorded, replay)
-            detail = (
-                f" [len(recorded)={len(recorded)} len(replay)={len(replay)}"
-                f" first_diff={index} recorded_frame={recorded_frame!r}"
-                f" replay_frame={replay_frame!r}]"
-            )
-
-        raise ReplayDivergence(
-            "replay stacktrace divergence during "
-            f"{context}: recorded={_format_stack_for_message(recorded)} "
-            f"replay={_format_stack_for_message(replay)}"
-            f"{detail}{self._debug_suffix()}"
+        from retracesoftware.install.monitoring import (
+            begin_suppress_monitoring,
+            end_suppress_monitoring,
         )
+
+        previous_count = begin_suppress_monitoring()
+        try:
+            recorded_msg = self._coerce_recorded_stacktrace(recorded_msg)
+            replay_msg = self._capture_replay_stack_delta()
+
+            recorded = _normalize_stack_for_compare(recorded_msg.stacktrace)
+            replay = _normalize_stack_for_compare(replay_msg.stacktrace)
+            if recorded == replay:
+                return
+
+            from retracesoftware.install import ReplayDivergence
+
+            detail = ""
+            if os.getenv("RETRACE_DEBUG_STACK_DIFF") == "1":
+                index, recorded_frame, replay_frame = _first_stack_difference(recorded, replay)
+                detail = (
+                    f" [len(recorded)={len(recorded)} len(replay)={len(replay)}"
+                    f" first_diff={index} recorded_frame={recorded_frame!r}"
+                    f" replay_frame={replay_frame!r}]"
+                )
+
+            raise ReplayDivergence(
+                "replay stacktrace divergence during "
+                f"{context}: recorded={_format_stack_for_message(recorded)} "
+                f"replay={_format_stack_for_message(replay)}"
+                f"{detail}{self._debug_suffix()}"
+            )
+        finally:
+            end_suppress_monitoring(previous_count)
 
     def handle_stacktrace(self, msg, *, context="replay"):
         if isinstance(msg, StacktraceMessage):
@@ -281,6 +290,12 @@ class ReplayReader:
         signature = self._async_new_patched_signature(value)
         self._pending_async_new_patched.append((signature, materialized))
         return materialized
+
+    def _is_call_checkpoint_value(self, value):
+        return (
+            isinstance(value, dict)
+            and set(value.keys()) == {"function", "args", "kwargs"}
+        )
 
     def _deserialize_result(self, value):
         def transform(item):
@@ -374,6 +389,58 @@ class ReplayReader:
                 )
             pass
 
+    def _read_sync_call_result(self):
+        last_checkpoint = None
+
+        while True:
+            msg = self._next_message(self.source)
+            self._note_debug("read_sync_call_result", msg)
+
+            if isinstance(msg, CheckpointMessage):
+                last_checkpoint = msg.value
+                continue
+            if isinstance(msg, ErrorMessage):
+                if self._is_call_checkpoint_value(last_checkpoint):
+                    last_checkpoint = None
+                    continue
+                raise msg.error
+            if isinstance(msg, ResultMessage):
+                if self._is_call_checkpoint_value(last_checkpoint):
+                    last_checkpoint = None
+                    continue
+                value = self._deserialize_result(msg.result)
+                self._pending_async_new_patched.clear()
+                return value
+            if msg == CALL:
+                continue
+            if isinstance(msg, MonitorMessage):
+                if self._monitor_enabled:
+                    from retracesoftware.install import ReplayDivergence
+
+                    raise ReplayDivergence(
+                        f"unexpected MONITOR({msg.value!r}) in sync call stream"
+                    )
+                continue
+            if isinstance(msg, StacktraceMessage):
+                self.handle_stacktrace(msg, context="skip_sync_call_result")
+                continue
+            if isinstance(msg, AsyncNewPatchedMessage):
+                self._remember_async_new_patched(msg.value)
+                continue
+            if isinstance(msg, CallMessage):
+                self.async_call(
+                    self._deserialize_result(msg.fn),
+                    *self._deserialize_result(msg.args),
+                    **self._deserialize_result(msg.kwargs),
+                )
+                continue
+            if msg == "SYNC":
+                continue
+
+            raise ValueError(
+                f"unexpected message while reading sync call result: {msg}{self._debug_suffix()}"
+            )
+
     @utils.striptraceback
     def read_result(self):
         while True:
@@ -404,8 +471,12 @@ class ReplayReader:
                     self._deserialize_result(msg.fn),
                     *self._deserialize_result(msg.args),
                     **self._deserialize_result(msg.kwargs))
-            # elif isinstance(msg, CheckpointMessage):
-            #     pass
+            elif isinstance(msg, CheckpointMessage):
+                continue
+            elif msg == CALL:
+                return self._read_sync_call_result()
+            elif msg == "SYNC":
+                continue
             else:
                 raise ValueError(f"unexpected message: {msg}{self._debug_suffix()}")
 

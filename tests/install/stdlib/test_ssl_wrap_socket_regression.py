@@ -3,9 +3,12 @@
 import socket
 import ssl
 
+from tests.runner import Runner
 
-def test_install_component_ssl_wrap_socket_crash_reproducer(runner):
+
+def test_install_component_ssl_wrap_socket_crash_reproducer():
     """This currently segfaults during runner.record(work)."""
+    runner = Runner()
 
     def work():
         s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)

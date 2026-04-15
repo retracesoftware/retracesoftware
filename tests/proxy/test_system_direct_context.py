@@ -5,7 +5,7 @@ import retracesoftware.proxy.system as system_mod
 from retracesoftware.install.patcher import patch as install_patch
 from retracesoftware.install.installation import Installation
 from retracesoftware.proxy.contexts import record_context, replay_context
-from retracesoftware.proxy.messagestream import MemoryWriter
+from retracesoftware.testing.memorytape import MemoryWriter
 from retracesoftware.proxy.system import CallHooks, LifecycleHooks, System
 
 pytestmark = pytest.mark.skip(reason="stale direct-context coverage targets a deprecated System.context surface")

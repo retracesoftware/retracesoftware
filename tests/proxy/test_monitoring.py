@@ -4,15 +4,15 @@ Exercises the full monitoring stack:
   - MonitorMessage parsing in next_message
   - monitor_checkpoint verification
   - install_monitoring callback registration
-  - TestRunner integration with monitor= parameter
+  - Runner integration with monitor= parameter
 """
 import sys
 import pytest
 
-from retracesoftware.proxy.messagestream import (
-    ReplayReader, MonitorMessage, MemoryWriter, MemoryReader, next_message,
-)
-from retracesoftware.protocol.replay import StacktraceFactory
+from retracesoftware.protocol.messages import MonitorMessage
+from retracesoftware.protocol.replay import ReplayReader, StacktraceFactory, next_message
+from retracesoftware.testing.memorytape import MemoryWriter, MemoryReader
+from tests.runner import Runner
 
 
 class FakeStackFactory:
@@ -134,48 +134,55 @@ class TestMemoryWriterReader:
         assert r.read_result() == 42
 
 
-# ── TestRunner integration ────────────────────────────────────
+# ── Runner integration ────────────────────────────────────────
 
 @pytest.mark.skipif(
     sys.version_info < (3, 12),
     reason="sys.monitoring requires Python 3.12+")
 class TestRunnerMonitoring:
-    """Test monitoring through the TestRunner (in-process record+replay)."""
+    """Test monitoring through the new in-process Runner."""
 
-    @pytest.fixture(scope="class")
-    def runner(self):
-        from retracesoftware.install import install_for_pytest
-        return install_for_pytest(modules=["socket"])
-
-    def test_run_with_monitor_level_1(self, runner):
+    def test_run_with_monitor_level_1(self):
         """Record+replay with monitor=1 — should not raise."""
         import socket
+        runner = Runner(monitor=1)
+
         def do_dns():
             return socket.getaddrinfo("localhost", 80)
-        runner.run(do_dns, monitor=1)
 
-    def test_record_replay_with_monitor_level_1(self, runner):
+        runner.run(do_dns)
+
+    def test_record_replay_with_monitor_level_1(self):
         """Separate record/replay with monitor=1."""
         import socket
+        runner = Runner(monitor=1)
+
         def do_dns():
             return socket.getaddrinfo("localhost", 80)
-        recording = runner.record(do_dns, monitor=1)
-        runner.replay(recording, do_dns, monitor=1)
 
-    def test_monitor_tape_has_monitor_messages(self, runner):
+        recording = runner.record(do_dns)
+        runner.replay(recording, do_dns)
+
+    def test_monitor_tape_has_monitor_messages(self):
         """Verify MONITOR messages appear on the tape when monitor > 0."""
         import socket
+        runner = Runner(monitor=1)
+
         def do_dns():
             return socket.getaddrinfo("localhost", 80)
-        recording = runner.record(do_dns, monitor=1)
+
+        recording = runner.record(do_dns)
         assert 'MONITOR' in recording.tape, \
             "Expected MONITOR messages in tape with monitor=1"
 
-    def test_no_monitor_messages_at_level_0(self, runner):
+    def test_no_monitor_messages_at_level_0(self):
         """Verify NO MONITOR messages at level 0 (zero overhead)."""
         import socket
+        runner = Runner(monitor=0)
+
         def do_dns():
             return socket.getaddrinfo("localhost", 80)
-        recording = runner.record(do_dns, monitor=0)
+
+        recording = runner.record(do_dns)
         assert 'MONITOR' not in recording.tape, \
             "Expected no MONITOR messages at level 0"

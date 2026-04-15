@@ -15,6 +15,8 @@ import atexit
 
 import pytest
 
+from tests.runner import Runner
+
 certifi = pytest.importorskip("certifi")
 httpcore = pytest.importorskip("httpcore")
 
@@ -38,11 +40,12 @@ def _reset_certifi_cache() -> None:
     core._CACERT_PATH = None
 
 
-def test_httpcore_https_record_replay_does_not_diverge(runner):
+def test_httpcore_https_record_replay_does_not_diverge():
     # This install-suite test records and replays in the same process with a
     # session-scoped runtime. Clear certifi's extracted-path cache before both
     # phases so record and replay observe the same importlib.resources calls
     # regardless of earlier test order.
+    runner = Runner()
     _reset_certifi_cache()
     recording = runner.record(_httpcore_fetch, URL)
     assert recording.error is None

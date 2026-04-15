@@ -8,6 +8,7 @@ import retracesoftware.utils as utils
 from retracesoftware.proxy.proxytype import dynamic_int_proxytype, dynamic_proxytype
 
 from ._system_patching import Patched
+from ._system_adapters import maybe_proxy
 
 
 def create_context(
@@ -63,9 +64,10 @@ def create_int_spec(system, bind, checkpoint = None, on_call=None, on_result=Non
         functional.if_then_else(
             system.is_patched,
             system._throw_passthrough,
-            system._proxyfactory(
-                system.disable_for(int_proxytype), 
-                on_instance = functional.side_effect(bind))
+            maybe_proxy(
+                system.disable_for(int_proxytype),
+                on_instance=functional.side_effect(bind),
+            )
         ),
     )
 
@@ -91,11 +93,7 @@ def create_ext_spec(
     """Build the external (int→ext) specification."""
 
     if disabled_handler is None:
-        disabled_handler = functional.mapargs(
-            starting=1,
-            transform=utils.try_unwrap,
-            function=system.execute,
-        )
+        disabled_handler = system.fallback
 
     if internal_handler is None:
         internal_handler = system._external
@@ -109,11 +107,12 @@ def create_ext_spec(
     def ext_proxytype(cls):
         proxytype = dynamic_proxytype(handler=handler, cls=cls)
         proxytype.__retrace_source__ = "external"
+        base_to_patched = getattr(system, "base_to_patched", {})
 
         if issubclass(cls, Patched):
             patched = cls
-        elif cls in system.base_to_patched:
-            patched = system.base_to_patched[cls]
+        elif cls in base_to_patched:
+            patched = base_to_patched[cls]
         else:
             patched = None
 
@@ -143,8 +142,8 @@ def create_ext_spec(
         functional.identity,
         functional.if_then_else(
             is_patched_type,
-            track if track else functional.identity,
-            system._proxyfactory(system.disable_for(ext_proxytype)),
+            functional.side_effect(track) if track else functional.identity,
+            maybe_proxy(system.disable_for(ext_proxytype)),
         ),
     )
 

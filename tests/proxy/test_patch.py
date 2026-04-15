@@ -10,7 +10,7 @@ from retracesoftware.proxy.contexts import record_context, replay_context
 from retracesoftware.proxy.system import System
 from retracesoftware.install.installation import Installation
 from retracesoftware.install.patcher import patch
-from retracesoftware.proxy.messagestream import MemoryWriter
+from retracesoftware.testing.memorytape import MemoryWriter
 
 
 def test_patch_proxy_type_record_replay():

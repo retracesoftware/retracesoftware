@@ -56,15 +56,19 @@ class _GateContext:
             if value is None:
                 return
             gate = getattr(self._system, f"_{name}")
-            saved[name] = gate.executor
+            saved[name] = ("gate", gate.executor)
             gate.executor = value.executor
 
         def maybe_save_gate(name: str, value: BindHandler | None) -> None:
             if value is None:
                 return
-            gate = getattr(self._system, f"_{name}")
-            saved[name] = gate.executor
-            gate.executor = value
+            gate = getattr(self._system, f"_{name}", None)
+            if gate is not None and hasattr(gate, "executor"):
+                saved[name] = ("gate", gate.executor)
+                gate.executor = value
+                return
+            saved[name] = ("attr", getattr(self._system, name))
+            setattr(self._system, name, value)
 
         maybe_save_handler("internal", self._internal)
         maybe_save_handler("external", self._external)
@@ -79,7 +83,11 @@ class _GateContext:
 
             for name in ("async_new_patched", "bind", "external", "internal"):
                 if name in saved:
-                    getattr(self._system, f"_{name}").executor = saved[name]
+                    kind, value = saved[name]
+                    if kind == "gate":
+                        getattr(self._system, f"_{name}").executor = value
+                    else:
+                        setattr(self._system, name, value)
 
         try:
             if self._on_start is not None:
@@ -98,13 +106,18 @@ class _GateContext:
         return uninstall
 
     def __enter__(self):
-        current_context = self._system.current_context.context(self)
-        current_context.__enter__()
+        current_context = getattr(self._system, "current_context", None)
+        if current_context is not None and hasattr(current_context, "context"):
+            current_context = current_context.context(self)
+            current_context.__enter__()
+        else:
+            current_context = None
         self._saved.current_context = current_context
         try:
             self._saved.uninstall = self._install()
         except Exception:
-            current_context.__exit__(None, None, None)
+            if current_context is not None:
+                current_context.__exit__(None, None, None)
             raise
         return self._system
 
@@ -112,5 +125,6 @@ class _GateContext:
         try:
             self._saved.uninstall()
         finally:
-            self._saved.current_context.__exit__(*exc)
+            if self._saved.current_context is not None:
+                self._saved.current_context.__exit__(*exc)
         return False

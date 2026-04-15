@@ -17,7 +17,7 @@ def _materialize_stack_delta(delta):
     return (to_drop, tuple(tuple(frame) for frame in frames))
 
 
-def stream_writer(writer, stackfactory, on_write_error=None, debug = False):
+def stream_writer(writer, stackfactory=None, on_write_error=None, debug = False):
     """Adapt a ``stream.writer`` to the high-level writer protocol.
 
     The returned object exposes semantic protocol operations such as
@@ -27,10 +27,12 @@ def stream_writer(writer, stackfactory, on_write_error=None, debug = False):
         
     checkpoint_handle = writer.handle("CHECKPOINT")
 
-    stacktrace_handle = writer.handle("STACKTRACE")
+    stacktrace = None
+    if stackfactory is not None:
+        stacktrace_handle = writer.handle("STACKTRACE")
 
-    def stacktrace():
-        stacktrace_handle(_materialize_stack_delta(stackfactory.delta()))
+        def stacktrace():
+            stacktrace_handle(_materialize_stack_delta(stackfactory.delta()))
 
     _write_error = writer.handle("ERROR")
 
@@ -51,7 +53,8 @@ def stream_writer(writer, stackfactory, on_write_error=None, debug = False):
         return async_call_handle(fn, args, kwargs)
 
     def checkpoint(value):
-        stacktrace()
+        if stacktrace is not None:
+            stacktrace()
         checkpoint_handle(normalize(value))
 
     call = functional.repeatedly(writer.handle(CALL))
@@ -79,6 +82,10 @@ def stream_writer(writer, stackfactory, on_write_error=None, debug = False):
 
         async_call = functional.runall(on_async_call, async_call)
 
+    intern = getattr(writer, "intern", None)
+    if intern is None:
+        intern = getattr(writer, "_intern")
+
     return SimpleNamespace(
         type_serializer=writer.type_serializer,
         sync = bind_write_error(writer.handle("SYNC")),
@@ -86,7 +93,7 @@ def stream_writer(writer, stackfactory, on_write_error=None, debug = False):
         write_result = bind_write_error(writer.handle("RESULT")),
         write_error = bind_write_error(write_error),
         bind = bind_write_error(bind),
-        intern = bind_write_error(writer.intern),
+        intern = bind_write_error(intern),
         async_new_patched = bind_write_error(writer.async_new_patched),
         async_call = bind_write_error(async_call),
         checkpoint = bind_write_error(checkpoint),

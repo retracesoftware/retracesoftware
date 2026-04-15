@@ -9,38 +9,6 @@ from retracesoftware.install import stream_writer
 
 
 pytest.importorskip("requests")
-
-
-def test_stream_writer_async_call_serializes_kwargs_as_payloads():
-    class RecordingWriter:
-        def __init__(self):
-            self.type_serializer = {}
-            self.calls = []
-
-        def handle(self, name):
-            def emit(*args):
-                self.calls.append((name, args))
-            return emit
-
-        def bind(self, obj):
-            self.calls.append(("bind", (obj,)))
-
-        def intern(self, obj):
-            self.calls.append(("intern", (obj,)))
-
-        def async_new_patched(self, obj):
-            self.calls.append(("ASYNC_NEW_PATCHED", (obj,)))
-
-    raw_writer = RecordingWriter()
-    writer = stream_writer(raw_writer)
-
-    writer.async_call("socket", fileno=123, family=2)
-
-    assert raw_writer.calls == [
-        ("ASYNC_CALL", ("socket", (), {"fileno": 123, "family": 2})),
-    ]
-
-
 def test_requests_get_record_only_exits_without_cleanup_traceback(tmp_path):
     script = tmp_path / "requests_record_only.py"
     script.write_text(

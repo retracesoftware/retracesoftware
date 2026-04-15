@@ -25,7 +25,7 @@ from retracesoftware.proxy.context import CallHooks, LifecycleHooks
 from retracesoftware.proxy._system_context import _GateContext, Handler
 from retracesoftware.proxy._system_specs import create_context
 from retracesoftware.proxy.system import System
-from retracesoftware.proxy.messagestream import MemoryWriter, MemoryReader
+from retracesoftware.testing.memorytape import MemoryWriter, MemoryReader
 from retracesoftware.stream import BindingCreate, BindingLookup
 
 pytestmark = pytest.mark.skip(reason="stale proxy.contexts coverage targets a deprecated System context surface")
@@ -387,7 +387,7 @@ def test_system_record_replay_socket_time():
         import threading
         import time
 
-        from retracesoftware.proxy.messagestream import MemoryWriter
+        from retracesoftware.testing.memorytape import MemoryWriter
         from retracesoftware.proxy.contexts import record_context, replay_context
         from retracesoftware.proxy.system import System
 

@@ -23,6 +23,8 @@ from http.server import HTTPServer, BaseHTTPRequestHandler
 
 import pytest
 
+from tests.runner import Runner
+
 requests_lib = pytest.importorskip("requests")
 
 pytestmark = pytest.mark.skip(reason="known _thread proxy divergence — diagnosing separately")
@@ -81,8 +83,9 @@ def _flush_http_modules():
 
 # ── tests ─────────────────────────────────────────────────────────
 
-def test_requests_get(runner):
+def test_requests_get():
     """requests.get() records and replays an HTTP response."""
+    runner = Runner()
     _flush_http_modules()
     _Handler.routes = {
         "/hello": (b"Hello from test server", "text/plain"),
@@ -116,8 +119,9 @@ def test_requests_get(runner):
     assert result == "Hello from test server"
 
 
-def test_diagnose_requests_get(runner):
+def test_diagnose_requests_get():
     """Sequential record+replay diagnosis for requests.get()."""
+    runner = Runner()
     _Handler.routes = {
         "/hello": (b"Hello from test server", "text/plain"),
     }
@@ -133,14 +137,17 @@ def test_diagnose_requests_get(runner):
             timeout=5)
         return resp.text
 
-    runner.diagnose(client_work, setup=_flush_http_modules)
+    recording = runner.record(client_work)
+    _flush_http_modules()
+    runner.replay(recording, client_work)
 
     t.join()
     server.server_close()
 
 
-def test_requests_post(runner):
+def test_requests_post():
     """requests.post() records and replays a POST round-trip."""
+    runner = Runner()
     _flush_http_modules()
     _Handler.routes = {}
     server = HTTPServer(("127.0.0.1", 0), _Handler)
@@ -176,8 +183,9 @@ def test_requests_post(runner):
     assert result == payload
 
 
-def test_requests_json(runner):
+def test_requests_json():
     """requests parses a JSON response during replay."""
+    runner = Runner()
     _flush_http_modules()
     import json
     body = json.dumps({"status": "ok", "count": 7}).encode()
@@ -213,8 +221,9 @@ def test_requests_json(runner):
     assert result == {"status": "ok", "count": 7}
 
 
-def test_requests_multiple(runner):
+def test_requests_multiple():
     """Multiple sequential requests in one recording."""
+    runner = Runner()
     _flush_http_modules()
     _Handler.routes = {
         "/a": (b"alpha", "text/plain"),
@@ -247,8 +256,9 @@ def test_requests_multiple(runner):
     assert result == ["alpha", "bravo"]
 
 
-def test_requests_large_response(runner):
+def test_requests_large_response():
     """requests handles a large response body during replay."""
+    runner = Runner()
     _flush_http_modules()
     large_body = b"x" * 100_000
     _Handler.routes = {

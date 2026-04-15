@@ -298,9 +298,6 @@ class DebugPersister:
             return self._index_event("bound_ref_delete", index)
         return self._command1("delete", ref_key)
 
-    def write_thread_switch(self, thread_handle):
-        return self._command1("thread_switch", thread_handle)
-
     def write_pickled(self, obj):
         return self._dispatch_event(
             _debug_command_event("pickled", (_debug_object_event(obj),))
@@ -514,10 +511,6 @@ class JsonPersister:
 
     def prepare_resume(self):
         return self.flush()
-
-    def write_thread_switch(self, thread_handle):
-        self._write_event("thread_switch", value=self._encode_value(thread_handle, use_serializer=False))
-        return None
 
     def write_heartbeat(self):
         self._write_event("heartbeat")
@@ -818,10 +811,6 @@ class writer(_backend_mod.ObjectWriter):
             queue_kwargs["worker_wait_timeout_ms"] = consumer_wait_timeout_ms
         if queue_capacity is not None:
             queue_kwargs["queue_capacity"] = queue_capacity
-        if thread is not None:
-            if not callable(thread) and hasattr(thread, "get"):
-                thread = thread.get
-            queue_kwargs["thread"] = thread
         if effective_push_fail_callback is not None:
             queue_kwargs["push_fail_callback"] = effective_push_fail_callback
         if on_consumer_error is not None:
@@ -1063,7 +1052,6 @@ class reader1(_backend_mod.ObjectStreamReader):
             path=str(path),
             deserialize=self.deserialize,
             stub_factory=self._call_stub_factory,
-            on_thread_switch=ThreadSwitch,
             read_timeout=read_timeout,
             verbose=verbose,
             on_heartbeat=Heartbeat,
@@ -1098,7 +1086,6 @@ class TapeReader(_backend_mod.TapeReader):
         super().__init__(
             path=str(path),
             deserialize=self.deserialize,
-            on_thread_switch=ThreadSwitch,
             read_timeout=read_timeout,
             verbose=verbose,
             on_heartbeat=Heartbeat,

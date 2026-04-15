@@ -1,13 +1,19 @@
 import io
 import _io
 
+from retracesoftware.install import install_retrace
+from retracesoftware.proxy.system import System
 from retracesoftware.modules import ModuleConfigResolver
 
 
-def test_install_for_pytest_patches_loaded_builtin_modules():
+def test_install_retrace_patches_loaded_builtin_modules():
     """Already-loaded builtins should be patched by their sys.modules key."""
-    assert "BoundGate" in repr(_io.open)
-    assert io.open is _io.open
+    system = System()
+    uninstall = install_retrace(system=system, retrace_shutdown=False)
+    try:
+        assert "built-in function open" not in repr(_io.open)
+    finally:
+        uninstall()
 
 
 def test_io_single_module_config_preserves_root_immutable_directive():

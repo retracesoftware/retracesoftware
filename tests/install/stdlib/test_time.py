@@ -5,43 +5,33 @@ values on replay as they did during recording.
 """
 import time
 
-import pytest
+from tests.runner import Runner, retrace_test
 
 
-@pytest.fixture
-def time_runtime(runner, system):
-    return runner, system
-
-
-def test_time_time(system, runner):
+@retrace_test
+def test_time_time():
     """time.time() records and replays the same value."""
-    patched_time = system.patch(time.time)
-
-    def do_time():
-        return patched_time()
-
-    runner.run(do_time)
+    value = time.time()
+    assert isinstance(value, float)
+    return value
 
 
-def test_time_time_replay_equals_record_explicitly(time_runtime):
+def test_time_time_replay_equals_record_explicitly():
     """Explicitly assert replayed time.time() equals the recorded value."""
-    runner, system = time_runtime
-    patched_time = system.patch(time.time)
+    runner = Runner()
 
-    def do_time():
-        return patched_time()
+    def work():
+        return time.time()
 
-    recording = runner.record(do_time)
-    replay_result = runner.replay(recording, do_time)
+    recording = runner.record(work)
+    replay_result = runner.replay(recording, work)
 
     assert recording.result == replay_result
 
 
-def test_monotonic(system, runner):
+@retrace_test
+def test_monotonic():
     """time.monotonic() records and replays the same value."""
-    patched_mono = system.patch(time.monotonic)
-
-    def do_monotonic():
-        return patched_mono()
-
-    runner.run(do_monotonic)
+    value = time.monotonic()
+    assert isinstance(value, float)
+    return value

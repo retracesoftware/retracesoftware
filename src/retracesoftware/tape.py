@@ -106,6 +106,36 @@ def _write_shebang(trace_path, replay_bin):
     os.chmod(str(trace_path), 0o755)
 
 
+class _ReplayTapeReader:
+    __slots__ = ("_tape_reader",)
+
+    protocol_thread_source = True
+
+    def __init__(self, *, path, read_timeout, verbose, start_offset=0):
+        self._tape_reader = stream.TapeReader(
+            path=path,
+            read_timeout=read_timeout,
+            verbose=verbose,
+            start_offset=start_offset,
+        )
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *args):
+        self.close()
+
+    def close(self):
+        self._tape_reader.close()
+
+    def read(self):
+        return self._tape_reader.next()
+
+    @property
+    def messages_read(self):
+        return self._tape_reader.messages_read
+
+
 def create_tape_writer(options, argv, *, thread_getter) -> TapeWriter:
     recording_format = getattr(options, "format", "binary")
     recording = normalize_recording_path(options.recording, argv)
@@ -177,12 +207,11 @@ def open_tape_reader(args, *, thread_id):
 
     header, data_offset = stream.read_process_info(path, raw=is_unframed)
 
-    with stream.reader(
+    with _ReplayTapeReader(
         path=path,
         read_timeout=args.read_timeout,
         verbose=args.verbose,
         start_offset=data_offset,
-        thread_id=thread_id,
     ) as reader:
         yield header, reader
 

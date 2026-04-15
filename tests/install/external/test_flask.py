@@ -22,6 +22,8 @@ import threading
 
 import pytest
 
+from tests.runner import Runner
+
 pytest.skip("flask tests disabled — server hangs in test environment", allow_module_level=True)
 flask = pytest.importorskip("flask")
 from flask import Flask, jsonify, request as flask_request
@@ -97,8 +99,9 @@ def _wait_for_client(event, timeout=2):
 
 # ── tests ─────────────────────────────────────────────────────────
 
-def test_flask_hello(runner):
+def test_flask_hello():
     """Flask serves a GET /hello — no client during replay."""
+    runner = Runner()
     app = _make_app()
     srv = make_server("127.0.0.1", 0, app)
     port = srv.server_address[1]
@@ -133,8 +136,9 @@ def test_flask_hello(runner):
     srv2.server_close()
 
 
-def test_flask_post_echo(runner):
+def test_flask_post_echo():
     """Flask echoes POST body — no client during replay."""
+    runner = Runner()
     app = _make_app()
     srv = make_server("127.0.0.1", 0, app)
     port = srv.server_address[1]
@@ -170,8 +174,9 @@ def test_flask_post_echo(runner):
     srv2.server_close()
 
 
-def test_flask_json(runner):
+def test_flask_json():
     """Flask JSON endpoint records and replays."""
+    runner = Runner()
     app = _make_app()
     srv = make_server("127.0.0.1", 0, app)
     port = srv.server_address[1]
@@ -208,8 +213,9 @@ def test_flask_json(runner):
     srv2.server_close()
 
 
-def test_flask_multiple_requests(runner):
+def test_flask_multiple_requests():
     """Flask handles multiple sequential requests in one recording."""
+    runner = Runner()
     app = _make_app()
     srv = make_server("127.0.0.1", 0, app)
     port = srv.server_address[1]

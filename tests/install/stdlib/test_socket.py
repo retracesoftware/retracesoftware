@@ -21,6 +21,8 @@ and replays the same code path.
 import socket
 import threading
 
+from tests.runner import Runner, retrace_test
+
 
 # ── helpers ───────────────────────────────────────────────────────
 
@@ -46,27 +48,26 @@ def _loopback_pair():
 
 # ── name resolution ───────────────────────────────────────────────
 
-def test_gethostname(runner):
+@retrace_test
+def test_gethostname():
     """socket.gethostname() records and replays identically."""
-    def work():
-        return socket.gethostname()
+    value = socket.gethostname()
+    assert isinstance(value, str)
+    assert value
+    return value
 
-    runner.run(work)
 
-
-def test_getaddrinfo(system, runner):
+@retrace_test
+def test_getaddrinfo():
     """socket.getaddrinfo records and replays identically."""
-    patched = system.patch(socket.getaddrinfo)
-
-    def work():
-        return patched("localhost", 80, socket.AF_INET, socket.SOCK_STREAM)
-
-    runner.run(work)
+    value = socket.getaddrinfo("localhost", 80, socket.AF_INET, socket.SOCK_STREAM)
+    assert value
+    return value
 
 
 # ── TCP server / client (peer absent during replay) ──────────────
 
-def test_server_recv(runner):
+def test_server_recv():
     """Server side receives bytes — no client during replay.
 
     All sockets are created inside the context so they are bound and
@@ -86,6 +87,7 @@ def test_server_recv(runner):
 
     t = threading.Thread(target=client)
     t.start()
+    runner = Runner()
 
     def server_work():
         srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -107,7 +109,7 @@ def test_server_recv(runner):
     assert result == b"hello from client"
 
 
-def test_client_recv(runner):
+def test_client_recv():
     """Client side receives bytes — no server during replay.
 
     A real server runs *outside* the recording context.  All client
@@ -128,6 +130,7 @@ def test_client_recv(runner):
 
     t = threading.Thread(target=server)
     t.start()
+    runner = Runner()
 
     def client_work():
         cli = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -146,119 +149,109 @@ def test_client_recv(runner):
 
 # ── TCP symmetric (same code records and replays) ────────────────
 
-def test_echo_round_trip(runner):
+@retrace_test
+def test_echo_round_trip():
     """Client sends bytes, reads them back from server."""
-    def work():
-        cli, conn, srv = _loopback_pair()
-        cli.sendall(b"ping")
-        echo = conn.recv(4096)
-        conn.sendall(echo)
-        reply = cli.recv(4096)
-        conn.close()
-        cli.close()
-        srv.close()
-        return reply
-
-    result = runner.run(work)
-    assert result == b"ping"
+    cli, conn, srv = _loopback_pair()
+    cli.sendall(b"ping")
+    echo = conn.recv(4096)
+    conn.sendall(echo)
+    reply = cli.recv(4096)
+    conn.close()
+    cli.close()
+    srv.close()
+    assert reply == b"ping"
+    return reply
 
 
-def test_multiple_exchanges(runner):
+@retrace_test
+def test_multiple_exchanges():
     """Multiple send/recv round trips over one connection."""
-    def work():
-        cli, conn, srv = _loopback_pair()
-        replies = []
-        for msg in [b"aaa", b"bbb", b"ccc"]:
-            cli.sendall(msg)
-            chunk = conn.recv(4096)
-            conn.sendall(chunk.upper())
-            replies.append(cli.recv(4096))
-        conn.close()
-        cli.close()
-        srv.close()
-        return replies
-
-    result = runner.run(work)
-    assert result == [b"AAA", b"BBB", b"CCC"]
+    cli, conn, srv = _loopback_pair()
+    replies = []
+    for msg in [b"aaa", b"bbb", b"ccc"]:
+        cli.sendall(msg)
+        chunk = conn.recv(4096)
+        conn.sendall(chunk.upper())
+        replies.append(cli.recv(4096))
+    conn.close()
+    cli.close()
+    srv.close()
+    assert replies == [b"AAA", b"BBB", b"CCC"]
+    return replies
 
 
-def test_large_payload(runner):
+@retrace_test
+def test_large_payload():
     """Sending a payload larger than a typical buffer size."""
-    def work():
-        cli, conn, srv = _loopback_pair()
-        payload = b"x" * 100_000
-        cli.sendall(payload)
+    cli, conn, srv = _loopback_pair()
+    payload = b"x" * 100_000
+    cli.sendall(payload)
 
-        received = b""
-        while len(received) < len(payload):
-            chunk = conn.recv(65536)
-            if not chunk:
-                break
-            received += chunk
+    received = b""
+    while len(received) < len(payload):
+        chunk = conn.recv(65536)
+        if not chunk:
+            break
+        received += chunk
 
-        conn.close()
-        cli.close()
-        srv.close()
-        return len(received)
-
-    result = runner.run(work)
-    assert result == 100_000
+    conn.close()
+    cli.close()
+    srv.close()
+    assert len(received) == 100_000
+    return len(received)
 
 
 # ── recv_into edge case ──────────────────────────────────────────
 
-def test_recv_into(runner):
+@retrace_test
+def test_recv_into():
     """recv_into fills a pre-allocated buffer via the recv proxy."""
-    def work():
-        cli, conn, srv = _loopback_pair()
-        cli.sendall(b"recv_into test")
-        buf = bytearray(4096)
-        nbytes = conn.recv_into(buf)
-        conn.close()
-        cli.close()
-        srv.close()
-        return bytes(buf[:nbytes])
-
-    result = runner.run(work)
-    assert result == b"recv_into test"
+    cli, conn, srv = _loopback_pair()
+    cli.sendall(b"recv_into test")
+    buf = bytearray(4096)
+    nbytes = conn.recv_into(buf)
+    conn.close()
+    cli.close()
+    srv.close()
+    value = bytes(buf[:nbytes])
+    assert value == b"recv_into test"
+    return value
 
 
-def test_recv_into_with_nbytes(runner):
+@retrace_test
+def test_recv_into_with_nbytes():
     """recv_into respects an explicit nbytes limit."""
-    def work():
-        cli, conn, srv = _loopback_pair()
-        cli.sendall(b"abcdefghij")
-        buf = bytearray(4096)
-        nbytes = conn.recv_into(buf, 5)
-        conn.close()
-        cli.close()
-        srv.close()
-        return bytes(buf[:nbytes])
-
-    result = runner.run(work)
-    assert result == b"abcde"
+    cli, conn, srv = _loopback_pair()
+    cli.sendall(b"abcdefghij")
+    buf = bytearray(4096)
+    nbytes = conn.recv_into(buf, 5)
+    conn.close()
+    cli.close()
+    srv.close()
+    value = bytes(buf[:nbytes])
+    assert value == b"abcde"
+    return value
 
 
-def test_recv_into_multiple(runner):
+@retrace_test
+def test_recv_into_multiple():
     """recv_into works across multiple sequential reads."""
-    def work():
-        cli, conn, srv = _loopback_pair()
-        parts = []
-        for msg in [b"one", b"two", b"three"]:
-            cli.sendall(msg)
-            buf = bytearray(64)
-            n = conn.recv_into(buf)
-            parts.append(bytes(buf[:n]))
-        conn.close()
-        cli.close()
-        srv.close()
-        return parts
-
-    result = runner.run(work)
-    assert result == [b"one", b"two", b"three"]
+    cli, conn, srv = _loopback_pair()
+    parts = []
+    for msg in [b"one", b"two", b"three"]:
+        cli.sendall(msg)
+        buf = bytearray(64)
+        n = conn.recv_into(buf)
+        parts.append(bytes(buf[:n]))
+    conn.close()
+    cli.close()
+    srv.close()
+    assert parts == [b"one", b"two", b"three"]
+    return parts
 
 
-def test_recv_into_server_only(runner):
+def test_recv_into_server_only():
     """recv_into replays correctly with no client during replay.
 
     Server socket is created inside the context so accept/recv_into
@@ -277,6 +270,7 @@ def test_recv_into_server_only(runner):
 
     t = threading.Thread(target=client)
     t.start()
+    runner = Runner()
 
     def server_work():
         srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -297,5 +291,3 @@ def test_recv_into_server_only(runner):
 
     result = runner.replay(recording, server_work)
     assert result == b"hello via recv_into"
-
-

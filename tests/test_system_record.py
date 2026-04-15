@@ -32,7 +32,7 @@ import retracesoftware.utils as utils
 import retracesoftware.proxy.system as proxy_system
 from retracesoftware.install import stream_writer
 from retracesoftware.proxy.contexts import record_context, replay_context
-from retracesoftware.proxy.messagestream import ReplayReader
+from retracesoftware.protocol.replay import ReplayReader
 
 
 class RecordingQueue:

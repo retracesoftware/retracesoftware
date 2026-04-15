@@ -5,7 +5,7 @@ from retracesoftware.install import ReplayDivergence
 from retracesoftware.protocol import CALL, StacktraceMessage
 from retracesoftware.protocol.normalize import normalize as normalize_checkpoint_value
 from retracesoftware.protocol.replay import ReplayReader, StacktraceFactory, next_message
-from retracesoftware.testing.protocol_memory import MemoryWriter
+from retracesoftware.testing.memorytape import MemoryWriter
 
 
 class FakeStackFactory:
@@ -179,3 +179,24 @@ def test_checkpoint_normalizes_values_symmetrically():
         stacktrace_factory=FakeStackFactory(delta),
     )
     reader.checkpoint(value)
+
+
+def test_read_result_skips_nested_sync_call_frames():
+    tape = iter([
+        CALL,
+        "CHECKPOINT",
+        True,
+        CALL,
+        "CHECKPOINT",
+        {"function": "recv", "args": (), "kwargs": {}},
+        "RESULT",
+        b"GET /health HTTP/1.1\r\nHost: localhost\r\n\r\n",
+        "CHECKPOINT",
+        b"GET /health HTTP/1.1\r\nHost: localhost\r\n\r\n",
+        "RESULT",
+        b"GET /health HTTP/1.1\r\n",
+    ])
+
+    reader = ReplayReader(lambda: next(tape), bind=utils.noop)
+
+    assert reader.read_result() == b"GET /health HTTP/1.1\r\n"

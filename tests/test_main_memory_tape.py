@@ -5,7 +5,8 @@ import pytest
 
 from retracesoftware.__main__ import install_and_run
 from retracesoftware.proxy.io import recorder, replayer
-from retracesoftware.testing.memorytape import MemoryTape
+from retracesoftware.testing.memorytape import MemoryTape, record_then_replay
+from tests.runner import retrace_test
 
 
 def _options(**overrides):
@@ -21,6 +22,35 @@ def _options(**overrides):
 
 def _configure_system(system):
     system.immutable_types.update({int, float, str, bytes, bool, type, type(None)})
+
+
+def test_record_then_replay_helper_round_trips_time_proxy(monkeypatch):
+    live_calls = []
+
+    def fake_time():
+        live_calls.append("time")
+        return 123.456
+
+    monkeypatch.setattr(time, "time", fake_time)
+
+    result = record_then_replay(
+        lambda: time.time(),
+        configure_system=_configure_system,
+    )
+
+    assert result.recorded == 123.456
+    assert result.replayed == 123.456
+    assert result.remaining == []
+    assert live_calls == ["time"]
+
+
+@retrace_test
+def test_retrace_test_pytest_smoke():
+    import socket
+
+    value = socket.gethostname()
+    assert isinstance(value, str)
+    assert value
 
 
 def test_install_and_run_round_trips_time_proxy_with_memory_tape(monkeypatch):

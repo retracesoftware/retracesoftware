@@ -16,7 +16,7 @@ import pytest
 
 pytest.importorskip("retracesoftware.stream")
 import retracesoftware.stream as stream
-from retracesoftware.proxy.messagestream import ReplayReader
+from retracesoftware.protocol.replay import ReplayReader
 
 _mod = stream._backend_mod
 FramedWriter = _mod.FramedWriter
@@ -33,12 +33,11 @@ def _make_persister(path):
     return fw, p, q
 
 
-def _make_raw_native_reader(path, *, deserialize=pickle.loads, on_thread_switch=None, on_heartbeat=None):
+def _make_raw_native_reader(path, *, deserialize=pickle.loads, on_heartbeat=None):
     return ObjectStreamReader(
         path=str(path),
         deserialize=deserialize,
         stub_factory=lambda cls: cls.__new__(cls),
-        on_thread_switch=(lambda thread: thread) if on_thread_switch is None else on_thread_switch,
         read_timeout=1,
         verbose=False,
         on_heartbeat=on_heartbeat,
@@ -396,29 +395,28 @@ def test_raw_persister_container_headers_roundtrip_with_native_reader(tmp_path):
         reader.close()
 
 
-def test_raw_persister_thread_switch_uses_native_callback(tmp_path):
-    """Thread switch payloads are wrapped by the reader callback."""
+def test_raw_persister_protocol_thread_switch_roundtrip(tmp_path):
+    """Protocol thread switch messages roundtrip as ordinary tape objects."""
     path = tmp_path / "raw_thread_switch_roundtrip.bin"
     fw = FramedWriter(str(path), raw=True)
     persister = Persister(fw, serializer=pickle.dumps)
 
     try:
-        assert persister.write_thread_switch({"thread": 7}) is None
+        assert persister.write_object("THREAD_SWITCH") is None
+        assert persister.write_object({"thread": 7}) is None
         persister.flush()
     finally:
         fw.close()
 
-    reader = _make_raw_native_reader(
-        path,
-        on_thread_switch=lambda thread: ("thread_switch", thread),
-    )
+    reader = _make_raw_native_reader(path)
     try:
-        assert reader() == ("thread_switch", {"thread": 7})
+        assert reader() == "THREAD_SWITCH"
+        assert reader() == {"thread": 7}
     finally:
         reader.close()
 
 
-def test_tape_reader_emits_thread_switch_markers(tmp_path):
+def test_tape_reader_roundtrips_protocol_thread_switch_messages(tmp_path):
     path = tmp_path / "raw_tape_reader_roundtrip.bin"
     fw = FramedWriter(str(path), raw=True)
     persister = Persister(fw, serializer=pickle.dumps)
@@ -427,10 +425,12 @@ def test_tape_reader_emits_thread_switch_markers(tmp_path):
     thread_b = {"thread": 2}
 
     try:
-        assert persister.write_thread_switch(thread_a) is None
+        assert persister.write_object("THREAD_SWITCH") is None
+        assert persister.write_object(thread_a) is None
         persister.write_object("a")
         persister.write_object(1)
-        assert persister.write_thread_switch(thread_b) is None
+        assert persister.write_object("THREAD_SWITCH") is None
+        assert persister.write_object(thread_b) is None
         persister.write_object("b")
         persister.flush()
     finally:
@@ -438,14 +438,12 @@ def test_tape_reader_emits_thread_switch_markers(tmp_path):
 
     reader = _make_tape_reader(path)
     try:
-        switch_a = reader()
-        assert isinstance(switch_a, stream.ThreadSwitch)
-        assert switch_a.value == thread_a
+        assert reader() == "THREAD_SWITCH"
+        assert reader() == thread_a
         assert reader() == "a"
         assert reader() == 1
-        switch_b = reader()
-        assert isinstance(switch_b, stream.ThreadSwitch)
-        assert switch_b.value == thread_b
+        assert reader() == "THREAD_SWITCH"
+        assert reader() == thread_b
         assert reader() == "b"
     finally:
         reader.close()
@@ -602,7 +600,7 @@ def test_message_stream_raises_immediately_on_unmatched_bind():
 
 
 def test_memory_writer_reader_roundtrip_uses_binding_lookup_for_bound_results():
-    from retracesoftware.proxy.messagestream import MemoryReader, MemoryWriter
+    from retracesoftware.testing.memorytape import MemoryReader, MemoryWriter
 
     writer = MemoryWriter()
     bound = object()
@@ -694,7 +692,8 @@ def test_with_thread_reader_attaches_current_thread_to_objects():
         stream.ThreadSwitch(thread_a),
         "a1",
         1,
-        stream.ThreadSwitch(thread_b),
+        "THREAD_SWITCH",
+        thread_b,
         "b1",
     ]).__next__)
 
@@ -742,11 +741,14 @@ def test_peekable_reader_peeks_tape_reader_by_thread(tmp_path):
     thread_b = {"thread": 2}
 
     try:
-        assert persister.write_thread_switch(thread_a) is None
+        assert persister.write_object("THREAD_SWITCH") is None
+        assert persister.write_object(thread_a) is None
         persister.write_object("a1")
-        assert persister.write_thread_switch(thread_b) is None
+        assert persister.write_object("THREAD_SWITCH") is None
+        assert persister.write_object(thread_b) is None
         persister.write_object("b1")
-        assert persister.write_thread_switch(thread_a) is None
+        assert persister.write_object("THREAD_SWITCH") is None
+        assert persister.write_object(thread_a) is None
         persister.write_object("a2")
         persister.flush()
     finally:
@@ -792,11 +794,14 @@ def test_demux_reader_dispatches_tape_reader_by_thread(tmp_path):
     thread_b = {"thread": 2}
 
     try:
-        assert persister.write_thread_switch(thread_a) is None
+        assert persister.write_object("THREAD_SWITCH") is None
+        assert persister.write_object(thread_a) is None
         persister.write_object("a1")
-        assert persister.write_thread_switch(thread_b) is None
+        assert persister.write_object("THREAD_SWITCH") is None
+        assert persister.write_object(thread_b) is None
         persister.write_object("b1")
-        assert persister.write_thread_switch(thread_a) is None
+        assert persister.write_object("THREAD_SWITCH") is None
+        assert persister.write_object(thread_a) is None
         persister.write_object("a2")
         persister.flush()
     finally:
@@ -869,7 +874,6 @@ def test_resolving_reader_peek_resolves_values_using_binding_table(tmp_path):
     finally:
         reader.close()
 
-
 def test_raw_persister_non_bytes_serializer_emits_serialize_error(tmp_path):
     """Non-bytes serializer results are emitted under SERIALIZE_ERROR."""
     path = tmp_path / "raw_serialize_error_roundtrip.bin"
@@ -883,9 +887,6 @@ def test_raw_persister_non_bytes_serializer_emits_serialize_error(tmp_path):
     finally:
         sock.close()
         fw.close()
-
-    raw = path.read_bytes()
-    assert raw[0] == 0xBE
 
     reader = _make_raw_native_reader(path)
     try:

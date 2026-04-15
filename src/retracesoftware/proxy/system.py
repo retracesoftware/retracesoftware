@@ -204,6 +204,8 @@ import retracesoftware.utils as utils
 import retracesoftware.functional as functional
 import types
 import gc
+import threading
+
 from retracesoftware.proxy.proxytype import method_names, superdict
 from retracesoftware.proxy.typeutils import WithoutFlags
 
@@ -282,6 +284,23 @@ class CallHooks(NamedTuple):
 
 class _PassthroughExternalCall(Exception):
     """Signal that an external call should bypass retrace and run live."""
+
+class ThreadSafeCounter:
+    def __init__(self, initial=0):
+        self._value = initial
+        self._lock = threading.Lock()
+
+    def next(self):
+        with self._lock:
+            value = self._value
+            self._value += 1
+            return value
+
+    def peek(self):
+        with self._lock:
+            return self._value
+
+def inc(x): return x + 1
 
 def get_all_subtypes(cls):
     """Recursively find all subtypes of a given class."""
@@ -455,6 +474,20 @@ class System:
             on_result = on_end,
             on_error = on_end)
 
+
+    # def wrap_thread_function(self, function):
+    #     if self() is None:
+    #         return function
+
+    #     next_id = self.next_id()
+
+    #     def in_child(*args, **kwargs):
+    #         self.id.set(next_id)
+
+    #     return utils.observer(
+    #         on_call = in_child, 
+    #         function = function)
+
     def wrap_start_new_thread(self, original_start_new_thread):
         """Wrap ``start_new_thread`` so child threads inherit active retrace context.
 
@@ -464,7 +497,15 @@ class System:
         """
         def wrap_thread_function(function):
             if self.enabled():
-                return self.thread_wrapper(function)
+                next_id = self.counter.next()
+
+                def in_child(*args, **kwargs):
+                    self._thread_id.set(next_id)
+
+                return utils.observer(
+                    on_call = in_child, 
+                    function = self.thread_wrapper(function))
+                # return self.thread_wrapper(function)
             else:
                 return function
 
@@ -816,6 +857,12 @@ class System:
         self.descriptor_proxytype = functional.memoize_one_arg(self.descriptor_proxytype)        
         self.ext_proxy = proxy(functional.memoize_one_arg(self.ext_proxytype))
 
+        self.counter = ThreadSafeCounter(initial = 0)
+
+        self._thread_id = utils.ThreadLocal(None)
+        self._thread_id.set(self.counter.next())
+        self.thread_id = self._thread_id.get
+    
     def wrap_async(self, function):
         return self._wrapped_function(self._int_handler, function)
         # return self._wrapped_function(self._internal, function)

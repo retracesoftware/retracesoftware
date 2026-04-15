@@ -1,5 +1,5 @@
 from retracesoftware.protocol.record import CALL
-from retracesoftware.testing.protocol_memory import MemoryTape
+from retracesoftware.testing.memorytape import MemoryTape
 
 
 def test_memory_tape_round_trips_call_shape():

@@ -40,11 +40,8 @@ namespace retracesoftware_stream {
         rigtorp::SPSCQueue<QEntry> entries;
         rigtorp::SPSCQueue<PyObject*> returned;
         PyObject* target_obj = nullptr;
-        PyObject* thread_id_callback = nullptr;
         PyObject* push_fail_callback = nullptr;
         PyObject* on_target_error = nullptr;
-        PyThreadState* last_thread_tstate = nullptr;
-        PyObject* last_thread_id = nullptr;
         QueueState state = QueueState::ACTIVE;
         int64_t total_added = 0;
         std::atomic<int64_t> total_removed{0};
@@ -94,7 +91,6 @@ namespace retracesoftware_stream {
         BindingHandle consume_binding_handle(EntryKind expected_kind);
         void release_consumed_obj(PyObject* obj);
         void finish_consumed_obj(PyObject* obj);
-        void clear_thread_state();
         bool has_entry_slots(size_t needed) const;
         bool wait_for_slots(size_t needed);
         bool wait_for_space(size_t needed_free_slots = 2);
@@ -147,20 +143,6 @@ namespace retracesoftware_stream {
         }
 
         inline void push_entry_unchecked(QEntry entry) {
-
-            if (thread_id_callback && PyThreadState_Get() != last_thread_tstate) {
-                last_thread_tstate = PyThreadState_Get();
-                PyObject * thread_id = PyObject_CallNoArgs(thread_id_callback);
-                if (!thread_id) {
-                    throw nullptr;
-                }
-                const bool pushed_thread_cmd = try_push_entry(cmd_entry(CMD_THREAD_SWITCH, 0));
-                const bool pushed_thread_id = pushed_thread_cmd &&
-                    try_push_entry(object_entry(thread_id));
-                assert(pushed_thread_id);
-                (void)pushed_thread_id;
-            }
-
             const bool pushed = try_push_entry(entry);
             assert(pushed);
             (void)pushed;
@@ -214,8 +196,6 @@ namespace retracesoftware_stream {
             push_entry_unchecked(object_entry(obj));
             return wait_for_slots(4);
         }
-
-        inline PyObject * find_thread_id();
 
     public:
         Queue();

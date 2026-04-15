@@ -107,6 +107,28 @@ def pytest_collection_modifyitems(session, config, items):
     items.sort(key=sort_key)
 
 
+def pytest_configure(config):
+    config.addinivalue_line(
+        "markers",
+        "retrace_test: run the test body through tests.runner.Runner record/replay",
+    )
+
+
+@pytest.hookimpl(tryfirst=True)
+def pytest_pyfunc_call(pyfuncitem):
+    if pyfuncitem.get_closest_marker("retrace_test") is None:
+        return None
+
+    from tests.runner import Runner
+
+    kwargs = {
+        name: pyfuncitem.funcargs[name]
+        for name in pyfuncitem._fixtureinfo.argnames
+    }
+    Runner().run(pyfuncitem.obj, **kwargs)
+    return True
+
+
 @pytest.fixture
 def tmpdir():
     """A fresh temporary directory, cleaned up after the test."""

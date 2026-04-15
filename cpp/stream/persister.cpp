@@ -144,7 +144,6 @@ namespace retracesoftware_stream {
         bool write_object(PyObject* obj);
         bool write_handle_ref(BindingHandle handle);
         void write_delete(BindingHandle handle);
-        bool write_thread_switch(PyObject* thread_handle);
         void bind(BindingHandle handle);
 
         void write_heartbeat();
@@ -380,13 +379,6 @@ namespace retracesoftware_stream {
             return call_persister_method([&] { self->write_heartbeat(); });
         }
 
-        PyObject* Persister_py_write_thread_switch(Persister* self, PyObject* obj) {
-            PyObject* owned = Py_NewRef(obj);
-            PyObject* result = call_persister_bool_method([&] { return self->write_thread_switch(owned); });
-            Py_DECREF(owned);
-            return result;
-        }
-
         PyObject* Persister_py_write_pickled(Persister* self, PyObject* obj) {
             PyObject* owned = Py_NewRef(obj);
             PyObject* result = call_persister_method([&] { self->write_pickled(owned); });
@@ -420,7 +412,6 @@ namespace retracesoftware_stream {
             {"start_dict", (PyCFunction)Persister_py_start_dict, METH_O, "Write a dict header while mimicking consumer threading"},
             {"start_collection", (PyCFunction)Persister_py_start_collection, METH_VARARGS, "Write a collection header while mimicking consumer threading"},
             {"write_heartbeat", (PyCFunction)Persister_py_write_heartbeat, METH_NOARGS, "Write a heartbeat while mimicking consumer threading"},
-            {"write_thread_switch", (PyCFunction)Persister_py_write_thread_switch, METH_O, "Write a thread switch while mimicking consumer threading"},
             {"write_pickled", (PyCFunction)Persister_py_write_pickled, METH_O, "Write a pre-pickled payload while mimicking consumer threading"},
             {"reset_state", (PyCFunction)Persister_py_reset_state, METH_NOARGS, "Reset persister state while mimicking consumer threading"},
             {nullptr}
@@ -776,22 +767,6 @@ namespace retracesoftware_stream {
         object_freed(handle);
     }
 
-    bool Persister::write_thread_switch(PyObject* thread_handle) {
-        BindingHandle key = pointer_handle(thread_handle);
-        if (!interns.contains(key)) {
-            if (!intern(thread_handle, key)) {
-                return false;
-            }
-        }
-
-        emit_control(ThreadSwitch);
-        if (interns.contains(key)) {
-            write_intern_lookup(interns[key]);
-            return true;
-        }
-        return false;
-    }
-
     void Persister::write_pickled(PyObject* obj) {
         PyGILState_STATE gil = PyGILState_Ensure();
         write_pickled_value(obj);
@@ -866,10 +841,6 @@ namespace retracesoftware_stream {
         return true;
     }
     
-    bool Persister_write_thread_switch(Persister * persister, PyObject * thread_handle) {
-        return persister->write_thread_switch(thread_handle);
-    }
-
     bool Persister_start_collection(Persister * persister, PyObject* type, size_t len) {
         persister->start_collection(type, len);
         return true;

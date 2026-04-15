@@ -79,10 +79,11 @@ def test_wsgiref_two_requests_replay_diverges_cleanly(tmp_path):
         import threading
         from wsgiref.simple_server import make_server
 
-        from retracesoftware.install import ReplayDivergence, install_for_pytest
+        from retracesoftware.install import ReplayDivergence
+        from tests.runner import Runner
 
 
-        runner = install_for_pytest()
+        runner = Runner()
         responses = []
         state = {}
 

@@ -14,7 +14,6 @@ namespace retracesoftware_stream {
 
     extern bool Persister_write_heartbeat(Persister* persister);
     extern bool Persister_write_delete_handle(Persister* persister, BindingHandle handle);
-    extern bool Persister_write_thread_switch(Persister* persister, PyObject* thread_handle);
     extern bool Persister_start_collection(Persister* persister, PyObject* type, size_t len);
     extern bool Persister_write_binding_lookup(Persister* persister, BindingHandle handle);
     extern bool Persister_write_object(Persister* persister, PyObject* obj);
@@ -22,10 +21,8 @@ namespace retracesoftware_stream {
     extern bool Persister_bind_handle(Persister* persister, BindingHandle handle);
 
     namespace {
-        // The producer can prepend a 2-entry CMD_THREAD_SWITCH packet ahead of
-        // a 3-entry logical command such as CMD_INTERN.
-        // Keep the minimum capacity large enough that this worst-case burst can
-        // be enqueued without silently truncating a multi-entry packet.
+        // Keep the minimum capacity large enough that multi-entry logical
+        // commands such as CMD_INTERN can be enqueued atomically.
         constexpr size_t kMinQueueCapacity = 5;
 
         inline size_t clamp_queue_capacity(size_t capacity) {
@@ -210,7 +207,6 @@ namespace retracesoftware_stream {
         new (self) Queue((size_t)queue_capacity,
                          (int64_t)inflight_limit,
                          worker_wait_timeout_ms);
-        if (thread != Py_None) self->thread_id_callback = Py_NewRef(thread);
         if (push_fail_callback != Py_None) self->push_fail_callback = Py_NewRef(push_fail_callback);
         if (on_target_error != Py_None) self->on_target_error = Py_NewRef(on_target_error);
         if (persister != Py_None) {
@@ -262,7 +258,6 @@ namespace retracesoftware_stream {
 
     Queue::~Queue() {
         close();
-        Py_CLEAR(thread_id_callback);
         Py_CLEAR(push_fail_callback);
         Py_CLEAR(on_target_error);
         clear_target();
@@ -740,7 +735,6 @@ namespace retracesoftware_stream {
         drain_returned();
         release_entries();
         drain_returned();
-        clear_thread_state();
         reset_target_state();
     }
 
@@ -768,12 +762,10 @@ namespace retracesoftware_stream {
         thread_started = false;
         return_thread_started = false;
         shutdown_flag.store(false, std::memory_order_release);
-        clear_thread_state();
     }
 
     void Queue::resume() {
         if (closed || thread_started || !target_obj || state == QueueState::STOPPED) return;
-        clear_thread_state();
         prepare_target_resume();
         state = QueueState::ACTIVE;
         saw_shutdown = false;
@@ -901,11 +893,6 @@ namespace retracesoftware_stream {
         Py_DECREF(obj);
     }
 
-    void Queue::clear_thread_state() {
-        last_thread_tstate = nullptr;
-        Py_CLEAR(last_thread_id);
-    }
-
     void Queue::finish_consumed_obj(PyObject* obj) {
         if (queue_is_immortal(obj)) return;
         while (!returned.try_push(obj)) {
@@ -1014,32 +1001,6 @@ namespace retracesoftware_stream {
                 if (!call_target_intern(obj, handle)) {
                     release_consumed_obj(obj);
                     return false;
-                }
-                finish_consumed_obj(obj);
-                return true;
-            }
-            case CMD_THREAD_SWITCH: {
-                PyObject* obj = consume_owned_payload();
-                if (is_persister()) {
-                    if (!Persister_write_thread_switch(native_persister(target_obj), obj)) {
-                        release_consumed_obj(obj);
-                        return false;
-                    }
-                } else {
-                    retracesoftware::GILGuard gstate;
-                    PyObject* method = lookup_target_method(target_obj, "write_thread_switch");
-                    if (!method) {
-                        finish_consumed_obj(obj);
-                        return true;
-                    }
-                    PyObject* result = PyObject_CallOneArg(method, obj);
-                    Py_DECREF(method);
-                    if (!result) {
-                        capture_current_target_error();
-                        release_consumed_obj(obj);
-                        return false;
-                    }
-                    Py_DECREF(result);
                 }
                 finish_consumed_obj(obj);
                 return true;
@@ -1183,9 +1144,6 @@ namespace retracesoftware_stream {
             case CMD_INTERN:
                 release_consumed_obj(consume_owned_payload());
                 (void)consume_binding_handle(ENTRY_BIND);
-                break;
-            case CMD_THREAD_SWITCH:
-                release_consumed_obj(consume_owned_payload());
                 break;
             case CMD_FLUSH:
             case CMD_SHUTDOWN:

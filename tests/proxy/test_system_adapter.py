@@ -6,7 +6,7 @@ import retracesoftware.proxy.system as system_mod
 import retracesoftware.utils as utils
 from retracesoftware.proxy._system_adapters import adapter
 from retracesoftware.proxy.contexts import record_context
-from retracesoftware.proxy.messagestream import MemoryWriter
+from retracesoftware.testing.memorytape import MemoryWriter
 
 
 @pytest.fixture(autouse=True)

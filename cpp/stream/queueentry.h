@@ -141,7 +141,6 @@ namespace retracesoftware_stream {
 
     enum Cmd : uint32_t {
         CMD_INTERN,
-        CMD_THREAD_SWITCH,
         CMD_FLUSH,
         CMD_SHUTDOWN,
         CMD_LIST,

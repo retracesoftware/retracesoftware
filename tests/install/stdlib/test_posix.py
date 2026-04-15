@@ -5,32 +5,39 @@ C extension are recorded and replayed correctly.
 """
 import os
 
+from tests.runner import Runner, retrace_test
 
-def test_getcwd(system, runner):
+
+@retrace_test
+def test_getcwd():
     """os.getcwd() records and replays the same value."""
-    patched_getcwd = system.patch(os.getcwd)
-
-    def do_getcwd():
-        return patched_getcwd()
-
-    runner.run(do_getcwd)
+    value = os.getcwd()
+    assert value
+    return value
 
 
-def test_getpid(system, runner):
+@retrace_test
+def test_getpid():
     """os.getpid() records and replays the same value."""
-    patched_getpid = system.patch(os.getpid)
-
-    def do_getpid():
-        return patched_getpid()
-
-    runner.run(do_getpid)
+    value = os.getpid()
+    assert isinstance(value, int)
+    assert value > 0
+    return value
 
 
-def test_urandom(system, runner):
+def test_urandom():
     """os.urandom() records and replays the same bytes."""
-    patched_urandom = system.patch(os.urandom)
+    state = {}
+
+    def configure_system(system):
+        state["urandom"] = system.patch(os.urandom)
+
+    runner = Runner(configure_system=configure_system)
 
     def do_urandom():
-        return patched_urandom(16)
+        value = state["urandom"](16)
+        assert isinstance(value, bytes)
+        assert len(value) == 16
+        return value
 
     runner.run(do_urandom)

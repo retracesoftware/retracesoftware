@@ -214,6 +214,28 @@ def runall(*funcs):
 _deprecated_local["return_none"] = _return_none
 _deprecated_local["chain"] = _chain
 
+
+def thread_switch(function=None, *, on_thread_switch):
+    """Compose ``thread_switch_monitor`` and ``observer``.
+
+    This is a small Python convenience wrapper only. The hot path still uses
+    the native ``thread_switch_monitor(...)`` and ``observer(...)`` helpers.
+    """
+    if not callable(on_thread_switch):
+        raise TypeError(f"on_thread_switch must be callable, got {on_thread_switch!r}")
+
+    monitor = _backend_mod.thread_switch_monitor(on_thread_switch=on_thread_switch)
+
+    def decorate(target):
+        if not callable(target):
+            raise TypeError(f"function must be callable, got {target!r}")
+        return _backend_mod.observer(target, on_call=monitor)
+
+    if function is None:
+        return decorate
+
+    return decorate(function)
+
 class Demultiplexer2:
     """Key-based demultiplexer wrapping Dispatcher.
 

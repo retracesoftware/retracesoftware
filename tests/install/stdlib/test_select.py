@@ -15,17 +15,20 @@ import threading
 
 import pytest
 
+from tests.runner import Runner
+
 needs_kqueue = pytest.mark.skipif(
     not hasattr(select, "kqueue"), reason="kqueue not available")
 
 
-def test_select_readable(runner):
+def test_select_readable():
     """select.select() detects a readable socket and replays."""
+    runner = Runner()
     ready = threading.Event()
     port_box = []
 
     def client():
-        ready.wait(timeout=2.0)
+        assert ready.wait(timeout=30.0)
         c = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         c.connect(("127.0.0.1", port_box[0]))
         c.sendall(b"ping")
@@ -58,8 +61,10 @@ def test_select_readable(runner):
     assert result == b"ping"
 
 
-def test_select_timeout(runner):
+def test_select_timeout():
     """select.select() with timeout returns empty lists and replays."""
+    runner = Runner()
+
     def work():
         srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
@@ -76,8 +81,10 @@ def test_select_timeout(runner):
     assert result == (0, 0, 0)
 
 
-def test_select_writable(runner):
+def test_select_writable():
     """select.select() detects a writable socket and replays."""
+    runner = Runner()
+
     def work():
         srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
@@ -108,13 +115,14 @@ def test_select_writable(runner):
 # ── kqueue / kevent ──────────────────────────────────────────────
 
 @needs_kqueue
-def test_kqueue_readable(runner):
+def test_kqueue_readable():
     """kqueue detects a readable socket and replays."""
+    runner = Runner()
     ready = threading.Event()
     port_box = []
 
     def client():
-        ready.wait(timeout=2.0)
+        assert ready.wait(timeout=30.0)
         c = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         c.connect(("127.0.0.1", port_box[0]))
         c.sendall(b"kq-ping")
@@ -154,8 +162,10 @@ def test_kqueue_readable(runner):
 
 
 @needs_kqueue
-def test_kqueue_writable(runner):
+def test_kqueue_writable():
     """kqueue detects a writable socket and replays."""
+    runner = Runner()
+
     def work():
         srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
@@ -190,8 +200,10 @@ def test_kqueue_writable(runner):
 
 
 @needs_kqueue
-def test_kqueue_timeout(runner):
+def test_kqueue_timeout():
     """kqueue.control() with no events times out and replays."""
+    runner = Runner()
+
     def work():
         srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
@@ -215,8 +227,10 @@ def test_kqueue_timeout(runner):
 
 
 @needs_kqueue
-def test_kevent_multiple_filters(runner):
+def test_kevent_multiple_filters():
     """Register both read and write kevents, get results back."""
+    runner = Runner()
+
     def work():
         srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)

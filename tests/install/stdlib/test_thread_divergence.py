@@ -19,11 +19,12 @@ import _thread
 import pytest
 
 from retracesoftware.install import ReplayDivergence
+from tests.runner import Runner
 
 
 # ── tests ─────────────────────────────────────────────────────────
 
-def test_rlock_shared_state_divergence(system, runner):
+def test_rlock_shared_state_divergence():
     """Shared mutable state causes different RLock operation counts.
 
     Record: state is empty → takes the initialisation branch
@@ -53,11 +54,13 @@ def test_rlock_shared_state_divergence(system, runner):
             lock.release()
         return 42
 
+    runner = Runner()
+
     with pytest.raises(ReplayDivergence):
-        runner.run(work, timeout=3)
+        runner.run(work)
 
 
-def test_allocate_lock_divergence(system, runner):
+def test_allocate_lock_divergence():
     """Different number of lock *creations* between record and replay.
 
     Record: state is empty → allocate_lock() called to create a lock.
@@ -77,5 +80,7 @@ def test_allocate_lock_divergence(system, runner):
         cache['lock'].release()
         return 1
 
+    runner = Runner()
+
     with pytest.raises(ReplayDivergence):
-        runner.run(work, timeout=3)
+        runner.run(work)

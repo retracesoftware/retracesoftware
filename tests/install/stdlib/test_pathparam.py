@@ -7,7 +7,7 @@ import threading
 import retracesoftware.utils as utils
 from retracesoftware.proxy.contexts import record_context
 from retracesoftware.proxy.system import System
-from retracesoftware.proxy.messagestream import MemoryWriter
+from retracesoftware.testing.memorytape import MemoryWriter
 from retracesoftware.install.installation import Installation
 from retracesoftware.install.patcher import patch
 
@@ -89,8 +89,9 @@ def test_open_whitelisted_path_is_retraced():
         os.unlink(tmp_path)
 
 
-def test_is_bound_true_for_whitelisted_open(system):
+def test_is_bound_true_for_whitelisted_open():
     """Objects created via a whitelisted open should be bound in the writer."""
+    system = _make_system()
 
     def pathpredicate(arg):
         return True

@@ -110,11 +110,14 @@ def replay(args):
         controller_ref = [None]
 
         class TapeReaderAdapter:
-            __slots__ = ["reader", "controller_ref"]
+            __slots__ = ["reader", "controller_ref", "protocol_thread_source"]
 
             def __init__(self, reader: TapeReader, controller_ref):
                 self.reader = reader
                 self.controller_ref = controller_ref
+                self.protocol_thread_source = getattr(
+                    reader, "protocol_thread_source", False
+                )
 
             def read(self):
                 value = self.reader.read()

@@ -2,6 +2,13 @@
 from contextlib import contextmanager
 import retracesoftware.functional as functional
 import retracesoftware.utils as utils
+from retracesoftware.stream.reader import (
+    DemuxReader,
+    HeartbeatReader,
+    PeekableReader,
+    ResolvingReader,
+    WithThreadReader,
+)
 
 from retracesoftware.proxy.system import CallHooks, LifecycleHooks, System
 from retracesoftware.proxy.tape import TapeReader, TapeWriter
@@ -12,6 +19,60 @@ import os
 
 class ReplayException(Exception):
     pass
+
+
+class _FlatTapeSource:
+    __slots__ = ("_read", "_close")
+
+    def __init__(self, tape_reader):
+        read = getattr(tape_reader, "read", None)
+        if read is None:
+            read = getattr(tape_reader, "next", None)
+        if read is None and callable(tape_reader):
+            read = tape_reader
+        if read is None:
+            raise TypeError("tape_reader must provide read(), next(), or __call__()")
+
+        self._read = read
+        self._close = getattr(tape_reader, "close", None)
+
+    def __call__(self):
+        return self._read()
+
+    def close(self):
+        if self._close is not None:
+            return self._close()
+
+
+class _ProtocolReplayTapeReader:
+    __slots__ = ("source",)
+
+    def __init__(self, tape_reader, *, thread_id, initial_thread_id):
+        flat_source = _FlatTapeSource(tape_reader)
+        heartbeat_reader = HeartbeatReader(flat_source)
+        with_thread_reader = WithThreadReader(
+            heartbeat_reader,
+            initial_thread_id=initial_thread_id,
+        )
+        demux_reader = DemuxReader(
+            source=PeekableReader(with_thread_reader),
+            thread_id=thread_id,
+        )
+        self.source = ResolvingReader(demux_reader)
+
+    def read(self):
+        return self.source.next()
+
+    def bind(self, obj):
+        return self.source.bind(obj)
+
+    def peek(self):
+        return self.source.peek()
+
+    def close(self):
+        close = getattr(self.source, "close", None)
+        if close is not None:
+            return close()
 
 
 def equal(a, b):
@@ -114,20 +175,44 @@ def normalize_stack_delta(delta):
 def recorder(*, tape_writer: TapeWriter, 
     debug: bool = False,
     stacktraces: bool = False,
-    gc_collect_multiplier: int = None) -> System:
+    gc_collect_multiplier: int = None,
+    thread_id = None) -> System:
+
+    if thread_id is not None:
+        on_thread_switch = functional.sequence(
+            functional.repeatedly(thread_id),
+            functional.partial(tape_writer.write, "THREAD_SWITCH"))
+
+        def check_thread_switch(function):
+            return utils.thread_switch(
+                function, on_thread_switch = on_thread_switch)
+    else:
+        check_thread_switch = functional.identity
 
     write = tape_writer.write
     bind = tape_writer.bind
     system = System(bind)
+
     in_sandbox = system._in_sandbox
 
-    checkpoint = functional.partial(write, "CHECKPOINT")
-    call = functional.sequence(_on_call, checkpoint) if debug else functional.repeatedly(write, "CALL")
-    on_start = functional.repeatedly(write, "ON_START")
+    on_thread_switch = functional.sequence(
+        functional.repeatedly(system.thread_id),
+        functional.partial(tape_writer.write, "THREAD_SWITCH"))
+
+    def check_thread_switch(function):
+        return utils.thread_switch(
+            function, on_thread_switch = on_thread_switch)
+
+    def on_start(*args, **kwargs):
+        write("ON_START")
+
+    checkpoint = check_thread_switch(functional.partial(write, "CHECKPOINT"))
+    call = check_thread_switch(functional.sequence(_on_call, checkpoint) if debug else functional.repeatedly(write, "CALL"))
+    # on_start = check_thread_switch(functional.repeatedly(write, "ON_START"))
 
     if stacktraces:
         stack = utils.StackFactory()
-        stacktrace = functional.partial(write, "STACKTRACE")
+        stacktrace = check_thread_switch(functional.partial(write, "STACKTRACE"))
 
         write_stacktrace = functional.repeatedly(functional.if_then_else(
             lambda: in_sandbox(),
@@ -140,11 +225,11 @@ def recorder(*, tape_writer: TapeWriter,
     def get_error(*funcs):
         return functional.sequence(functional.positional_param(1), *funcs)
 
-    on_callback_result = functional.sequence(_on_result, checkpoint) \
-        if debug else functional.repeatedly(write, "CALLBACK_RESULT")
+    on_callback_result = check_thread_switch(functional.sequence(_on_result, checkpoint) \
+        if debug else functional.repeatedly(write, "CALLBACK_RESULT"))
 
-    on_callback_error = get_error(_on_error, checkpoint) \
-        if debug else functional.repeatedly(write, "CALLBACK_ERROR")
+    on_callback_error = check_thread_switch(get_error(_on_error, checkpoint) \
+        if debug else functional.repeatedly(write, "CALLBACK_ERROR"))
 
     create_stub_object = system.wrap_async(utils.create_stub_object)
     collect = system.wrap_async(gc.collect)
@@ -159,14 +244,14 @@ def recorder(*, tape_writer: TapeWriter,
             #functional.repeatedly(write, "ON_END")
             )
             
-    on_call = functional.pack_call(1, functional.partial(write, "CALLBACK"))
-    on_result = functional.partial(write, "RESULT")
-    on_error = functional.sequence(
+    on_call = check_thread_switch(functional.pack_call(1, functional.partial(write, "CALLBACK")))
+    on_result = check_thread_switch(functional.partial(write, "RESULT"))
+    on_error = check_thread_switch(functional.sequence(
         functional.positional_param(1), 
         functional.if_then_else(
             functional.isinstanceof(Exception),
             functional.partial(write, "ERROR"),
-            utils.noop))
+            utils.noop)))
 
     if gc_collect_multiplier:
         gc_collector = utils.Collector(multiplier = gc_collect_multiplier, collect = collect)
@@ -237,9 +322,25 @@ def replayer(*, tape_reader: TapeReader,
              on_desync = default_desync_handler,
              debug: bool = False,
              stacktraces: bool = False) -> System:
-    read = tape_reader.read
-    bind = tape_reader.bind
-    system = System(bind)
+    system = None
+
+    def current_thread_id():
+        if system is None:
+            return 0
+        return system.thread_id()
+
+    if getattr(tape_reader, "protocol_thread_source", False):
+        routed_tape_reader = _ProtocolReplayTapeReader(
+            tape_reader,
+            thread_id=current_thread_id,
+            initial_thread_id=current_thread_id(),
+        )
+    else:
+        routed_tape_reader = tape_reader
+
+    system = System(routed_tape_reader.bind)
+
+    read = routed_tape_reader.read
 
     stack = utils.StackFactory()
     current_stack = utils.ThreadLocal([])

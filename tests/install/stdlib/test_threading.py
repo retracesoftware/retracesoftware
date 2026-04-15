@@ -13,8 +13,7 @@ import threading
 
 import pytest
 
-from retracesoftware.proxy.system import System
-from retracesoftware.install import TestRunner
+from tests.runner import Runner
 
 pytestmark = pytest.mark.skip(
     reason="_MemoryWriter/_MemoryReader lack ThreadSwitch demuxing — "
@@ -24,43 +23,72 @@ pytestmark = pytest.mark.skip(
 
 # ── helpers ────────────────────────────────────────────────────────
 
-def _make_counter(sys):
-    """Return a patched function that increments and returns a counter.
+def _make_counter(installs):
+    """Return a per-pass patched function that increments and returns a counter.
 
     Each call returns a new integer (1, 2, 3, ...).  The function is
-    patched via system.patch so that every invocation crosses the
+    patched via the active per-pass system so that every invocation crosses the
     sandbox boundary and is recorded/replayed.
     """
-    state = {'n': 0}
+    holder = {'patched': None}
 
-    def _next():
-        state['n'] += 1
-        return state['n']
+    def install(system):
+        state = {'n': 0}
 
-    return sys.patch(_next)
+        def _next():
+            state['n'] += 1
+            return state['n']
+
+        holder['patched'] = system.patch(_next)
+
+    installs.append(install)
+
+    def call():
+        return holder['patched']()
+
+    return call
+
+
+def _make_patch(installs, fn):
+    """Return a callable patched separately for each record/replay pass."""
+    holder = {'patched': None}
+
+    def install(system):
+        holder['patched'] = system.patch(fn)
+
+    installs.append(install)
+
+    def call(*args, **kwargs):
+        return holder['patched'](*args, **kwargs)
+
+    return call
 
 
 def _fresh_runner():
-    """Create a standalone System + TestRunner pair.
+    """Create patch installers plus a standalone Runner.
 
-    Each test that uses a counter needs its own system so state
-    doesn't leak between record and replay.  Thread patching is
-    handled by TestRunner.record/replay, not here.
+    Each test that uses patched helpers gets a fresh set of per-pass
+    installs so state doesn't leak between record and replay.
     """
-    s = System()
-    s.immutable_types.update({
-        int, float, str, bytes, bool, type, type(None),
-        tuple, list, dict, set, frozenset,
-    })
-    return s, TestRunner(s)
+    installs = []
+
+    def configure_system(system):
+        system.immutable_types.update({
+            int, float, str, bytes, bool, type, type(None),
+            tuple, list, dict, set, frozenset,
+        })
+        for install in installs:
+            install(system)
+
+    return installs, Runner(configure_system=configure_system)
 
 
 # ── single-threaded ───────────────────────────────────────────────
 
 def test_single_thread_multiple_calls():
     """Multiple calls in one thread replay in order."""
-    s, r = _fresh_runner()
-    counter = _make_counter(s)
+    installs, r = _fresh_runner()
+    counter = _make_counter(installs)
 
     def work():
         return [counter() for _ in range(5)]
@@ -71,9 +99,9 @@ def test_single_thread_multiple_calls():
 
 def test_single_thread_interleaved_functions():
     """Two different patched functions interleaved in one thread."""
-    s, r = _fresh_runner()
-    counter_a = _make_counter(s)
-    counter_b = _make_counter(s)
+    installs, r = _fresh_runner()
+    counter_a = _make_counter(installs)
+    counter_b = _make_counter(installs)
 
     def work():
         return [counter_a(), counter_b(), counter_a(), counter_b()]
@@ -84,8 +112,8 @@ def test_single_thread_interleaved_functions():
 
 def test_single_thread_high_call_count():
     """Many calls in one thread replay correctly."""
-    s, r = _fresh_runner()
-    counter = _make_counter(s)
+    installs, r = _fresh_runner()
+    counter = _make_counter(installs)
 
     def work():
         return [counter() for _ in range(100)]
@@ -98,8 +126,8 @@ def test_single_thread_high_call_count():
 
 def test_two_threads_join():
     """Two threads that each call a patched function, joined by main."""
-    s, r = _fresh_runner()
-    counter = _make_counter(s)
+    installs, r = _fresh_runner()
+    counter = _make_counter(installs)
 
     def work():
         results = {}
@@ -123,8 +151,8 @@ def test_two_threads_join():
 def test_thread_returning_patched_value():
     """A thread can return a value obtained from a patched call."""
     import time
-    s, r = _fresh_runner()
-    patched_time = s.patch(time.time)
+    installs, r = _fresh_runner()
+    patched_time = _make_patch(installs, time.time)
 
     def work():
         box = {}
@@ -143,8 +171,8 @@ def test_thread_returning_patched_value():
 
 def test_many_threads_stress():
     """Ten threads each making several patched calls."""
-    s, r = _fresh_runner()
-    counter = _make_counter(s)
+    installs, r = _fresh_runner()
+    counter = _make_counter(installs)
 
     def work():
         results = [None] * 10
@@ -168,8 +196,8 @@ def test_many_threads_stress():
 
 def test_sequential_thread_creation():
     """Threads created and joined one at a time."""
-    s, r = _fresh_runner()
-    counter = _make_counter(s)
+    installs, r = _fresh_runner()
+    counter = _make_counter(installs)
 
     def work():
         values = []
@@ -191,8 +219,8 @@ def test_sequential_thread_creation():
 
 def test_main_and_child_interleaved():
     """Main thread and child thread both call patched functions."""
-    s, r = _fresh_runner()
-    counter = _make_counter(s)
+    installs, r = _fresh_runner()
+    counter = _make_counter(installs)
 
     def work():
         barrier = threading.Event()
@@ -223,8 +251,8 @@ def test_main_and_child_interleaved():
 
 def test_thread_with_exception():
     """A thread that raises still allows replay to succeed."""
-    s, r = _fresh_runner()
-    counter = _make_counter(s)
+    installs, r = _fresh_runner()
+    counter = _make_counter(installs)
 
     def work():
         box = {'error': None, 'before': None}

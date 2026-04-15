@@ -45,8 +45,9 @@ Many bugs that look like proxy or replay bugs are actually install-layer bugs.
   explicit patching.
 - Preload timing matters. `preload.txt` exists to import common modules before
   patching/hook installation settles.
-- `install_for_pytest()` is the in-process testing path; keep it aligned with
-  the main lifecycle rather than letting it drift into a separate runtime model.
+- `tests.runner.Runner` and `@retrace_test` are the in-process testing path;
+  keep them aligned with the main lifecycle rather than letting them drift into
+  a separate runtime model.
 - `InstallSession` is part of the runtime contract, not just test scaffolding.
   If callback identity, wrapped descriptors, or callback normalization change,
   record/replay and pytest paths must stay aligned.

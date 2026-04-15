@@ -143,7 +143,7 @@ py.install_sources(
 # testing
 py.install_sources(
   _py_root / 'testing/__init__.py',
-  _py_root / 'testing/protocol_memory.py',
+  _py_root / 'testing/memorytape.py',
   subdir: 'retracesoftware/testing',
 )
 

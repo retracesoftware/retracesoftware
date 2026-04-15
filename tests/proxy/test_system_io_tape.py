@@ -47,12 +47,32 @@ class StreamTape:
         )
 
     def reader(self):
-        return stream.reader(
-            path=self.path,
+        return _RawStreamTapeReader(self.path)
+
+
+class _RawStreamTapeReader:
+    __slots__ = ("_tape_reader",)
+
+    protocol_thread_source = True
+
+    def __init__(self, path: Path):
+        self._tape_reader = stream.TapeReader(
+            path=path,
             read_timeout=1,
             verbose=False,
-            thread_id=_thread_id,
         )
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *args):
+        self.close()
+
+    def close(self):
+        self._tape_reader.close()
+
+    def read(self):
+        return self._tape_reader.next()
 
 
 @pytest.fixture(params=["memory", "stream"], ids=["memory", "stream"])
@@ -322,4 +342,3 @@ def test_system_ext_proxytype_can_build_for_socket_family_descriptor_type():
 
     assert os.WIFEXITED(status)
     assert os.WEXITSTATUS(status) == 0
-
