@@ -26,16 +26,32 @@ hard constraints, not as an encyclopedia.
    nondeterministic OS/library surface, the fix is wrong.
 3. Replay/debugger control-plane I/O must bypass retrace gates. Do not route
    it through the same path as recorded application I/O.
-4. `tape.py` exists in two places with different responsibilities:
-   `src/retracesoftware/tape.py` (top-level) and
-   `src/retracesoftware/proxy/tape.py` (proxy kernel). Confirm which one a
-   symbol comes from before editing or referencing it.
+4. There are two `tape.py` files and they are not the same thing:
+   - `src/retracesoftware/proxy/tape.py` is small (≈40 lines) and only
+     defines the `Tape` / `TapeReader` / `TapeWriter` `Protocol` types.
+   - `src/retracesoftware/tape.py` (top level) is the recording I/O
+     implementation: `create_tape_writer`, `open_tape_reader`,
+     `RawTapeWriter`, checksums, replay-binary discovery. It imports the
+     `TapeWriter` Protocol from `proxy/tape.py`.
+   Before editing or referencing a `tape.py` symbol, confirm which file it
+   lives in. Do not "consolidate" them — the type/implementation split is
+   intentional.
 5. Prefer fixes in the narrowest responsible layer. Do not modify `install`,
    `proxy`, and `stream` together unless the change genuinely requires all
    three. Cross-layer diffs need an explicit justification.
 6. Do not delete or rewrite a high-level abstraction (e.g. proxy types,
    factories, gates) to fix a localized bug without first explaining what
    contract in the relevant `AGENTS.md` or `DESIGN.md` is being violated.
+7. Do not introduce backwards-compatibility shims for old trace formats,
+   message tags, or APIs. Retrace breaks format/API freely; if a recording
+   no longer matches the current code, the recording is regenerated, not
+   the code. Compatibility code that already exists in legacy files is
+   tolerated only because it has not been deleted yet, not because new
+   compatibility code is welcome.
+8. Prioritize simplicity above all else. When two correct designs exist,
+   pick the smaller one. Do not add abstractions, indirection, or
+   "extensibility hooks" without a current, concrete consumer that needs
+   them. Deleting code is preferred over generalizing it.
 
 ## Repo Map
 
