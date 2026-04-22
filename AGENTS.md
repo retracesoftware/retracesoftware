@@ -83,7 +83,9 @@ hard constraints, not as an encyclopedia.
   `tape.py` (top-level recording I/O implementation, distinct from
   `proxy/tape.py` which only holds the `Tape` / `TapeReader` / `TapeWriter`
   Protocol types), `autoenable.py` + `retracesoftware_autoenable.pth`
-  (`RETRACE=1` auto-activation), `cursor.py`, `control_runtime.py`,
+  (auto-activation when `RETRACE_RECORDING` or `RETRACE_CONFIG` is set
+  in the environment — bare `RETRACE=1` does nothing today, despite some
+  stale `__main__.py install` help text), `cursor.py`, `control_runtime.py`,
   `search.py`, `exceptions.py`, `run.py`, and the `functional/`, `utils/`,
   `testing/` (incl. `memorytape.py`), and `threadid/` packages. Treat
   these as shared infrastructure used by `install`, `proxy`, `protocol`,
@@ -105,9 +107,18 @@ hard constraints, not as an encyclopedia.
 - If replay or debugger control-plane I/O is accidentally retraced, the tool
   can interfere with its own replay.
 - Replay validates Retrace checksums and exact Python version before running.
-- Replay temporarily disables GC to avoid nondeterministic collections changing
-  weakref/finalizer timing.
-- Thread replay uses stable hierarchical thread ids rather than live OS thread ids.
+  (`__main__.py` -> `tape.checksums()`; bypassed only with the
+  `RETRACE_SKIP_CHECKSUMS` debug escape hatch.)
+- Replay schedules `gc.collect()` deterministically at intercepted safe
+  points so GC timing is part of the recording rather than the live
+  runtime's whim. The CLI flag is `--gc_collect_multiplier` and the
+  hook is `system.wrap_async(gc.collect)` in `proxy/io.py`. There is no
+  process-wide `gc.disable()`; the only short-lived `PyGC_Disable` lives
+  inside the C++ persister fallback (`cpp/stream/persister.cpp`) around
+  one serialize call.
+- Thread replay uses stable hierarchical thread-id tuples (built by
+  `src/retracesoftware/threadid/ThreadId`, instantiated in
+  `src/retracesoftware/__main__.py`) rather than live OS thread ids.
 
 ## High-Risk Invariants
 
