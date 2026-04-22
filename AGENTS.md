@@ -80,13 +80,14 @@ hard constraints, not as an encyclopedia.
 - `src/retracesoftware/modules/*.toml`
   Module interception config for stdlib and third-party libraries.
 - Top-level Python helpers in `src/retracesoftware/`:
-  `tape.py` (top-level tape, distinct from `proxy/tape.py`),
-  `replay_protocol.py`, `autoenable.py` + `retracesoftware_autoenable.pth`
-  (`RETRACE=1` auto-activation), `breakpoint.py`, `cursor.py`,
-  `control_runtime.py`, `search.py`, `exceptions.py`, and the
-  `functional/`, `utils/`, `testing/` (incl. `memorytape.py`), and `threadid/`
-  packages. Treat these as shared infrastructure used by `install`, `proxy`,
-  `protocol`, and `replay`; do not duplicate their helpers in those layers.
+  `tape.py` (top-level recording I/O implementation, distinct from
+  `proxy/tape.py` which only holds the `Tape` / `TapeReader` / `TapeWriter`
+  Protocol types), `autoenable.py` + `retracesoftware_autoenable.pth`
+  (`RETRACE=1` auto-activation), `cursor.py`, `control_runtime.py`,
+  `search.py`, `exceptions.py`, `run.py`, and the `functional/`, `utils/`,
+  `testing/` (incl. `memorytape.py`), and `threadid/` packages. Treat
+  these as shared infrastructure used by `install`, `proxy`, `protocol`,
+  and `replay`; do not duplicate their helpers in those layers.
 - `tests/` and `dockertests/`
   Component tests, replay tests, and scenario/integration tests.
 

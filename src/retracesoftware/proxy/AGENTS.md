@@ -23,29 +23,23 @@ how divergence is detected. Small changes here can silently corrupt replay.
    `CALL`, `CALLBACK`, `RESULT`, `ERROR`, `CHECKPOINT`, bind open/close, or
    `THREAD_SWITCH` events. Replay alignment is a hard invariant, not a
    convention.
-5. **Prefer the narrowest fix in the responsible handler.** The current
-   live CLI runtime path is just `__main__.py` -> `proxy/tape.py` (Protocol
-   types) + `proxy/io.py` -> `proxy/system.py` (which uses
-   `proxy/proxytype.py` and `proxy/typeutils.py`, and `install/`). If a diff
-   touches more than one of `system.py`, `io.py`, `proxytype.py`, or
-   `typeutils.py` in a single change, stop and re-read `DESIGN.md` before
-   continuing. `contexts.py`, `_system_specs.py`, `_system_patching.py`,
-   `_system_adapters.py`, and `context.py` are NOT on the CLI runtime path
-   (see "Current vs Compatibility Paths"); editing them does not fix CLI
-   record/replay bugs.
+5. **Prefer the narrowest fix in the responsible handler.** The CLI
+   runtime path is `__main__.py` -> `proxy/tape.py` (Protocol types) +
+   `proxy/io.py` -> `proxy/system.py` (which uses `proxy/proxytype.py`,
+   `proxy/typeutils.py`, and `install/`). If a single diff touches more
+   than one of `system.py`, `io.py`, `proxytype.py`, or `typeutils.py`,
+   stop and re-read `DESIGN.md` before continuing. The `contexts.py` /
+   `context.py` / `_system_specs.py` / `_system_patching.py` /
+   `_system_adapters.py` cluster is **test/`mode/`-only** and is not on
+   the CLI runtime path; editing it does not fix CLI record/replay bugs.
 6. **Do not add backwards-compatibility shims** for old trace formats,
-   message tags, or APIs. If a recording no longer matches the current
-   code, the recording is regenerated, not the code. Existing legacy
-   modules (`record.py`, `replay.py`, `proxysystem.py`, `messagestream.py`,
-   `gateway.py`, `record_system.py`, `serializer.py`, `globalref.py`,
-   `thread.py`, `_system_context.py`, `proxy/protocol.py`,
-   `proxy/startthread.py`) exist only because they have not been deleted
-   yet. Do not extend them, do not "modernize" them, and do not pattern
-   new code after them.
+   message tags, or removed APIs. If a recording no longer matches the
+   current code, regenerate the recording. Do not pattern new code after
+   anything you find under `proxy/` that is not listed in this file.
 7. **Prioritize simplicity above all else.** When two correct designs
    exist, pick the smaller one. Do not add abstractions, indirection, or
    "extensibility hooks" without a concrete consumer that needs them.
-   Deleting code is preferred over generalizing it. The proxy kernel is
+   Deletion is preferred over generalization. The proxy kernel is
    already large enough.
 
 ## Read Order
@@ -55,9 +49,11 @@ Before editing proxy-layer code, read these in order:
 1. `src/retracesoftware/proxy/AGENTS.md`
 2. `src/retracesoftware/proxy/DESIGN.md`
 3. The current CLI runtime path for the behavior in question. Verified by
-   import graph (`__main__.py` only imports `proxy.tape` + `proxy.io`;
-   `proxy/io.py` only imports from `proxy.system`; `proxy/system.py` only
-   imports `proxy.proxytype`, `proxy.typeutils`, and `install/`):
+   import graph (`__main__.py` imports `proxy.tape` + `proxy.io` and the
+   recording-I/O implementation from top-level `tape.py`; `proxy/io.py`
+   only imports from `proxy.system` within the proxy package;
+   `proxy/system.py` only imports `proxy.proxytype`, `proxy.typeutils`,
+   and `install/`):
    - `src/retracesoftware/__main__.py`
    - `src/retracesoftware/tape.py` (top-level, recording I/O implementation)
    - `src/retracesoftware/proxy/tape.py` (`Tape` / `TapeReader` /
@@ -66,13 +62,12 @@ Before editing proxy-layer code, read these in order:
    - `src/retracesoftware/proxy/system.py`
    - `src/retracesoftware/proxy/proxytype.py`
    - `src/retracesoftware/proxy/typeutils.py`
-   - `src/retracesoftware/install/` (patcher, edgecases)
+   - `src/retracesoftware/install/` (`patcher.py`, `edgecases.py`)
 
-   Do **not** trace through `contexts.py`, `_system_specs.py`,
-   `_system_patching.py`, `_system_adapters.py`, `_system_threading.py`,
-   `_binding_checkpoint.py`, `context.py`, `_system_context.py`, or
-   `proxy/mode/` for CLI runtime debugging — they are not on this path
-   (see "Current vs Compatibility Paths" and "Where Bugs Usually Are NOT").
+   The `contexts.py` / `context.py` / `_system_specs.py` /
+   `_system_patching.py` / `_system_adapters.py` cluster is on the
+   test/`mode/` path, not the CLI path — do not trace through it when
+   debugging a CLI bug.
 
 Treat `DESIGN.md` as the behavior contract for the proxy kernel. When
 debugging, first explain what the code is supposed to do according to
@@ -81,33 +76,36 @@ Do not start by "trying a fix" in `system.py`.
 
 ## Current Core Files
 
-Categorization below comes from the actual import graph as of this audit.
-If in doubt, re-grep `from retracesoftware.proxy` and the relative `from .`
-imports inside `proxy/` before trusting this list.
+Verified against the actual import graph. Only files listed here are
+considered live for AI guidance purposes; if a file under `proxy/` is not
+listed in this section or in "Test-only / `proxy/mode/`-only" below, do
+not pattern new code after it and do not assume it influences runtime
+behavior.
 
 ### Live CLI runtime kernel (record + replay both go through these)
 
 - `system.py`
-  Current gate-based kernel (`System` class, `_external` / `_internal` gates,
+  Gate-based kernel (`System` class, `_external` / `_internal` gates,
   `_ext_handler`, `_int_handler`, `_override_handler`, `ext_executor`,
   `int_executor`, `patch_type`, `patch_function`, `disable_for`, `run`,
   `location`, `wrap_start_new_thread`, `adapter`). Imported by
-  `proxy/io.py`, by tests, and by `install/`. This is the proxy kernel.
+  `proxy/io.py`, by tests, and by `install/`.
 - `io.py`
-  `recorder()` / `replayer()` builders used by `src/retracesoftware/__main__.py`.
-  Hosts `_RawTapeSource`, `_ReplayBindingState`, `_ThreadDemuxSource`,
-  `_IoMessageSource`, `on_materialized_result`, `on_materialized_error`,
-  and the `system.replay_materialize` registry initialization. Imports
-  only from `proxy/system.py` within the proxy package.
+  `recorder()` / `replayer()` builders used by
+  `src/retracesoftware/__main__.py`. Hosts `_RawTapeSource`,
+  `_ReplayBindingState`, `_ThreadDemuxSource`, `_IoMessageSource`,
+  `on_materialized_result`, `on_materialized_error`, and the
+  `system.replay_materialize` registry initialization. Within the proxy
+  package it only imports from `proxy/system.py`.
 - `tape.py` (proxy)
   ≈40 lines. Defines the `Tape`, `TapeReader`, `TapeWriter` `Protocol`
-  classes only. The actual recording I/O lives in top-level
+  classes only. The recording I/O implementation lives in top-level
   `src/retracesoftware/tape.py`, which imports `TapeWriter` from here.
 - `proxytype.py`
-  Live dependency of `system.py`. Defines `dynamic_proxytype`,
-  `dynamic_int_proxytype`, `DynamicProxy`, `method_names`, `superdict`.
-  On the runtime path, but rarely the right place to fix a record/replay
-  bug — see "Where Bugs Usually Are NOT".
+  Defines `dynamic_proxytype`, `dynamic_int_proxytype`, `DynamicProxy`,
+  `method_names`, `superdict`. Live dependency of `system.py`. On the
+  runtime path, but rarely the right place to fix a record/replay bug —
+  see "Where Bugs Usually Are NOT".
 - `typeutils.py`
   `WithoutFlags`, `modify`. Used by `system.py` and by
   `install/patcher.py`.
@@ -119,125 +117,65 @@ imports inside `proxy/` before trusting this list.
 
 These files are imported by tests under `tests/proxy/` and `tests/install/`,
 and by the experimental `proxy/mode/` package, but **not** by `proxy/io.py`,
-`proxy/system.py`, or `__main__.py`. Editing them does not change CLI
-record/replay behavior.
+`proxy/system.py`, or `__main__.py`. Editing them changes test/`mode/`
+behavior, not CLI record/replay.
 
 - `contexts.py`
   `record_context()` / `replay_context()` factories. Used by
   `tests/proxy/test_patch.py`, `test_system_unpatch.py`,
   `test_system_direct_context.py`, `test_system_adapter.py`,
   `tests/install/...`, and by `proxy/mode/record.py` + `proxy/mode/replay.py`.
-  The previous claim that `io.recorder()` / `io.replayer()` use this
-  "indirectly" is **wrong** — `io.py` does not import `contexts.py`.
 - `context.py`
-  `Context`, `LifecycleHooks`, `CallHooks`. Used by `proxy/mode/base.py`
-  and by the skipped `tests/proxy/test_system_context.py`. Distinct from
-  `contexts.py` (plural).
+  `Context`, `LifecycleHooks`, `CallHooks`. Used by `proxy/mode/base.py`.
+  Distinct from `contexts.py` (plural).
 - `_system_specs.py`
-  `create_context`, `create_int_spec`, `create_ext_spec`. Imported only by
-  `contexts.py`, `context.py`, and the skipped test. Not consumed by
-  `system.py`.
+  `create_context`, `create_int_spec`, `create_ext_spec`. Imported by
+  `contexts.py` and `context.py`.
 - `_system_patching.py`
-  Defines `Patched`. Imported only by `_system_specs.py`. **Not** used by
-  `System.patch_type()` (which goes through `install.patcher` and
-  `install.edgecases.patchtype`).
+  Defines `Patched`. Imported by `_system_specs.py`. (CLI `System.patch_type()`
+  uses `install.patcher.install_hash_patching` and
+  `install.edgecases.patchtype` instead.)
 - `_system_adapters.py`
-  `_run_with_replay`, `adapter`, `maybe_proxy`. Imported by tests
-  (`test_system_adapter.py`, `test_replay_materialize.py`), by
-  `_system_specs.py`, and by `context.py`. Reach `replay_materialize`
-  through this module in tests; the live CLI replay-materialize path goes
-  through `io.py` + `system.py`.
+  `_run_with_replay`, `adapter`, `maybe_proxy`. Imported by
+  `tests/proxy/test_system_adapter.py`,
+  `tests/proxy/test_replay_materialize.py`, by `_system_specs.py`, and by
+  `context.py`.
 
-### Experimental / not wired
+### In-progress (not wired into the CLI runtime today)
 
 - `mode/` (`__init__.py`, `base.py`, `record.py`, `replay.py`)
   Defines `Mode`, `RecordMode`, `ReplayMode` wrapping
-  `record_context()` / `replay_context()`. **Nothing in the live runtime
-  imports `proxy.mode`.** Treat as in-progress refactor scaffolding.
+  `record_context()` / `replay_context()`. Intentional WIP — nothing in
+  the live runtime imports `proxy.mode` yet. Treat as scaffolding for a
+  future refactor; do not assume it is on the CLI path.
 
-### Dead code (zero importers anywhere — do not extend, prefer deletion)
+## Current Path
 
-- `_system_threading.py`
-  Defines `wrap_start_new_thread` helper. **Not imported by any file.**
-  `system.py` defines its own `wrap_start_new_thread` method directly.
-- `_binding_checkpoint.py`
-  Defines `binding_name`, `checkpoint_bind`. **Not imported by any file.**
-- `proxyfactory.py`
-  **Not imported by any file.** Previously labeled "live but rarely the
-  right fix site"; that was wrong.
-- `_system_context.py`
-  `_GateContext`, `Handler`. Only used by the skipped
-  `tests/proxy/test_system_context.py` and by `context.py` (which is
-  itself test/mode-only).
-- `protocol.py` (proxy)
-  **Not imported anywhere.** Distinct from `src/retracesoftware/protocol/`,
-  which is the live protocol package.
-- `startthread.py` (proxy)
-  **Not imported anywhere.** Distinct from `install/startthread.py`.
-
-### Legacy stack (mutually self-importing; not on CLI runtime, not on tests)
-
-- `proxysystem.py`, `record.py`, `replay.py`, `serializer.py`,
-  `globalref.py`, `thread.py`, `messagestream.py`
-  Old proxy stack. Only imported by each other. Do not pattern new code
-  after them; do not extend them. Deletion is acceptable when no one
-  needs the diff to stay clean.
-
-### DAP-related (degraded — DAP currently no-ops these gracefully)
-
-- `gateway.py`
-  Defines `Gates`, `adapter_pair`. Imported by `proxysystem.py`,
-  `record_system.py`, and lazily inside `dap/replay/gate.py._try_import_gates()`.
-  Its top-level import `from retracesoftware.proxy.system import _run_with_replay, adapter, Patched`
-  is **broken** today (`_run_with_replay` and `Patched` no longer exist in
-  `system.py`), so DAP's lazy import silently falls through to no-op gates.
-  Do not rely on this file for working DAP gate discipline.
-- `record_system.py`
-  Older `RecordSystem`. Imported only by `dap/replay/gate.py` (lazily,
-  same fall-through as `gateway.py`).
-
-## Current vs Compatibility Paths
-
-- **Current CLI runtime path (record + replay both):**
+- **CLI runtime (record + replay both):**
   `src/retracesoftware/__main__.py` imports `recorder`, `replayer` from
   `proxy.io` and the `TapeReader` Protocol from `proxy.tape`. It also
   imports the recording-I/O implementation (`create_tape_writer`,
   `open_tape_reader`, `RawTapeWriter`) from top-level
   `src/retracesoftware/tape.py`. `io.recorder()` / `io.replayer()` build a
-  `System` from `proxy/system.py`, which uses `proxy/proxytype.py` and
-  `proxy/typeutils.py`, plus `install/patcher.py` and
-  `install/edgecases.py`. **That is the entire CLI proxy path.**
-  `proxy/mode/`, `contexts.py`, `_system_specs.py`, `_system_patching.py`,
-  `_system_adapters.py`, `_system_threading.py`, `_binding_checkpoint.py`,
-  `context.py`, and `_system_context.py` are **not** on this path.
-- **Test-only / `proxy/mode/`-only context surface:**
+  `System` from `proxy/system.py`, which uses `proxy/proxytype.py`,
+  `proxy/typeutils.py`, `install/patcher.py`, and `install/edgecases.py`.
+  **That is the entire CLI proxy path.**
+- **Test / `proxy/mode/` surface:**
   The `contexts.py` / `context.py` / `_system_specs.py` /
   `_system_patching.py` / `_system_adapters.py` cluster drives most of
-  `tests/proxy/` and the experimental `proxy/mode/` package. Editing it
-  changes test behavior and `mode/` semantics; it does not change CLI
-  record/replay behavior.
-- **Legacy stack (not on CLI, not on current tests):**
-  `record.py`, `replay.py`, `proxysystem.py`, `serializer.py`,
-  `globalref.py`, `thread.py`, `messagestream.py`. They only import each
-  other. Do not pattern new code after them.
-- **DAP gates are currently degraded.**
-  `dap/replay/gate.py` lazily tries to import `proxy.gateway` /
-  `proxy.record_system` and looks up `system.gates`. `gateway.py`'s
-  top-level import from `proxy.system` is broken today (`_run_with_replay`
-  and `Patched` no longer exist there) and `system.py` does not expose a
-  `gates` attribute, so the DAP lazy import either ImportErrors and is
-  swallowed or finds no `gates` and falls through to no-op. Do not assume
-  DAP gate discipline is enforced via this file in the current state.
-- `retracesoftware.protocol.replay` (the top-level package, not
-  `proxy/protocol.py`) is still important for compatibility, monitoring,
-  and some in-memory / test readers, but it is not the first file to
-  trust for the live CLI/runtime call flow.
-- `tests/proxy/test_system_context.py` is `pytest.mark.skip`ped and is
-  not a source of truth for current behavior. The active tests under
-  `tests/proxy/` are: `test_patch.py`, `test_monitoring.py`,
-  `test_system_io_tape.py`, `test_system_direct_context.py`,
-  `test_system_unpatch.py`, `test_system_adapter.py`,
-  `test_replay_materialize.py`, `test_io_memory_tape.py`.
+  `tests/proxy/` and the in-progress `proxy/mode/` package. Editing it
+  changes test and `mode/` behavior; it does not change CLI record/replay
+  behavior.
+- `retracesoftware.protocol.replay` (the top-level `protocol/` package,
+  not `proxy/`) handles in-memory / test readers and monitoring. Inspect
+  it whenever a task touches monitoring or in-memory replay readers in
+  addition to `io.py`.
+- The active tests under `tests/proxy/` are: `test_patch.py`,
+  `test_monitoring.py`, `test_system_io_tape.py`,
+  `test_system_direct_context.py`, `test_system_unpatch.py`,
+  `test_system_adapter.py`, `test_replay_materialize.py`,
+  `test_io_memory_tape.py`. (`test_system_context.py` is
+  `pytest.mark.skip`ped — not a source of truth.)
 
 ## Mental Model
 
@@ -264,16 +202,14 @@ When a proxy-layer bug is reported, work in this order:
 2. Identify the first observed mismatch:
    wrong gate, wrong phase, wrong message consumed, missing bind, unexpected
    passthrough, or materialization in the wrong context.
-3. Trace the current CLI runtime path before changing code:
+3. Trace the CLI runtime path before changing code:
    `__main__.py` -> `proxy/tape.py` (Protocol types) +
    top-level `src/retracesoftware/tape.py` (recording I/O) +
    `proxy/io.py` -> `proxy/system.py` (with `proxytype.py`, `typeutils.py`,
-   and `install/`). Do **not** route the trace through `contexts.py`,
-   `_system_specs.py`, `_system_patching.py`, `_system_adapters.py`,
-   `_system_threading.py`, `_binding_checkpoint.py`, `context.py`,
-   `_system_context.py`, or `proxy/mode/`. None of those files are on the
-   live CLI path; following them while debugging a CLI bug wastes time and
-   frequently leads to fixes in the wrong layer.
+   and `install/`). The test/`mode/` cluster (`contexts.py`, `context.py`,
+   `_system_specs.py`, `_system_patching.py`, `_system_adapters.py`) is
+   not on this path — following it while debugging a CLI bug leads to
+   fixes in the wrong layer.
 4. Prefer the narrowest fix in the responsible layer. Do not rewrite proxy
    kernel logic when the issue actually belongs in module patching, install
    config, or message plumbing.
@@ -424,25 +360,14 @@ right place to fix a record/replay or boundary bug:
   `system.py` or `io.py` would have been correct. If a fix lands here,
   justify why type construction itself is wrong rather than the per-call
   wrapping or message flow.
-- `proxyfactory.py`, `_system_threading.py`, `_binding_checkpoint.py`,
-  `proxy/protocol.py`, `proxy/startthread.py`
-  **Dead** — zero importers anywhere in the codebase. Editing these
-  cannot fix a runtime bug because they do not run. Prefer deleting over
-  "improving" them.
 - `contexts.py`, `context.py`, `_system_specs.py`, `_system_patching.py`,
-  `_system_adapters.py`, `_system_context.py`
+  `_system_adapters.py`
   **Test-only / `proxy/mode/`-only.** Not on the CLI runtime path. They
-  drive `tests/proxy/` behavior; editing them changes test/mode
-  semantics, not CLI record/replay. Confirm whether the bug is reported
+  drive `tests/proxy/` behavior and `proxy/mode/` semantics; editing them
+  does not change CLI record/replay. Confirm whether the bug is reported
   against the CLI or against tests/`mode/` before editing.
-- `record.py`, `replay.py`, `gateway.py`, `proxysystem.py`,
-  `record_system.py`, `messagestream.py`, `serializer.py`, `globalref.py`,
-  `thread.py`
-  Legacy stack. Only import each other (or are imported lazily by DAP and
-  swallowed on ImportError). Not the live CLI/runtime path. See "Current
-  vs Compatibility Paths" above.
 - `tests/proxy/test_system_context.py`
-  Marked stale/skipped. Not a source of truth for current behavior.
+  Marked `pytest.mark.skip`. Not a source of truth for current behavior.
 
 When in doubt, fix the smallest layer that owns the contract being violated:
 module config (`src/retracesoftware/modules/*.toml`) -> install patcher ->
@@ -460,9 +385,10 @@ when the inner layer cannot express the fix.
   `src/retracesoftware/proxy/io.py`, `src/retracesoftware/proxy/system.py`,
   `src/retracesoftware/proxy/proxytype.py`,
   `src/retracesoftware/proxy/typeutils.py`, and
-  `src/retracesoftware/install/`. Do not assume `contexts.py`,
-  `_system_specs.py`, `_system_patching.py`, `_system_adapters.py`, or
-  `proxy/mode/` are on the CLI runtime path.
+  `src/retracesoftware/install/`. The test/`mode/` cluster
+  (`contexts.py`, `context.py`, `_system_specs.py`,
+  `_system_patching.py`, `_system_adapters.py`) is not on the CLI
+  runtime path.
 - If a fix can live in `src/retracesoftware/modules/*.toml` or the install
   layer, prefer that over rewriting boundary logic.
 - If you change `system.py`, `io.py`, `proxytype.py`, `typeutils.py`, or
@@ -470,11 +396,11 @@ when the inner layer cannot express the fix.
   how the change preserves gate selection, binding semantics, and message
   alignment.
 - If a change is being proposed in `contexts.py`, `context.py`,
-  `_system_specs.py`, `_system_patching.py`, `_system_adapters.py`,
-  `_system_context.py`, or `proxy/mode/`, first confirm the bug actually
-  belongs to the test or `mode/` surface — not the CLI. If it is a CLI
-  bug, the fix almost certainly belongs in `system.py`, `io.py`,
-  `install/`, or `modules/*.toml` instead.
+  `_system_specs.py`, `_system_patching.py`, `_system_adapters.py`, or
+  `proxy/mode/`, first confirm the bug actually belongs to the test or
+  `mode/` surface — not the CLI. If it is a CLI bug, the fix almost
+  certainly belongs in `system.py`, `io.py`, `install/`, or
+  `modules/*.toml` instead.
 - If you change replay message parsing, binding close consumption, thread
   demux, or materialization flow, check `tests/proxy/test_system_io_tape.py`,
   `tests/proxy/test_replay_materialize.py`, and the relevant install-level
@@ -493,8 +419,7 @@ when the inner layer cannot express the fix.
   tags, or removed APIs. Regenerate recordings instead.
 - Prefer simpler over cleverer. Do not introduce new abstractions,
   factories, or "extensibility hooks" without a current, concrete
-  consumer that needs them. Deleting code from the dead/legacy lists in
-  this file is preferred over generalizing it.
+  consumer that needs them. Deletion is preferred over generalization.
 - Add or update focused tests in the narrowest responsible layer.
 - When debugging a replay failure, find the first divergence or misalignment
   instead of patching later symptoms.
@@ -524,36 +449,11 @@ Test-only / `proxy/mode/`-only (not on CLI runtime path):
 - `src/retracesoftware/proxy/_system_patching.py`
 - `src/retracesoftware/proxy/_system_adapters.py`
 
-Experimental / not wired:
+In-progress (not wired into the CLI runtime today):
 
 - `src/retracesoftware/proxy/mode/`
 
-Dead (zero importers anywhere — prefer deletion over extension):
-
-- `src/retracesoftware/proxy/proxyfactory.py`
-- `src/retracesoftware/proxy/_system_threading.py`
-- `src/retracesoftware/proxy/_binding_checkpoint.py`
-- `src/retracesoftware/proxy/_system_context.py`
-- `src/retracesoftware/proxy/protocol.py`
-- `src/retracesoftware/proxy/startthread.py`
-
-Legacy stack (mutually self-importing; not on CLI, not on current tests):
-
-- `src/retracesoftware/proxy/proxysystem.py`
-- `src/retracesoftware/proxy/record.py`
-- `src/retracesoftware/proxy/replay.py`
-- `src/retracesoftware/proxy/serializer.py`
-- `src/retracesoftware/proxy/globalref.py`
-- `src/retracesoftware/proxy/thread.py`
-- `src/retracesoftware/proxy/messagestream.py`
-
-DAP-related (currently degraded — DAP lazy-imports and silently no-ops):
-
-- `src/retracesoftware/proxy/gateway.py`
-- `src/retracesoftware/proxy/record_system.py`
-- `src/retracesoftware/dap/replay/gate.py`
-
-Top-level protocol package (distinct from `proxy/protocol.py`):
+Top-level protocol package (live, distinct from anything under `proxy/`):
 
 - `src/retracesoftware/protocol/replay.py`
 
