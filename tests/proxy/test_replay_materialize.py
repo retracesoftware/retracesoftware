@@ -122,7 +122,17 @@ def test_run_with_replay_propagates_recorded_error_without_calling_live_function
     assert called is False
 
 
-def test_install_and_run_allocate_lock_minimal_replay_materialize_regression():
+def test_recorder_async_new_patched_rejects_unpatched_types():
+    tape = IOMemoryTape()
+    system = recorder(writer=tape.writer().write, debug=False, stacktraces=False)
+    try:
+        with pytest.raises(AssertionError, match="async_new_patched expected a patched type"):
+            system.async_new_patched(object())
+    finally:
+        system.unpatch_types()
+
+
+def test_replay_materialize_disabled_call_does_not_consume_next_recorded_result():
     tape = IOMemoryTape()
 
     options = Namespace(
@@ -135,16 +145,28 @@ def test_install_and_run_allocate_lock_minimal_replay_materialize_regression():
     def configure(system):
         system.immutable_types.update({int, float, str, bytes, bool, type, type(None)})
 
-    def allocate_and_acquire():
+    def allocate_and_acquire(system):
+        skipped_allocate = system.disable_for(_thread.allocate_lock)
+
+        skipped_lock = skipped_allocate()
+        skipped_acquired = skipped_lock.acquire(False)
+        if skipped_acquired:
+            skipped_lock.release()
+
         lock = _thread.allocate_lock()
         acquired = lock.acquire(False)
         if acquired:
             lock.release()
-        return acquired
+        return skipped_acquired, acquired
 
     record_system = recorder(writer=tape.writer().write, debug=False, stacktraces=False)
     configure(record_system)
-    assert install_and_run(system=record_system, options=options, function=allocate_and_acquire) is True
+    assert install_and_run(
+        system=record_system,
+        options=options,
+        function=allocate_and_acquire,
+        args=(record_system,),
+    ) == (True, True)
 
     replay_reader = tape.reader()
     replay_system = replayer(
@@ -155,4 +177,9 @@ def test_install_and_run_allocate_lock_minimal_replay_materialize_regression():
     )
     configure(replay_system)
 
-    assert install_and_run(system=replay_system, options=options, function=allocate_and_acquire) is True
+    assert install_and_run(
+        system=replay_system,
+        options=options,
+        function=allocate_and_acquire,
+        args=(replay_system,),
+    ) == (True, True)

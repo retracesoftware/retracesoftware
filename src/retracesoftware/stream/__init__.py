@@ -9,6 +9,7 @@ import importlib
 import json
 import os
 import pickle
+import resource
 import threading
 import time
 import weakref
@@ -975,7 +976,6 @@ class writer(_backend_mod.ObjectWriter):
             # producer thread during backpressure.
             if getattr(queue, "inflight_bytes", 0) > 0:
                 return
-            import resource
             payload = {
                 'ts': time.time(),
                 'inflight': queue.inflight_bytes,

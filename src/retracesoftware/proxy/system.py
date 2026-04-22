@@ -823,7 +823,9 @@ class System:
         #     self._external.is_set, self.bind,
         #     utils.noop)
 
-        self.ext_proxytype_from_spec = self.wrap_async(_ext_proxytype_from_spec)
+        self.ext_proxytype_from_spec = self._wrapped_function(self._internal, _ext_proxytype_from_spec)
+
+        # self.ext_proxytype_from_spec = self.wrap_async(_ext_proxytype_from_spec)
         
         self.bind(self)
 
@@ -862,7 +864,9 @@ class System:
         self.descriptor_proxytype = functional.memoize_one_arg(self.descriptor_proxytype)
         self._memoized_ext_proxytype = functional.memoize_one_arg(self.ext_proxytype)
         self.ext_proxy = proxy(self._memoized_ext_proxytype)
-        self.ext_result_proxytype = self._wrapped_function(self._internal, self._memoized_ext_proxytype)
+        # self.ext_result_proxytype = self._wrapped_function(self._internal, self._memoized_ext_proxytype)
+        self.ext_result_proxytype = self._memoized_ext_proxytype
+
         self.ext_result_proxy = proxy(self.ext_result_proxytype)
 
         self.counter = ThreadSafeCounter(initial = 0)

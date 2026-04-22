@@ -254,23 +254,11 @@ def patch(module, spec, installation, update_refs = None, pathpredicate = None):
             for name in config:
                 if name not in namespace:
                     continue
-                # Register the callable identity replay will actually compare
-                # against after this patch pass finishes. When a name is both
-                # proxied and replay-materialized (for example
-                # ``_thread.allocate_lock``), the live module slot now points at
-                # the patched BoundGate wrapper, not the original builtin.
-                #
-                # Replay later checks ``target in system.replay_materialize``
-                # using the invoked callable object. If we register only the
-                # pre-patch/original callable here, replay misses the
-                # materialization rule, treats the call like an ordinary proxy
-                # result, and can consume subsequent binding markers out of
-                # alignment.
-                #
-                # Prefer the current namespace value so overlap with prior
-                # ``proxy``/``wrap`` transforms in the same spec tracks the
-                # wrapper identity replay will see. Fall back to the original
-                # callable only when the current slot is no longer callable.
+                # Track the post-patch callable identity for names marked
+                # replay-materialize. When a callable is both proxied and in
+                # replay_materialize (for example ``_thread.allocate_lock``),
+                # the live module slot points at the patched wrapper, not the
+                # original builtin, so record the current callable object.
                 value = namespace[name]
                 if not callable(value):
                     value = originals.get(name, value)

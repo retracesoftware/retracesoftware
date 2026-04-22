@@ -556,7 +556,16 @@ def recorder(*,
 
     @utils.exclude_from_stacktrace
     def async_new_patched(obj):
-        system.primary_hooks.on_call(create_stub_object, type(obj))
+        cls = type(obj)
+        assert cls in system.patched_types, (
+            "async_new_patched expected a patched type, got "
+            f"{cls.__module__}.{cls.__qualname__}"
+        )
+        assert binder.lookup(cls) is not None, (
+            "async_new_patched expected the patched type to be bound, got "
+            f"{cls.__module__}.{cls.__qualname__}"
+        )
+        system.primary_hooks.on_call(create_stub_object, cls)
         system.bind(obj)
         system.secondary_hooks.on_result(obj)
 
@@ -813,12 +822,6 @@ def replayer(*, next_object,
 
     @utils.exclude_from_stacktrace
     def ext_execute(fn, *args, **kwargs):
-        target = utils.try_unwrap(fn)
-
-        if target in system.replay_materialize:
-            materializing.set(True)
-            return fn(*args, **kwargs)
-
         return next_result_message()
 
     system.ext_execute = ext_execute
