@@ -11,10 +11,39 @@ workspace generation, and DAP workflows.
 Keep this file brief and factual. Use it as a table of contents and a list of
 hard constraints, not as an encyclopedia.
 
+## Hard Rules (Non-Negotiable)
+
+1. Before editing any subdirectory listed in Repo Map, read its local
+   `AGENTS.md`. Each listed subdirectory has one. If that directory also
+   contains a `DESIGN.md` (or any `*_DESIGN.md` / `docs/DESIGN*.md` next to
+   it), read it too and treat it as the component's behavior contract, not
+   background reading. The proxy layer
+   (`src/retracesoftware/proxy/AGENTS.md` + `src/retracesoftware/proxy/DESIGN.md`)
+   is the current canonical example, and most other major components are
+   expected to grow a `DESIGN.md` over time — always check.
+2. Replay never calls live external code. If a fix makes replay touch the real
+   filesystem, network, clock, RNG, threading primitives, or any other
+   nondeterministic OS/library surface, the fix is wrong.
+3. Replay/debugger control-plane I/O must bypass retrace gates. Do not route
+   it through the same path as recorded application I/O.
+4. `tape.py` exists in two places with different responsibilities:
+   `src/retracesoftware/tape.py` (top-level) and
+   `src/retracesoftware/proxy/tape.py` (proxy kernel). Confirm which one a
+   symbol comes from before editing or referencing it.
+5. Prefer fixes in the narrowest responsible layer. Do not modify `install`,
+   `proxy`, and `stream` together unless the change genuinely requires all
+   three. Cross-layer diffs need an explicit justification.
+6. Do not delete or rewrite a high-level abstraction (e.g. proxy types,
+   factories, gates) to fix a localized bug without first explaining what
+   contract in the relevant `AGENTS.md` or `DESIGN.md` is being violated.
+
 ## Repo Map
 
 - `src/retracesoftware/__main__.py`, `run.py`, `replay/`
   CLI orchestration, recording setup, replay startup, replay binary discovery.
+  `__main__.py` exposes the `install`/`uninstall` subcommands and the
+  record/replay invocation. `pyproject.toml` also installs a `replay` console
+  script that points at `retracesoftware.replay:_exec_replay`.
 - `src/retracesoftware/install/`
   Runtime patching, import hooks, weakref/thread setup, monitoring, pytest integration.
 - `src/retracesoftware/proxy/`
@@ -25,12 +54,23 @@ hard constraints, not as an encyclopedia.
   Semantic replay protocol layered above stream transport.
 - `src/retracesoftware/stream/` and `cpp/stream/`
   Trace writing/reading, binding transport, queue transport, thread/process framing.
-- `cpp/utils/` and `cpp/cursor/`
-  CPython internals, gates, demux, cursor/call-count machinery.
-- `src/retracesoftware/dap/` and `go/replay/`
-  Replay debugger, DAP control plane, extraction/index tooling.
+- `cpp/utils/`, `cpp/cursor/`, `cpp/common/`, `cpp/functional/`
+  CPython internals, gates, demux, cursor/call-count machinery, shared C++
+  helpers, and pure-functional helpers used by the native extensions.
+- `src/retracesoftware/dap/` and `go/replay/`, `go/cmd/replay/`
+  Replay debugger, DAP control plane, extraction/index tooling. The Go binary
+  built from `go/cmd/replay/` is what `RETRACE_REPLAY_BIN` / `REPLAY_BIN`
+  point at.
 - `src/retracesoftware/modules/*.toml`
   Module interception config for stdlib and third-party libraries.
+- Top-level Python helpers in `src/retracesoftware/`:
+  `tape.py` (top-level tape, distinct from `proxy/tape.py`),
+  `replay_protocol.py`, `autoenable.py` + `retracesoftware_autoenable.pth`
+  (`RETRACE=1` auto-activation), `breakpoint.py`, `cursor.py`,
+  `control_runtime.py`, `search.py`, `exceptions.py`, and the
+  `functional/`, `utils/`, `testing/` (incl. `memorytape.py`), and `threadid/`
+  packages. Treat these as shared infrastructure used by `install`, `proxy`,
+  `protocol`, and `replay`; do not duplicate their helpers in those layers.
 - `tests/` and `dockertests/`
   Component tests, replay tests, and scenario/integration tests.
 
@@ -85,6 +125,10 @@ hard constraints, not as an encyclopedia.
   `cd dockertests && python run.py <test_name>`
 - Enable local auto-activation in the active venv:
   `python -m retracesoftware install`
+- Replay a recording via the installed console script:
+  `replay <recording.retrace>`
+  (equivalent to `python -m retracesoftware.replay`; uses the same Go replay
+  binary discovery as `python -m retracesoftware`).
 - Build local Go replay binary if auto-discovery does not work in the
   current checkout layout:
   `cd go && go build -o ../.retrace-replay-bin ./cmd/replay`
@@ -103,22 +147,30 @@ if needed.
 
 ## Working Rules
 
-- If you change `src/retracesoftware/modules/*.toml`, explain which
-  nondeterministic call path is being intercepted and add or update tests.
-- If you change replay control flow, threading, weakrefs, fork handling, or
-  cursor logic, explicitly call out the determinism impact.
-- If you touch `cpp/` or `src/retracesoftware/dap/`, also read the local
-  `AGENTS.md` in that directory if present.
+- Each subdirectory listed in Repo Map has its own `AGENTS.md`. Read the
+  relevant one before editing that area; do not assume this top-level file
+  contains everything you need.
+- Whenever a component directory contains a `DESIGN.md` (today: `proxy/`;
+  expected to grow to other components), read it before editing that
+  component and treat it as the behavior contract for that layer. The same
+  rule applies to any `DESIGN.md` placed under `docs/` for a specific
+  component.
 - If you touch `src/retracesoftware/proxy/`, read both
   `src/retracesoftware/proxy/AGENTS.md` and
   `src/retracesoftware/proxy/DESIGN.md` first. Treat `DESIGN.md` as the proxy
   behavior contract, not optional background reading.
-- If you touch `src/retracesoftware/stream/`, `src/retracesoftware/protocol/`,
-  or `tests/`, also read the local `AGENTS.md` there if present.
+- If you change `src/retracesoftware/modules/*.toml`, explain which
+  nondeterministic call path is being intercepted and add or update tests.
+- If you change replay control flow, threading, weakrefs, fork handling, or
+  cursor logic, explicitly call out the determinism impact.
+- If you touch `cpp/`, `src/retracesoftware/dap/`,
+  `src/retracesoftware/stream/`, `src/retracesoftware/protocol/`,
+  `src/retracesoftware/install/`, `src/retracesoftware/modules/`,
+  `tests/`, `dockertests/`, or `go/`, read the local `AGENTS.md` in that
+  directory before editing — and any `DESIGN.md` in that directory if one
+  exists.
 - If you touch `meson.build`, package install lists, or runtime entrypoints,
   run packaging smoke checks in addition to ordinary tests.
-- If you touch `dockertests/`, `go/`, or `src/retracesoftware/modules/`,
-  also read the local `AGENTS.md` there if present.
 - If a task depends on a test-directory-specific manual replay loop, inspect
   the target test directory and existing scripts before suggesting commands.
 - For changes touching replay-sensitive boundary logic, threading, weakrefs,
@@ -130,14 +182,38 @@ if needed.
   expectation is being violated before proposing a fix. If you cannot name the
   violated gate, phase, binding, or message-order invariant, inspect the
   design and call flow again before editing code.
+- For bugs in any other component that has a `DESIGN.md`, follow the same
+  pattern: name the specific contract in that component's `DESIGN.md` that is
+  being violated before editing code. If no such contract is named in the
+  design, prefer reading more of the design over guessing at a fix.
 
 ## References
+
+Architecture / behavior:
 
 - `docs/LAYERS.md`
 - `docs/THREAD_REPLAY.md`
 - `docs/STREAM.md`
 - `docs/cursors.md`
 - `docs/DEBUGGING.md`
-- `src/retracesoftware/proxy/DESIGN.md`
 - `MODULES_AUDIT.md`
 - `LIBRARIES_AUDIT.md`
+
+Per-component `DESIGN.md` (behavior contracts — always read before editing
+the matching component, and check for new ones when other components grow
+their own design docs):
+
+- `src/retracesoftware/proxy/DESIGN.md`
+
+Per-directory AGENTS.md files (read before editing the matching area):
+
+- `cpp/AGENTS.md`
+- `go/AGENTS.md`
+- `tests/AGENTS.md`
+- `dockertests/AGENTS.md`
+- `src/retracesoftware/proxy/AGENTS.md`
+- `src/retracesoftware/dap/AGENTS.md`
+- `src/retracesoftware/install/AGENTS.md`
+- `src/retracesoftware/modules/AGENTS.md`
+- `src/retracesoftware/protocol/AGENTS.md`
+- `src/retracesoftware/stream/AGENTS.md`
