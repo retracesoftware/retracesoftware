@@ -103,7 +103,6 @@ If a diff touches any of these files:
 - `src/retracesoftware/proxy/_system_specs.py`
 - `src/retracesoftware/proxy/_system_patching.py`
 - `src/retracesoftware/proxy/_system_adapters.py`
-- `src/retracesoftware/proxy/_system_threading.py`
 - `src/retracesoftware/proxy/io.py`
 - `src/retracesoftware/proxy/contexts.py`
 - `src/retracesoftware/proxy/tape.py`

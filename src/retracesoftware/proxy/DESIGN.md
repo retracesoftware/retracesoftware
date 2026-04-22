@@ -1,7 +1,13 @@
 # Proxy Design
 
 This document describes the current gate-based proxy path implemented by
-`system.py`, `io.py`, `contexts.py`, and `_system_specs.py`.
+`system.py` and `io.py`. Those two files (plus `proxytype.py`,
+`typeutils.py`, the `Tape` Protocols in `proxy/tape.py`, and the
+top-level `tape.py` recording I/O) are the entire live CLI proxy
+runtime. The `contexts.py` / `context.py` / `_system_specs.py` /
+`_system_patching.py` / `_system_adapters.py` cluster wires the same
+`System` kernel for tests and the in-progress `proxy/mode/` package
+only — it is not on the CLI runtime path.
 
 Use this file as the proxy behavior contract. Before changing proxy-layer code,
 read `src/retracesoftware/proxy/AGENTS.md`, then this document, then compare
@@ -24,9 +30,8 @@ The proxy layer is the record/replay boundary.
   and replays those crossings while re-executing the Python code around them.
 
 `system.py` is the small kernel that decides how calls cross the boundary.
-`io.py` connects that kernel to an actual recording or replay stream.
-`contexts.py` and `_system_specs.py` build the current record/replay gate
-configurations used by the live runtime path.
+`io.py` builds the live record/replay `System` configurations and connects
+that kernel to an actual recording or replay stream.
 
 ## Main Pieces
 
@@ -58,8 +63,10 @@ expected contract before editing code:
    internal -> external call, external -> internal callback, disabled
    control-plane work, bind/materialization, or thread replay.
 2. Identify which phase and gate should be active at that point.
-3. Trace the current runtime path from `src/retracesoftware/__main__.py`
-   through `io.py`, `contexts.py`, `_system_specs.py`, and `system.py`.
+3. Trace the current CLI runtime path from `src/retracesoftware/__main__.py`
+   through `io.py` and `system.py` (with `proxytype.py`, `typeutils.py`,
+   and `install/`). Do not route the trace through `contexts.py` or
+   `_system_specs.py` — those drive tests and `proxy/mode/`, not the CLI.
 4. Find the first mismatch between the observed behavior and this design.
 5. Only then choose the narrowest responsible fix.
 

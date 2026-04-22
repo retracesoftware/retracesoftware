@@ -30,10 +30,10 @@ async materialization.
   ordering and visibility are part of the replay contract.
 - Replay-side materialization is stateful: `_pending_async_new_patched` is a
   queue, not a convenience cache.
-- The higher-level replay/control protocol exposed by `replay_protocol.py` and
-  `control_runtime.py` is also a contract: event ordering, `message_index`,
-  `breakpoint_hit`, stop reasons, and `set_backstop` semantics are externally
-  visible behavior.
+- The higher-level replay/control protocol exposed by `control_runtime.py`
+  is also a contract: event ordering, `message_index`, `breakpoint_hit`,
+  stop reasons, and `set_backstop` semantics are externally visible
+  behavior.
 
 ## Materialization Invariants
 
@@ -64,9 +64,8 @@ async materialization.
 
 - Keep stream concerns and protocol concerns separate; do not move binding rules
   into protocol code or semantic rules into stream code casually.
-- If you change protocol tags or their ordering, review the matching tests and
-  the higher-level callers in `proxy`, `replay_protocol.py`, and
-  `control_runtime.py`.
+- If you change protocol tags or their ordering, review the matching tests
+  and the higher-level callers in `proxy` and `control_runtime.py`.
 - If you change client-visible control events, reason explicitly about:
   event ordering, stop reasons, `message_index`, and whether tests such as
   `tests/test_stdio_replay.py` need updating in the same diff.
@@ -83,5 +82,4 @@ async materialization.
 - `src/retracesoftware/protocol/messages.py`
 - `src/retracesoftware/protocol/record.py`
 - `src/retracesoftware/protocol/replay.py`
-- `src/retracesoftware/replay_protocol.py`
 - `src/retracesoftware/control_runtime.py`
