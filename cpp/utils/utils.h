@@ -83,9 +83,6 @@ namespace retracesoftware {
     extern PyTypeObject RunAll_Type;
     extern PyTypeObject StackFactory_Type;
     extern PyTypeObject Stack_Type;
-    extern PyTypeObject Binding_Type;
-    extern PyTypeObject Binder_Type;
-
     extern PyTypeObject Gate_Type;
     extern PyTypeObject BoundGate_Type;
     extern PyTypeObject GateContext_Type;
@@ -165,14 +162,6 @@ namespace retracesoftware {
 
 
     PyObject * create_wrapped(PyTypeObject * cls, PyObject * target);
-
-    bool Binding_Check(PyObject * obj);
-    uint64_t Binding_Handle(PyObject * obj);
-    PyObject * Binding_New(uint64_t handle);
-    bool AddBindSupport(PyTypeObject * type);
-    bool RemoveBindSupport(PyTypeObject * type);
-    PyObject * Binder_Bind(PyObject * binder, PyObject * obj);
-    PyObject * Binder_Lookup(PyObject * binder, PyObject * obj);
 
     void patch_hash(PyTypeObject * cls, PyObject * hashfunc);
 

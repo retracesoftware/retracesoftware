@@ -88,7 +88,7 @@ class StacktraceFactory:
     def __init__(self):
         self._previous = ()
 
-    def materialize(self, num_frames_to_drop, new_frames):
+    def materialize(self, num_frames_to_drop, new_frames, thread_id=None):
         normalized_frames = tuple(tuple(frame) for frame in new_frames)
         if normalized_frames:
             stack = tuple(normalized_frames[0])
@@ -97,28 +97,35 @@ class StacktraceFactory:
         else:
             stack = self._previous[num_frames_to_drop:]
         self._previous = stack
-        return StacktraceMessage(stack)
+        return StacktraceMessage(stack, thread_id=thread_id)
 
 
-def next_message(source: Callable[[], object], stacktrace_factory):
+def _current_thread_id(thread_id):
+    if callable(thread_id):
+        return thread_id()
+    return thread_id
+
+
+def next_message(source: Callable[[], object], stacktrace_factory, thread_id=None):
     """Read one high-level protocol message from *source*."""
 
     tag = source()
+    current_thread_id = _current_thread_id(thread_id)
 
     if tag == "STACKTRACE":
-        return stacktrace_factory(source(), source())
+        return stacktrace_factory(source(), source(), current_thread_id)
     if tag == "RESULT":
-        return ResultMessage(source())
+        return ResultMessage(source(), thread_id=current_thread_id)
     if tag == "ERROR":
-        return ErrorMessage(source())
+        return ErrorMessage(source(), thread_id=current_thread_id)
     if tag == "ASYNC_CALL":
-        return CallMessage(source(), source(), source())
+        return CallMessage(source(), source(), source(), thread_id=current_thread_id)
     if tag == "CHECKPOINT":
-        return CheckpointMessage(source())
+        return CheckpointMessage(source(), thread_id=current_thread_id)
     if tag == "MONITOR":
-        return MonitorMessage(source())
+        return MonitorMessage(source(), thread_id=current_thread_id)
     if tag == "ASYNC_NEW_PATCHED":
-        return AsyncNewPatchedMessage(source())
+        return AsyncNewPatchedMessage(source(), thread_id=current_thread_id)
     return tag
 
 class ReplayReader:
@@ -129,6 +136,7 @@ class ReplayReader:
         source: Callable[[], object],
         *,
         bind: Callable[[object], None],
+        thread_id: Callable[[], object] | None = None,
         mark_retraced: Callable[[object], None] | None = None,
         stub_factory=None,
         monitor_enabled: bool = False,
@@ -146,9 +154,26 @@ class ReplayReader:
         self._recorded_stacktrace_factory = StacktraceFactory()
         self._replay_stacktrace_factory = StacktraceFactory()
         self._live_stacktrace_factory = stacktrace_factory
+        self._thread_id = thread_id if thread_id is not None else self._discover_thread_id(source)
 
     def _next_message(self, source: Callable[[], object]):
-        return next_message(source, stacktrace_factory=self._recorded_stacktrace_factory.materialize)
+        return next_message(
+            source,
+            stacktrace_factory=self._recorded_stacktrace_factory.materialize,
+            thread_id=self._thread_id,
+        )
+
+    @staticmethod
+    def _discover_thread_id(source):
+        demux_reader = getattr(source, "demux_reader", None)
+        if demux_reader is not None and hasattr(demux_reader, "thread_id"):
+            return demux_reader.thread_id
+
+        with_thread_reader = getattr(source, "with_thread_reader", None)
+        if with_thread_reader is not None:
+            return lambda: with_thread_reader.thread_id
+
+        return lambda: None
 
     def _get_stacktrace_factory(self):
         if self._live_stacktrace_factory is None:
@@ -158,13 +183,17 @@ class ReplayReader:
     def _capture_replay_stack_delta(self):
         return self._replay_stacktrace_factory.materialize(
             *_materialize_stack_delta(self._get_stacktrace_factory().delta()),
+            _current_thread_id(self._thread_id),
         )
 
     def _coerce_recorded_stacktrace(self, value):
         if isinstance(value, StacktraceMessage):
             return value
         if _looks_like_stacktrace_delta(value):
-            return self._recorded_stacktrace_factory.materialize(*value)
+            return self._recorded_stacktrace_factory.materialize(
+                *value,
+                _current_thread_id(self._thread_id),
+            )
         raise TypeError(f"expected stacktrace delta, got {value!r}")
 
     def _diff_stacktrace(self, recorded_msg, *, context):
@@ -210,6 +239,7 @@ class ReplayReader:
             recorded_msg = self._recorded_stacktrace_factory.materialize(
                 self.source(),
                 self.source(),
+                _current_thread_id(self._thread_id),
             )
         else:
             raise TypeError(f"expected STACKTRACE, got {msg!r}")

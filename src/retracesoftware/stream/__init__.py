@@ -55,10 +55,77 @@ def _export_public(mod: ModuleType) -> None:
 
 _export_public(_backend_mod)
 
-BindingRef = getattr(_backend_mod, "BindingRef")
-BindingCreate = getattr(_backend_mod, "BindingCreate")
-BindingLookup = getattr(_backend_mod, "BindingLookup")
-BindingDelete = getattr(_backend_mod, "BindingDelete")
+_NativeBinder = globals().get("Binder")
+if "add_bind_support" not in globals() and "set_bind_support" in globals():
+    add_bind_support = set_bind_support
+
+if _NativeBinder is not None and "add_bind_support" in globals():
+    class Binder(_NativeBinder):
+        add_bind_support = staticmethod(add_bind_support)
+        set_bind_support = staticmethod(add_bind_support)
+        if "remove_bind_support" in globals():
+            remove_bind_support = staticmethod(remove_bind_support)
+
+
+class _BinderWeakState:
+    __slots__ = ("binder", "bindings", "refs")
+
+    def __init__(self, binder):
+        self.binder = binder
+        self.bindings = {}
+        self.refs = {}
+
+    def bind(self, obj, binding):
+        obj_id = id(obj)
+        ref = weakref.ref(obj, lambda _ref, key=obj_id: self.on_collect(key))
+        self.refs[obj_id] = ref
+        self.bindings[obj_id] = binding
+        return binding
+
+    def lookup(self, obj):
+        obj_id = id(obj)
+        ref = self.refs.get(obj_id)
+        if ref is None or ref() is not obj:
+            return None
+        return self.bindings.get(obj_id)
+
+    def on_collect(self, obj_id):
+        self.refs.pop(obj_id, None)
+        binding = self.bindings.pop(obj_id, None)
+        if binding is None:
+            return
+
+        on_delete = self.binder.on_delete
+        if on_delete is None:
+            return
+
+        try:
+            on_delete(getattr(binding, "handle", binding))
+        except Exception:
+            pass
+
+_BIND_OPEN_TAG = "__bind__"
+_BIND_CLOSE_TAG = "__unbind__"
+
+
+def _is_bind_open(value):
+    return (
+        isinstance(value, tuple)
+        and len(value) == 2
+        and value[0] == _BIND_OPEN_TAG
+    )
+
+
+def _is_bind_close(value):
+    return (
+        isinstance(value, tuple)
+        and len(value) == 2
+        and value[0] == _BIND_CLOSE_TAG
+    )
+
+
+def _bind_index(value):
+    return value[1]
 
 _NATIVE_PERSISTER_TYPES = tuple(
     t for t in (
@@ -545,7 +612,6 @@ class ObjectWriter:
         self.type_serializer = {}
         self._queue = queue
         self._serializer = serializer
-        self._bound = {}
         self._native = None
 
         if isinstance(queue, getattr(_backend_mod, "Queue")):
@@ -559,19 +625,6 @@ class ObjectWriter:
         if self._native is None:
             raise AttributeError(name)
         return getattr(self._native, name)
-
-    def _bind_token(self, obj):
-        token = self._bound.get(obj)
-        if token is None:
-            token = id(obj)
-            self._bound[obj] = token
-        return token
-
-    def bind(self, obj):
-        if self._native is not None:
-            return self._native.bind(obj)
-        self._queue.push_bind(self._bind_token(obj))
-        return None
 
     def write(self, *values):
         if self._native is not None:
@@ -588,8 +641,7 @@ class ObjectWriter:
     def _intern(self, obj):
         if self._native is not None:
             return self._native._intern(obj)
-        token = self._bind_token(obj)
-        self._queue.push_intern(obj, token)
+        self._queue.push_intern(obj)
         return None
 
 # ---------------------------------------------------------------------------
@@ -1063,9 +1115,6 @@ class reader1(_backend_mod.ObjectStreamReader):
 
     def __exit__(self, *args):
         self.close()
-
-    def bind(self, obj):
-        super().bind(obj)
 
     def _default_stub_factory(self, cls):
         return cls.__new__(cls)

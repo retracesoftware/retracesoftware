@@ -145,7 +145,7 @@ def test_runner_replays_external_allocation_results():
     assert recording.error is None
 
     tags = [type(item).__name__ if not isinstance(item, str) else item for item in recording.tape]
-    assert "_BindingCreate" in tags
+    assert "NEW_BINDING" in tags
     assert "CALLBACK" in tags
     assert "CALLBACK_RESULT" in tags
 

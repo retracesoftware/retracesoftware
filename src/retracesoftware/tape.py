@@ -6,6 +6,7 @@ import stat
 import sys
 from pathlib import Path
 
+import retracesoftware.functional as functional
 import retracesoftware.stream as stream
 
 from retracesoftware.exceptions import RecordingNotFoundError
@@ -109,8 +110,6 @@ def _write_shebang(trace_path, replay_bin):
 class _ReplayTapeReader:
     __slots__ = ("_tape_reader",)
 
-    protocol_thread_source = True
-
     def __init__(self, *, path, read_timeout, verbose, start_offset=0):
         self._tape_reader = stream.TapeReader(
             path=path,
@@ -129,11 +128,32 @@ class _ReplayTapeReader:
         self._tape_reader.close()
 
     def read(self):
-        return self._tape_reader.next()
+        value = self._tape_reader.next()
+        while isinstance(value, stream.Heartbeat):
+            value = self._tape_reader.next()
+        return value
 
     @property
     def messages_read(self):
         return self._tape_reader.messages_read
+
+
+class RawTapeWriter:
+    """Adapt raw protocol writes onto a native stream writer.
+
+    ``proxy.io.recorder`` now emits raw protocol values directly. The native
+    stream writer already knows how to serialize those values, including plain
+    ``stream.Binding`` lookups, so this adapter is now just a small shape
+    adapter that preserves the ``TapeWriter`` surface.
+    """
+
+    __slots__ = ("_tape_writer",)
+
+    def __init__(self, tape_writer):
+        self._tape_writer = tape_writer
+
+    def write(self, *values):
+        self._tape_writer.write(*values)
 
 
 def create_tape_writer(options, argv, *, thread_getter) -> TapeWriter:
@@ -217,6 +237,7 @@ def open_tape_reader(args, *, thread_id):
 
 
 __all__ = [
+    "RawTapeWriter",
     "checksums",
     "create_tape_writer",
     "expand_recording_path",

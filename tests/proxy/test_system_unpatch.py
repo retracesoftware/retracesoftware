@@ -1,4 +1,5 @@
 import retracesoftware.utils as utils
+import retracesoftware.stream as stream
 
 from retracesoftware.proxy.contexts import record_context
 from retracesoftware.proxy.system import CallHooks, LifecycleHooks, System, unpatch_type
@@ -149,8 +150,8 @@ def test_system_unpatch_type_removes_bind_support(monkeypatch):
     added = []
     removed = []
 
-    original_add = utils.Binder.add_bind_support
-    original_remove = utils.Binder.remove_bind_support
+    original_add = stream.Binder.add_bind_support
+    original_remove = stream.Binder.remove_bind_support
 
     def record_add(cls):
         added.append(cls)
@@ -160,8 +161,8 @@ def test_system_unpatch_type_removes_bind_support(monkeypatch):
         removed.append(cls)
         return original_remove(cls)
 
-    monkeypatch.setattr(utils.Binder, "add_bind_support", staticmethod(record_add))
-    monkeypatch.setattr(utils.Binder, "remove_bind_support", staticmethod(record_remove))
+    monkeypatch.setattr(stream.Binder, "add_bind_support", staticmethod(record_add))
+    monkeypatch.setattr(stream.Binder, "remove_bind_support", staticmethod(record_remove))
 
     system.patch_type(Base)
     system.unpatch_type(Base)

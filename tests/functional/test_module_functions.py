@@ -181,6 +181,7 @@ class TestModuleImports:
         assert hasattr(fn, 'memoize_one_arg')
 
     def test_advanced_types(self):
+        assert hasattr(fn, 'iterate')
         assert hasattr(fn, 'walker')
         assert hasattr(fn, 'deepwrap')
         assert hasattr(fn, 'when_not')

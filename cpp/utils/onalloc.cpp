@@ -1,5 +1,6 @@
 #include "utils.h"
 #include <exception>
+#include <cstdlib>
 #include <structmember.h>
 #include <vector>
 #include "unordered_dense.h"
@@ -24,6 +25,7 @@ namespace retracesoftware {
     static PyObject * generic_alloc(PyTypeObject *type, Py_ssize_t nitems);
     static void generic_dealloc(PyObject * obj);
     static void replacement_subtype_dealloc(PyObject * obj);
+    static destructor get_subtype_dealloc();
 
     static void clear_type_patch(TypePatchState *state) {
         bool drop_map_ref = false;
@@ -218,6 +220,42 @@ namespace retracesoftware {
 
     static thread_local bool in_callback = false;
 
+    static destructor unwrap_stream_bind_support_dealloc(PyTypeObject * cls, destructor fallback) {
+        PyObject *stream_module = PyImport_ImportModule("retracesoftware.stream");
+        if (!stream_module) {
+            PyErr_Clear();
+            return fallback;
+        }
+
+        PyObject *resolver = PyObject_GetAttrString(stream_module, "_get_bind_support_original_dealloc");
+        Py_DECREF(stream_module);
+        if (!resolver) {
+            PyErr_Clear();
+            return fallback;
+        }
+
+        PyObject *result = PyObject_CallOneArg(resolver, (PyObject *)cls);
+        Py_DECREF(resolver);
+        if (!result) {
+            PyErr_Clear();
+            return fallback;
+        }
+
+        if (result == Py_None) {
+            Py_DECREF(result);
+            return fallback;
+        }
+
+        void *ptr = PyLong_AsVoidPtr(result);
+        Py_DECREF(result);
+        if (PyErr_Occurred()) {
+            PyErr_Clear();
+            return fallback;
+        }
+
+        return reinterpret_cast<destructor>(ptr);
+    }
+
     static bool call_callback(PyObject * allocated) {
         if (in_callback || _Py_IsFinalizing()) return true;
         TypePatchState *state = find_callback_patch(Py_TYPE(allocated));
@@ -281,7 +319,6 @@ namespace retracesoftware {
 
     static void generic_dealloc(PyObject * obj) {
         PyObject * cb = _Py_IsFinalizing() ? nullptr : take_dealloc_callback(obj);
-
         TypePatchState *state = find_dealloc_patch(Py_TYPE(obj));
         if (state)
             state->original_dealloc(obj);
@@ -384,9 +421,22 @@ namespace retracesoftware {
         TypePatchState *state = ensure_type_patch(cls);
         if (!state) return false;
         if (state->dealloc_patched) return true;
-        state->original_dealloc = cls->tp_dealloc;
+        // When binder has already wrapped this exact type, capture binder's
+        // saved underlying deallocator instead of binder_dealloc itself. That
+        // keeps the wrapper stack linear and avoids a generic_dealloc <->
+        // binder_dealloc cycle during teardown.
+        destructor original_dealloc = unwrap_stream_bind_support_dealloc(cls, cls->tp_dealloc);
+        // If binder was sitting on top of an existing onalloc wrapper, the
+        // resolved "original" still points at one of our wrappers. Reusing the
+        // existing chain is correct here; patching again would create a
+        // self-referential generic_dealloc state for the same type family.
+        if (original_dealloc == generic_dealloc
+            || original_dealloc == replacement_subtype_dealloc) {
+            return true;
+        }
+        state->original_dealloc = original_dealloc;
         state->dealloc_patched = true;
-        if (cls->tp_dealloc == get_subtype_dealloc()) {
+        if (state->original_dealloc == get_subtype_dealloc()) {
             cls->tp_dealloc = replacement_subtype_dealloc;
         } else {
             cls->tp_dealloc = generic_dealloc;
@@ -456,7 +506,6 @@ namespace retracesoftware {
                 clear_type_patch(state);
                 return nullptr;
             }
-
         Py_INCREF(callback);
         state->alloc_callback = callback;
         state->alloc_owner = state;

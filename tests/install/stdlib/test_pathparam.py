@@ -89,8 +89,8 @@ def test_open_whitelisted_path_is_retraced():
         os.unlink(tmp_path)
 
 
-def test_is_bound_true_for_whitelisted_open():
-    """Objects created via a whitelisted open should be bound in the writer."""
+def test_is_retraced_true_for_whitelisted_open():
+    """Whitelisted open() results should remain retraced inside the context."""
     system = _make_system()
 
     def pathpredicate(arg):
@@ -113,7 +113,7 @@ def test_is_bound_true_for_whitelisted_open():
     try:
         with record_context(system, writer):
             f = patched_open(tmp_path, 'r')
-            assert system.is_bound(f), "file from whitelisted open should be bound"
+            assert system.is_retraced(f), "file from whitelisted open should stay retraced"
             f.close()
     finally:
         os.unlink(tmp_path)

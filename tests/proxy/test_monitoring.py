@@ -28,9 +28,14 @@ class FakeStackFactory:
 class TestMonitorMessage:
     def test_parse_monitor_tag(self):
         tape = ['MONITOR', 'S:foo', 'SYNC']
-        msg = next_message(iter(tape).__next__, stacktrace_factory=lambda *_: None)
+        msg = next_message(
+            iter(tape).__next__,
+            stacktrace_factory=lambda *_: None,
+            thread_id=lambda: ("monitor",),
+        )
         assert isinstance(msg, MonitorMessage)
         assert msg.value == 'S:foo'
+        assert msg.thread_id == ("monitor",)
 
     def test_monitor_checkpoint_match(self):
         tape = ['MONITOR', 'S:foo']

@@ -71,7 +71,7 @@ async materialization.
   event ordering, stop reasons, `message_index`, and whether tests such as
   `tests/test_stdio_replay.py` need updating in the same diff.
 - Treat `AsyncNewPatchedMessage` ordering as a no-break contract.
-- If a failure smells like `ExpectedBindingCreate`, check stream first; if it
+- If a failure smells like `ExpectedBindMarker`, check stream first; if it
   smells like wrong semantic event ordering or replay-side materialization
   order, check protocol first.
 - Add focused tests when changing message meaning, callback round-tripping, or

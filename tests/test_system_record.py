@@ -30,8 +30,8 @@ pytest.importorskip("retracesoftware.stream")
 import retracesoftware.stream as stream
 import retracesoftware.utils as utils
 import retracesoftware.proxy.system as proxy_system
-from retracesoftware.install import stream_writer
 from retracesoftware.proxy.contexts import record_context, replay_context
+from retracesoftware.proxy.io import recorder_context, replayer
 from retracesoftware.protocol.replay import ReplayReader
 
 
@@ -70,20 +70,26 @@ class SystemRecordHarness:
     ``System.record_context`` expects a writer with methods such as ``bind``,
     ``async_new_patched``, ``write_call``, and ``write_result``.  The real high-level
     stream writer carries much more behavior than these tests need, so this
-    harness delegates the binding/allocation operations to the native
-    ``stream.ObjectWriter`` while keeping the other callbacks as simple
-    in-memory bookkeeping.
+    harness keeps binding/allocation bookkeeping itself while delegating the
+    plain write/intern operations to ``stream.ObjectWriter``.
     """
 
     def __init__(self, queue):
         self.queue = queue
         self.object_writer = stream.ObjectWriter(queue, lambda obj: obj)
+        self.binder = stream.Binder()
         self.type_serializer = {}
         self.calls = []
 
     def bind(self, obj):
         self.calls.append(("bind", obj))
-        return self.object_writer.bind(obj)
+        binding = self.binder.bind(obj)
+        push_bind = getattr(self.queue, "push_bind", None)
+        if push_bind is not None:
+            push_bind(binding.handle)
+        else:
+            self.persister.bind(binding.handle)
+        return None
 
     def intern(self, obj):
         self.calls.append(("intern", obj))
@@ -96,7 +102,7 @@ class SystemRecordHarness:
         if self.object_writer._native is not None:
             self.object_writer._native(tag, obj)
         else:
-            self.queue.push_ref(self.object_writer._bind_token(tag))
+            self.queue.push_ref(id(tag))
             self.queue.push_obj(obj)
         return None
 
@@ -136,28 +142,24 @@ class QueueBackedDebugHarness(SystemRecordHarness):
         self.native_queue.close()
 
 
-def test_objectwriter_bind_uses_python_queue_fallback():
-    """``ObjectWriter.bind`` should use the Python queue slow path.
+def test_objectwriter_intern_uses_python_queue_fallback():
+    """``ObjectWriter._intern`` should use the Python queue slow path.
 
     This is the lowest-level test in the file.  It does not involve
     ``System`` at all.  The purpose is to document the contract introduced by
     the queue fast-path/slow-path refactor:
 
     - if the queue is not the exact native ``Queue`` type
-    - ``ObjectWriter`` should call ``push_bind`` on the Python object
-    - opaque refs should cross that boundary as Python integers
+    - ``ObjectWriter`` should call ``push_intern`` on the Python object
+    - intern payloads should cross that boundary unchanged
     """
 
     queue = RecordingQueue()
     writer = stream.ObjectWriter(queue, lambda obj: obj)
 
-    obj = object()
-    assert writer.bind(obj) is None
+    assert writer._intern("tag") is None
 
-    bind_calls = queue.named("push_bind")
-    assert len(bind_calls) == 1
-    assert len(bind_calls[0]) == 1
-    assert isinstance(bind_calls[0][0], int)
+    assert queue.named("push_intern") == [("tag",)]
 
 
 def test_objectwriter_write_uses_python_queue_fallback_and_serializer():
@@ -279,8 +281,8 @@ def test_system_record_passthroughs_unbound_instances():
     assert queue.calls == []
 
 
-def test_system_record_bind_reaches_python_persister_via_native_queue():
-    """Sandbox binds should survive native Queue -> Python persister dispatch."""
+def test_system_record_bind_reaches_python_persister():
+    """Sandbox binds should still reach the Python persister."""
 
     system = proxy_system.System()
     writer = QueueBackedDebugHarness()
@@ -300,7 +302,7 @@ def test_system_record_bind_reaches_python_persister_via_native_queue():
     assert ("command", ("bind", (0,))) in writer.events
 
 
-def test_system_record_async_new_patched_reaches_python_persister_via_native_queue():
+def test_system_record_async_new_patched_reaches_python_persister():
     """External-phase allocations should survive via async callback + bind."""
 
     system = proxy_system.System()
@@ -348,19 +350,16 @@ def test_system_record_memoryview_result_roundtrips_through_unframed_binary_repl
     back the recorded result from an unframed file-backed trace.
     """
 
-    system = proxy_system.System()
-    system.immutable_types.update({memoryview, int, float, str, bytes, bool, type, type(None)})
     path = tmp_path / "memoryview.bin"
 
     class Patched:
         def payload(self):
             return memoryview(b"payload")
 
-    system.patch_type(Patched)
-
     with stream.writer(path, flush_interval=999, format="unframed_binary") as raw_writer:
-        writer = stream_writer(raw_writer)
-        with record_context(system, writer):
+        with recorder_context(writer=raw_writer.write, debug=False, stacktraces=False) as system:
+            system.immutable_types.update({memoryview, int, float, str, bytes, bool, type, type(None)})
+            system.patch_type(Patched)
             obj = Patched()
             result = obj.payload()
             assert isinstance(result, memoryview)
@@ -368,19 +367,24 @@ def test_system_record_memoryview_result_roundtrips_through_unframed_binary_repl
 
     assert path.stat().st_size > 0
 
-    with stream.reader(path, read_timeout=1, verbose=False) as raw_reader:
-        per_thread_source = stream.per_thread(
-            source=raw_reader,
-            thread=lambda: (),
-            timeout=1,
-        )
-        replay_reader = ReplayReader(
-            per_thread_source,
-            bind=raw_reader.bind,
-            stub_factory=getattr(raw_reader, "stub_factory", None),
-        )
+    with stream.TapeReader(path=path, read_timeout=1, verbose=False) as raw_reader:
+        def next_object():
+            value = raw_reader.next()
+            while isinstance(value, stream.Heartbeat):
+                value = raw_reader.next()
+            return value
 
-        with replay_context(system, replay_reader):
+        replay_system = replayer(
+            next_object=next_object,
+            close=raw_reader.close,
+            debug=False,
+            stacktraces=False,
+        )
+        replay_system.immutable_types.update({memoryview, int, float, str, bytes, bool, type, type(None)})
+        replay_system.patch_type(Patched)
+        try:
             obj = Patched()
             replayed = obj.payload()
             assert bytes(replayed) == b"payload"
+        finally:
+            replay_system.unpatch_types()

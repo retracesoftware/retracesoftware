@@ -237,34 +237,6 @@ static PyObject * yields_weakly_referenceable_instances(PyObject * module, PyObj
     return PyBool_FromLong(reinterpret_cast<PyTypeObject*>(cls)->tp_weaklistoffset > 0);
 }
 
-static PyObject * add_bind_support(PyObject * module, PyObject * cls) {
-
-    if (!PyType_Check(cls)) {
-        PyErr_SetString(PyExc_TypeError, "add_bind_support takes a type");
-        return nullptr;
-    }
-
-    if (!retracesoftware::AddBindSupport(reinterpret_cast<PyTypeObject *>(cls))) {
-        return nullptr;
-    }
-
-    Py_RETURN_NONE;
-}
-
-static PyObject * remove_bind_support(PyObject * module, PyObject * cls) {
-
-    if (!PyType_Check(cls)) {
-        PyErr_SetString(PyExc_TypeError, "remove_bind_support takes a type");
-        return nullptr;
-    }
-
-    if (!retracesoftware::RemoveBindSupport(reinterpret_cast<PyTypeObject *>(cls))) {
-        return nullptr;
-    }
-
-    Py_RETURN_NONE;
-}
-
 static bool is_direct_subtype(PyTypeObject * sub, PyTypeObject * base) {
     if (sub == base) return true;
     else if (sub == nullptr) return false;
@@ -659,9 +631,6 @@ static PyMethodDef module_methods[] = {
     {"set_type", (PyCFunction)set_type, METH_FASTCALL, "TODO"},
     {"yields_callable_instances", (PyCFunction)yields_callable_instances, METH_O, "TODO"},
     {"yields_weakly_referenceable_instances", (PyCFunction)yields_weakly_referenceable_instances, METH_O, "TODO"},
-    {"add_bind_support", (PyCFunction)add_bind_support, METH_O, "Enable binder lifecycle support for instances of a type"},
-    {"remove_bind_support", (PyCFunction)remove_bind_support, METH_O, "Disable binder lifecycle support for instances of a type"},
-    {"set_bind_support", (PyCFunction)add_bind_support, METH_O, "Backward-compatible alias for add_bind_support"},
     {"unwrap_apply", (PyCFunction)unwrap_apply, METH_FASTCALL | METH_KEYWORDS, "TODO"},
     {"try_unwrap_apply", (PyCFunction)try_unwrap_apply, METH_FASTCALL | METH_KEYWORDS, "TODO"},
     {"try_unwrap", try_unwrap, METH_O, "TODO"},
@@ -808,8 +777,6 @@ PyMODINIT_FUNC CONCAT(PyInit_, MODULE_NAME)(void) {
         &retracesoftware::ThreadSwitchMonitor_Type,
         &retracesoftware::IdSet_Type,
         &retracesoftware::IdDict_Type,
-        &retracesoftware::Binding_Type,
-        &retracesoftware::Binder_Type,
         &retracesoftware::StripTraceback_Type,
         &retracesoftware::Observer_Type,
         &retracesoftware::PerThread_Type,

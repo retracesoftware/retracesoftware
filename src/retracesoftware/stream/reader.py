@@ -9,8 +9,8 @@ This module keeps the reader pipeline split into small layers:
   newer protocol-level ``"THREAD_SWITCH", <thread_id>`` message pair.
 - ``PeekableReader`` buffers future ``(thread_id, obj)`` tuples.
 - ``DemuxReader`` routes those tuples by thread.
-- ``ResolvingReader`` resolves ``BindingLookup`` records against a live
-  binding table and consumes ``BindingDelete`` records internally.
+- ``ResolvingReader`` resolves ``stream.Binding`` records against a live
+  binding table and consumes bind-close markers internally.
 - ``ObjectReader`` wires the layers together into the public end-of-chain
   reader counterpart to ``ObjectWriter``.
 """
@@ -18,24 +18,25 @@ This module keeps the reader pipeline split into small layers:
 from collections import deque
 
 import retracesoftware.functional as functional
+import retracesoftware.stream as stream
 import retracesoftware.utils as utils
 
 from . import (
-    BindingCreate,
-    BindingDelete,
-    BindingLookup,
     Heartbeat,
     ThreadSwitch,
+    _bind_index,
+    _is_bind_close,
+    _is_bind_open,
 )
 
 _MISSING = object()
 
 
-class ExpectedBindingCreate(RuntimeError):
+class ExpectedBindMarker(RuntimeError):
     __slots__ = ["next"]
 
     def __init__(self, next):
-        super().__init__("Expected BindingCreate")
+        super().__init__("Expected bind marker")
         self.next = next
 
 
@@ -229,7 +230,7 @@ class ResolvingReader:
     """Resolve binding records on top of a demultiplexed source.
 
     ``next()`` returns visible replay objects for the current thread.
-    ``BindingDelete`` records are consumed internally. ``BindingCreate`` is not
+    Bind-close markers are consumed internally. Bind-open markers are not
     returned here; instead callers are expected to satisfy the next create
     record by calling ``bind(obj)``.
     """
@@ -248,19 +249,19 @@ class ResolvingReader:
             bindings = self._bindings
 
         def transform(value):
-            if isinstance(value, BindingLookup):
-                return bindings[value.index]
+            if isinstance(value, stream.Binding):
+                return bindings[value.handle]
             return value
 
         resolver = functional.walker(transform)
         return resolver(obj)
 
     def _consume_deletes(self):
-        """Advance past delete records while keeping the binding table in sync."""
+        """Advance past bind-close markers while keeping the binding table in sync."""
         next = self.source()
 
-        while isinstance(next, BindingDelete):
-            self._bindings.pop(next.index, None)
+        while _is_bind_close(next):
+            self._bindings.pop(_bind_index(next), None)
             next = self.source()
 
         return next
@@ -268,28 +269,28 @@ class ResolvingReader:
     def next(self, thread_id=_MISSING):
         """Return the next resolved replay object.
 
-        The next visible record must not be ``BindingCreate``; those are handled
+        The next visible record must not be a bind-open marker; those are handled
         through ``bind(obj)``.
         """
         next = self._consume_deletes()
 
-        if isinstance(next, BindingCreate) and thread_id is _MISSING:
-            raise RuntimeError("BindingCreate returned when bind was expected")
+        if _is_bind_open(next) and thread_id is _MISSING:
+            raise RuntimeError("bind marker returned when bind was expected")
 
         return self._resolve(next)
 
     def bind(self, obj):
-        """Consume the next ``BindingCreate`` record and bind it to ``obj``.
+        """Consume the next bind-open marker and bind it to ``obj``.
 
         This method is intentionally stateful: it advances the underlying
-        source and expects the next visible message to be ``BindingCreate``.
+        source and expects the next visible message to be a bind-open marker.
         """
         next = self._consume_deletes()
 
-        if not isinstance(next, BindingCreate):
-            raise ExpectedBindingCreate(next)
+        if not _is_bind_open(next):
+            raise ExpectedBindMarker(next)
 
-        self._bindings[next.index] = obj
+        self._bindings[_bind_index(next)] = obj
 
     def _peek_visible(self):
         shadow_bindings = dict(self._bindings)
@@ -317,15 +318,15 @@ class ResolvingReader:
                 continue
 
             value = item[1]
-            if isinstance(value, BindingDelete):
-                shadow_bindings.pop(value.index, None)
+            if _is_bind_close(value):
+                shadow_bindings.pop(_bind_index(value), None)
                 continue
             return value, shadow_bindings
 
     def peek(self, thread_id=None):
         value, shadow_bindings = self._peek_visible()
-        if isinstance(value, BindingCreate):
-            raise RuntimeError("BindingCreate returned when bind was expected")
+        if _is_bind_open(value):
+            raise RuntimeError("bind marker returned when bind was expected")
         return self._resolve(value, shadow_bindings)
 
     @property

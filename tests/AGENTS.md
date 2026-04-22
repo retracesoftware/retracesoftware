@@ -66,8 +66,8 @@ Label each reported item as one of:
 These are current examples, not permanent truth. Refresh them when the failure
 mix changes.
 
-- Binding/materialization failures such as `ExpectedBindingCreate`
-  or runtime errors matching `expected BindingCreate during bind`
+- Binding/materialization failures such as `ExpectedBindMarker`
+  or runtime errors matching `expected bind marker during bind`
   usually belong to stream/protocol/proxy contracts.
 - Legacy tests or helpers still using `--raw` instead of current `--format`
   handling are test/CLI drift.

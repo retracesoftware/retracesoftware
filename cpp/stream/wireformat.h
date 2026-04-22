@@ -28,7 +28,6 @@ namespace retracesoftware_stream {
         SET,
         FROZENSET,
         BINDING,
-        BINDING_DELETE,
         INTERN,
         
         STR_REF,  // Reference to previously-written interned string
@@ -66,7 +65,6 @@ namespace retracesoftware_stream {
         THREAD_EXIT,
         FLOAT,
         INT64,
-        BIND,
         INTERN_INLINE,
         CHECKSUM,
         DROPPED,
@@ -127,13 +125,7 @@ namespace retracesoftware_stream {
     constexpr Control Dropped = create_fixed_size(FixedSizeTypes::DROPPED);
     constexpr Control Heartbeat = create_fixed_size(FixedSizeTypes::HEARTBEAT);
     constexpr Control SerializeError = create_fixed_size(FixedSizeTypes::SERIALIZE_ERROR);
-    constexpr Control Bind = create_fixed_size(FixedSizeTypes::BIND);
     constexpr Control Intern = create_fixed_size(FixedSizeTypes::INTERN_INLINE);
-    // constexpr Control BindingDelete = create_fixed_size(FixedSizeTypes::);
-
-    constexpr bool is_binding_delete(Control control) {
-        return control.Sized.type == SizedTypes::BINDING_DELETE;
-    }
 
     // static FixedSizeTypes fixed_size_type(Control control) {
     //     return control.Fixed.SizedTypes_FIXED_SIZE == FIXED_SIZE ? control.Fixed.type : FixedSizeTypes__LAST__;
@@ -198,7 +190,6 @@ namespace retracesoftware_stream {
             case FixedSizeTypes::THREAD_EXIT: return "THREAD_EXIT";
             case FixedSizeTypes::FLOAT: return "FLOAT";
             case FixedSizeTypes::INT64: return "INT64";
-            case FixedSizeTypes::BIND: return "BIND";
             case FixedSizeTypes::INTERN_INLINE: return "INTERN";
             case FixedSizeTypes::CHECKSUM: return "CHECKSUM";
             case FixedSizeTypes::DROPPED: return "DROPPED";
@@ -225,7 +216,6 @@ namespace retracesoftware_stream {
             case SizedTypes::FROZENSET: return "FROZENSET";
 
             case SizedTypes::BINDING: return "BINDING";
-            case SizedTypes::BINDING_DELETE: return "BINDING_DELETE";
             case SizedTypes::INTERN: return "INTERN";
             case SizedTypes::STR_REF: return "STR_REF";
             case SizedTypes::FIXED_SIZE: return "FIXED_SIZE";

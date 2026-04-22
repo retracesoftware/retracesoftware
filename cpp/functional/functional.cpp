@@ -288,6 +288,7 @@ PyMODINIT_FUNC CONCAT(PyInit_, MODULE_NAME)(void) {
         &OrPredicate_Type,
         &SpreadAnd_Type,
         &SpreadOr_Type,
+        &Iterate_Type,
         &TypePredicate_Type,
         &TransformArgs_Type,
         &MapCall_Type,

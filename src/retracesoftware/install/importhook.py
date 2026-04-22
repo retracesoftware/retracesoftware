@@ -37,7 +37,7 @@ def install_import_hooks(disable_for, module_patcher):
 
     Parameters
     ----------
-    disable_for : callable(fn) → fn
+    disable_for : callable(fn, *, unwrap_args=True) → fn
         Wraps a function so the proxy gates are temporarily cleared
         for its duration.  Typically ``system.disable_for``.
     module_patcher : callable(namespace_dict, update_refs: bool, module_name: str | None = None) → None
@@ -66,8 +66,8 @@ def install_import_hooks(disable_for, module_patcher):
     orig_run_code = runpy._run_code
 
     # ── __import__ / importlib.import_module ──────────────────
-    builtins.__import__ = disable_for(builtins.__import__)
-    importlib.import_module = disable_for(importlib.import_module)
+    builtins.__import__ = disable_for(builtins.__import__, unwrap_args=False)
+    importlib.import_module = disable_for(importlib.import_module, unwrap_args=False)
 
     _orig_exec = builtins.exec
 

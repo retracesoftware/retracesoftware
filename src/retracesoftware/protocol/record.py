@@ -58,7 +58,12 @@ def stream_writer(writer, stackfactory=None, on_write_error=None, debug = False)
         checkpoint_handle(normalize(value))
 
     call = functional.repeatedly(writer.handle(CALL))
-    bind = writer.bind
+    bind = getattr(writer, "bind", None)
+    if bind is None:
+        raise TypeError(
+            "stream_writer(...) requires a writer with bind(obj); "
+            "binding create/delete emission is not handled here"
+        )
 
     if debug:
         def on_bind(obj):

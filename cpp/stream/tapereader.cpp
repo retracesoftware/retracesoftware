@@ -10,6 +10,10 @@
 
 namespace retracesoftware_stream {
 
+    static PyObject * binding_lookup(uint64_t handle) {
+        return Binding_New(handle);
+    }
+
     static FILE * open(PyObject * path) {
         FILE * file = fopen(PyUnicode_AsUTF8(path), "rb");
 
@@ -32,7 +36,6 @@ namespace retracesoftware_stream {
 
         map<int, PyObject *> interns;
         int intern_counter = 0;
-        int binding_counter = 0;
         PyObject * create_pickled = nullptr;
         PyObject * create_dropped = nullptr;
         PyObject * create_heartbeat = nullptr;
@@ -408,10 +411,7 @@ namespace retracesoftware_stream {
                     return result;
                 }
                 case SizedTypes::BINDING:
-                    return binding_ref_new(&BindingRefLookup_Type, size);
-
-                case SizedTypes::BINDING_DELETE:
-                    return binding_ref_new(&BindingRefDelete_Type, size);
+                    return binding_lookup(size);
 
                 case SizedTypes::INTERN: {
                     auto it = interns.find(size);
@@ -469,14 +469,6 @@ namespace retracesoftware_stream {
                     return PyFloat_FromDouble(read<double>());
                 case FixedSizeTypes::INT64:
                     return PyLong_FromLongLong(read<int64_t>());
-                case FixedSizeTypes::BIND: {
-                    PyObject * created = binding_ref_new(&BindingRefCreate_Type, binding_counter);
-                    if (!created) {
-                        return nullptr;
-                    }
-                    binding_counter++;
-                    return created;
-                }
                 case FixedSizeTypes::HEARTBEAT:
                     return create_heartbeat ? PyObject_CallNoArgs(create_heartbeat)
                                             : Py_NewRef(Py_None);

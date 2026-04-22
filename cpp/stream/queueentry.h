@@ -13,9 +13,7 @@ namespace retracesoftware_stream {
     //   bits 3..   : payload
     //
     // Tagged subtypes:
-    //   00 = binding create
-    //   01 = binding lookup
-    //   10 = binding delete
+    //   00 = reference handle
     //   11 = command header
     //
     // Pointer payloads remain raw object pointers whose low bit is zero due
@@ -33,30 +31,21 @@ namespace retracesoftware_stream {
     static constexpr int CMD_SHIFT = ENTRY_PAYLOAD_SHIFT;
     static constexpr int CMD_BITS  = 5;
     static constexpr int LEN_SHIFT = CMD_SHIFT + CMD_BITS;
+    static constexpr BindingHandle MAX_INLINE_BINDING_HANDLE =
+        static_cast<BindingHandle>((QEntry(-1) >> ENTRY_PAYLOAD_SHIFT));
 
     enum EntryKind : uint32_t {
-        ENTRY_BIND = 0,
-        ENTRY_REF = 1,
-        ENTRY_DELETE = 2,
+        ENTRY_REF = 0,
         ENTRY_COMMAND = 3,
     };
-
-    static constexpr BindingHandle MAX_INLINE_BINDING_HANDLE =
-        static_cast<BindingHandle>(UINTPTR_MAX >> ENTRY_PAYLOAD_SHIFT);
 
     inline bool is_pointer_entry(QEntry e) { return (e & ENTRY_TAG_BIT) == 0; }
     inline bool is_tagged_entry(QEntry e) { return !is_pointer_entry(e); }
     inline uint32_t kind_of(QEntry e) {
         return static_cast<uint32_t>((e >> ENTRY_KIND_SHIFT) & ENTRY_KIND_MASK);
     }
-    inline bool is_bind_entry(QEntry e) {
-        return is_tagged_entry(e) && kind_of(e) == ENTRY_BIND;
-    }
     inline bool is_ref_entry(QEntry e) {
         return is_tagged_entry(e) && kind_of(e) == ENTRY_REF;
-    }
-    inline bool is_delete_entry(QEntry e) {
-        return is_tagged_entry(e) && kind_of(e) == ENTRY_DELETE;
     }
     inline bool is_command_entry(QEntry e) {
         return is_tagged_entry(e) && kind_of(e) == ENTRY_COMMAND;
@@ -77,24 +66,10 @@ namespace retracesoftware_stream {
         return static_cast<BindingHandle>(e >> ENTRY_PAYLOAD_SHIFT);
     }
 
-    inline QEntry bind_entry(BindingHandle handle) {
-        assert(handle <= MAX_INLINE_BINDING_HANDLE);
-        return ENTRY_TAG_BIT
-             | ((QEntry)ENTRY_BIND << ENTRY_KIND_SHIFT)
-             | ((QEntry)handle << ENTRY_PAYLOAD_SHIFT);
-    }
-
     inline QEntry ref_entry(BindingHandle handle) {
         assert(handle <= MAX_INLINE_BINDING_HANDLE);
         return ENTRY_TAG_BIT
              | ((QEntry)ENTRY_REF << ENTRY_KIND_SHIFT)
-             | ((QEntry)handle << ENTRY_PAYLOAD_SHIFT);
-    }
-
-    inline QEntry delete_entry(BindingHandle handle) {
-        assert(handle <= MAX_INLINE_BINDING_HANDLE);
-        return ENTRY_TAG_BIT
-             | ((QEntry)ENTRY_DELETE << ENTRY_KIND_SHIFT)
              | ((QEntry)handle << ENTRY_PAYLOAD_SHIFT);
     }
 

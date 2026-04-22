@@ -9,6 +9,10 @@
 
 namespace retracesoftware_stream {
 
+    static PyObject * binding_lookup(uint64_t handle) {
+        return Binding_New(handle);
+    }
+
     static FILE * open(PyObject * path) {
         FILE * file = fopen(PyUnicode_AsUTF8(path), "rb");
 
@@ -29,9 +33,7 @@ namespace retracesoftware_stream {
         vectorcallfunc vectorcall;
         std::vector<PyObject *> interned_strings;
 
-        map<int, PyObject *> bindings;
-        bool pending_bind = false;
-        int binding_counter = 0;
+        map<int, PyObject *> interns;
         PyObject * create_pickled = nullptr;
         PyObject * stub_factory = nullptr;
         PyObject * create_dropped = nullptr;
@@ -74,7 +76,7 @@ namespace retracesoftware_stream {
             }
 
             new (&self->interned_strings) std::vector<PyObject *>();
-            new (&self->bindings) map<int, PyObject *>();
+            new (&self->interns) map<int, PyObject *>();
 
             self->create_pickled = Py_NewRef(create_pickled);
             self->stub_factory = Py_NewRef(stub_factory);
@@ -110,7 +112,7 @@ namespace retracesoftware_stream {
             clear(self);
 
             self->interned_strings.std::vector<PyObject *>::~vector();
-            self->bindings.~map<int, PyObject *>();
+            self->interns.~map<int, PyObject *>();
 
             Py_TYPE(self)->tp_free(reinterpret_cast<PyObject*>(self));
         }
@@ -132,10 +134,10 @@ namespace retracesoftware_stream {
             }
             self->interned_strings.clear();
 
-            for (auto const& [index, value] : self->bindings) {
+            for (auto const& [index, value] : self->interns) {
                 Py_XDECREF(value);
             }
-            self->bindings.clear();
+            self->interns.clear();
 
             Py_CLEAR(self->path);
             Py_CLEAR(self->create_pickled);
@@ -399,8 +401,9 @@ namespace retracesoftware_stream {
                     return result;
                 }
                 case SizedTypes::BINDING:
+                    return binding_lookup(size);
                 case SizedTypes::INTERN:
-                    return Py_NewRef(bindings[size]);
+                    return Py_NewRef(interns[size]);
                 case SizedTypes::BYTES: return read_bytes(size);
                 case SizedTypes::LIST: return read_list(size);
                 case SizedTypes::DICT: return read_dict(size);
@@ -482,34 +485,13 @@ namespace retracesoftware_stream {
                     printf("    read control: 0x%02X at byte %zu\n", control.raw, bytes_read - 1);
                 }
 
-                if (control.Sized.type == SizedTypes::BINDING_DELETE) {
-                    if (verbose) {
-                        printf("Retrace - ObjectStream[%lu, %zu] - Inline BINDING_DELETE\n", messages_read, start);
-                    }
-                    size_t size = read_unsigned_number(control);
-                    Py_DECREF(bindings[size]);
-                    bindings.erase(size);
-                    messages_read++;
-                    continue;
-                }
-
                 if (control == Intern) {
                     if (verbose) {
                         printf("Retrace - ObjectStream[%lu, %zu] - Inline INTERN\n", messages_read, start);
                     }
-                    bindings[binding_counter++] = read();
+                    interns[interns.size()] = read();
                     messages_read++;
                     continue;
-                }
-
-                if (control == Bind) {
-                    PyErr_Format(
-                        PyExc_RuntimeError,
-                        "unexpected inline BIND at byte %zu, message %zu",
-                        start,
-                        messages_read
-                    );
-                    throw nullptr;
                 }
 
                 return read(control);
@@ -559,26 +541,6 @@ namespace retracesoftware_stream {
             return instance;
         }
 
-        PyObject * read_ext_bind() {
-            PyTypeObject * cls = read_bound_type("BIND");
-            PyObject * empty = PyTuple_New(0);
-
-            if (!empty) {
-                Py_DECREF(reinterpret_cast<PyObject *>(cls));
-                throw nullptr;
-            }
-
-            PyObject * instance = cls->tp_new(cls, empty, nullptr);
-
-            Py_DECREF(empty);
-            Py_DECREF(reinterpret_cast<PyObject *>(cls));
-
-            if (!instance) {
-                throw nullptr;
-            }
-            return instance;
-        }
-
         Control consume(size_t & start) {
             while (true) {
                 start = bytes_read;
@@ -588,47 +550,14 @@ namespace retracesoftware_stream {
                     printf("  consume: control 0x%02X at byte %zu\n", control.raw, start);
                 }
                 
-                if (control.Sized.type == SizedTypes::BINDING_DELETE) {
-                    if (verbose) printf("Retrace - ObjectStream[%lu, %lu] - Consumed BINDING_DELETE\n", messages_read, start);
-                    size_t size = read_unsigned_number(control);
-                    Py_DECREF(bindings[size]);
-                    bindings.erase(size);
-                    messages_read++;
-                } else if (control == Bind) {                
-                    if (verbose) printf("Retrace - ObjectStream[%lu, %lu] - Consumed BIND\n", messages_read, start);
-                    pending_bind = true;
-                    messages_read++;
-                    return control;
-                } else if (control == Intern) {
+                if (control == Intern) {
                     if (verbose) printf("Retrace - ObjectStream[%lu, %lu] - Consumed INTERN\n", messages_read, start);
-                    bindings[binding_counter++] = read();
+                    interns[interns.size()] = read();
                     messages_read++;
                 } else {
                     return control;
                 }
             }
-        }
-
-        bool bind(PyObject * binding) {
-            if (!pending_bind) {
-                PyErr_Format(PyExc_RuntimeError, "Trying to bind when no pending bind");
-                return false;
-            }
-            bindings[binding_counter++] = Py_NewRef(binding);
-            pending_bind = false;
-            return true;
-        }
-
-        static PyObject * py_bind(ObjectStream * self, PyObject * binding) {
-            try {
-                if (!self->bind(binding)) {
-                    return nullptr;
-                }
-            } catch (...) {
-                assert(PyErr_Occurred());
-                return nullptr;
-            }
-            Py_RETURN_NONE;
         }
 
         static PyObject * py_close(ObjectStream * self, PyObject * usused) {
@@ -672,11 +601,6 @@ namespace retracesoftware_stream {
         }
 
         PyObject * next() {
-            if (pending_bind) {
-                PyErr_Format(PyExc_RuntimeError, "Can't reading next as unbound pending bind");
-                return nullptr;
-            }
-
             size_t start;
             Control control = consume(start);
 
@@ -710,20 +634,15 @@ namespace retracesoftware_stream {
                 Py_DECREF(payload);
                 return next();
             }
-            if (control == Bind) {
-                Py_RETURN_NONE;
-            }
-            else {
-                PyObject * result = read(control);
+            PyObject * result = read(control);
 
-                if (verbose) {
-                    PyObject * s = PyObject_Str(result);
-                    printf("Retrace - ObjectStream[%lu, %lu] - Read: %s\n", messages_read, start, PyUnicode_AsUTF8(s));
-                    Py_DECREF(s);
-                }
-                messages_read++;
-                return result;
+            if (verbose) {
+                PyObject * s = PyObject_Str(result);
+                printf("Retrace - ObjectStream[%lu, %lu] - Read: %s\n", messages_read, start, PyUnicode_AsUTF8(s));
+                Py_DECREF(s);
             }
+            messages_read++;
+            return result;
         }
 
         static PyObject* call(ObjectStream *self, PyObject *const *args, size_t nargsf, PyObject *kwnames) {
@@ -754,7 +673,6 @@ namespace retracesoftware_stream {
         {"read_timeout", T_INT, OFFSET_OF_MEMBER(ObjectStream, read_timeout), 0, "TODO"},
         {"bytes_read", T_ULONG, OFFSET_OF_MEMBER(ObjectStream, bytes_read), READONLY, "TODO"},
         {"messages_read", T_ULONG, OFFSET_OF_MEMBER(ObjectStream, messages_read), READONLY, "TODO"},
-        {"pending_bind", T_BOOL, OFFSET_OF_MEMBER(ObjectStream, pending_bind), READONLY, "TODO"},
         {"verbose", T_BOOL, OFFSET_OF_MEMBER(ObjectStream, verbose), 0, "TODO"},
         {NULL}  /* Sentinel */
     };
@@ -768,7 +686,6 @@ namespace retracesoftware_stream {
     };
 
     static PyMethodDef methods[] = {
-        {"bind", (PyCFunction)ObjectStream::py_bind, METH_O, "TODO"},
         {"close", (PyCFunction)ObjectStream::py_close, METH_NOARGS, "TODO"},
         {"file_offset", (PyCFunction)ObjectStream::py_file_offset, METH_NOARGS,
          "Return the current file read position"},

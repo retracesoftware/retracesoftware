@@ -12,17 +12,17 @@ through the tape. Many "protocol" failures are actually stream contract bugs.
   serialization, heartbeat/fork handling, and public reader/writer API.
 - `reader.py`
   Replay reader stack: heartbeat stripping, thread demux, binding resolution,
-  and the `ExpectedBindingCreate` contract.
+  and the `ExpectedBindMarker` contract.
 
 ## Mental Model
 
 - Stream is transport-level, not business logic. It owns raw object movement,
   binding records, thread-switch markers, and transport framing.
-- `BindingCreate`, `BindingLookup`, and `BindingDelete` are part of the replay
-  contract. If their creation/consumption order changes, replay can fail long
-  before higher-level code notices.
+- Bind-open markers, `stream.Binding` lookups, and bind-close markers are part
+  of the replay contract. If their creation/consumption order changes, replay
+  can fail long before higher-level code notices.
 - `ObjectReader.bind(obj)` is intentionally stateful: it must consume the next
-  visible `BindingCreate` record at the right moment. `ExpectedBindingCreate`
+  visible bind-open marker at the right moment. `ExpectedBindMarker`
   means the reader/writer contract has drifted.
 - `Heartbeat` and `ThreadSwitch` are control records. They should help transport
   and diagnosis without changing user-visible replay behavior.
@@ -33,11 +33,11 @@ through the tape. Many "protocol" failures are actually stream contract bugs.
 
 ## Binding And Routing Invariants
 
-- The next visible replay object must not unexpectedly be `BindingCreate`; bind
-  records are consumed through `bind(obj)`, not surfaced as ordinary payloads.
-- `BindingLookup` resolution must use the current live binding table for the
+- The next visible replay object must not unexpectedly be a bind-open marker;
+  bind records are consumed through `bind(obj)`, not surfaced as ordinary payloads.
+- `stream.Binding` resolution must use the current live binding table for the
   correct thread.
-- `BindingDelete` records are internal maintenance records; deleting or exposing
+- Bind-close markers are internal maintenance records; deleting or exposing
   them at the wrong layer changes replay behavior.
 - `PeekableReader`, `DemuxReader`, and `ResolvingReader` must preserve parity:
   peeking must not observe a different logical stream than replay consumes.
@@ -46,7 +46,7 @@ through the tape. Many "protocol" failures are actually stream contract bugs.
 
 ## High-Risk Areas
 
-- `ExpectedBindingCreate` / `bind(obj)` failures.
+- `ExpectedBindMarker` / `bind(obj)` failures.
 - Reader/writer parity for bindings, async-new-patched records, and deletes.
 - `ThreadSwitch` handling and current-thread routing.
 - Heartbeat skipping and buffering behavior.
@@ -62,7 +62,7 @@ through the tape. Many "protocol" failures are actually stream contract bugs.
   delete consumption together; they are one contract.
 - If you change writer-side binding emission, update or re-check the matching
   reader-side expectations in the same diff.
-- Do not change `BindingCreate` / `BindingLookup` visibility casually.
+- Do not change bind-open marker / `stream.Binding` visibility casually.
 - If a fix changes transport ordering, call out whether it affects:
   binding creation, thread routing, heartbeat skipping, or fork behavior.
 - Prefer adding focused tests in `tests/stream/` when the failure is about

@@ -5,6 +5,7 @@ import pytest
 
 pytest.importorskip("retracesoftware.stream")
 import retracesoftware.stream as stream
+import retracesoftware.utils as utils
 
 
 def _command_events(events, name):
@@ -214,24 +215,20 @@ def test_raw_queue_passes_collection_lengths_as_python_ints():
         queue.close()
 
 
-def test_debug_persister_emits_bound_ref_for_bound_patched_object(monkeypatch):
+def test_debug_persister_serializes_binding_objects_as_handle_refs(monkeypatch):
     _disable_heartbeat(monkeypatch)
     events = []
     persister = stream.DebugPersister(events.append)
 
-    class Patched:
-        __retrace_system__ = object()
+    binder = stream.Binder()
+    obj = object()
+    binding = binder.bind(obj)
 
     with stream.writer(output=persister, flush_interval=999) as writer:
-        writer.bind(Patched)
-        obj = Patched()
-        writer.bind(obj)
-        writer(obj)
+        writer(binding)
         writer.flush()
 
-    assert ("command", ("bind", (0,))) in events
-    assert ("command", ("bind", (1,))) in events
-    assert ("bound_ref", 1) in events
+    assert ("handle_ref", 0) in events
 
 
 def test_debug_persister_emits_intern_then_ref(monkeypatch):

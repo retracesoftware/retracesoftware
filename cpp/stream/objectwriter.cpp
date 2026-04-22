@@ -37,101 +37,14 @@ namespace retracesoftware_stream {
     struct ObjectWriter;
     class Persister;
 
-    struct BinderDeleteCallback : public PyObject {
-        PyObject * writer;
-        vectorcallfunc vectorcall;
-        
-        static PyObject* call(BinderDeleteCallback* self,
-                              PyObject* const* args, size_t nargsf,
-                              PyObject* kwnames);
-        static int traverse(BinderDeleteCallback* self, visitproc visit, void* arg);
-        static int clear(BinderDeleteCallback* self);
-        static void dealloc(BinderDeleteCallback* self);
-    };
-
-    PyTypeObject BinderDeleteCallback_Type = {
-        .ob_base = PyVarObject_HEAD_INIT(NULL, 0)
-        .tp_name = MODULE "BinderDeleteCallback",
-        .tp_basicsize = sizeof(BinderDeleteCallback),
-        .tp_itemsize = 0,
-        .tp_dealloc = (destructor)BinderDeleteCallback::dealloc,
-        .tp_vectorcall_offset = OFFSET_OF_MEMBER(BinderDeleteCallback, vectorcall),
-        .tp_call = PyVectorcall_Call,
-        .tp_flags = Py_TPFLAGS_DEFAULT | Py_TPFLAGS_HAVE_GC | Py_TPFLAGS_HAVE_VECTORCALL,
-        .tp_traverse = (traverseproc)BinderDeleteCallback::traverse,
-        .tp_clear = (inquiry)BinderDeleteCallback::clear,
-    };
-
-    static PyObject* pickle_dumps_fn() {
-        static PyObject* dumps = nullptr;
-        if (!dumps) {
-            PyObject* mod = PyImport_ImportModule("pickle");
-            if (!mod) { PyErr_Clear(); return nullptr; }
-            dumps = PyObject_GetAttrString(mod, "dumps");
-            Py_DECREF(mod);
-            if (!dumps) { PyErr_Clear(); return nullptr; }
-        }
-        return dumps;
-    }
-
-    static PyObject* utils_module() {
-        static PyObject* module = nullptr;
-        if (!module) {
-            module = PyImport_ImportModule("retracesoftware.utils");
-        }
-        return module;
-    }
-
-    static PyObject* new_binder_instance() {
-        PyObject* module = utils_module();
-        if (!module) {
-            return nullptr;
-        }
-        PyObject* binder_type = PyObject_GetAttrString(module, "Binder");
-        if (!binder_type) {
-            return nullptr;
-        }
-        PyObject* binder = PyObject_CallNoArgs(binder_type);
-        Py_DECREF(binder_type);
-        return binder;
-    }
-
-    static PyObject* call_binder_method_one_arg(PyObject* binder, const char* name, PyObject* arg) {
-        PyObject* method = PyObject_GetAttrString(binder, name);
-        if (!method) {
-            return nullptr;
-        }
-        PyObject* result = PyObject_CallOneArg(method, arg);
-        Py_DECREF(method);
-        return result;
-    }
-
-    static bool extract_binding_handle(PyObject* binding, BindingHandle& handle) {
-        PyObject* value = nullptr;
-        if (PyLong_Check(binding)) {
-            value = Py_NewRef(binding);
-        } else {
-            value = PyObject_GetAttrString(binding, "handle");
-            if (!value) {
-                return false;
-            }
-        }
-
-        unsigned long long raw = PyLong_AsUnsignedLongLong(value);
-        Py_DECREF(value);
-        if (raw == static_cast<unsigned long long>(-1) && PyErr_Occurred()) {
-            return false;
-        }
-        handle = static_cast<BindingHandle>(raw);
-        return true;
+    static BindingHandle intern_handle(PyObject* obj) {
+        return static_cast<BindingHandle>(reinterpret_cast<uintptr_t>(obj));
     }
 
     struct ObjectWriter : public PyObject {
 
         Queue * queue = nullptr;
-        PyObject * binder = nullptr;
-        map<PyObject*, BindingHandle> fallback_bindings;
-        BindingHandle next_fallback_handle = MAX_INLINE_BINDING_HANDLE;
+        set<BindingHandle> interned_handles;
 
         size_t messages_written = 0;
         int pid;
@@ -230,102 +143,34 @@ namespace retracesoftware_stream {
             return buffer;
         }
 
-        void bind(PyObject * obj) {
-            if (is_disabled()) return;
-            BindingHandle handle = bind_handle(obj);
-
-            // trace_bind_event("producer-bind-enter", obj, (long)messages_written);
-
-            if (verbose) {
-                debug_prefix();
-                printf("BIND(%s)\n", Py_TYPE(obj)->tp_name);
-            }
-
-            if (!disable_if_push_failed(queue->push_bind(handle))) return;
-            messages_written++;
-            // trace_bind_event("producer-bind-enqueued", obj, (long)messages_written);
-        }
-
         void intern_value(PyObject* obj) {
             if (is_disabled()) return;
-
-            BindingHandle handle = 0;
-            if (lookup_handle(obj, handle)) {
-                write_root(obj);
-                return;
-            }
-            handle = bind_handle(obj);
 
             if (verbose) {
                 debug_prefix();
                 printf("INTERN(%s)\n", Py_TYPE(obj)->tp_name);
             }
 
-            if (!disable_if_push_failed(queue->push_intern(obj, handle))) return;
+            if (!disable_if_push_failed(queue->push_intern(obj, intern_handle(obj)))) return;
             messages_written++;
+        }
+
+        BindingHandle ensure_interned(PyObject* obj) {
+            BindingHandle handle = intern_handle(obj);
+            auto [_, inserted] = interned_handles.emplace(handle);
+            if (inserted) {
+                intern_value(obj);
+            }
+            return handle;
         }
 
         static constexpr int MAX_FLATTEN_DEPTH = 32;
 
-        bool lookup_handle(PyObject* obj, BindingHandle& handle) {
-            auto fallback = fallback_bindings.find(obj);
-            if (fallback != fallback_bindings.end()) {
-                handle = fallback->second;
-                return true;
-            }
-
-            PyObject* binding = call_binder_method_one_arg(binder, "lookup", obj);
-            if (!binding) throw nullptr;
-            if (binding == Py_None) {
-                Py_DECREF(binding);
-                return false;
-            }
-            if (!extract_binding_handle(binding, handle)) {
-                Py_DECREF(binding);
-                throw nullptr;
-            }
-            Py_DECREF(binding);
-            return true;
-        }
-
-        BindingHandle bind_fallback_handle(PyObject* obj) {
-            auto it = fallback_bindings.find(obj);
-            if (it != fallback_bindings.end()) {
-                return it->second;
-            }
-            if (next_fallback_handle == 0) {
-                PyErr_SetString(PyExc_OverflowError, "exhausted inline binding handles");
-                throw nullptr;
-            }
-            BindingHandle handle = next_fallback_handle--;
-            fallback_bindings.emplace(Py_NewRef(obj), handle);
-            return handle;
-        }
-
-        BindingHandle bind_handle(PyObject* obj) {
-            PyObject* binding = call_binder_method_one_arg(binder, "bind", obj);
-            if (!binding) {
-                if (PyErr_ExceptionMatches(PyExc_TypeError)) {
-                    PyErr_Clear();
-                    return bind_fallback_handle(obj);
-                }
-                throw nullptr;
-            }
-            BindingHandle handle = 0;
-            if (!extract_binding_handle(binding, handle)) {
-                Py_DECREF(binding);
-                throw nullptr;
-            }
-            Py_DECREF(binding);
-            return handle;
-        }
-
         void push_value(PyObject* obj, int depth = 0) {
             if (is_disabled()) return;
 
-            BindingHandle handle = 0;
-            if (lookup_handle(obj, handle)) {
-                disable_if_push_failed(queue->push_ref(handle));
+            if (Binding_Check(obj)) {
+                disable_if_push_failed(queue->push_ref(Binding_Handle(obj)));
             } else {
                 PyTypeObject* tp = Py_TYPE(obj);
                 
@@ -341,10 +186,7 @@ namespace retracesoftware_stream {
                     }
                 }
                 else if (tp == &PyUnicode_Type && is_interned_unicode(obj)) [[unlikely]] {
-                    intern_value(obj);
-                    if (lookup_handle(obj, handle)) {
-                        disable_if_push_failed(queue->push_ref(handle));
-                    }
+                    disable_if_push_failed(queue->push_ref(ensure_interned(obj)));
                 }
                 else if (tp == &PyList_Type) [[unlikely]] {
                     assert (depth < MAX_FLATTEN_DEPTH);
@@ -444,7 +286,6 @@ namespace retracesoftware_stream {
             }
         }
 
-        static PyObject * py_bind(ObjectWriter * self, PyObject* obj);
         static PyObject * py__intern(ObjectWriter * self, PyObject* obj);
 
         static PyObject* py_new(PyTypeObject* type, PyObject*, PyObject*) {
@@ -479,45 +320,18 @@ namespace retracesoftware_stream {
             self->vectorcall = reinterpret_cast<vectorcallfunc>(ObjectWriter::py_vectorcall);
 
             self->queue = reinterpret_cast<Queue*>(Py_NewRef(queue_obj));
-            self->binder = new_binder_instance();
-            if (!self->binder) {
-                return -1;
-            }
-
-            auto* callback = reinterpret_cast<BinderDeleteCallback*>(
-                BinderDeleteCallback_Type.tp_alloc(&BinderDeleteCallback_Type, 0));
-            if (!callback) {
-                Py_CLEAR(self->binder);
-                return -1;
-            }
-            callback->writer = Py_NewRef(reinterpret_cast<PyObject*>(self));
-            callback->vectorcall = reinterpret_cast<vectorcallfunc>(BinderDeleteCallback::call);
-            if (PyObject_SetAttrString(self->binder, "on_delete", reinterpret_cast<PyObject*>(callback)) < 0) {
-                Py_DECREF(reinterpret_cast<PyObject*>(callback));
-                Py_CLEAR(self->binder);
-                return -1;
-            }
-            Py_DECREF(reinterpret_cast<PyObject*>(callback));
 
             return 0;
         }
 
         static int traverse(ObjectWriter* self, visitproc visit, void* arg) {
             Py_VISIT(self->queue);
-            Py_VISIT(self->binder);
-            for (auto const& [obj, _] : self->fallback_bindings) {
-                Py_VISIT(obj);
-            }
             return 0;
         }
 
         static int clear(ObjectWriter* self) {
+            self->interned_handles.clear();
             self->clear_queue_ref();
-            Py_CLEAR(self->binder);
-            for (auto const& [obj, _] : self->fallback_bindings) {
-                Py_DECREF(obj);
-            }
-            self->fallback_bindings.clear();
             return 0;
         }
 
@@ -564,58 +378,9 @@ namespace retracesoftware_stream {
         }
     };
 
-    PyObject* BinderDeleteCallback::call(BinderDeleteCallback* self,
-                                         PyObject* const* args, size_t nargsf,
-                                         PyObject* kwnames) {
-        if (PyVectorcall_NARGS(nargsf) != 1 || kwnames) {
-            PyErr_SetString(PyExc_TypeError, "BinderDeleteCallback takes one positional argument");
-            return nullptr;
-        }
-
-        auto* w = reinterpret_cast<ObjectWriter*>(self->writer);
-        if (w && !w->is_disabled()) {
-            try {
-                BindingHandle handle = 0;
-                if (extract_binding_handle(args[0], handle)) {
-                    (void)w->disable_if_push_failed(w->queue->push_delete(handle));
-                } else {
-                    PyErr_Clear();
-                }
-            } catch (...) {
-                PyErr_Clear();
-            }
-        }
-        Py_RETURN_NONE;
-    }
-
-    int BinderDeleteCallback::traverse(BinderDeleteCallback* self, visitproc visit, void* arg) {
-        Py_VISIT(self->writer);
-        return 0;
-    }
-
-    int BinderDeleteCallback::clear(BinderDeleteCallback* self) {
-        Py_CLEAR(self->writer);
-        return 0;
-    }
-
-    void BinderDeleteCallback::dealloc(BinderDeleteCallback* self) {
-        PyObject_GC_UnTrack(self);
-        clear(self);
-        Py_TYPE(self)->tp_free((PyObject*)self);
-    }
-
-    PyObject* ObjectWriter::py_bind(ObjectWriter* self, PyObject* obj) {
-        try {
-            self->bind(obj);
-            Py_RETURN_NONE;
-        } catch (...) {
-            return nullptr;
-        }
-    }
-
     PyObject* ObjectWriter::py__intern(ObjectWriter* self, PyObject* obj) {
         try {
-            self->intern_value(obj);
+            (void)self->ensure_interned(obj);
             Py_RETURN_NONE;
         } catch (...) {
             return nullptr;
@@ -628,7 +393,6 @@ namespace retracesoftware_stream {
         {"flush", (PyCFunction)ObjectWriter::py_flush, METH_NOARGS, "Flush buffered data to the output callback"},
         {"disable", (PyCFunction)ObjectWriter::py_disable, METH_NOARGS, "Null queue pointers to prevent further writes"},
         {"heartbeat", (PyCFunction)ObjectWriter::py_heartbeat, METH_O, "Push heartbeat payload dict and flush"},
-        {"bind", (PyCFunction)ObjectWriter::py_bind, METH_O, "TODO"},
         {"_intern", (PyCFunction)ObjectWriter::py__intern, METH_O, "TODO"},
         {NULL}
     };

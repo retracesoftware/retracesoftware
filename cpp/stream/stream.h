@@ -106,12 +106,8 @@ namespace retracesoftware_stream {
     extern PyTypeObject TapeReader_Type;
     extern PyTypeObject Persister_Type;
     extern PyTypeObject FramedWriter_Type;
-    extern PyTypeObject BindingRef_Type;
-    extern PyTypeObject BindingRefCreate_Type;
-    extern PyTypeObject BindingRefLookup_Type;
-    extern PyTypeObject BindingRefDelete_Type;
-
-    PyObject* binding_ref_new(PyTypeObject* type, uint64_t index);
+    extern PyTypeObject Binding_Type;
+    extern PyTypeObject Binder_Type;
 
     void handle_write_error();
     void handle_debug_error(bool quit_on_error);
@@ -120,7 +116,15 @@ namespace retracesoftware_stream {
     class FramedWriter;
     FramedWriter* FramedWriter_get(PyObject* obj);
 
-    extern PyTypeObject BinderDeleteCallback_Type;
+    bool Binding_Check(PyObject * obj);
+    uint64_t Binding_Handle(PyObject * obj);
+    PyObject * Binding_New(uint64_t handle);
+    bool AddBindSupport(PyTypeObject * type);
+    bool RemoveBindSupport(PyTypeObject * type);
+    bool GetExactBindSupportOriginalDealloc(PyTypeObject * type, destructor * out);
+    PyObject * Binder_Bind(PyObject * binder, PyObject * obj);
+    PyObject * Binder_Lookup(PyObject * binder, PyObject * obj);
+
     // extern PyTypeObject ObjectReader_Type;
 
     inline void generic_gc_dealloc(PyObject *self) {

@@ -26,6 +26,9 @@ from tests.runner import Runner, retrace_test
 
 # ── helpers ───────────────────────────────────────────────────────
 
+_SERVER_READY_TIMEOUT = 10.0
+_SERVER_ACCEPT_TIMEOUT = 10.0
+
 def _loopback_pair():
     """Create a connected (client, server_conn) socket pair over TCP.
 
@@ -44,6 +47,36 @@ def _loopback_pair():
 
     conn, addr = srv.accept()
     return cli, conn, srv
+
+
+def _start_server_only_client(*, ready, port_box, payload):
+    client_errors = []
+
+    def client():
+        try:
+            if not ready.wait(timeout=_SERVER_READY_TIMEOUT):
+                raise AssertionError("server did not become ready before client timeout")
+            if not port_box:
+                raise AssertionError("server signaled readiness before publishing a port")
+            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as client_socket:
+                client_socket.connect(("127.0.0.1", port_box[0]))
+                client_socket.sendall(payload)
+        except Exception as exc:
+            client_errors.append(exc)
+
+    thread = threading.Thread(target=client)
+    thread.start()
+    return thread, client_errors
+
+
+def _accept_server_only_connection(srv, client_errors):
+    srv.settimeout(_SERVER_ACCEPT_TIMEOUT)
+    try:
+        return srv.accept()
+    except TimeoutError as exc:
+        if client_errors:
+            raise AssertionError("client failed before connecting") from client_errors[0]
+        raise AssertionError("timed out waiting for client connection") from exc
 
 
 # ── name resolution ───────────────────────────────────────────────
@@ -78,15 +111,11 @@ def test_server_recv():
     ready = threading.Event()
     port_box = []
 
-    def client():
-        ready.wait(timeout=2.0)
-        c = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        c.connect(("127.0.0.1", port_box[0]))
-        c.sendall(b"hello from client")
-        c.close()
-
-    t = threading.Thread(target=client)
-    t.start()
+    t, client_errors = _start_server_only_client(
+        ready=ready,
+        port_box=port_box,
+        payload=b"hello from client",
+    )
     runner = Runner()
 
     def server_work():
@@ -96,14 +125,17 @@ def test_server_recv():
         port_box.append(srv.getsockname()[1])
         srv.listen(1)
         ready.set()
-        conn, _addr = srv.accept()
-        data = conn.recv(4096)
-        conn.close()
-        srv.close()
-        return data
+        try:
+            conn, _addr = _accept_server_only_connection(srv, client_errors)
+            data = conn.recv(4096)
+            conn.close()
+            return data
+        finally:
+            srv.close()
 
     recording = runner.record(server_work)
     t.join()
+    assert not client_errors, str(client_errors[0])
 
     result = runner.replay(recording, server_work)
     assert result == b"hello from client"
@@ -261,15 +293,11 @@ def test_recv_into_server_only():
     ready = threading.Event()
     port_box = []
 
-    def client():
-        ready.wait(timeout=2.0)
-        c = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        c.connect(("127.0.0.1", port_box[0]))
-        c.sendall(b"hello via recv_into")
-        c.close()
-
-    t = threading.Thread(target=client)
-    t.start()
+    t, client_errors = _start_server_only_client(
+        ready=ready,
+        port_box=port_box,
+        payload=b"hello via recv_into",
+    )
     runner = Runner()
 
     def server_work():
@@ -279,15 +307,18 @@ def test_recv_into_server_only():
         port_box.append(srv.getsockname()[1])
         srv.listen(1)
         ready.set()
-        conn, _addr = srv.accept()
-        buf = bytearray(4096)
-        nbytes = conn.recv_into(buf)
-        conn.close()
-        srv.close()
-        return bytes(buf[:nbytes])
+        try:
+            conn, _addr = _accept_server_only_connection(srv, client_errors)
+            buf = bytearray(4096)
+            nbytes = conn.recv_into(buf)
+            conn.close()
+            return bytes(buf[:nbytes])
+        finally:
+            srv.close()
 
     recording = runner.record(server_work)
     t.join()
+    assert not client_errors, str(client_errors[0])
 
     result = runner.replay(recording, server_work)
     assert result == b"hello via recv_into"

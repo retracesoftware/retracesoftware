@@ -5,7 +5,7 @@ import pytest
 from retracesoftware.install import Recording, ReplayDivergence, install_retrace
 from retracesoftware.install.monitoring import install_monitoring, suppress_monitoring
 from retracesoftware.proxy.io import recorder, replayer
-from retracesoftware.testing.memorytape import MemoryTape
+from retracesoftware.testing.memorytape import IOMemoryTape
 
 _RUNNER_SETTINGS_ATTR = "__retrace_runner_settings__"
 
@@ -134,10 +134,10 @@ class Runner:
                 system.patch(obj)
 
     def _record_with_settings(self, settings, fn, *args, **kwargs):
-        tape = MemoryTape()
+        tape = IOMemoryTape()
         writer = tape.writer()
         system = recorder(
-            tape_writer=writer,
+            writer=writer.write,
             debug=settings["debug"],
             stacktraces=settings["stacktraces"],
         )
@@ -190,7 +190,7 @@ class Runner:
         return self._record_with_settings(settings, fn, *args, **kwargs)
 
     def _replay_with_settings(self, settings, recording, fn, *args, **kwargs):
-        tape = MemoryTape(recording.tape)
+        tape = IOMemoryTape(recording.tape)
         reader = tape.reader()
 
         def on_unexpected(key):
@@ -206,7 +206,8 @@ class Runner:
             )
 
         system = replayer(
-            tape_reader=reader,
+            next_object=reader.read,
+            close=getattr(reader, "close", None),
             on_unexpected=on_unexpected,
             on_desync=on_desync,
             debug=settings["debug"],

@@ -4,11 +4,18 @@ from pathlib import Path
 
 import pytest
 import retracesoftware.stream as stream
-import retracesoftware.utils as utils
 
-from retracesoftware.proxy.io import recorder_context, replayer_context
+from retracesoftware.proxy.io import (
+    _ThreadDemuxSource,
+    _IoMessageSource,
+    _RawTapeSource,
+    _ReplayBindingState,
+    recorder_context,
+    replayer,
+)
 from retracesoftware.proxy.tape import Tape
-from retracesoftware.testing.memorytape import MemoryTape
+from retracesoftware.tape import RawTapeWriter
+from retracesoftware.testing.memorytape import IOMemoryTape
 
 
 @dataclass(frozen=True)
@@ -53,8 +60,6 @@ class StreamTape:
 class _RawStreamTapeReader:
     __slots__ = ("_tape_reader",)
 
-    protocol_thread_source = True
-
     def __init__(self, path: Path):
         self._tape_reader = stream.TapeReader(
             path=path,
@@ -72,13 +77,25 @@ class _RawStreamTapeReader:
         self._tape_reader.close()
 
     def read(self):
-        return self._tape_reader.next()
+        value = self._tape_reader.next()
+        while isinstance(value, stream.Heartbeat):
+            value = self._tape_reader.next()
+        return value
+
+
+class FreshExternalResult:
+    def ping(self):
+        return "pong"
+
+
+def make_fresh_external_result():
+    return FreshExternalResult()
 
 
 @pytest.fixture(params=["memory", "stream"], ids=["memory", "stream"])
 def tape(request, tmp_path):
     if request.param == "memory":
-        value = MemoryTape()
+        value = IOMemoryTape()
     else:
         value = StreamTape(tmp_path / "trace.bin")
 
@@ -100,7 +117,7 @@ def _entered(resource):
 @contextmanager
 def _recorder_context(mode, tape_writer, gc_collect_multiplier=None):
     with recorder_context(
-        tape_writer=tape_writer,
+        writer=tape_writer.write,
         debug=mode.debug,
         stacktraces=mode.stacktraces,
         gc_collect_multiplier=gc_collect_multiplier,
@@ -111,13 +128,17 @@ def _recorder_context(mode, tape_writer, gc_collect_multiplier=None):
 
 @contextmanager
 def _replayer_context(mode, tape_reader):
-    with replayer_context(
-        tape_reader=tape_reader,
+    system = replayer(
+        next_object=tape_reader.read,
+        close=getattr(tape_reader, "close", None),
         debug=mode.debug,
         stacktraces=mode.stacktraces,
-    ) as system:
+    )
+    try:
         _configure_system(system)
         yield system
+    finally:
+        system.unpatch_types()
 
 
 def _contains_type_name(value, name):
@@ -132,6 +153,122 @@ def _contains_type_name(value, name):
 
 def _raw_tape(tape):
     return getattr(tape, "tape", None)
+
+
+def test_replayer_consumes_protocol_result_after_thread_switch():
+    class FlatTapeReader:
+        def __init__(self, items):
+            self._iter = iter(items)
+
+        def read(self):
+            return next(self._iter)
+
+        def close(self):
+            return None
+
+    message = _IoMessageSource(
+        _ReplayBindingState(
+            _ThreadDemuxSource(
+                FlatTapeReader([
+                    "THREAD_SWITCH",
+                    0,
+                    "RESULT",
+                    42,
+                ]).read,
+                thread_id=lambda: 0,
+                initial_thread_id=0,
+            )
+        ).read,
+        thread_id=lambda: 0,
+    ).read()
+
+    assert message.result == 42
+    assert message.thread_id == 0
+
+
+def test_replay_binding_state_consumes_trailing_binding_deletes():
+    class FlatTapeReader:
+        def __init__(self, items):
+            self._iter = iter(items)
+
+        def read(self):
+            return next(self._iter)
+
+    reader = _ReplayBindingState(
+        FlatTapeReader([
+            (stream._BIND_CLOSE_TAG, 7),
+            (stream._BIND_CLOSE_TAG, 8),
+            "RESULT",
+        ])
+    )
+    reader._bindings = {7: object(), 8: object()}
+
+    reader.consume_pending_closes()
+
+    assert reader._bindings == {}
+    assert reader.read() == "RESULT"
+
+
+def test_raw_tape_source_consumes_binding_delete_before_thread_demux():
+    source = _RawTapeSource(
+        iter([
+            "THREAD_SWITCH",
+            1,
+            "BINDING_DELETE",
+            7,
+            "THREAD_SWITCH",
+            0,
+            "RESULT",
+            42,
+        ]).__next__
+    )
+    deleted = []
+    source._on_bind_close = deleted.append
+
+    demux = _ThreadDemuxSource(
+        source.read,
+        thread_id=lambda: 0,
+        initial_thread_id=0,
+    )
+
+    assert demux.read() == "RESULT"
+    assert deleted == [7]
+
+
+def test_raw_tape_writer_passes_binding_objects_through_to_stream_writer():
+    class FakeTapeWriter:
+        def __init__(self):
+            self.written = []
+
+        def write(self, *values):
+            self.written.append(values)
+
+    writer = FakeTapeWriter()
+    raw_writer = RawTapeWriter(writer)
+    binding = stream.Binding(7)
+
+    raw_writer.write("RESULT", {"value": [binding]})
+
+    assert writer.written == [
+        ("RESULT", {"value": [binding]}),
+    ]
+
+
+def test_system_io_records_callback_for_new_ext_proxy_type_with_memory_tape():
+    tape = IOMemoryTape()
+    writer = tape.writer()
+
+    with _entered(writer) as writer:
+        with _recorder_context(IOMode("plain"), writer) as record_system:
+            recorded_make = record_system.patch_function(make_fresh_external_result)
+            record_system.run(recorded_make)
+
+    raw = _raw_tape(tape)
+
+    assert raw is not None
+    assert "CALL" in raw
+    assert "CALLBACK" in raw
+    assert "RESULT" in raw
 
 
 @pytest.mark.parametrize("mode", ALL_IO_MODES)
@@ -261,7 +398,7 @@ def test_system_io_records_and_rebinds_callback_receiver_with_tape(mode, tape):
 
     raw = _raw_tape(tape)
     if raw is not None:
-        assert any(_contains_type_name(entry, "_BindingCreate") for entry in raw)
+        assert "NEW_BINDING" in raw
 
     reader = tape.reader()
     with _entered(reader) as reader:
@@ -281,7 +418,7 @@ def test_system_io_records_and_rebinds_callback_receiver_with_tape(mode, tape):
 
 
 def test_system_io_replays_dynamic_internal_proxy_callback_side_effect_with_memory_tape():
-    tape = MemoryTape()
+    tape = IOMemoryTape()
     writer = tape.writer()
 
     class External:

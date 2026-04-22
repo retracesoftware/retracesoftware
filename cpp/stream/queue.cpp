@@ -13,12 +13,10 @@ namespace retracesoftware_stream {
     class Persister;
 
     extern bool Persister_write_heartbeat(Persister* persister);
-    extern bool Persister_write_delete_handle(Persister* persister, BindingHandle handle);
     extern bool Persister_start_collection(Persister* persister, PyObject* type, size_t len);
     extern bool Persister_write_binding_lookup(Persister* persister, BindingHandle handle);
     extern bool Persister_write_object(Persister* persister, PyObject* obj);
     extern bool Persister_intern_handle(Persister* persister, PyObject* obj, BindingHandle handle);
-    extern bool Persister_bind_handle(Persister* persister, BindingHandle handle);
 
     namespace {
         // Keep the minimum capacity large enough that multi-entry logical
@@ -306,62 +304,6 @@ namespace retracesoftware_stream {
             }
             return method;
         }
-    }
-
-    bool Queue::call_target_bind(BindingHandle handle) {
-        if (is_persister()) {
-            return Persister_bind_handle(native_persister(target_obj), handle);
-        }
-        retracesoftware::GILGuard gstate;
-        PyObject* method = lookup_target_method(target_obj, "bind");
-        if (!method) {
-            PyErr_SetString(PyExc_AttributeError, "target is missing 'bind'");
-            capture_current_target_error();
-            return false;
-        }
-        PyObject* handle_obj = handle_to_pyobject(handle);
-        if (!handle_obj) {
-            Py_DECREF(method);
-            capture_current_target_error();
-            return false;
-        }
-        PyObject* result = PyObject_CallFunctionObjArgs(method, handle_obj, nullptr);
-        Py_DECREF(handle_obj);
-        Py_DECREF(method);
-        if (!result) {
-            capture_current_target_error();
-            return false;
-        }
-        Py_DECREF(result);
-        return true;
-    }
-
-    bool Queue::call_target_delete(BindingHandle handle) {
-        if (is_persister()) {
-            return Persister_write_delete_handle(native_persister(target_obj), handle);
-        }
-        retracesoftware::GILGuard gstate;
-        PyObject* method = lookup_target_method(target_obj, "write_delete");
-        if (!method) {
-            PyErr_SetString(PyExc_AttributeError, "target is missing 'write_delete'");
-            capture_current_target_error();
-            return false;
-        }
-        PyObject* handle_obj = handle_to_pyobject(handle);
-        if (!handle_obj) {
-            Py_DECREF(method);
-            capture_current_target_error();
-            return false;
-        }
-        PyObject* result = PyObject_CallFunctionObjArgs(method, handle_obj, nullptr);
-        Py_DECREF(handle_obj);
-        Py_DECREF(method);
-        if (!result) {
-            capture_current_target_error();
-            return false;
-        }
-        Py_DECREF(result);
-        return true;
     }
 
     bool Queue::call_target_intern(PyObject* obj, BindingHandle handle) {
@@ -872,9 +814,9 @@ namespace retracesoftware_stream {
         return as_payload_obj(entry);
     }
 
-    BindingHandle Queue::consume_binding_handle(EntryKind expected_kind) {
+    BindingHandle Queue::consume_binding_handle() {
         QEntry entry = pop_entry();
-        if (!is_tagged_entry(entry) || kind_of(entry) != expected_kind) {
+        if (!is_ref_entry(entry)) {
             retracesoftware::GILGuard gstate;
             PyErr_SetString(PyExc_RuntimeError, "expected binding handle payload");
             throw nullptr;
@@ -997,7 +939,7 @@ namespace retracesoftware_stream {
         switch (cmd_of(entry)) {
             case CMD_INTERN: {
                 PyObject* obj = consume_owned_payload();
-                BindingHandle handle = consume_binding_handle(ENTRY_BIND);
+                BindingHandle handle = consume_binding_handle();
                 if (!call_target_intern(obj, handle)) {
                     release_consumed_obj(obj);
                     return false;
@@ -1121,12 +1063,6 @@ namespace retracesoftware_stream {
         if (is_ref_entry(entry)) {
             return call_target_write_handle_ref(as_binding_handle(entry));
         }
-        if (is_bind_entry(entry)) {
-            return call_target_bind(as_binding_handle(entry));
-        }
-        if (is_delete_entry(entry)) {
-            return call_target_delete(as_binding_handle(entry));
-        }
         return dispatch_command(entry);
     }
 
@@ -1136,14 +1072,14 @@ namespace retracesoftware_stream {
             return;
         }
 
-        if (is_ref_entry(entry) || is_bind_entry(entry) || is_delete_entry(entry)) {
+        if (is_ref_entry(entry)) {
             return;
         }
 
         switch (cmd_of(entry)) {
             case CMD_INTERN:
                 release_consumed_obj(consume_owned_payload());
-                (void)consume_binding_handle(ENTRY_BIND);
+                (void)consume_binding_handle();
                 break;
             case CMD_FLUSH:
             case CMD_SHUTDOWN:

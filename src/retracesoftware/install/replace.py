@@ -33,10 +33,20 @@ def update(old, new):
 
 
 def update_module_refs(old, new):
-    # Temporary test-focused simplification: skip module namespace alias
-    # rewriting entirely. This avoids the expensive sys.modules sweep during
-    # install/uninstall and is sufficient for the current focused replay tests.
-    return []
+    changes = []
+    for module in tuple(sys.modules.values()):
+        namespace = getattr(module, "__dict__", None)
+        if not isinstance(namespace, dict):
+            continue
+
+        for key, value in tuple(namespace.items()):
+            if key == "__retrace_unproxied__":
+                continue
+            if value is old:
+                namespace[key] = new
+                changes.append((namespace, key, old, new))
+
+    return changes
 
 
 def restore_module_refs(changes):

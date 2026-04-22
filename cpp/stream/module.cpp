@@ -1,7 +1,7 @@
 #include "stream.h"
 #include "wireformat.h"
 
-static PyTypeObject * hidden_types[] = {    &retracesoftware_stream::BinderDeleteCallback_Type,
+static PyTypeObject * hidden_types[] = {
     nullptr
 };
 
@@ -12,10 +12,8 @@ static PyTypeObject * exposed_types[] = {
     &retracesoftware_stream::ObjectStream_Type,
     &retracesoftware_stream::TapeReader_Type,
     &retracesoftware_stream::Persister_Type,
-    &retracesoftware_stream::BindingRef_Type,
-    &retracesoftware_stream::BindingRefCreate_Type,
-    &retracesoftware_stream::BindingRefLookup_Type,
-    &retracesoftware_stream::BindingRefDelete_Type,
+    &retracesoftware_stream::Binding_Type,
+    &retracesoftware_stream::Binder_Type,
     nullptr
 };
 
@@ -34,9 +32,54 @@ static PyObject * set_thread_id(PyObject * module, PyObject * id) {
     Py_RETURN_NONE;
 }
 
+static PyObject * add_bind_support(PyObject * module, PyObject * cls) {
+    if (!PyType_Check(cls)) {
+        PyErr_SetString(PyExc_TypeError, "add_bind_support takes a type");
+        return nullptr;
+    }
+
+    if (!retracesoftware_stream::AddBindSupport(reinterpret_cast<PyTypeObject *>(cls))) {
+        return nullptr;
+    }
+
+    Py_RETURN_NONE;
+}
+
+static PyObject * remove_bind_support(PyObject * module, PyObject * cls) {
+    if (!PyType_Check(cls)) {
+        PyErr_SetString(PyExc_TypeError, "remove_bind_support takes a type");
+        return nullptr;
+    }
+
+    if (!retracesoftware_stream::RemoveBindSupport(reinterpret_cast<PyTypeObject *>(cls))) {
+        return nullptr;
+    }
+
+    Py_RETURN_NONE;
+}
+
+static PyObject * get_bind_support_original_dealloc(PyObject * module, PyObject * cls) {
+    if (!PyType_Check(cls)) {
+        PyErr_SetString(PyExc_TypeError, "_get_bind_support_original_dealloc takes a type");
+        return nullptr;
+    }
+
+    destructor original = nullptr;
+    if (!retracesoftware_stream::GetExactBindSupportOriginalDealloc(
+            reinterpret_cast<PyTypeObject *>(cls), &original)) {
+        Py_RETURN_NONE;
+    }
+
+    return PyLong_FromVoidPtr(reinterpret_cast<void *>(original));
+}
+
 static PyMethodDef module_methods[] = {
     {"thread_id", (PyCFunction)thread_id, METH_NOARGS, "TODO"},
     {"set_thread_id", (PyCFunction)set_thread_id, METH_O, "TODO"},
+    {"add_bind_support", (PyCFunction)add_bind_support, METH_O, "Enable binder lifecycle support for instances of a type"},
+    {"remove_bind_support", (PyCFunction)remove_bind_support, METH_O, "Disable binder lifecycle support for instances of a type"},
+    {"set_bind_support", (PyCFunction)add_bind_support, METH_O, "Alias for add_bind_support"},
+    {"_get_bind_support_original_dealloc", (PyCFunction)get_bind_support_original_dealloc, METH_O, "Internal helper for composing native dealloc wrappers"},
     // {"create_wrapping_proxy_type", (PyCFunction)create_wrapping_proxy_type, METH_VARARGS | METH_KEYWORDS, "TODO"},
     // {"unwrap_apply", (PyCFunction)unwrap_apply, METH_FASTCALL | METH_KEYWORDS, "Call the wrapped target with unproxied *args/**kwargs."},
     // {"thread_id", (PyCFunction)thread_id, METH_NOARGS, "TODO"},

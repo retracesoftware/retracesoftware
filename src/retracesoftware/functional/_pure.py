@@ -456,6 +456,28 @@ def repeatedly(func: Callable[..., Any], *bound_args: Any) -> Callable[..., Any]
     return _rep
 
 
+class _Iterate:
+    def __init__(self, function: Callable[[Any], Any], seed: Any):
+        if not callable(function):
+            raise TypeError("iterate() expects a callable")
+        self.function = function
+        self.current = seed
+
+    def __iter__(self):
+        return self
+
+    def __next__(self):
+        value = self.current
+        self.current = self.function(value)
+        return value
+
+
+def iterate(function: Callable[[Any], Any], seed: Any):
+    """iterate(function, seed) -> iterator yielding seed, f(seed), f(f(seed)), ..."""
+
+    return _Iterate(function, seed)
+
+
 def constantly(value: Any) -> Callable[..., Any]:
     """constantly(x) returns a callable that always returns x (never calls x even if callable)."""
 
@@ -935,6 +957,7 @@ __all__ = [
     "indexed",
     "instance_test",
     "intercept",
+    "iterate",
     "isinstanceof",
     "mapargs",
     "mapcall",

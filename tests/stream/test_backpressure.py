@@ -201,7 +201,7 @@ def test_inflight_no_data_loss_under_pressure(tmp_path):
 
 
 def test_push_fail_callback_disables_objectwriter():
-    """A falsy push-fail callback should disable further native writer pushes."""
+    """The first stalled native push should disable later ObjectWriter pushes."""
     callbacks = []
 
     queue = stream._backend_mod.Queue(
@@ -211,13 +211,13 @@ def test_push_fail_callback_disables_objectwriter():
     writer = stream._backend_mod.ObjectWriter(queue)
 
     try:
-        writer.bind(object())
-        assert callbacks == []
-
-        writer.bind(object())
+        writer._intern("first")
         assert callbacks == ["fail"]
 
-        writer.bind(object())
+        writer._intern("second")
+        assert callbacks == ["fail"]
+
+        writer._intern("third")
         assert callbacks == ["fail"]
     finally:
         queue.close()

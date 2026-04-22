@@ -11,7 +11,7 @@ from retracesoftware.testing.memorytape import MemoryWriter
 class FakeStackFactory:
     def __init__(self, *deltas):
         self._deltas = list(deltas)
-        self.exclude = set()
+        self.exclude = set().__contains__
 
     def delta(self):
         return self._deltas.pop(0)
@@ -106,10 +106,23 @@ def test_next_message_materializes_full_stacktrace_message():
     msg = next_message(
         iter(["STACKTRACE", delta[0], delta[1]]).__next__,
         stacktrace_factory=StacktraceFactory().materialize,
+        thread_id=lambda: ("worker",),
     )
 
     assert isinstance(msg, StacktraceMessage)
     assert msg.stacktrace == delta[1][0]
+    assert msg.thread_id == ("worker",)
+
+
+def test_next_message_attaches_thread_id_to_result_message():
+    msg = next_message(
+        iter(["RESULT", 42]).__next__,
+        stacktrace_factory=lambda *_: None,
+        thread_id=lambda: ("main", 1),
+    )
+
+    assert msg.result == 42
+    assert msg.thread_id == ("main", 1)
 
 
 def test_write_call_raises_on_stacktrace_divergence():
@@ -179,6 +192,14 @@ def test_checkpoint_normalizes_values_symmetrically():
         stacktrace_factory=FakeStackFactory(delta),
     )
     reader.checkpoint(value)
+
+
+def test_memory_writer_handle_message_records_thread_id():
+    writer = MemoryWriter(thread=lambda: ("worker",))
+
+    writer.handle("STACKTRACE")("payload")
+
+    assert writer.tape[0].thread_id == ("worker",)
 
 
 def test_read_result_skips_nested_sync_call_frames():

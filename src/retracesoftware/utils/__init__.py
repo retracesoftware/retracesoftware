@@ -5,7 +5,6 @@ Set RETRACE_DEBUG=1 to use the debug build with symbols and assertions.
 """
 import os
 import sys
-import weakref as _weakref
 
 __path__ = [os.path.dirname(os.path.abspath(__file__))]
 import warnings
@@ -73,17 +72,6 @@ def _export_public(mod: ModuleType) -> None:
 
 _export_public(_backend_mod)
 
-_NativeBinder = globals().get("Binder")
-if "add_bind_support" not in globals() and "set_bind_support" in globals():
-    add_bind_support = set_bind_support
-
-if _NativeBinder is not None and "add_bind_support" in globals():
-    class Binder(_NativeBinder):
-        add_bind_support = staticmethod(add_bind_support)
-        set_bind_support = staticmethod(add_bind_support)
-        if "remove_bind_support" in globals():
-            remove_bind_support = staticmethod(remove_bind_support)
-
 _NativeStackFactory = _backend_mod.StackFactory
 stacktrace_exclude = set()
 
@@ -106,41 +94,6 @@ class InternalWrapped(_WrappedBase):
 
 class ExternalWrapped(_WrappedBase):
     """Marker base for wrappers representing the external domain."""
-
-
-class _BinderWeakState:
-    __slots__ = ("binder", "bindings")
-
-    def __init__(self, binder):
-        self.binder = binder
-        self.bindings = {}
-
-    def bind(self, obj, binding):
-        ref = _weakref.ref(obj, self.on_collect)
-        self.bindings[ref] = binding
-        return binding
-
-    def lookup(self, obj):
-        try:
-            return self.bindings[_weakref.ref(obj)]
-        except TypeError:
-            return None
-        except KeyError:
-            return None
-
-    def on_collect(self, ref):
-        binding = self.bindings.pop(ref, None)
-        if binding is None:
-            return
-
-        on_delete = self.binder.on_delete
-        if on_delete is None:
-            return
-
-        try:
-            on_delete(getattr(binding, "handle", binding))
-        except Exception:
-            pass
 
 
 # ---------------------------------------------------------------------------

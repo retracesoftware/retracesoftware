@@ -11,43 +11,33 @@ from retracesoftware.protocol.record import CALL
 from retracesoftware.protocol.replay import ReplayReader, StacktraceFactory
 from retracesoftware.proxy.tape import TapeReader, TapeWriter
 from retracesoftware.stream import (
-    BindingCreate,
-    BindingDelete,
-    BindingLookup,
+    Binder,
+    Binding,
     ObjectReader,
     ThreadSwitch,
+    _BIND_OPEN_TAG,
 )
 import retracesoftware.utils as utils
 
 
-class _BindingCreate:
+class _BindOpenMarker:
     __slots__ = ("index",)
 
     def __init__(self, index):
         self.index = index
 
     def __repr__(self):
-        return f"BindingCreate({self.index})"
+        return f"BindOpen({self.index})"
 
 
-class _BindingLookup:
+class _BindCloseMarker:
     __slots__ = ("index",)
 
     def __init__(self, index):
         self.index = index
 
     def __repr__(self):
-        return f"BindingRef({self.index})"
-
-
-class _BindingDelete:
-    __slots__ = ("index",)
-
-    def __init__(self, index):
-        self.index = index
-
-    def __repr__(self):
-        return f"BindingDelete({self.index})"
+        return f"BindClose({self.index})"
 
 
 class _BindingState:
@@ -60,7 +50,7 @@ class _BindingState:
     )
 
     def __init__(self, tape_append):
-        self._binder = utils.Binder(on_delete=self._on_delete)
+        self._binder = Binder(on_delete=self._on_delete)
         self._indices = {}
         self._fallback_bindings = {}
         self._next_index = 0
@@ -78,14 +68,14 @@ class _BindingState:
         handle = binding.handle if hasattr(binding, "handle") else binding
         index = self._indices.pop(("binding", handle), None)
         if index is not None:
-            self._tape_append(_BindingDelete(index))
+            self._tape_append(_BindCloseMarker(index))
 
     def _on_collect(self, obj_id):
         key = ("fallback", obj_id)
         index = self._indices.pop(key, None)
         self._fallback_bindings.pop(obj_id, None)
         if index is not None:
-            self._tape_append(_BindingDelete(index))
+            self._tape_append(_BindCloseMarker(index))
 
     def _bind_fallback(self, obj):
         obj_id = id(obj)
@@ -98,24 +88,24 @@ class _BindingState:
                 weakref.finalize(obj, self._on_collect, obj_id)
             except TypeError:
                 pass
-        return _BindingCreate(index)
+        return _BindOpenMarker(index)
 
     def bind(self, obj):
         try:
             binding = self._binder.bind(obj)
         except TypeError:
             return self._bind_fallback(obj)
-        return _BindingCreate(self._index_for_key(("binding", binding.handle)))
+        return _BindOpenMarker(self._index_for_key(("binding", binding.handle)))
 
     def __call__(self, obj, fallback=None):
         binding = self._binder.lookup(obj)
         if binding is not None:
             index = self._indices.get(("binding", binding.handle))
             if index is not None:
-                return _BindingLookup(index)
+                return Binding(index)
         fallback_index = self._fallback_bindings.get(id(obj))
         if fallback_index is not None:
-            return _BindingLookup(fallback_index)
+            return Binding(fallback_index)
         return fallback(obj) if fallback else obj
 
 
@@ -132,7 +122,18 @@ class _MemoryTapeWriter:
             tape_append,
         )
 
-    def write(self, *values):
+    def write(self, *values, **kwargs):
+        if kwargs:
+            if len(values) < 2:
+                raise TypeError("write(..., **kwargs) requires at least a tag and callable")
+            prefix = values[:2]
+            arguments = values[2:]
+            for value in prefix:
+                self._write_one(value)
+            self._write_one(arguments)
+            self._write_one(kwargs)
+            return None
+
         for value in values:
             self._write_one(value)
         return None
@@ -148,34 +149,64 @@ class _MemoryTapeWriter:
 class _MemoryTapeReader:
     """Low-level reader surface used by ``proxy.io.IO`` tests."""
 
-    __slots__ = ("_next_from_tape", "_bindings", "read")
+    __slots__ = ("_buffer", "_next_from_tape", "_bindings")
 
     def __init__(self, next_from_tape):
+        self._buffer = []
         self._next_from_tape = next_from_tape
         self._bindings = {}
-        self.read = functional.sequence(self._next_visible, functional.walker(self._resolve))
+
+    def _next_raw(self):
+        if self._buffer:
+            return self._buffer.pop(0)
+        return self._next_from_tape()
 
     def _next_visible(self):
-        value = self._next_from_tape()
-        while isinstance(value, _BindingDelete):
+        value = self._next_raw()
+        while isinstance(value, _BindCloseMarker):
             self._bindings.pop(value.index, None)
-            value = self._next_from_tape()
+            value = self._next_raw()
         return value
 
-    def _resolve(self, value):
-        if isinstance(value, _BindingLookup):
-            return self._bindings[value.index]
-        elif isinstance(value, _BindingCreate):
-            raise RuntimeError(f"unexpected BindingCreate, got {value!r}")
+    def _resolve(self, value, bindings=None):
+        if bindings is None:
+            bindings = self._bindings
+        if isinstance(value, Binding):
+            return bindings[value.handle]
+        elif isinstance(value, _BindOpenMarker):
+            raise RuntimeError(f"unexpected bind marker, got {value!r}")
         else:
             return value
 
+    def read(self):
+        return functional.walker(self._resolve)(self._next_visible())
+
     def bind(self, obj):
         marker = self._next_visible()
-        if not isinstance(marker, _BindingCreate):
-            raise RuntimeError(f"expected BindingCreate, got {marker!r}")
+        if not isinstance(marker, _BindOpenMarker):
+            raise RuntimeError(f"expected bind marker, got {marker!r}")
         self._bindings[marker.index] = obj
         return None
+
+    def peek(self):
+        shadow_bindings = dict(self._bindings)
+        index = 0
+
+        while True:
+            while index >= len(self._buffer):
+                self._buffer.append(self._next_from_tape())
+
+            value = self._buffer[index]
+            index += 1
+
+            if isinstance(value, _BindCloseMarker):
+                shadow_bindings.pop(value.index, None)
+                continue
+
+            if isinstance(value, _BindOpenMarker):
+                raise RuntimeError(f"unexpected bind marker, got {value!r}")
+
+            return functional.walker(lambda obj: self._resolve(obj, shadow_bindings))(value)
 
     def monitor_checkpoint(self, value):
         marker = self._next_visible()
@@ -243,6 +274,21 @@ class MemoryTape:
 
     def reader(self) -> TapeReader:
         return _MemoryTapeReader(iter(self.tape).__next__)
+
+
+class IOMemoryTape:
+    """Raw in-memory tape for ``proxy.io`` record/replay paths."""
+
+    __slots__ = ("tape",)
+
+    def __init__(self, tape=None):
+        self.tape = [] if tape is None else list(tape)
+
+    def writer(self) -> TapeWriter:
+        return _IOThreadAwareTapeWriter(self.tape)
+
+    def reader(self):
+        return _IOThreadAwareTapeReader(self.tape)
 
 
 class _ProtocolBindingState:
@@ -321,6 +367,11 @@ class MemoryWriter:
                 self._last_thread = tid
                 self.tape.append(ThreadSwitch(tid))
 
+    def _current_thread_id(self):
+        if self._thread is not None:
+            return self._thread()
+        return self._last_thread
+
     def _encode_value(self, value):
         serializer = self.type_serializer.get(type(value))
         if serializer is not None:
@@ -328,7 +379,7 @@ class MemoryWriter:
 
         binding_index = self._binding_state.lookup(value)
         if binding_index is not None:
-            return BindingLookup(binding_index)
+            return Binding(binding_index)
 
         if isinstance(value, list):
             return [self._encode_value(item) for item in value]
@@ -370,7 +421,8 @@ class MemoryWriter:
         self._maybe_switch()
         self.tape.append(
             self._stacktrace_message_factory.materialize(
-                *self._checkpoint_stackfactory.delta()
+                *self._checkpoint_stackfactory.delta(),
+                self._current_thread_id(),
             )
         )
         self.tape.append("CHECKPOINT")
@@ -384,14 +436,23 @@ class MemoryWriter:
     def stacktrace(self):
         if self._stackfactory is not None:
             self.tape.append(
-                self._stacktrace_message_factory.materialize(*self._stackfactory.delta())
+                self._stacktrace_message_factory.materialize(
+                    *self._stackfactory.delta(),
+                    self._current_thread_id(),
+                )
             )
 
     def handle(self, name):
         tape = self.tape
 
         def handle_writer(value):
-            tape.append(HandleMessage(name, value))
+            tape.append(
+                HandleMessage(
+                    name,
+                    value,
+                    thread_id=self._current_thread_id(),
+                )
+            )
 
         return handle_writer
 
@@ -399,7 +460,7 @@ class MemoryWriter:
         if not a:
             return None
         index = self._binding_state.bind(a[0])
-        self.tape.append(BindingCreate(index))
+        self.tape.append((_BIND_OPEN_TAG, index))
         return None
 
     def intern(self, obj):
@@ -538,14 +599,25 @@ class _IOThreadAwareTapeWriter:
 class _IOThreadAwareTapeReader:
     __slots__ = ("_tape", "_source")
 
-    protocol_thread_source = True
-
-    def __init__(self, tape, *, thread_id):
+    def __init__(self, tape):
         self._tape = tape
         self._source = _ProtocolTapeSource(tape)
 
     def read(self):
         return self._source()
+
+    def close(self):
+        return None
+
+    def monitor_checkpoint(self, value):
+        marker = self.read()
+        if marker != "MONITOR":
+            raise RuntimeError(f"expected 'MONITOR', got {marker!r}")
+        recorded = self.read()
+        if recorded != value:
+            raise RuntimeError(
+                f"monitor divergence: recorded {recorded!r}, replayed {value!r}"
+            )
 
 
 @contextmanager
@@ -601,7 +673,7 @@ def record_then_replay(
         thread=record_thread_ids.id.get,
     )
     record_system = recorder(
-        tape_writer=writer,
+        writer=writer.write,
         debug=debug,
         stacktraces=stacktraces,
     )
@@ -629,10 +701,7 @@ def record_then_replay(
         after_record()
 
     replay_thread_ids = ThreadId()
-    tape_reader = _IOThreadAwareTapeReader(
-        tape_storage,
-        thread_id=replay_thread_ids.id.get,
-    )
+    tape_reader = _IOThreadAwareTapeReader(tape_storage)
 
     def on_unexpected(key):
         raise ReplayDivergence(
@@ -647,7 +716,8 @@ def record_then_replay(
         )
 
     replay_system = replayer(
-        tape_reader=tape_reader,
+        next_object=tape_reader.read,
+        close=tape_reader.close,
         on_unexpected=on_unexpected,
         on_desync=on_desync,
         debug=debug,
@@ -689,6 +759,6 @@ __all__ = [
     "MemoryTape",
     "MemoryWriter",
     "RecordReplayResult",
-    "_BindingDelete",
+    "_BindCloseMarker",
     "record_then_replay",
 ]

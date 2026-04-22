@@ -9,12 +9,10 @@ from retracesoftware.proxy.system import CallHooks, LifecycleHooks, System
 
 
 def _system():
-    system = System(
-        primary_hooks=CallHooks(),
-        secondary_hooks=CallHooks(),
-        lifecycle_hooks=LifecycleHooks(on_start=utils.noop, on_end=utils.noop),
-        on_bind=utils.noop,
-    )
+    system = System(on_bind=utils.noop)
+    system.primary_hooks = CallHooks()
+    system.secondary_hooks = CallHooks()
+    system.lifecycle_hooks = LifecycleHooks(on_start=utils.noop, on_end=utils.noop)
     system.immutable_types.update({int, float, str, bytes, bool, type, type(None)})
     return system
 

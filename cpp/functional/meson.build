@@ -22,6 +22,7 @@ _func_sources = files(
   'indexer.cpp',
   'instancetest.cpp',
   'intercept.cpp',
+  'iterate.cpp',
   'lazy.cpp',
   'mapcall.cpp',
   'manypredicate.cpp',

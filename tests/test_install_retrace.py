@@ -4,7 +4,7 @@ import threading
 
 from retracesoftware.install import install_retrace
 from retracesoftware.proxy.io import recorder, replayer
-from retracesoftware.testing.memorytape import MemoryTape
+from retracesoftware.testing.memorytape import IOMemoryTape
 
 
 def _configure_system(system):
@@ -17,9 +17,9 @@ def _new_socket():
 
 
 def test_install_retrace_uninstall_resets_patched_types():
-    tape = MemoryTape()
+    tape = IOMemoryTape()
 
-    record_system = recorder(tape_writer=tape.writer(), debug=False, stacktraces=False)
+    record_system = recorder(writer=tape.writer().write, debug=False, stacktraces=False)
     _configure_system(record_system)
     uninstall_record = install_retrace(
         system=record_system,
@@ -40,7 +40,13 @@ def test_install_retrace_uninstall_resets_patched_types():
     _new_socket()
     assert len(tape.tape) == tape_len
 
-    replay_system = replayer(tape_reader=tape.reader(), debug=False, stacktraces=False)
+    replay_reader = tape.reader()
+    replay_system = replayer(
+        next_object=replay_reader.read,
+        close=getattr(replay_reader, "close", None),
+        debug=False,
+        stacktraces=False,
+    )
     _configure_system(replay_system)
     uninstall_replay = install_retrace(
         system=replay_system,
@@ -60,13 +66,13 @@ def test_install_retrace_uninstall_resets_patched_types():
 
 
 def test_install_retrace_uninstall_restores_thread_lock_aliases():
-    tape = MemoryTape()
+    tape = IOMemoryTape()
 
     original_thread_allocate_lock = _thread.allocate_lock
     original_threading_lock = threading.Lock
     original_threading_allocate_lock = threading._allocate_lock
 
-    record_system = recorder(tape_writer=tape.writer(), debug=False, stacktraces=False)
+    record_system = recorder(writer=tape.writer().write, debug=False, stacktraces=False)
     _configure_system(record_system)
     uninstall_record = install_retrace(
         system=record_system,
@@ -86,7 +92,13 @@ def test_install_retrace_uninstall_restores_thread_lock_aliases():
     assert threading.Lock is _thread.allocate_lock
     assert threading._allocate_lock is _thread.allocate_lock
 
-    replay_system = replayer(tape_reader=tape.reader(), debug=False, stacktraces=False)
+    replay_reader = tape.reader()
+    replay_system = replayer(
+        next_object=replay_reader.read,
+        close=getattr(replay_reader, "close", None),
+        debug=False,
+        stacktraces=False,
+    )
     _configure_system(replay_system)
     uninstall_replay = install_retrace(
         system=replay_system,

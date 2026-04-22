@@ -200,8 +200,9 @@ Usage
 from ast import Call
 from typing import NamedTuple, Callable, Any
 from contextlib import contextmanager
-import retracesoftware.utils as utils
 import retracesoftware.functional as functional
+import retracesoftware.stream as stream
+import retracesoftware.utils as utils
 import types
 import gc
 import threading
@@ -317,7 +318,6 @@ def with_type_of(func):
     return functional.sequence(functional.typeof, func)
 
 def _ext_proxytype_from_spec(system, module, name, methods):
-
         spec = {
             '__module__': module,        
         }
@@ -498,22 +498,23 @@ class System:
         def wrap_thread_function(function):
             if self.enabled():
                 next_id = self.counter.next()
+                wrapped = self.thread_wrapper(function)
 
                 def in_child(*args, **kwargs):
                     self._thread_id.set(next_id)
+                    return wrapped(*args, **kwargs)
 
-                return utils.observer(
-                    on_call = in_child, 
-                    function = self.thread_wrapper(function))
-                # return self.thread_wrapper(function)
+                return in_child
             else:
                 return function
 
-        return functional.positional_param_transform(
-            function=original_start_new_thread,
-            index=0,
-            transform=wrap_thread_function,
-        )
+        def wrapped_start_new_thread(function, args, kwargs=None):
+            wrapped = wrap_thread_function(function)
+            if kwargs is None:
+                return original_start_new_thread(wrapped, args)
+            return original_start_new_thread(wrapped, args, kwargs)
+
+        return wrapped_start_new_thread
 
     def patch_function(self, fn):
         """Return a wrapper that routes *fn* through the external gate.
@@ -553,7 +554,7 @@ class System:
             return self.patch_function(obj)
         raise TypeError(f"cannot patch {type(obj).__name__!r} object")
 
-    def disable_for(self, function):
+    def disable_for(self, function, *, unwrap_args=True):
         """Return a callable that runs *function* with both gates disabled.
 
         This is used when the system needs to call its own internal
@@ -571,16 +572,20 @@ class System:
 
         ``function`` may itself be a ``wrapped_function``. In that case we
         still want to execute its underlying target rather than re-entering
-        the wrapper/handler path with both gates cleared, so the disabled
-        call goes through ``self.fallback`` rather than invoking *function*
-        directly.
+        the wrapper/handler path with both gates cleared.
+
+        When ``unwrap_args`` is true, the disabled call also recursively
+        unwraps nested args/kwargs through ``self.fallback``. When false, it
+        only unwraps the callable itself and passes args/kwargs through
+        unchanged via ``utils.try_unwrap_apply``.
         """
         apply_ext = self._external.apply_with(None)
         apply_int = self._internal.apply_with(None)
+        disabled = self.fallback if unwrap_args else utils.try_unwrap_apply
 
         return functional.partial(
             apply_ext,
-            functional.partial(apply_int, self.fallback),
+            functional.partial(apply_int, disabled),
             function,
         )
 
@@ -810,8 +815,8 @@ class System:
         #   - Otherwise: utils.noop keeps the object unbound, so later
         #     patched method calls passthrough.
         self._on_alloc = functional.cond(
-            self._external.is_set, self.bind,
-            self._internal.is_set, self.async_new_patched,
+            self._external.is_set, self._call_bind,
+            self._internal.is_set, self._call_async_new_patched,
             utils.noop)
 
         # self._on_alloc = functional.cond(
@@ -854,8 +859,11 @@ class System:
 
         self.checkpoint = utils.noop
 
-        self.descriptor_proxytype = functional.memoize_one_arg(self.descriptor_proxytype)        
-        self.ext_proxy = proxy(functional.memoize_one_arg(self.ext_proxytype))
+        self.descriptor_proxytype = functional.memoize_one_arg(self.descriptor_proxytype)
+        self._memoized_ext_proxytype = functional.memoize_one_arg(self.ext_proxytype)
+        self.ext_proxy = proxy(self._memoized_ext_proxytype)
+        self.ext_result_proxytype = self._wrapped_function(self._internal, self._memoized_ext_proxytype)
+        self.ext_result_proxy = proxy(self.ext_result_proxytype)
 
         self.counter = ThreadSafeCounter(initial = 0)
 
@@ -865,9 +873,17 @@ class System:
     
     def wrap_async(self, function):
         return self._wrapped_function(self._int_handler, function)
-        # return self._wrapped_function(self._internal, function)
 
-    def _ext_proxy(self):
+    def _call_bind(self, obj):
+        return self.bind(obj)
+
+    def _call_async_new_patched(self, obj):
+        return self.async_new_patched(obj)
+
+    def _ext_proxy(self, proxy_factory=None):
+        if proxy_factory is None:
+            proxy_factory = self.ext_proxy
+
         ext_leaf_proxy = \
             functional.if_then_else(
                 self.ext_passthrough,
@@ -875,7 +891,7 @@ class System:
                 functional.if_then_else(
                     self.is_patched_type,
                     functional.side_effect(self.async_new_patched),
-                    self.ext_proxy))
+                    proxy_factory))
 
         if not self.passthrough_proxyref:
             ext_leaf_proxy = \
@@ -905,11 +921,11 @@ class System:
             functional.identity,
             functional.walker(leaf_int_proxy))
 
-    def ext_executor(self, *, int_proxy, ext_proxy, hooks):
+    def ext_executor(self, *, int_proxy, ext_result_proxy, hooks):
         
         with_generic_ext_result = \
             functional.sequence(
-                ext_proxy,
+                ext_result_proxy,
                 functional.side_effect(
                       functional.sequence(
                           self.serialize_ext_wrapped,
@@ -983,10 +999,11 @@ class System:
     def run(self, function, *args, **kwargs):
         int_proxy = self._int_proxy()
         ext_proxy = self._ext_proxy()
+        ext_result_proxy = self._ext_proxy(self.ext_result_proxy)
 
         external_executor = self.ext_executor(
             int_proxy = int_proxy,
-            ext_proxy = ext_proxy,
+            ext_result_proxy = ext_result_proxy,
             hooks = CallHooks(
                 on_call = self.secondary_hooks.on_call if self.secondary_hooks else None,
                 on_result = self.primary_hooks.on_result if self.primary_hooks else None,
@@ -1229,7 +1246,7 @@ class System:
         bound_types = []
 
         def bind_patched_type(target):
-            utils.Binder.add_bind_support(target)
+            stream.Binder.add_bind_support(target)
             self.bind(target)
             bound_types.append(target)
 
@@ -1338,7 +1355,7 @@ class System:
             )
 
             for bound_type in reversed(bound_types):
-                utils.Binder.remove_bind_support(bound_type)
+                stream.Binder.remove_bind_support(bound_type)
                 self.is_bound.discard(bound_type)
 
             self.patched_types.discard(cls)
@@ -1368,7 +1385,7 @@ class System:
         _module_unpatch_type(cls)
 
         for target in tracked_types:
-            utils.Binder.remove_bind_support(target)
+            stream.Binder.remove_bind_support(target)
             self.patched_types.discard(target)
             self.is_bound.discard(target)
 

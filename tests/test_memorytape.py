@@ -2,8 +2,8 @@ import gc
 import pytest
 
 from retracesoftware.proxy.tape import TapeReader, TapeWriter
-from retracesoftware.testing.memorytape import MemoryTape, _BindingDelete
-import retracesoftware.utils as utils
+from retracesoftware.testing.memorytape import MemoryTape, _BindCloseMarker
+import retracesoftware.stream as stream
 
 
 def test_memory_tape_write_is_just_a_flat_append_surface():
@@ -40,7 +40,7 @@ def test_memory_tape_uses_tape_local_binding_indices_not_global_binder_handles()
     class Thing:
         pass
 
-    binder = utils.Binder()
+    binder = stream.Binder()
     binder.bind(Thing())
 
     tape = MemoryTape()
@@ -55,15 +55,15 @@ def test_memory_tape_uses_tape_local_binding_indices_not_global_binder_handles()
 
     assert tape.tape[0].index == 0
     assert tape.tape[1].index == 1
-    assert repr(tape.tape[2][0]) == "BindingRef(0)"
-    assert repr(tape.tape[2][1]) == "BindingRef(1)"
+    assert repr(tape.tape[2][0]) == "Binding(0)"
+    assert repr(tape.tape[2][1]) == "Binding(1)"
 
 
 def test_memory_tape_reader_bind_requires_binding_create_marker():
     tape = MemoryTape(["CALL"])
     reader = tape.reader()
 
-    with pytest.raises(RuntimeError, match="expected BindingCreate"):
+    with pytest.raises(RuntimeError, match="expected bind marker"):
         reader.bind(object())
 
 
@@ -74,7 +74,7 @@ def test_memory_tape_reader_rejects_unconsumed_binding_create():
 
     writer.bind(object())
 
-    with pytest.raises(RuntimeError, match="expected BindingCreate"):
+    with pytest.raises(RuntimeError, match="expected bind marker"):
         reader.read()
 
 
@@ -103,7 +103,7 @@ def test_memory_tape_writer_emits_binding_delete_for_weakrefable_bound_object():
     del value
     gc.collect()
 
-    assert any(isinstance(item, _BindingDelete) for item in tape.tape)
+    assert any(isinstance(item, _BindCloseMarker) for item in tape.tape)
 
 
 def test_memory_tape_reader_consumes_binding_delete_records():

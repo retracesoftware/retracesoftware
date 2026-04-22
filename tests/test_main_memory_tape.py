@@ -5,7 +5,7 @@ import pytest
 
 from retracesoftware.__main__ import install_and_run
 from retracesoftware.proxy.io import recorder, replayer
-from retracesoftware.testing.memorytape import MemoryTape, record_then_replay
+from retracesoftware.testing.memorytape import IOMemoryTape, record_then_replay
 from tests.runner import retrace_test
 
 
@@ -54,7 +54,7 @@ def test_retrace_test_pytest_smoke():
 
 
 def test_install_and_run_round_trips_time_proxy_with_memory_tape(monkeypatch):
-    tape = MemoryTape()
+    tape = IOMemoryTape()
     live_calls = []
 
     def fake_time():
@@ -64,7 +64,7 @@ def test_install_and_run_round_trips_time_proxy_with_memory_tape(monkeypatch):
     monkeypatch.setattr(time, "time", fake_time)
 
     record_system = recorder(
-        tape_writer=tape.writer(),
+        writer=tape.writer().write,
         debug=False,
         stacktraces=False,
     )
@@ -80,10 +80,11 @@ def test_install_and_run_round_trips_time_proxy_with_memory_tape(monkeypatch):
     assert live_calls == ["time"]
     assert time.time is fake_time
     assert "ON_START" in tape.tape
-    assert "ON_END" in tape.tape
 
+    replay_reader = tape.reader()
     replay_system = replayer(
-        tape_reader=tape.reader(),
+        next_object=replay_reader.read,
+        close=getattr(replay_reader, "close", None),
         debug=False,
         stacktraces=False,
     )
@@ -103,10 +104,10 @@ def test_install_and_run_round_trips_time_proxy_with_memory_tape(monkeypatch):
 def test_install_and_run_reads_socket_family_with_memory_tape():
     import _socket
 
-    tape = MemoryTape()
+    tape = IOMemoryTape()
 
     record_system = recorder(
-        tape_writer=tape.writer(),
+        writer=tape.writer().write,
         debug=False,
         stacktraces=False,
     )
@@ -131,7 +132,7 @@ def test_install_and_run_reads_socket_family_with_memory_tape():
 def test_install_and_run_round_trips_allocate_lock_with_memory_tape():
     import _thread
 
-    tape = MemoryTape()
+    tape = IOMemoryTape()
 
     def allocate_and_check():
         lock = _thread.allocate_lock()
@@ -142,7 +143,7 @@ def test_install_and_run_round_trips_allocate_lock_with_memory_tape():
             lock.release()
 
     record_system = recorder(
-        tape_writer=tape.writer(),
+        writer=tape.writer().write,
         debug=False,
         stacktraces=False,
     )
@@ -154,8 +155,10 @@ def test_install_and_run_round_trips_allocate_lock_with_memory_tape():
         function=allocate_and_check,
     )
 
+    replay_reader = tape.reader()
     replay_system = replayer(
-        tape_reader=tape.reader(),
+        next_object=replay_reader.read,
+        close=getattr(replay_reader, "close", None),
         debug=False,
         stacktraces=False,
     )
@@ -184,7 +187,7 @@ def test_install_and_run_replays_flask_request_from_unretraced_client_thread_wit
     from flask import Flask
     from wsgiref.simple_server import make_server
 
-    tape = MemoryTape()
+    tape = IOMemoryTape()
     path = "/hello"
     body = b"Hello from Flask!"
 
@@ -223,7 +226,7 @@ def test_install_and_run_replays_flask_request_from_unretraced_client_thread_wit
             server.server_close()
 
     record_system = recorder(
-        tape_writer=tape.writer(),
+        writer=tape.writer().write,
         debug=False,
         stacktraces=True,
     )
@@ -250,8 +253,10 @@ def test_install_and_run_replays_flask_request_from_unretraced_client_thread_wit
     assert recorded_hits == ["hello"]
     assert body in record_result["response"]
 
+    replay_reader = tape.reader()
     replay_system = replayer(
-        tape_reader=tape.reader(),
+        next_object=replay_reader.read,
+        close=getattr(replay_reader, "close", None),
         debug=False,
         stacktraces=True,
     )

@@ -47,6 +47,7 @@ extern PyTypeObject AndPredicate_Type;
 extern PyTypeObject OrPredicate_Type;
 extern PyTypeObject SpreadAnd_Type;
 extern PyTypeObject SpreadOr_Type;
+extern PyTypeObject Iterate_Type;
 extern PyTypeObject TypePredicate_Type;
 extern PyTypeObject TransformArgs_Type;
 extern PyTypeObject MapCall_Type;

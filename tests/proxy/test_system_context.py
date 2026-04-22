@@ -18,6 +18,7 @@ from types import SimpleNamespace
 import pytest
 
 import retracesoftware.utils as utils
+import retracesoftware.stream as stream
 from retracesoftware.protocol import StacktraceMessage
 import retracesoftware.proxy.context as context_mod
 from retracesoftware.proxy.contexts import record_context, replay_context
@@ -26,8 +27,6 @@ from retracesoftware.proxy._system_context import _GateContext, Handler
 from retracesoftware.proxy._system_specs import create_context
 from retracesoftware.proxy.system import System
 from retracesoftware.testing.memorytape import MemoryWriter, MemoryReader
-from retracesoftware.stream import BindingCreate, BindingLookup
-
 pytestmark = pytest.mark.skip(reason="stale proxy.contexts coverage targets a deprecated System context surface")
 
 _PATCHED_TYPE_KEEPALIVE = []
@@ -264,8 +263,8 @@ def test_patch_type_leaves_subclass_only_methods_as_plain_python():
 
     assert recorded == "value-1"
     assert len(writer.tape) == 1
-    assert isinstance(writer.tape[0], BindingCreate)
-    assert writer.tape[0].index == 0
+    assert stream._is_bind_open(writer.tape[0])
+    assert stream._bind_index(writer.tape[0]) == 0
 
     calls = 100
     with replay_context(system, writer.reader()):
@@ -547,7 +546,7 @@ def test_system_records_dynamic_int_proxy_callback_identity_as_binding_lookup():
 
     An internal object crosses out to an external method, which then calls one
     of its named methods. The callback fn written in ASYNC_CALL should be the
-    bound wrapped method identity (BindingLookup), not the raw underlying
+    bound wrapped method identity (`stream.Binding`), not the raw underlying
     function object.
     """
 
@@ -576,7 +575,7 @@ def test_system_records_dynamic_int_proxy_callback_identity_as_binding_lookup():
 
     idx = writer.tape.index("ASYNC_CALL")
     assert "CHECKPOINT" not in writer.tape
-    assert isinstance(writer.tape[idx + 1], BindingLookup)
+    assert isinstance(writer.tape[idx + 1], stream.Binding)
 
     callback_calls.clear()
 
@@ -622,9 +621,9 @@ def test_system_records_dynamic_int_proxy_callback_receiver_as_binding_lookup():
     assert recorded == 11
 
     idx = writer.tape.index("ASYNC_CALL")
-    assert isinstance(writer.tape[idx + 1], BindingLookup)
+    assert isinstance(writer.tape[idx + 1], stream.Binding)
     assert isinstance(writer.tape[idx + 2], tuple)
-    assert isinstance(writer.tape[idx + 2][0], BindingLookup)
+    assert isinstance(writer.tape[idx + 2][0], stream.Binding)
 
 
 def test_system_init_subclass_only_wraps_overrides():
@@ -687,8 +686,8 @@ def test_system_replay_runs_python_subclass_init_for_patched_base():
 
     assert recorded.child_ran is True
     assert len(writer.tape) == 4
-    assert isinstance(writer.tape[0], BindingCreate)
-    assert writer.tape[0].index == 0
+    assert stream._is_bind_open(writer.tape[0])
+    assert stream._bind_index(writer.tape[0]) == 0
     assert writer.tape[1:] == ["CALL", "RESULT", None]
 
     with replay_context(system, writer.reader()):
@@ -1577,7 +1576,7 @@ def test_system_bind_writes_stacktrace_before_binding_when_enabled():
         obj = Patched()
 
     assert isinstance(writer.tape[0], StacktraceMessage)
-    assert isinstance(writer.tape[1], BindingCreate)
+    assert stream._is_bind_open(writer.tape[1])
 
 
 def test_system_enabled_returns_boolean_false_when_inactive():

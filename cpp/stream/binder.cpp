@@ -1,4 +1,4 @@
-#include "utils.h"
+#include "stream.h"
 #include <structmember.h>
 #include <cstdint>
 #include <new>
@@ -7,7 +7,9 @@
 
 using namespace ankerl::unordered_dense;
 
-namespace retracesoftware {
+namespace retracesoftware_stream {
+
+    static destructor get_subtype_dealloc();
 
     struct Binding : PyObject {
         uint64_t handle;
@@ -103,10 +105,29 @@ namespace retracesoftware {
             : binder(binder), binding(binding) {}
     };
 
+    struct PyObjectIdentityHash {
+        using is_avalanching = void;
+
+        auto operator()(PyObject * obj) const noexcept -> uint64_t {
+            return static_cast<uint64_t>(reinterpret_cast<uintptr_t>(obj));
+        }
+    };
+
+    struct PyObjectIdentityEqual {
+        bool operator()(PyObject * left, PyObject * right) const noexcept {
+            return left == right;
+        }
+    };
+
+    template <typename T>
+    using identity_map = map<PyObject *, T, PyObjectIdentityHash, PyObjectIdentityEqual>;
+
     struct Binder : PyObject {
-        map<PyObject *, PyObject *> bindings;
+        identity_map<PyObject *> bindings;
+        identity_map<PyObject *> fallback_bindings;
         PyObject * weak_bindings = nullptr;
         PyObject * on_delete = nullptr;
+        vectorcallfunc vectorcall = nullptr;
 
         static int clear(Binder * self) {
             Py_CLEAR(self->weak_bindings);
@@ -115,19 +136,26 @@ namespace retracesoftware {
                 Py_DECREF(binding);
             }
             self->bindings.clear();
+            for (auto const & [obj, binding] : self->fallback_bindings) {
+                Py_DECREF(obj);
+                Py_DECREF(binding);
+            }
+            self->fallback_bindings.clear();
             return 0;
         }
 
         static void dealloc(Binder * self) {
             clear(self);
-            self->bindings.~map<PyObject *, PyObject *>();
+            self->bindings.~identity_map<PyObject *>();
+            self->fallback_bindings.~identity_map<PyObject *>();
             Py_TYPE(self)->tp_free(reinterpret_cast<PyObject *>(self));
         }
 
         static PyObject * py_new(PyTypeObject * type, PyObject *, PyObject *) {
             auto * self = reinterpret_cast<Binder *>(type->tp_alloc(type, 0));
             if (!self) return nullptr;
-            new (&self->bindings) map<PyObject *, PyObject *>();
+            new (&self->bindings) identity_map<PyObject *>();
+            new (&self->fallback_bindings) identity_map<PyObject *>();
             self->weak_bindings = nullptr;
             self->on_delete = nullptr;
             return reinterpret_cast<PyObject *>(self);
@@ -151,7 +179,27 @@ namespace retracesoftware {
 
             Py_XINCREF(on_delete);
             Py_XSETREF(self->on_delete, on_delete);
+            self->vectorcall = (vectorcallfunc)call;
             return 0;
+        }
+
+        static PyObject * call(Binder * self, PyObject * const * args, size_t nargsf, PyObject * kwnames) {
+            Py_ssize_t nargs = PyVectorcall_NARGS(nargsf);
+            if (nargs != 1 || (kwnames && PyTuple_GET_SIZE(kwnames) != 0)) {
+                PyErr_SetString(PyExc_TypeError, "Binder() takes exactly one positional argument");
+                return nullptr;
+            }
+
+            PyObject * binding = self->lookup(args[0]);
+            if (!binding) {
+                return nullptr;
+            }
+
+            if (binding == Py_None) {
+                Py_DECREF(binding);
+                return Py_NewRef(args[0]);
+            }
+            return binding;
         }
 
         static PyObject * on_delete_get(Binder * self, void *) {
@@ -177,13 +225,13 @@ namespace retracesoftware {
                 return true;
             }
 
-            PyObject * utils = PyImport_ImportModule("retracesoftware.utils");
-            if (!utils) {
+            PyObject * stream = PyImport_ImportModule("retracesoftware.stream");
+            if (!stream) {
                 return false;
             }
 
-            PyObject * weak_state_type = PyObject_GetAttrString(utils, "_BinderWeakState");
-            Py_DECREF(utils);
+            PyObject * weak_state_type = PyObject_GetAttrString(stream, "_BinderWeakState");
+            Py_DECREF(stream);
             if (!weak_state_type) {
                 return false;
             }
@@ -199,6 +247,11 @@ namespace retracesoftware {
             auto it = bindings.find(obj);
             if (it != bindings.end()) {
                 return Py_NewRef(it->second);
+            }
+
+            auto fallback = fallback_bindings.find(obj);
+            if (fallback != fallback_bindings.end()) {
+                return Py_NewRef(fallback->second);
             }
 
             if (!weak_bindings) {
@@ -218,6 +271,13 @@ namespace retracesoftware {
         void forget(PyObject * obj) {
             auto it = bindings.find(obj);
             if (it == bindings.end()) {
+                auto fallback = fallback_bindings.find(obj);
+                if (fallback == fallback_bindings.end()) {
+                    return;
+                }
+                Py_DECREF(fallback->first);
+                Py_DECREF(fallback->second);
+                fallback_bindings.erase(fallback);
                 return;
             }
             Py_DECREF(it->second);
@@ -265,6 +325,17 @@ namespace retracesoftware {
 
         PyObject * bind(PyObject * obj);
 
+        PyObject * bind_fallback(PyObject * obj, PyObject * binding) {
+            auto it = fallback_bindings.find(obj);
+            if (it != fallback_bindings.end()) {
+                Py_DECREF(binding);
+                return Py_NewRef(it->second);
+            }
+
+            fallback_bindings.emplace(Py_NewRef(obj), Py_NewRef(binding));
+            return binding;
+        }
+
         static PyObject * py_bind(Binder * self, PyObject * obj) {
             return self->bind(obj);
         }
@@ -276,9 +347,57 @@ namespace retracesoftware {
 
     static map<PyTypeObject *, destructor> dealloc_patches;
     static set<PyTypeObject *> bind_supported_types;
-    static map<PyObject *, std::vector<BoundEntry>> bound_entries;
+    static identity_map<std::vector<BoundEntry>> bound_entries;
     static uint64_t next_binding_handle = 0;
     static void binder_dealloc(PyObject * obj);
+
+    static destructor get_subtype_dealloc() {
+        static destructor cached = nullptr;
+        if (!cached) {
+            PyObject *probe = PyObject_CallFunction(
+                (PyObject *)&PyType_Type,
+                "s(O){}",
+                "_BinderSubtypeProbe",
+                (PyObject *)&PyBaseObject_Type
+            );
+            cached = ((PyTypeObject *)probe)->tp_dealloc;
+            Py_DECREF(probe);
+        }
+        return cached;
+    }
+
+    static void call_subtype_dealloc_without_reentering_wrapper(PyObject * obj) {
+        PyTypeObject * type = Py_TYPE(obj);
+        bool gc = type->tp_flags & Py_TPFLAGS_HAVE_GC;
+        if (gc) PyObject_GC_UnTrack(obj);
+
+        if (type->tp_finalize) {
+            if (gc) PyObject_GC_Track(obj);
+            PyObject_CallFinalizer(obj);
+            if (Py_REFCNT(obj) > 0) {
+                return;
+            }
+            if (gc) PyObject_GC_UnTrack(obj);
+        }
+
+        if (type->tp_weaklistoffset) {
+            PyObject **list = (PyObject **)((char *)obj + type->tp_weaklistoffset);
+            if (*list != NULL) {
+                PyObject_ClearWeakRefs(obj);
+            }
+        }
+
+        PyObject **dictptr = _PyObject_GetDictPtr(obj);
+        if (dictptr && *dictptr) {
+            Py_CLEAR(*dictptr);
+        }
+
+        PyBaseObject_Type.tp_dealloc(obj);
+
+        if (type->tp_flags & Py_TPFLAGS_HEAPTYPE) {
+            Py_DECREF(type);
+        }
+    }
 
     static bool has_patched_base(PyTypeObject * type) {
         type = type->tp_base;
@@ -336,6 +455,15 @@ namespace retracesoftware {
         return nullptr;
     }
 
+    bool GetExactBindSupportOriginalDealloc(PyTypeObject * type, destructor * out) {
+        auto it = dealloc_patches.find(type);
+        if (it == dealloc_patches.end()) {
+            return false;
+        }
+        *out = it->second;
+        return true;
+    }
+
     static void binder_dealloc(PyObject * obj) {
         PyTypeObject * patched_type = Py_TYPE(obj);
         while (patched_type && !dealloc_patches.contains(patched_type)) {
@@ -346,6 +474,16 @@ namespace retracesoftware {
             Py_TYPE(obj)->tp_dealloc(obj);
             return;
         }
+        destructor original = *original_dealloc;
+
+        // Binder composes with other native dealloc wrappers. If another layer
+        // saved binder_dealloc as its "original" handler and calls us as an
+        // inner deallocator, patched_type->tp_dealloc already points at that
+        // outer wrapper rather than binder_dealloc. In that case we must not
+        // temporarily re-enter the full dealloc slot chain or we recurse back
+        // into the outer wrapper. Only perform the tp_dealloc swap when binder
+        // is the active slot owner for this type.
+        bool entry = patched_type->tp_dealloc == binder_dealloc;
 
         auto entries_it = bound_entries.find(obj);
         if (entries_it != bound_entries.end()) {
@@ -360,9 +498,18 @@ namespace retracesoftware {
             }
         }
 
-        patched_type->tp_dealloc = *original_dealloc;
-        (*original_dealloc)(obj);
-        patched_type->tp_dealloc = binder_dealloc;
+        if (entry) {
+            patched_type->tp_dealloc = original;
+            original(obj);
+            patched_type->tp_dealloc = binder_dealloc;
+            return;
+        }
+
+        if (original == get_subtype_dealloc()) {
+            call_subtype_dealloc_without_reentering_wrapper(obj);
+        } else {
+            original(obj);
+        }
     }
 
     static bool patch_dealloc(PyTypeObject * type) {
@@ -413,7 +560,9 @@ namespace retracesoftware {
             return nullptr;
         }
         if (existing != Py_None) {
-            return existing;
+            Py_DECREF(existing);
+            PyErr_SetString(PyExc_RuntimeError, "object is already bound");
+            return nullptr;
         }
         Py_DECREF(existing);
 
@@ -425,8 +574,16 @@ namespace retracesoftware {
         PyTypeObject * supported_type = find_bind_supported_type(Py_TYPE(obj));
         if (!supported_type) {
             PyObject * result = bind_with_weakref(obj, binding);
+            if (result) {
+                Py_DECREF(binding);
+                return result;
+            }
+            if (PyErr_ExceptionMatches(PyExc_TypeError)) {
+                PyErr_Clear();
+                return bind_fallback(obj, binding);
+            }
             Py_DECREF(binding);
-            return result;
+            return nullptr;
         }
 
         if (!patch_dealloc(supported_type)) {
@@ -457,7 +614,9 @@ namespace retracesoftware {
         .tp_name = MODULE "Binder",
         .tp_basicsize = sizeof(Binder),
         .tp_dealloc = (destructor)Binder::dealloc,
-        .tp_flags = Py_TPFLAGS_DEFAULT | Py_TPFLAGS_BASETYPE,
+        .tp_vectorcall_offset = OFFSET_OF_MEMBER(Binder, vectorcall),
+        .tp_call = PyVectorcall_Call,
+        .tp_flags = Py_TPFLAGS_DEFAULT | Py_TPFLAGS_BASETYPE | Py_TPFLAGS_HAVE_VECTORCALL,
         .tp_methods = Binder_methods,
         .tp_getset = Binder_getset,
         .tp_init = (initproc)Binder::init,

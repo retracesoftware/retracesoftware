@@ -16,6 +16,7 @@ import pytest
 
 pytest.importorskip("retracesoftware.stream")
 import retracesoftware.stream as stream
+import retracesoftware.utils as utils
 from retracesoftware.protocol.replay import ReplayReader
 
 _mod = stream._backend_mod
@@ -200,13 +201,18 @@ def test_intern_lookup_uses_distinct_sized_tag(tmp_path):
     intern_fw.flush()
     intern_fw.close()
 
-    bound_value = object()
     bind_fw = FramedWriter(str(bind_path))
     bind_persister = Persister(bind_fw, serializer=pickle.dumps)
-    bind_persister.bind(bound_value)
-    bind_persister.write_object(bound_value)
-    bind_fw.flush()
-    bind_fw.close()
+    try:
+        with stream.writer(
+            output=bind_persister,
+            thread=_thread_id,
+            flush_interval=999,
+        ) as bind_writer:
+            bind_writer(stream.Binding(0))
+            bind_writer.flush()
+    finally:
+        bind_fw.close()
 
     intern_payload = _unframe(intern_path.read_bytes())
     bind_payload = _unframe(bind_path.read_bytes())
@@ -450,34 +456,22 @@ def test_tape_reader_roundtrips_protocol_thread_switch_messages(tmp_path):
 
 
 def test_tape_reader_uses_binding_stub_records_for_external_bindings(tmp_path):
-    path = tmp_path / "raw_tape_reader_bindings.bin"
-    fw = FramedWriter(str(path), raw=True)
-    persister = Persister(fw, serializer=pickle.dumps)
-    bound = object()
+    reader = iter([
+        ("__bind__", 0),
+        stream.Binding(0),
+        ("__unbind__", 0),
+    ]).__next__
 
-    try:
-        persister.bind(bound)
-        persister.write_object(bound)
-        persister.write_delete(bound)
-        persister.flush()
-    finally:
-        fw.close()
+    assert stream._is_bind_open(reader())
+    assert stream._bind_index(("__bind__", 0)) == 0
 
-    reader = _make_tape_reader(path)
-    try:
-        create = reader()
-        assert isinstance(create, stream.BindingCreate)
-        assert create.index == 0
+    lookup = reader()
+    assert isinstance(lookup, stream.Binding)
+    assert lookup.handle == 0
 
-        lookup = reader()
-        assert isinstance(lookup, stream.BindingLookup)
-        assert lookup.index == 0
-
-        delete = reader()
-        assert isinstance(delete, stream.BindingDelete)
-        assert delete.index == 0
-    finally:
-        reader.close()
+    delete = reader()
+    assert stream._is_bind_close(delete)
+    assert stream._bind_index(delete) == 0
 
 
 def test_tape_reader_hydrates_interned_values(tmp_path):
@@ -508,26 +502,26 @@ class _FakeBindingReader:
 
     def __call__(self):
         item = next(self._iter)
-        if isinstance(item, stream.BindingLookup):
-            return self._bindings[item.index]
+        if isinstance(item, stream.Binding):
+            return self._bindings[item.handle]
         return item
 
     def bind(self, obj):
         item = next(self._iter)
-        if not isinstance(item, stream.BindingCreate):
+        if not stream._is_bind_open(item):
             raise RuntimeError(
-                f"expected BindingCreate during bind, got {type(item).__name__}"
+                f"expected bind marker during bind, got {type(item).__name__}"
             )
-        self._bindings[item.index] = obj
+        self._bindings[stream._bind_index(item)] = obj
 
 
 def test_message_stream_materializes_async_new_patched_tag_before_result():
     native_reader = _FakeBindingReader([
         "ASYNC_NEW_PATCHED",
         list,
-        stream.BindingCreate(0),
+        ("__bind__", 0),
         "RESULT",
-        stream.BindingLookup(0),
+        stream.Binding(0),
     ])
     messages = ReplayReader(
         native_reader,
@@ -544,9 +538,9 @@ def test_message_stream_resolves_binding_lookup_for_async_new_patched_result():
     native_reader = _FakeBindingReader([
         "ASYNC_NEW_PATCHED",
         list,
-        stream.BindingCreate(0),
+        ("__bind__", 0),
         "RESULT",
-        stream.BindingLookup(0),
+        stream.Binding(0),
     ])
     messages = ReplayReader(
         native_reader,
@@ -563,12 +557,12 @@ def test_message_stream_ignores_unreturned_async_new_patched_helpers():
     native_reader = _FakeBindingReader([
         "ASYNC_NEW_PATCHED",
         list,
-        stream.BindingCreate(0),
+        ("__bind__", 0),
         "ASYNC_NEW_PATCHED",
         dict,
-        stream.BindingCreate(1),
+        ("__bind__", 1),
         "RESULT",
-        stream.BindingLookup(1),
+        stream.Binding(1),
         "CALL",
         "RESULT",
         None,
@@ -595,7 +589,7 @@ def test_message_stream_raises_immediately_on_unmatched_bind():
         stub_factory=getattr(native_reader, "stub_factory", None),
     )
 
-    with pytest.raises(RuntimeError, match="expected BindingCreate during bind"):
+    with pytest.raises(RuntimeError, match="expected bind marker during bind"):
         messages.read_result()
 
 
@@ -608,8 +602,8 @@ def test_memory_writer_reader_roundtrip_uses_binding_lookup_for_bound_results():
     writer.write_call()
     writer.write_result(bound)
 
-    assert isinstance(writer.tape[0], stream.BindingCreate)
-    assert isinstance(writer.tape[3], stream.BindingLookup)
+    assert stream._is_bind_open(writer.tape[0])
+    assert isinstance(writer.tape[3], stream.Binding)
 
     reader = MemoryReader(writer.tape)
     resolved = object()
@@ -823,56 +817,41 @@ def test_demux_reader_dispatches_tape_reader_by_thread(tmp_path):
 
 
 def test_resolving_reader_resolves_bound_lookups_and_skips_deletes(tmp_path):
-    path = tmp_path / "raw_resolving_reader.bin"
-    fw = FramedWriter(str(path), raw=True)
-    persister = Persister(fw, serializer=pickle.dumps)
-    bound = object()
-
-    try:
-        persister.bind(bound)
-        persister.write_object(bound)
-        persister.write_delete(bound)
-        persister.write_object("after")
-        persister.flush()
-    finally:
-        fw.close()
-
-    source = stream.DemuxReader(stream.PeekableReader(stream.WithThreadReader(_make_tape_reader(path))))
+    source = stream.DemuxReader(
+        stream.PeekableReader(
+            stream.WithThreadReader(
+                iter([
+                    ("__bind__", 0),
+                    stream.Binding(0),
+                    ("__unbind__", 0),
+                    "after",
+                ]).__next__
+            )
+        )
+    )
     reader = stream.ResolvingReader(source)
     resolved = object()
-    try:
-        reader.bind(resolved)
-        assert reader.next(None) is resolved
-        assert reader.next(None) == "after"
-    finally:
-        reader.close()
+    reader.bind(resolved)
+    assert reader.next(None) is resolved
+    assert reader.next(None) == "after"
 
 
 def test_resolving_reader_peek_resolves_values_using_binding_table(tmp_path):
-    path = tmp_path / "raw_resolving_reader_peek.bin"
-    fw = FramedWriter(str(path), raw=True)
-    persister = Persister(fw, serializer=pickle.dumps)
-    bound = object()
-
-    try:
-        persister.bind(bound)
-        persister.write_object(bound)
-        persister.write_delete(bound)
-        persister.write_object("after")
-        persister.flush()
-    finally:
-        fw.close()
-
-    reader = stream.ObjectReader(thread_id=lambda: None, source=_make_tape_reader(path))
+    reader = stream.ObjectReader(
+        thread_id=lambda: None,
+        source=iter([
+            ("__bind__", 0),
+            stream.Binding(0),
+            ("__unbind__", 0),
+            "after",
+        ]).__next__,
+    )
     resolved = object()
-    try:
-        reader.bind(resolved)
-        assert reader.peek(None) is resolved
-        assert reader.next(None) is resolved
-        assert reader.peek(None) == "after"
-        assert reader.next(None) == "after"
-    finally:
-        reader.close()
+    reader.bind(resolved)
+    assert reader.peek(None) is resolved
+    assert reader.next(None) is resolved
+    assert reader.peek(None) == "after"
+    assert reader.next(None) == "after"
 
 def test_raw_persister_non_bytes_serializer_emits_serialize_error(tmp_path):
     """Non-bytes serializer results are emitted under SERIALIZE_ERROR."""
@@ -1038,29 +1017,17 @@ def test_raw_persister_interns_builtin_bools_roundtrip(tmp_path):
         reader.close()
 
 
-def test_write_delete_ignores_interned_values(tmp_path):
-    """Interned values live for the writer lifetime and do not emit deletes."""
-    without_delete = tmp_path / "intern_without_delete.bin"
-    with_delete = tmp_path / "intern_with_delete.bin"
+def test_native_persister_has_no_delete_surface_for_interned_values(tmp_path):
+    """Interned values do not rely on a native delete API on Persister."""
+    path = tmp_path / "intern_without_delete.bin"
     value = ["interned-value"]
 
-    fw = FramedWriter(str(without_delete), raw=True)
+    fw = FramedWriter(str(path), raw=True)
     persister = Persister(fw, serializer=pickle.dumps)
     try:
         persister.intern(value)
         persister.write_object(value)
         persister.flush()
+        assert not hasattr(persister, "write_delete")
     finally:
         fw.close()
-
-    fw = FramedWriter(str(with_delete), raw=True)
-    persister = Persister(fw, serializer=pickle.dumps)
-    try:
-        persister.intern(value)
-        persister.write_delete(value)
-        persister.write_object(value)
-        persister.flush()
-    finally:
-        fw.close()
-
-    assert with_delete.read_bytes() == without_delete.read_bytes()

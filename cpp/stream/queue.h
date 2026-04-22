@@ -77,8 +77,6 @@ namespace retracesoftware_stream {
         void reset_target_state();
         bool flush_target_background();
         bool target_shutdown();
-        bool call_target_bind(BindingHandle handle);
-        bool call_target_delete(BindingHandle handle);
         bool call_target_intern(PyObject* obj, BindingHandle handle);
         bool call_target_write_handle_ref(BindingHandle handle);
         bool call_target_collection(PyObject* type, size_t len);
@@ -88,7 +86,7 @@ namespace retracesoftware_stream {
         QEntry pop_entry();
         void* consume_raw_ptr_payload();
         PyObject* consume_owned_payload();
-        BindingHandle consume_binding_handle(EntryKind expected_kind);
+        BindingHandle consume_binding_handle();
         void release_consumed_obj(PyObject* obj);
         void finish_consumed_obj(PyObject* obj);
         bool has_entry_slots(size_t needed) const;
@@ -226,18 +224,6 @@ namespace retracesoftware_stream {
             return push_command(CMD_DICT, static_cast<uint32_t>(len));
         }
     
-        bool push_delete(BindingHandle handle) {
-            if (reject_push()) return false;
-            push_entry_unchecked(delete_entry(handle));
-            return wait_for_slots(4);
-        }
-
-        bool push_bind(BindingHandle handle) {
-            if (reject_push()) return false;
-            push_entry_unchecked(bind_entry(handle));
-            return wait_for_slots(4);
-        }
-
         bool push_intern(PyObject* obj) {
             return push_intern(obj, static_cast<BindingHandle>(reinterpret_cast<uintptr_t>(obj)));
         }
@@ -253,7 +239,7 @@ namespace retracesoftware_stream {
                 if (estimated_size > 0) reserve_inflight(estimated_size);
                 push_entry_unchecked(cmd_entry(CMD_INTERN));
                 push_entry_unchecked(object_entry(owned));
-                push_entry_unchecked(bind_entry(handle));
+                push_entry_unchecked(ref_entry(handle));
                 if (estimated_size > 0 && inflight_limit_bytes > 0 && inflight() >= inflight_limit_bytes) {
                     if (!wait_for_inflight()) return false;
                 }

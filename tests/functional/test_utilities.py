@@ -269,3 +269,25 @@ class TestRepeatedly:
         assert rep() == 5
         assert rep("ignored", key="ignored") == 5
         assert calls == [(2, 3), (2, 3)]
+
+
+class TestIterate:
+    def test_yields_seed_then_repeated_function_application(self):
+        iterator = fn.iterate(lambda x: x + 1, 0)
+
+        assert next(iterator) == 0
+        assert next(iterator) == 1
+        assert next(iterator) == 2
+
+    def test_tracks_current_value(self):
+        iterator = fn.iterate(lambda x: x * 2, 3)
+
+        assert iterator.current == 3
+        assert next(iterator) == 3
+        assert iterator.current == 6
+        assert next(iterator) == 6
+        assert iterator.current == 12
+
+    def test_requires_callable(self):
+        with pytest.raises(TypeError):
+            fn.iterate(42, 0)

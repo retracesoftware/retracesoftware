@@ -4,8 +4,36 @@ import importlib
 import importlib.resources
 import atexit
 import os
+from pathlib import Path
+import tomllib
 from retracesoftware import functional
 from retracesoftware import utils
+from retracesoftware.protocol.record import stream_writer
+
+__all__ = [
+    "install_retrace",
+    "install_and_run",
+    "patch_fork_for_replay",
+    "ReplayDivergence",
+    "Recording",
+    "stream_writer",
+]
+
+
+def _user_module_config_exists(module_name):
+    user_dir = Path(os.environ.get("RETRACE_MODULES_PATH", ".retrace/modules"))
+    if not user_dir.is_dir():
+        return False
+
+    for filepath in sorted(user_dir.glob("*.toml")):
+        raw = tomllib.loads(filepath.read_text(encoding="utf-8"))
+        if all(isinstance(value, dict) for value in raw.values()):
+            if module_name in raw:
+                return True
+        elif filepath.stem == module_name:
+            return True
+
+    return False
 
 def install_retrace(*, system, retrace_file_patterns=None, monitor_level=0, verbose=False, retrace_shutdown=True):
     """Install process-global retrace hooks for a configured ``System``.
@@ -85,6 +113,10 @@ def install_retrace(*, system, retrace_file_patterns=None, monitor_level=0, verb
             pass
 
     module_config = ModuleConfigResolver()
+    if not _user_module_config_exists("_io"):
+        # Keep CPython-owned `_io` objects on the interpreter's own stack unless
+        # the user explicitly opted into a custom `_io` config.
+        module_config._configs["_io"] = {"proxy": [], "immutable": []}
     installation = Installation(system)
 
     from retracesoftware.install.pathpredicate import load_patterns, make_pathpredicate
@@ -208,5 +240,3 @@ class Recording:
         self.result = result
         self.error = error
 
-
-from retracesoftware.protocol.record import stream_writer

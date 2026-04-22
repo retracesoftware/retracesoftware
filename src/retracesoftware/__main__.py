@@ -1,19 +1,29 @@
 import sys
 import os
 import argparse
+import tempfile
 import retracesoftware.functional as functional
+import retracesoftware.utils as utils
 from pathlib import Path
 import gc
 import atexit
+from contextlib import contextmanager
 
 from retracesoftware.threadid import ThreadId
 
 from retracesoftware.proxy.tape import TapeReader
 from retracesoftware.exceptions import VersionMismatchError
 from retracesoftware.proxy.io import recorder, replayer
+from retracesoftware.stream.reader import ExpectedBindMarker
 from retracesoftware.run import run_python_command
-from retracesoftware.tape import checksums, create_tape_writer, normalize_recording_path, open_tape_reader
-from retracesoftware.install import install_and_run, patch_fork_for_replay
+from retracesoftware.tape import (
+    RawTapeWriter,
+    checksums,
+    create_tape_writer,
+    normalize_recording_path,
+    open_tape_reader,
+)
+from retracesoftware.install import install_and_run, install_retrace, patch_fork_for_replay
 
 def diff_dicts(recorded, current, path=""):
     """Recursively diff two dicts, returning list of differences."""
@@ -39,6 +49,96 @@ def diff_dicts(recorded, current, path=""):
 
 thread_id = ThreadId()
 
+
+class _ReplayStartupBinding:
+    __slots__ = ()
+
+
+def _bind_stream_chain(system, stream_obj, seen):
+    current = stream_obj
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        system.bind(current)
+        next_current = getattr(current, "buffer", None)
+        if next_current is None:
+            next_current = getattr(current, "raw", None)
+        current = next_current
+
+
+def _bind_record_runtime(system, tape_writer):
+    seen = set()
+
+    for stream_obj in (
+        getattr(sys, "stdin", None),
+        getattr(sys, "stdout", None),
+        getattr(sys, "stderr", None),
+        getattr(sys, "__stdin__", None),
+        getattr(sys, "__stdout__", None),
+        getattr(sys, "__stderr__", None),
+    ):
+        _bind_stream_chain(system, stream_obj, seen)
+
+    for obj in (
+        tape_writer,
+        getattr(tape_writer, "_output", None),
+        getattr(tape_writer, "_queue", None),
+        getattr(tape_writer, "_heartbeat_lock", None),
+        getattr(getattr(tape_writer, "_output", None), "_stream", None),
+    ):
+        if obj is not None and id(obj) not in seen:
+            seen.add(id(obj))
+            system.bind(obj)
+
+    output_stream = getattr(getattr(tape_writer, "_output", None), "_stream", None)
+    _bind_stream_chain(system, output_stream, seen)
+
+
+def _consume_replay_startup_bindings(system):
+    """Consume CLI startup bind markers before ON_START.
+
+    CLI recording binds a number of interpreter/runtime helper objects before
+    entering ``System.run()``. Replay needs to consume those leading binding
+    records so lifecycle hooks start aligned at ``ON_START``.
+    """
+
+    sentinels = []
+
+    while True:
+        sentinel = _ReplayStartupBinding()
+        try:
+            system.bind(sentinel)
+        except ExpectedBindMarker:
+            break
+        else:
+            sentinels.append(sentinel)
+
+    return sentinels
+
+
+@contextmanager
+def _cli_module_overrides():
+    previous = os.environ.get("RETRACE_MODULES_PATH")
+    if previous is not None:
+        yield
+        return
+
+    with tempfile.TemporaryDirectory(prefix="retracesoftware-json-modules-") as td:
+        modules_dir = Path(td)
+        # CLI recording uses Python's own `_io` stack for stdio, import
+        # machinery, and JSON persister output. Keeping `_io` unpatched on
+        # this default path avoids crashing live interpreter-owned IO objects
+        # during finalization. Explicit user module overrides still win: if
+        # RETRACE_MODULES_PATH is already set we leave it alone.
+        (modules_dir / "_io.toml").write_text(
+            "proxy = []\nimmutable = []\n",
+            encoding="utf-8",
+        )
+        os.environ["RETRACE_MODULES_PATH"] = str(modules_dir)
+        try:
+            yield
+        finally:
+            os.environ.pop("RETRACE_MODULES_PATH", None)
+
 def record(options, args):
     options.recording = normalize_recording_path(options.recording, args)
 
@@ -51,8 +151,13 @@ def record(options, args):
             print(f"Retrace enabled, recording to {options.recording}", file=sys.stderr)
 
     tape_writer = create_tape_writer(options, args, thread_getter=thread_id.id.get)
+    writer_closed = False
 
     def close_tape_writer():
+        nonlocal writer_closed
+        if writer_closed:
+            return
+        writer_closed = True
         tape_writer.__exit__(None, None, None)
 
     if options.trace_shutdown:
@@ -61,19 +166,22 @@ def record(options, args):
         atexit.register(close_tape_writer)
 
     try:
+        raw_tape_writer = RawTapeWriter(tape_writer)
         system = recorder(
-            tape_writer=tape_writer,
+            writer=raw_tape_writer.write,
             debug=options.stacktraces,
             stacktraces=options.stacktraces,
             gc_collect_multiplier=getattr(options, "gc_collect_multiplier", 0),
         )
 
-        install_and_run(
-            system=system,
-            options=options,
-            function=run_python_command,
-            args=(args,),
-        )
+        with _cli_module_overrides():
+            install_and_run(
+                system=system,
+                options=options,
+                function=run_python_command,
+                args=(args,),
+                post_install=None if options.trace_shutdown else close_tape_writer,
+            )
     finally:
         if not options.trace_shutdown:
             close_tape_writer()
@@ -110,14 +218,11 @@ def replay(args):
         controller_ref = [None]
 
         class TapeReaderAdapter:
-            __slots__ = ["reader", "controller_ref", "protocol_thread_source"]
+            __slots__ = ["reader", "controller_ref"]
 
             def __init__(self, reader: TapeReader, controller_ref):
                 self.reader = reader
                 self.controller_ref = controller_ref
-                self.protocol_thread_source = getattr(
-                    reader, "protocol_thread_source", False
-                )
 
             def read(self):
                 value = self.reader.read()
@@ -126,16 +231,12 @@ def replay(args):
                     controller.on_new_message(value)
                 return value
 
-            def bind(self, obj):
-                return self.reader.bind(obj)
-
-            def peek(self):
-                return self.reader.peek()
-
         stacktraces = header.get('stacktraces', False)
 
+        tape_reader = TapeReaderAdapter(reader, controller_ref)
         system = replayer(
-            tape_reader=TapeReaderAdapter(reader, controller_ref),
+            next_object=tape_reader.read,
+            close=getattr(tape_reader, "close", None),
             debug=stacktraces,
             stacktraces=stacktraces,
         )
@@ -186,12 +287,42 @@ def replay(args):
             controller_ref[0] = controller
 
         try:
-            install_and_run(
-                post_install = patch_fork_for_replay(system.disable_for),
-                system = system, 
-                options = replay_options, 
-                function = run_python_command,
-                args = (header['argv'],))
+            with _cli_module_overrides():
+                strict_bind = system.bind
+
+                def bootstrap_bind(obj):
+                    try:
+                        return strict_bind(obj)
+                    except ExpectedBindMarker:
+                        return None
+
+                system.bind = bootstrap_bind
+                try:
+                    uninstall = install_retrace(
+                        system=system,
+                        monitor_level=getattr(replay_options, "monitor", 0),
+                        retrace_file_patterns=getattr(replay_options, "retrace_file_patterns", None),
+                        verbose=replay_options.verbose,
+                        retrace_shutdown=replay_options.trace_shutdown,
+                    )
+                finally:
+                    system.bind = strict_bind
+
+                uninstall = utils.runall(
+                    patch_fork_for_replay(system.disable_for),
+                    uninstall,
+                )
+
+                system._startup_bindings = _consume_replay_startup_bindings(system)
+
+                if replay_options.trace_shutdown:
+                    atexit.register(uninstall)
+                    system.run(run_python_command, header["argv"])
+                else:
+                    try:
+                        system.run(run_python_command, header["argv"])
+                    finally:
+                        uninstall()
         finally:
             if controller:
                 controller.on_replay_finished()
