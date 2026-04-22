@@ -1,7 +1,17 @@
 # Proxy Design
 
 This document describes the current gate-based proxy path implemented by
-`system.py` and `io.py`.
+`system.py`, `io.py`, `contexts.py`, and `_system_specs.py`.
+
+Use this file as the proxy behavior contract. Before changing proxy-layer code,
+read `src/retracesoftware/proxy/AGENTS.md`, then this document, then compare
+the current code to the expected behavior described here. For debugging work,
+start by answering:
+
+- what gate should be active (`_external`, `_internal`, or neither)
+- what phase should the system be in (`disabled`, `internal`, `external`)
+- what message, binding, or materialization event should happen next
+- where the first observed divergence from that contract occurs
 
 ## Purpose
 
@@ -15,6 +25,8 @@ The proxy layer is the record/replay boundary.
 
 `system.py` is the small kernel that decides how calls cross the boundary.
 `io.py` connects that kernel to an actual recording or replay stream.
+`contexts.py` and `_system_specs.py` build the current record/replay gate
+configurations used by the live runtime path.
 
 ## Main Pieces
 
@@ -36,6 +48,23 @@ The proxy layer is the record/replay boundary.
 At the top level, `src/retracesoftware/__main__.py` imports `recorder` and
 `replayer`, and the install layer uses `System.patch_type()` to patch selected
 stdlib and library types.
+
+## How To Use This Document
+
+When a proxy bug or replay mismatch appears, use this document to check the
+expected contract before editing code:
+
+1. Identify the intended boundary crossing:
+   internal -> external call, external -> internal callback, disabled
+   control-plane work, bind/materialization, or thread replay.
+2. Identify which phase and gate should be active at that point.
+3. Trace the current runtime path from `src/retracesoftware/__main__.py`
+   through `io.py`, `contexts.py`, `_system_specs.py`, and `system.py`.
+4. Find the first mismatch between the observed behavior and this design.
+5. Only then choose the narrowest responsible fix.
+
+If you cannot say which design rule is being violated, keep tracing instead of
+editing proxy-kernel code.
 
 ## The Core Model: Two Gates
 

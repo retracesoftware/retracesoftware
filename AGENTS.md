@@ -19,6 +19,8 @@ hard constraints, not as an encyclopedia.
   Runtime patching, import hooks, weakref/thread setup, monitoring, pytest integration.
 - `src/retracesoftware/proxy/`
   Record/replay boundary semantics, gates, proxying, message streams.
+  Start with `src/retracesoftware/proxy/AGENTS.md` and
+  `src/retracesoftware/proxy/DESIGN.md` before editing boundary code here.
 - `src/retracesoftware/protocol/`
   Semantic replay protocol layered above stream transport.
 - `src/retracesoftware/stream/` and `cpp/stream/`
@@ -105,8 +107,12 @@ if needed.
   nondeterministic call path is being intercepted and add or update tests.
 - If you change replay control flow, threading, weakrefs, fork handling, or
   cursor logic, explicitly call out the determinism impact.
-- If you touch `cpp/`, `src/retracesoftware/proxy/`, or `src/retracesoftware/dap/`,
-  also read the local `AGENTS.md` in that directory if present.
+- If you touch `cpp/` or `src/retracesoftware/dap/`, also read the local
+  `AGENTS.md` in that directory if present.
+- If you touch `src/retracesoftware/proxy/`, read both
+  `src/retracesoftware/proxy/AGENTS.md` and
+  `src/retracesoftware/proxy/DESIGN.md` first. Treat `DESIGN.md` as the proxy
+  behavior contract, not optional background reading.
 - If you touch `src/retracesoftware/stream/`, `src/retracesoftware/protocol/`,
   or `tests/`, also read the local `AGENTS.md` there if present.
 - If you touch `meson.build`, package install lists, or runtime entrypoints,
@@ -120,6 +126,10 @@ if needed.
   the repo skill `$determinism-check`.
 - When debugging replay failures, prefer locating the first divergence or
   misalignment instead of patching symptoms.
+- For proxy-boundary bugs, explain which `src/retracesoftware/proxy/DESIGN.md`
+  expectation is being violated before proposing a fix. If you cannot name the
+  violated gate, phase, binding, or message-order invariant, inspect the
+  design and call flow again before editing code.
 
 ## References
 
@@ -128,5 +138,6 @@ if needed.
 - `docs/STREAM.md`
 - `docs/cursors.md`
 - `docs/DEBUGGING.md`
+- `src/retracesoftware/proxy/DESIGN.md`
 - `MODULES_AUDIT.md`
 - `LIBRARIES_AUDIT.md`
