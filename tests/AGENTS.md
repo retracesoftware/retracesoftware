@@ -100,16 +100,17 @@ Some files have a much wider blast radius than their local tests suggest.
 If a diff touches any of these files:
 
 - `src/retracesoftware/proxy/system.py`
-- `src/retracesoftware/proxy/_system_specs.py`
-- `src/retracesoftware/proxy/_system_patching.py`
-- `src/retracesoftware/proxy/_system_adapters.py`
+- `src/retracesoftware/proxy/gateway.py`
+- `src/retracesoftware/proxy/patchtype.py`
 - `src/retracesoftware/proxy/io.py`
-- `src/retracesoftware/proxy/contexts.py`
+- `src/retracesoftware/proxy/proxytype.py`
 - `src/retracesoftware/proxy/tape.py`
+- `src/retracesoftware/tape.py`
 - `src/retracesoftware/protocol/replay.py`
 - `src/retracesoftware/stream/reader.py`
 - `src/retracesoftware/install/__init__.py`
 - `src/retracesoftware/install/session.py`
+- `src/retracesoftware/install/patcher.py`
 - `meson.build`
 
 do not stop at the nearest unit tests. Rerun the adjacent sentinel bundle.
@@ -118,20 +119,17 @@ do not stop at the nearest unit tests. Rerun the adjacent sentinel bundle.
 
 Run these before saying a proxy-kernel change is safe:
 
-- `tests/proxy/test_patch.py`
 - `tests/proxy/test_system_io_tape.py`
-- `tests/proxy/test_system_direct_context.py`
 - `tests/proxy/test_replay_materialize.py`
-- `tests/proxy/test_system_adapter.py`
+- `tests/proxy/test_io_memory_tape.py`
 - `tests/proxy/test_monitoring.py`
+- `tests/test_main_memory_tape.py`
+- `tests/install/test_hash_patching.py`
 - `tests/install/stdlib/test_threaded_select_replay_dispatcher_regression.py`
 - `tests/install/external/test_anyio_from_thread_replay_dispatcher_regression.py`
 - `tests/install/external/test_starlette_testclient_replay_regression.py`
 - `tests/install/external/test_fastapi_testclient_replay_regression.py`
 - `tests/test_record_replay.py::test_record_then_replay_fastapi_testclient_request`
-
-Note: `tests/proxy/test_system_context.py` is `pytest.mark.skip`ped and is
-intentionally omitted from this bundle.
 
 ### Install Session / Callback Sentinel Bundle
 
