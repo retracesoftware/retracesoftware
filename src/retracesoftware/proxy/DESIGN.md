@@ -106,6 +106,9 @@ same thread-local:
 
 Their `on_then` branch is installed by `System.run()` using a factory from
 `gateway.py`. Outside an active run they fall back to transparent passthrough.
+Inside an active run, the top-level user function executes under the
+`'internal'` phase so the first patched outbound call enters the external
+gateway instead of falling through as disabled passthrough.
 
 ## How The Two Gateways Interact
 
@@ -532,3 +535,34 @@ If you are debugging this layer, start here:
 - `io.replayer()`
   How replay consumes messages, runs callbacks, materializes objects, and binds
   live replay objects to recorded handles.
+
+## Suggested Test Matrix
+
+These scenarios are a good minimal coverage set for the live proxy runtime path.
+They are written as behavior-oriented cases rather than as specific test file
+names so they can be used for unit tests, integration tests, or replay
+regressions.
+
+| Scenario | Example shape | Main paths exercised | What to assert |
+| --- | --- | --- | --- |
+| Simple proxied function call | `time.time()` | External gateway, record `CALL`/`RESULT`, replay result consumption | Record runs the live call once; replay returns the recorded value without touching the live clock |
+| Simple proxied function error | `os.chdir("/definitely/missing")` | External gateway, error serialization, replay `ERROR` path | Record writes the failure; replay raises the same semantic error without making the live syscall |
+| Patched type method call | `lock.acquire(False)` or `socket.recv()` on a patched object | Patched method rewrite, external gateway, wrapped receiver/args | Patched methods route through the boundary and preserve the expected wrapped receiver behavior |
+| Patched type method returning another external object | `socket.makefile()` or similar | External result proxying, binding, replay-side hydration | Record writes proxy metadata/bindings; replay reconstructs a usable external proxy rather than leaking raw metadata |
+| External code calling back into Python | `sorted(items, key=callback)` or `executor.submit(fn)` style callback | Internal gateway, callback hooks, callback result/error recording | The Python callback body executes live on both record and replay, and callback events stay aligned |
+| Callback makes another outbound external call | Callback body calls `time.time()` | Internal gateway re-entry back into external gateway | Nested callback-originated external calls preserve ordering and do not bypass retrace |
+| Immutable passthrough value crossing the boundary | `time.sleep(0)` / small ints / strings / bytes | Passthrough predicates, no unnecessary proxying | Immutable values stay unproxied and behavior matches normal Python on both record and replay |
+| Internal Python object exposed to external code | Python file-like / callback / user object passed into patched library code | `int_proxy`, `InternalWrapped`, external-to-internal callback path | External code sees a stable wrapper and later calls route back into Python through the internal gateway |
+| External object passed back into internal code | Return a socket/lock/file object, store it, call methods later | `ext_proxy`, `ExternalWrapped`, binding identity preservation | Multiple later uses refer to the same logical recorded object and replay preserves handle identity |
+| Generated external proxy type creation | First encounter of a new external type/spec | `_ext_proxytype_from_spec`, internal retrace of helper work, binding of type + `ProxyRef` | Proxy-type generation is itself captured so replay recreates the same proxy class identity at the right point |
+| Replay hydration of `ProxyRef` results | Replay returns a bound proxy-producing handle | `_ReplayBindingState`, binding resolution, `ProxyRef` hydration | Replay deserialization turns the recorded `ProxyRef` into a live proxy shell before user code observes it |
+| Materialized replay escape hatch | Call a `replay_materialize` target while retrace is disabled on replay | `replay_materialize`, `disable_for()`, stub/materialization path | The unusual disabled replay call materializes the expected object without consuming the next unrelated recorded result |
+| Control-plane work excluded from retrace | Desync reporting, monitoring, stacktrace bookkeeping | `disable_for()`, gate-cleared execution | Helper plumbing does not generate extra boundary traffic or perturb replay alignment |
+| Threaded external activity | Child thread performs proxied calls | `wrap_start_new_thread()`, logical thread ids, `THREAD_SWITCH`, replay demux | Record and replay preserve per-thread message order and deliver results to the right logical thread |
+| Binding cleanup | External object lifetime ends after recorded use | Bind open/close flow, replay binding deletion | Replay drops dead bindings at the right time and does not leak stale handle lookups into later operations |
+
+Taken together, this matrix covers the main boundary directions:
+internal -> external calls, external -> internal callbacks, record-only live
+execution, replay-only message consumption, binding/materialization, helper
+work that must itself be retraced, and bookkeeping that must stay outside the
+trace.

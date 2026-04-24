@@ -1,4 +1,5 @@
 from argparse import Namespace
+import os
 import time
 
 import pytest
@@ -99,6 +100,41 @@ def test_install_and_run_round_trips_time_proxy_with_memory_tape(monkeypatch):
     assert replayed == recorded
     assert live_calls == ["time"]
     assert time.time is fake_time
+
+
+def test_install_and_run_round_trips_os_chdir_error_with_memory_tape(tmp_path):
+    tape = IOMemoryTape()
+    missing = tmp_path / "missing-dir"
+
+    record_system = recorder(
+        writer=tape.writer().write,
+        debug=False,
+        stacktraces=False,
+    )
+    _configure_system(record_system)
+
+    with pytest.raises(FileNotFoundError, match="missing-dir"):
+        install_and_run(
+            system=record_system,
+            options=_options(),
+            function=lambda: os.chdir(missing),
+        )
+
+    replay_reader = tape.reader()
+    replay_system = replayer(
+        next_object=replay_reader.read,
+        close=getattr(replay_reader, "close", None),
+        debug=False,
+        stacktraces=False,
+    )
+    _configure_system(replay_system)
+
+    with pytest.raises(FileNotFoundError, match="missing-dir"):
+        install_and_run(
+            system=replay_system,
+            options=_options(),
+            function=lambda: os.chdir(missing),
+        )
 
 
 def test_install_and_run_reads_socket_family_with_memory_tape():

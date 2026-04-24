@@ -13,9 +13,11 @@ from retracesoftware.proxy.io import (
     recorder_context,
     replayer,
 )
+from retracesoftware.proxy.system import ProxyRef
 from retracesoftware.proxy.tape import Tape
 from retracesoftware.tape import RawTapeWriter
 from retracesoftware.testing.memorytape import IOMemoryTape
+import retracesoftware.utils as utils
 
 
 @dataclass(frozen=True)
@@ -209,6 +211,18 @@ def test_replay_binding_state_consumes_trailing_binding_deletes():
     assert reader.read() == "RESULT"
 
 
+def test_replay_binding_state_hydrates_proxy_ref_bindings():
+    class DemoExternalWrapped(utils.ExternalWrapped):
+        pass
+
+    reader = _ReplayBindingState(iter(()).__next__)
+    reader.bind_handle(7, ProxyRef(DemoExternalWrapped))
+
+    resolved = reader.resolve({"value": [stream.Binding(7)]})
+
+    assert isinstance(resolved["value"][0], DemoExternalWrapped)
+
+
 def test_raw_tape_source_consumes_binding_delete_before_thread_demux():
     source = _RawTapeSource(
         iter([
@@ -308,6 +322,34 @@ def test_system_io_round_trips_simple_patched_function_with_tape(mode, tape):
 
     assert replayed == recorded
     assert live_calls == [(2, 3)]
+
+
+def test_system_io_round_trips_simple_patched_function_error_with_memory_tape():
+    tape = IOMemoryTape()
+    writer = tape.writer()
+
+    live_calls = []
+
+    def fail(path):
+        live_calls.append(path)
+        raise FileNotFoundError(path)
+
+    with _entered(writer) as writer:
+        with _recorder_context(IOMode("plain"), writer) as record_system:
+            recorded_fail = record_system.patch_function(fail)
+            with pytest.raises(FileNotFoundError, match="missing-path"):
+                record_system.run(recorded_fail, "missing-path")
+
+    assert live_calls == ["missing-path"]
+
+    reader = tape.reader()
+    with _entered(reader) as reader:
+        with _replayer_context(IOMode("plain"), reader) as replay_system:
+            replayed_fail = replay_system.patch_function(fail)
+            with pytest.raises(FileNotFoundError, match="missing-path"):
+                replay_system.run(replayed_fail, "missing-path")
+
+    assert live_calls == ["missing-path"]
 
 
 @pytest.mark.parametrize("mode", ALL_IO_MODES)
@@ -417,6 +459,50 @@ def test_system_io_records_and_rebinds_callback_receiver_with_tape(mode, tape):
     assert callback_receivers == [recorded_obj, replay_obj]
 
 
+def test_system_io_round_trips_nested_callback_external_call_with_memory_tape():
+    tape = IOMemoryTape()
+    writer = tape.writer()
+
+    live_calls = []
+    current_clock = None
+
+    def clock():
+        live_calls.append("clock")
+        return 100
+
+    class Base:
+        def trigger(self, value):
+            live_calls.append(("external", value))
+            return self.callback(value) + 1
+
+        def callback(self, value):
+            return 0
+
+    class Sub(Base):
+        def callback(self, value):
+            live_calls.append(("callback", value))
+            return value + current_clock()
+
+    with _entered(writer) as writer:
+        with _recorder_context(IOMode("plain"), writer) as record_system:
+            record_system.patch_type(Base)
+            current_clock = record_system.patch_function(clock)
+            recorded = record_system.run(lambda cls, value: cls().trigger(value), Sub, 5)
+
+    assert recorded == 106
+    assert live_calls == [("external", 5), ("callback", 5), "clock"]
+
+    reader = tape.reader()
+    with _entered(reader) as reader:
+        with _replayer_context(IOMode("plain"), reader) as replay_system:
+            replay_system.patch_type(Base)
+            current_clock = replay_system.patch_function(clock)
+            replayed = replay_system.run(lambda cls, value: cls().trigger(value), Sub, 5)
+
+    assert replayed == recorded
+    assert live_calls == [("external", 5), ("callback", 5), "clock", ("callback", 5)]
+
+
 def test_system_io_replays_dynamic_internal_proxy_callback_side_effect_with_memory_tape():
     tape = IOMemoryTape()
     writer = tape.writer()
@@ -460,6 +546,37 @@ def test_system_io_replays_dynamic_internal_proxy_callback_side_effect_with_memo
 
     assert replayed == recorded
     assert replay_calls == ["called"]
+
+
+def test_system_io_round_trips_external_result_proxy_hydration_with_memory_tape():
+    tape = IOMemoryTape()
+    writer = tape.writer()
+
+    make_calls = []
+    current_factory = None
+
+    def make_result():
+        make_calls.append("make")
+        return FreshExternalResult()
+
+    def run_flow():
+        return current_factory().ping()
+
+    with _entered(writer) as writer:
+        with _recorder_context(IOMode("plain"), writer) as record_system:
+            current_factory = record_system.patch_function(make_result)
+            recorded = record_system.run(run_flow)
+
+    assert recorded == "pong"
+    assert make_calls == ["make"]
+
+    reader = tape.reader()
+    with _entered(reader) as reader:
+        with _replayer_context(IOMode("plain"), reader) as replay_system:
+            current_factory = replay_system.patch_function(make_result)
+            replayed = replay_system.run(run_flow)
+
+    assert replayed == recorded
 
 
 def test_system_ext_proxytype_can_build_for_socket_family_descriptor_type():

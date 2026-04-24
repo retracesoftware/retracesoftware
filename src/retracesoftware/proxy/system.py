@@ -254,7 +254,9 @@ class System:
 
     @property
     def ext_proxy(self):
-        ext_passthrough = utils.FastTypePredicate(lambda cls: issubclass(cls, tuple(self.immutable_types) or issubclass(cls, utils.InternalWrapped))).is_typeof
+        ext_passthrough = utils.FastTypePredicate(
+            lambda cls: issubclass(cls, tuple(self.immutable_types)) or issubclass(cls, utils.InternalWrapped)
+        ).istypeof
 
         return functional.walker(
             functional.if_then_else(
@@ -270,7 +272,9 @@ class System:
 
     @property 
     def int_proxy(self):
-        int_passthrough = utils.FastTypePredicate(lambda cls: issubclass(cls, tuple(self.immutable_types) or issubclass(cls, utils.ExternalWrapped))).is_typeof
+        int_passthrough = utils.FastTypePredicate(
+            lambda cls: issubclass(cls, tuple(self.immutable_types)) or issubclass(cls, utils.ExternalWrapped)
+        ).istypeof
 
         return functional.walker(
             functional.if_then_else(
@@ -295,6 +299,14 @@ class System:
 
     def _call_async_new_patched(self, obj):
         return self.async_new_patched(obj)
+
+    def create_dispatch(self, *, disabled, external, internal):
+        """Dispatch by current phase using the live gate state."""
+        return self.gate.cond(
+            'internal', internal,
+            'external', external,
+            disabled,
+        )
 
     def run(self, function, *args, **kwargs):
 
@@ -327,9 +339,11 @@ class System:
 
         gc.collect()
 
+        run_internal = self.gate.apply_with('internal', function)
+
         try:
             self.lifecycle_hooks.on_start()
-            return function(*args, **kwargs)
+            return run_internal(*args, **kwargs)
         finally:            
             if callable(self.lifecycle_hooks.on_end):
                 self.lifecycle_hooks.on_end()

@@ -17,11 +17,16 @@ from retracesoftware.stream import (
 )
 from retracesoftware.stream.reader import ExpectedBindMarker, PeekableReader
 
-from retracesoftware.proxy.system import CallHooks, LifecycleHooks, System
+from retracesoftware.proxy.system import (
+    CallHooks,
+    LifecycleHooks,
+    ProxyRef,
+    System,
+)
 import gc
 import sys
 import os
-
+from retracesoftware.proxy.gateway import ext_replay_gateway, int_replay_gateway
 
 class _MarkerMessage:
     __slots__ = ("thread_id",)
@@ -153,7 +158,9 @@ class _ReplayBindingState:
 
         def transform(value):
             if isinstance(value, stream.Binding):
-                return bindings[value.handle]
+                value = bindings[value.handle]
+            if isinstance(value, ProxyRef):
+                return value()
             return value
 
         return functional.walker(transform)(obj)
@@ -463,7 +470,7 @@ def recorder(*,
     )
 
     system = System(
-        functional.sequence(binder.bind, _binding_handle, threaded(tagged("NEW_BINDING")))
+        on_bind = functional.sequence(binder.bind, _binding_handle, threaded(tagged("NEW_BINDING"))),
     )
 
     add_bindings = functional.walker(binder)
@@ -484,7 +491,7 @@ def recorder(*,
     #     transform=functional.walker(binder),
     # )
 
-    in_sandbox = system._in_sandbox
+    in_sandbox = system.enabled
 
     def on_start(*args, **kwargs):
         writer("ON_START")
@@ -520,7 +527,7 @@ def recorder(*,
     collect = system.wrap_async(gc.collect)
 
     system.checkpoint = functional.if_then_else(
-        functional.repeatedly(system._in_sandbox),
+        functional.repeatedly(system.enabled),
         checkpoint, utils.noop)
 
     system.lifecycle_hooks = LifecycleHooks(
@@ -531,7 +538,10 @@ def recorder(*,
             
     on_call = threaded(functional.pack_call(1, write_callback))
 
-    on_result = threaded(binding_writer(tagged("RESULT")))
+    on_result = functional.sequence(
+        system.serialize_ext_wrapped,
+        threaded(binding_writer(tagged("RESULT"))),
+    )
 
     on_error = threaded(functional.sequence(
         functional.positional_param(1), 
@@ -543,16 +553,17 @@ def recorder(*,
     if gc_collect_multiplier:
         gc_collector = utils.Collector(multiplier = gc_collect_multiplier, collect = collect)
         on_result = utils.observer(on_call = gc_collector, function = on_result)
-        
+    
     system.primary_hooks = CallHooks(
-            on_call = on_call,
-            on_result = on_result,
-            on_error = on_error)
-
+        on_call = on_call,
+        on_result = on_result,
+        on_error = on_error,
+    )
     system.secondary_hooks = CallHooks(
-        on_call=call, 
-        on_result=on_callback_result,
-        on_error=on_callback_error)
+        on_call = call,
+        on_result = on_callback_result,
+        on_error = on_callback_error,    
+    )
 
     @utils.exclude_from_stacktrace
     def async_new_patched(obj):
@@ -592,7 +603,7 @@ def default_desync_handler(record, replay):
     os._exit(1)
 
 def replayer(*, next_object,
-             close=None,
+             close = None,
              on_unexpected = default_unexpected_handler,
              on_desync = default_desync_handler,
              debug: bool = False,
@@ -695,7 +706,7 @@ def replayer(*, next_object,
         message = expect_message(CheckpointMessage)
         diff(record = message.value, replay = replay)
 
-    in_sandbox = system._in_sandbox
+    in_sandbox = system.enabled
 
     call = functional.sequence(
         _on_call, 
@@ -712,7 +723,7 @@ def replayer(*, next_object,
     system.wrap_async(gc.collect)
 
     system.checkpoint = functional.if_then_else(
-        functional.repeatedly(system._in_sandbox),
+        functional.repeatedly(system.enabled),
         checkpoint, utils.noop)
 
     def next_materialized_result(replay):
@@ -801,6 +812,7 @@ def replayer(*, next_object,
         # on_end=functional.repeatedly(expect, "ON_END"),
         )
 
+    @utils.exclude_from_stacktrace
     def next_result_message():
         while True:
             message = read_message()
@@ -824,6 +836,9 @@ def replayer(*, next_object,
     def ext_execute(fn, *args, **kwargs):
         return next_result_message()
 
-    system.ext_execute = ext_execute
+    system.ext_gateway_factory = functional.partial(ext_replay_gateway, functional.repeatedly(next_result_message))
+    system.int_gateway_factory = int_replay_gateway
 
+    # system.ext_execute = ext_execute
+    
     return system
