@@ -25,13 +25,19 @@ how divergence is detected. Small changes here can silently corrupt replay.
    convention.
 5. **Prefer the narrowest fix in the responsible handler.** The CLI
    runtime path is `__main__.py` -> `proxy/tape.py` (Protocol types) +
-   `proxy/io.py` -> `proxy/system.py` (which uses `proxy/proxytype.py`,
-   `proxy/typeutils.py`, and `install/`). If a single diff touches more
-   than one of `system.py`, `io.py`, `proxytype.py`, or `typeutils.py`,
-   stop and re-read `DESIGN.md` before continuing. The `contexts.py` /
-   `context.py` / `_system_specs.py` / `_system_patching.py` /
-   `_system_adapters.py` cluster is **test/`mode/`-only** and is not on
-   the CLI runtime path; editing it does not fix CLI record/replay bugs.
+   `proxy/io.py` -> `proxy/system.py` (which delegates `patch_type` /
+   `unpatch_type` to `proxy/patchtype.py`, uses `proxy/proxytype.py`
+   reaching `proxy/stubfactory.py`, uses `proxy/typeutils.py` via
+   `patchtype.py`, and uses `install/`). If a single diff touches more
+   than one of `system.py`, `patchtype.py`, `io.py`, `proxytype.py`, or
+   `typeutils.py`, stop and re-read `DESIGN.md` before continuing. The
+   `contexts.py` / `context.py` / `_system_specs.py` /
+   `_system_patching.py` / `_system_adapters.py` cluster is
+   **test/`mode/`-only** and is not on the CLI runtime path; editing it
+   does not fix CLI record/replay bugs. `proxy/gateway.py` is
+   **in-progress refactor scaffolding** (see "In-progress" below) — do
+   not treat it as a live kernel file even though `system.py` references
+   it.
 6. **Do not add backwards-compatibility shims** for old trace formats,
    message tags, or removed APIs. If a recording no longer matches the
    current code, regenerate the recording. Do not pattern new code after
@@ -48,20 +54,26 @@ Before editing proxy-layer code, read these in order:
 
 1. `src/retracesoftware/proxy/AGENTS.md`
 2. `src/retracesoftware/proxy/DESIGN.md`
-3. The current CLI runtime path for the behavior in question. Verified by
-   import graph (`__main__.py` imports `proxy.tape` + `proxy.io` and the
-   recording-I/O implementation from top-level `tape.py`; `proxy/io.py`
-   only imports from `proxy.system` within the proxy package;
-   `proxy/system.py` only imports `proxy.proxytype`, `proxy.typeutils`,
-   and `install/`):
+3. The current CLI runtime path for the behavior in question. Verified
+   by import graph (`__main__.py` imports `proxy.tape` + `proxy.io` and
+   the recording-I/O implementation from top-level `tape.py`;
+   `proxy/io.py` only imports from `proxy.system` within the proxy
+   package; `proxy/system.py` imports `proxy.proxytype`, `proxy.patchtype`,
+   and `install/` — and also tries to import `ext_gateway` /
+   `int_gateway` from `proxy.gateway`, which is in-progress and currently
+   does not resolve, see "In-progress" below; `proxy.patchtype` imports
+   `proxy.proxytype` and `proxy.typeutils`):
    - `src/retracesoftware/__main__.py`
    - `src/retracesoftware/tape.py` (top-level, recording I/O implementation)
    - `src/retracesoftware/proxy/tape.py` (`Tape` / `TapeReader` /
      `TapeWriter` Protocol types only)
    - `src/retracesoftware/proxy/io.py`
    - `src/retracesoftware/proxy/system.py`
+   - `src/retracesoftware/proxy/patchtype.py` (extracted from `system.py`
+     in commit `d9181fb`; owns `patch_type` / `unpatch_type`)
    - `src/retracesoftware/proxy/proxytype.py`
-   - `src/retracesoftware/proxy/typeutils.py`
+   - `src/retracesoftware/proxy/typeutils.py` (reached via `patchtype.py`,
+     not `system.py` directly)
    - `src/retracesoftware/install/` (`patcher.py`, `edgecases.py`)
 
    The `contexts.py` / `context.py` / `_system_specs.py` /
@@ -85,11 +97,30 @@ behavior.
 ### Live CLI runtime kernel (record + replay both go through these)
 
 - `system.py`
-  Gate-based kernel (`System` class, `_external` / `_internal` gates,
-  `_ext_handler`, `_int_handler`, `_override_handler`, `ext_executor`,
-  `int_executor`, `patch_type`, `patch_function`, `disable_for`, `run`,
-  `location`, `wrap_start_new_thread`, `adapter`). Imported by
-  `proxy/io.py`, by tests, and by `install/`.
+  Gate-based kernel. Owns the `System` class — the phase thread-local
+  `gate`, the `int_gateway` / `ext_gateway` callables built from that
+  thread-local, and the runtime methods (`__init__`, `run`,
+  `disable_for`, `wrap_start_new_thread`, `wrap_async`, `patch_function`,
+  `patch`, `int_proxytype`, `ext_proxytype`, `install`, plus the
+  `location` property and the `_on_alloc` allocation hook).
+  `System.patch_type()` / `System.unpatch_type()` are thin delegations
+  to `proxy/patchtype.py`. Module-level helpers include `LifecycleHooks`,
+  `CallHooks`, `ProxyRef`, `ThreadSafeCounter`, `_ext_proxytype_from_spec`,
+  and `fallback`. Imported by `proxy/io.py`, by tests, and by `install/`.
+  Also imports `ext_gateway` / `int_gateway` factory names from
+  `proxy/gateway.py` (per `d9181fb`); those imports are part of an
+  in-progress refactor and currently do not resolve — see "In-progress"
+  below.
+- `patchtype.py` (extracted from `system.py` in commit `d9181fb`)
+  Owns the in-place type-patching machinery: `patch_type`, `unpatch_type`
+  (also exported as `_module_unpatch_type`), `get_all_subtypes`,
+  `_unpatch_type_one`, `_unwrap_patched_attr`, `_restore_attr`, and
+  `_is_patch_generated_init_subclass`. Imports `superdict` from
+  `proxy/proxytype.py` and `WithoutFlags` from `proxy/typeutils.py`,
+  plus `install.edgecases.patchtype` indirectly through `system.py`.
+  Called by `System.patch_type()` and `System.unpatch_type()`. Treat as
+  a proxy-kernel file — bugs in patching, subclass interception, or
+  alloc-hook installation belong here, not in `system.py`.
 - `io.py`
   `recorder()` / `replayer()` builders used by
   `src/retracesoftware/__main__.py`. Hosts `_RawTapeSource`,
@@ -103,12 +134,14 @@ behavior.
   `src/retracesoftware/tape.py`, which imports `TapeWriter` from here.
 - `proxytype.py`
   Defines `dynamic_proxytype`, `dynamic_int_proxytype`, `DynamicProxy`,
-  `method_names`, `superdict`. Live dependency of `system.py`. On the
-  runtime path, but rarely the right place to fix a record/replay bug —
-  see "Where Bugs Usually Are NOT".
+  `method_names`, `superdict`. Live dependency of `system.py` and
+  `patchtype.py`. On the runtime path, but rarely the right place to fix
+  a record/replay bug — see "Where Bugs Usually Are NOT".
 - `typeutils.py`
-  `WithoutFlags`, `modify`. Used by `system.py` and by
-  `install/patcher.py`.
+  `WithoutFlags`, `modify`. Used by `proxy/patchtype.py` (via
+  `WithoutFlags` to temporarily clear `Py_TPFLAGS_IMMUTABLETYPE` while
+  patching) and by `install/patcher.py`. No longer imported directly by
+  `system.py` after `d9181fb`.
 - `stubfactory.py`
   Stubs used by `proxytype.py` for replay-time materialization. Reached
   via `proxytype.py`; not imported directly from `system.py` or `io.py`.
@@ -148,6 +181,41 @@ behavior, not CLI record/replay.
   `record_context()` / `replay_context()`. Intentional WIP — nothing in
   the live runtime imports `proxy.mode` yet. Treat as scaffolding for a
   future refactor; do not assume it is on the CLI path.
+- `gateway.py` (gateway-split refactor scaffolding)
+  `proxy/DESIGN.md` (rewritten in commit `d9181fb`) describes a target
+  architecture where `gateway.py` exports `ext_gateway()` /
+  `int_gateway()` / `ext_replay_gateway()` / `int_replay_gateway()`
+  factories that `system.py` calls inside `System.run()` to install the
+  record-time and replay-time pipelines. **The current `gateway.py`
+  does NOT define those factories.** It still contains the older
+  `Gates` class, `adapter_pair`, `create_context`, `create_int_spec`,
+  `create_ext_spec`, `record_context`, `GatewayPair`, and `Recorder`
+  symbols (verifiable via `grep -nE "^def |^class " gateway.py`). It
+  also still does
+  `from retracesoftware.proxy.system import _run_with_replay, adapter, Patched`,
+  but those names were removed from `system.py` in `d9181fb` and do not
+  exist anywhere in the current `system.py` either.
+
+  Net effect today:
+  - `proxy/system.py:27`
+    (`from retracesoftware.proxy.gateway import ext_gateway, int_gateway`)
+    is a forward reference into the in-progress refactor and will fail
+    with `ImportError` until the factories land in `gateway.py`.
+  - The kernel cannot be imported standalone via this commit.
+  - `proxy/DESIGN.md` describes the **target** shape, not the current
+    runtime behavior. Use it for the intended architecture, but do not
+    treat current `gateway.py` content as authoritative.
+
+  Until the refactor finishes:
+  - Do not pattern new code after current `gateway.py` content (the
+    older `Gates` / `adapter_pair` / `create_context` / `Recorder`
+    surface is what `DESIGN.md` is replacing).
+  - Do not "fix" the broken cross-imports by re-adding `_run_with_replay`,
+    `adapter`, or `Patched` to `system.py` without explicit coordination
+    — that contradicts the `d9181fb` direction.
+  - When debugging a current CLI bug, treat `gateway.py` as not on the
+    runtime path and look at `system.py`, `patchtype.py`, `io.py`,
+    `proxytype.py`, and `install/` instead.
 
 ## Current Path
 
@@ -156,10 +224,16 @@ behavior, not CLI record/replay.
   `proxy.io` and the `TapeReader` Protocol from `proxy.tape`. It also
   imports the recording-I/O implementation (`create_tape_writer`,
   `open_tape_reader`, `RawTapeWriter`) from top-level
-  `src/retracesoftware/tape.py`. `io.recorder()` / `io.replayer()` build a
-  `System` from `proxy/system.py`, which uses `proxy/proxytype.py`,
-  `proxy/typeutils.py`, `install/patcher.py`, and `install/edgecases.py`.
-  **That is the entire CLI proxy path.**
+  `src/retracesoftware/tape.py`. `io.recorder()` / `io.replayer()` build
+  a `System` from `proxy/system.py`, which delegates `patch_type` /
+  `unpatch_type` to `proxy/patchtype.py`, uses `proxy/proxytype.py`
+  (which reaches `proxy/stubfactory.py`), uses `proxy/typeutils.py`
+  via `patchtype.py`, and uses `install/patcher.py` and
+  `install/edgecases.py`. As of `d9181fb`, `system.py` also imports
+  `ext_gateway` / `int_gateway` factory names from `proxy/gateway.py`,
+  but those factories are not yet defined there — the gateway split is
+  in-progress refactor work, not finished CLI behavior. See "In-progress"
+  above. **That is the current CLI proxy path.**
 - **Test / `proxy/mode/` surface:**
   The `contexts.py` / `context.py` / `_system_specs.py` /
   `_system_patching.py` / `_system_adapters.py` cluster drives most of
@@ -315,9 +389,10 @@ details. They are the entire CLI proxy surface; changes here can cascade
 across record, replay, install patching, and downstream library replay:
 
 - `system.py`
+- `patchtype.py` (extracted from `system.py` in `d9181fb`)
 - `io.py`
 - `proxytype.py`
-- `typeutils.py`
+- `typeutils.py` (reached via `patchtype.py`)
 - `tape.py` (proxy — Protocol types)
 - top-level `src/retracesoftware/tape.py` (recording I/O implementation)
 
@@ -383,18 +458,21 @@ when the inner layer cannot express the fix.
   `src/retracesoftware/tape.py` (top-level recording I/O),
   `src/retracesoftware/proxy/tape.py` (Protocol types only),
   `src/retracesoftware/proxy/io.py`, `src/retracesoftware/proxy/system.py`,
+  `src/retracesoftware/proxy/patchtype.py`,
   `src/retracesoftware/proxy/proxytype.py`,
-  `src/retracesoftware/proxy/typeutils.py`, and
-  `src/retracesoftware/install/`. The test/`mode/` cluster
+  `src/retracesoftware/proxy/typeutils.py` (reached via `patchtype.py`),
+  and `src/retracesoftware/install/`. The test/`mode/` cluster
   (`contexts.py`, `context.py`, `_system_specs.py`,
   `_system_patching.py`, `_system_adapters.py`) is not on the CLI
-  runtime path.
+  runtime path. `proxy/gateway.py` is in-progress refactor scaffolding
+  with currently unresolved cross-imports to `system.py` — see
+  "In-progress" above before relying on it.
 - If a fix can live in `src/retracesoftware/modules/*.toml` or the install
   layer, prefer that over rewriting boundary logic.
-- If you change `system.py`, `io.py`, `proxytype.py`, `typeutils.py`, or
-  either `tape.py`, explicitly call out the determinism impact and explain
-  how the change preserves gate selection, binding semantics, and message
-  alignment.
+- If you change `system.py`, `patchtype.py`, `io.py`, `proxytype.py`,
+  `typeutils.py`, or either `tape.py`, explicitly call out the
+  determinism impact and explain how the change preserves gate
+  selection, binding semantics, and message alignment.
 - If a change is being proposed in `contexts.py`, `context.py`,
   `_system_specs.py`, `_system_patching.py`, `_system_adapters.py`, or
   `proxy/mode/`, first confirm the bug actually belongs to the test or
@@ -430,14 +508,18 @@ when the inner layer cannot express the fix.
 
 Live CLI runtime path (verified by import graph):
 
-- `src/retracesoftware/proxy/DESIGN.md`
+- `src/retracesoftware/proxy/DESIGN.md` (rewritten in `d9181fb` —
+  describes the **target** gateway-split architecture; ahead of the
+  current code, see "In-progress" above)
 - `src/retracesoftware/__main__.py`
 - `src/retracesoftware/tape.py` (top-level — recording I/O implementation)
 - `src/retracesoftware/proxy/tape.py` (Protocol types only)
 - `src/retracesoftware/proxy/io.py`
 - `src/retracesoftware/proxy/system.py`
+- `src/retracesoftware/proxy/patchtype.py` (extracted from `system.py`
+  in `d9181fb`; owns `patch_type` / `unpatch_type`)
 - `src/retracesoftware/proxy/proxytype.py`
-- `src/retracesoftware/proxy/typeutils.py`
+- `src/retracesoftware/proxy/typeutils.py` (reached via `patchtype.py`)
 - `src/retracesoftware/proxy/stubfactory.py` (reached via `proxytype.py`)
 - `src/retracesoftware/install/` (`patcher.py`, `edgecases.py`)
 
@@ -452,6 +534,12 @@ Test-only / `proxy/mode/`-only (not on CLI runtime path):
 In-progress (not wired into the CLI runtime today):
 
 - `src/retracesoftware/proxy/mode/`
+- `src/retracesoftware/proxy/gateway.py` (gateway-split scaffolding —
+  `DESIGN.md` describes a target where `gateway.py` exports
+  `ext_gateway` / `int_gateway` factories that `system.py:27` imports;
+  the factories do not exist in `gateway.py` yet, and the cross-imports
+  between `system.py` and `gateway.py` currently do not resolve. Do
+  not treat as finished live kernel.)
 
 Top-level protocol package (live, distinct from anything under `proxy/`):
 
