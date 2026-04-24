@@ -98,6 +98,9 @@ namespace retracesoftware {
 
     extern PyTypeObject ThreadLocal_Type;
     extern PyTypeObject ThreadLocalContext_Type;
+    extern PyTypeObject ThreadLocalIfThenElse_Type;
+    extern PyTypeObject ThreadLocalCond_Type;
+    extern PyTypeObject ThreadLocalApplyWith_Type;
 
     extern PyTypeObject ThreadContextWrapper_Type;
 

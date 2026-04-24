@@ -29,6 +29,31 @@ class TestCompose:
         
         assert composed("hello", suffix="!") == "HELLO!"
 
+    def test_exposes_and_updates_f_and_g(self):
+        f1 = lambda x: x + "!"
+        g1 = lambda x: x.upper()
+        f2 = lambda x: f"[{x}]"
+        g2 = lambda x: x.strip()
+
+        composed = fn.compose(f1, g1)
+
+        assert composed.f is f1
+        assert composed.g is g1
+        assert composed("hello") == "HELLO!"
+
+        composed.f = f2
+        composed.g = g2
+
+        assert composed.f is f2
+        assert composed.g is g2
+        assert composed("  hello  ") == "[hello]"
+
+        with pytest.raises(TypeError):
+            composed.f = 1
+
+        with pytest.raises(TypeError):
+            composed.g = None
+
     @pytest.mark.skip(reason="compose requires callable for second argument")
     def test_attribute_access_is_composed(self):
         class Obj:

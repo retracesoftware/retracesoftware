@@ -2,6 +2,7 @@ from dataclasses import dataclass
 
 from retracesoftware.install.replace import restore_module_refs, update, update_module_refs
 from retracesoftware.install.session import InstallSession
+from retracesoftware.proxy.patchtype import patch_type
 
 
 _MISSING = object()
@@ -156,7 +157,7 @@ class Installation:
         if not isinstance(value, type):
             raise TypeError(f"cannot patch_type {type(value).__name__!r} object")
 
-        self.system.patch_type(value, install_session=self.install_session)
+        patch_type(self.system, value, install_session=self.install_session)
         self._track_type(value)
         self._track_object(namespace, name, value, value)
         return value

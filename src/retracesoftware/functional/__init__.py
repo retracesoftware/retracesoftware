@@ -172,16 +172,18 @@ def lazy(func, *args):
     return _backend_mod.repeatedly(func, *args)
 
 
-def spread_and(pred):
-    """spread_and(pred)(*args, **kwargs) -> True iff pred(value) is truthy for every arg and kwarg value."""
+def spread_and(pred, *, starting: int = 0):
+    """spread_and(pred, starting=0)(*args, **kwargs) -> True iff pred(value) is truthy for every checked value."""
     ctor = getattr(_backend_mod, "spread_and", None)
     if ctor is not None:
-        return ctor(pred)
+        return ctor(pred, starting=starting)
     if not callable(pred):
         raise TypeError("spread_and() expects a callable")
+    if starting < 0:
+        raise ValueError("spread_and() starting must be >= 0")
 
     def _spread_and(*args, **kwargs):
-        for value in args:
+        for value in args[starting:]:
             if not pred(value):
                 return False
         for value in kwargs.values():

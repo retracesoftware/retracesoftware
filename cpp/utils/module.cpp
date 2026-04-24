@@ -741,6 +741,9 @@ PyMODINIT_FUNC CONCAT(PyInit_, MODULE_NAME)(void) {
         &retracesoftware::TypePatchState_Type,
         &retracesoftware::ThreadContextWrapper_Type,
         &retracesoftware::ThreadLocalContext_Type,
+        &retracesoftware::ThreadLocalIfThenElse_Type,
+        &retracesoftware::ThreadLocalCond_Type,
+        &retracesoftware::ThreadLocalApplyWith_Type,
         nullptr
     };
 

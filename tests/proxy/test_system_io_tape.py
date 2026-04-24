@@ -13,6 +13,7 @@ from retracesoftware.proxy.io import (
     recorder_context,
     replayer,
 )
+from retracesoftware.proxy.patchtype import patch_type
 from retracesoftware.proxy.system import ProxyRef
 from retracesoftware.proxy.tape import Tape
 from retracesoftware.tape import RawTapeWriter
@@ -373,7 +374,7 @@ def test_system_io_round_trips_simple_override_callback_with_tape(mode, tape):
 
     with _entered(writer) as writer:
         with _recorder_context(mode, writer) as record_system:
-            record_system.patch_type(Base)
+            patch_type(record_system, Base)
 
             def trigger(cls, value):
                 return cls().trigger(value)
@@ -394,7 +395,7 @@ def test_system_io_round_trips_simple_override_callback_with_tape(mode, tape):
     reader = tape.reader()
     with _entered(reader) as reader:
         with _replayer_context(mode, reader) as replay_system:
-            replay_system.patch_type(Base)
+            patch_type(replay_system, Base)
 
             def trigger(cls, value):
                 return cls().trigger(value)
@@ -425,7 +426,7 @@ def test_system_io_records_and_rebinds_callback_receiver_with_tape(mode, tape):
 
     with _entered(writer) as writer:
         with _recorder_context(mode, writer) as record_system:
-            record_system.patch_type(Base)
+            patch_type(record_system, Base)
             recorded_state = {}
 
             def do_record(cls, value):
@@ -445,7 +446,7 @@ def test_system_io_records_and_rebinds_callback_receiver_with_tape(mode, tape):
     reader = tape.reader()
     with _entered(reader) as reader:
         with _replayer_context(mode, reader) as replay_system:
-            replay_system.patch_type(Base)
+            patch_type(replay_system, Base)
             replay_state = {}
 
             def do_replay(cls, value):
@@ -485,7 +486,7 @@ def test_system_io_round_trips_nested_callback_external_call_with_memory_tape():
 
     with _entered(writer) as writer:
         with _recorder_context(IOMode("plain"), writer) as record_system:
-            record_system.patch_type(Base)
+            patch_type(record_system, Base)
             current_clock = record_system.patch_function(clock)
             recorded = record_system.run(lambda cls, value: cls().trigger(value), Sub, 5)
 
@@ -495,7 +496,7 @@ def test_system_io_round_trips_nested_callback_external_call_with_memory_tape():
     reader = tape.reader()
     with _entered(reader) as reader:
         with _replayer_context(IOMode("plain"), reader) as replay_system:
-            replay_system.patch_type(Base)
+            patch_type(replay_system, Base)
             current_clock = replay_system.patch_function(clock)
             replayed = replay_system.run(lambda cls, value: cls().trigger(value), Sub, 5)
 
@@ -523,7 +524,7 @@ def test_system_io_replays_dynamic_internal_proxy_callback_side_effect_with_memo
 
     with _entered(writer) as writer:
         with _recorder_context(IOMode("plain"), writer) as record_system:
-            record_system.patch_type(External)
+            patch_type(record_system, External)
 
             def run_callback(external_cls, callback_cls, calls):
                 return external_cls().run(callback_cls(calls))
@@ -537,7 +538,7 @@ def test_system_io_replays_dynamic_internal_proxy_callback_side_effect_with_memo
     replay_calls = []
     with _entered(reader) as reader:
         with _replayer_context(IOMode("plain"), reader) as replay_system:
-            replay_system.patch_type(External)
+            patch_type(replay_system, External)
 
             def run_callback(external_cls, callback_cls, calls):
                 return external_cls().run(callback_cls(calls))

@@ -157,7 +157,7 @@ def patch_type(system, cls, install_session=None):
             import _socket
             system = System()
             system.immutable_types.update({int, str, bytes, bool})
-            system.patch_type(_socket.socket)
+            patch_type(system, _socket.socket)
             # Now socket.connect(), socket.recv(), etc. all go through
             # the external gate when an executor is set.
             # A Python subclass that overrides recv() will have that

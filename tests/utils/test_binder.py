@@ -271,6 +271,7 @@ def test_binder_swallows_callback_exceptions():
 
 
 def test_system_patch_type_registers_bind_support(monkeypatch):
+    from retracesoftware.proxy.patchtype import patch_type
     from retracesoftware.proxy.system import System
 
     seen = []
@@ -284,7 +285,7 @@ def test_system_patch_type_registers_bind_support(monkeypatch):
 
     system = System()
     try:
-        system.patch_type(_socket.socket)
+        patch_type(system, _socket.socket)
     finally:
         system.unpatch_types()
 

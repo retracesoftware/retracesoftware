@@ -9,6 +9,7 @@ import sys
 import pytest
 
 from retracesoftware.install import ReplayDivergence
+from retracesoftware.proxy.patchtype import patch_type
 from tests.runner import DEFAULT_RUN_MATRIX, Runner, retrace_test
 
 
@@ -101,7 +102,7 @@ def test_proxied_return_value():
     def configure_system(system):
         systems.append(system)
         system.immutable_types.update({int, float, str, bytes, bool, type, type(None)})
-        system.patch_type(Database)
+        patch_type(system, Database)
 
     runner = Runner(configure_system=configure_system)
     seen = []
@@ -130,7 +131,7 @@ def test_runner_replays_external_allocation_results():
 
     def configure_system(system):
         system.immutable_types.update({int, float, str, bytes, bool, type, type(None)})
-        system.patch_type(Base)
+        patch_type(system, Base)
 
     runner = Runner(configure_system=configure_system, matrix=[{"name": "default"}])
 
@@ -165,7 +166,7 @@ def test_run_reruns_divergence_with_debug_tape():
 
     def configure_system(system):
         system.immutable_types.update({int, float, str, bytes, bool, type, type(None)})
-        system.patch_type(Base)
+        patch_type(system, Base)
 
     runner = Runner(configure_system=configure_system)
 

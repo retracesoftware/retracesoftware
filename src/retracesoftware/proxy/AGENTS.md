@@ -103,8 +103,9 @@ behavior.
   `disable_for`, `wrap_start_new_thread`, `wrap_async`, `patch_function`,
   `patch`, `int_proxytype`, `ext_proxytype`, `install`, plus the
   `location` property and the `_on_alloc` allocation hook).
-  `System.patch_type()` / `System.unpatch_type()` are thin delegations
-  to `proxy/patchtype.py`. Module-level helpers include `LifecycleHooks`,
+  Type patching lives in `proxy/patchtype.py`; `System.unpatch_type()`
+  delegates there, and `System.patch()` calls module-level `patch_type()`
+  for class inputs. Module-level helpers include `LifecycleHooks`,
   `CallHooks`, `ProxyRef`, `ThreadSafeCounter`, `_ext_proxytype_from_spec`,
   and `fallback`. Imported by `proxy/io.py`, by tests, and by `install/`.
   Also imports `ext_gateway` / `int_gateway` factory names from
@@ -118,7 +119,8 @@ behavior.
   `_is_patch_generated_init_subclass`. Imports `superdict` from
   `proxy/proxytype.py` and `WithoutFlags` from `proxy/typeutils.py`,
   plus `install.edgecases.patchtype` indirectly through `system.py`.
-  Called by `System.patch_type()` and `System.unpatch_type()`. Treat as
+  Called by `System.patch()`, `System.unpatch_type()`, and install/test code.
+  Treat as
   a proxy-kernel file — bugs in patching, subclass interception, or
   alloc-hook installation belong here, not in `system.py`.
 - `io.py`
@@ -165,7 +167,7 @@ behavior, not CLI record/replay.
   `create_context`, `create_int_spec`, `create_ext_spec`. Imported by
   `contexts.py` and `context.py`.
 - `_system_patching.py`
-  Defines `Patched`. Imported by `_system_specs.py`. (CLI `System.patch_type()`
+  Defines `Patched`. Imported by `_system_specs.py`. (CLI `patch_type()`
   uses `install.patcher.install_hash_patching` and
   `install.edgecases.patchtype` instead.)
 - `_system_adapters.py`

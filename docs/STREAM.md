@@ -597,7 +597,7 @@ Those concepts come from proxy, but stream has to preserve their meaning.
 
 #### Patched types
 
-In proxy, `System.patch_type(cls)` changes a type in place so calls on
+In proxy, `patch_type(system, cls)` changes a type in place so calls on
 that type are routed through the gate machinery in
 `src/retracesoftware/proxy/system.py`.
 

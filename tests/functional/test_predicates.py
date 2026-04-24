@@ -47,6 +47,11 @@ class TestSpreadAnd:
 
         assert pred(1, 2, 3) is True
 
+    def test_starting_defaults_to_zero(self):
+        pred = fn.spread_and(lambda x: x > 0, starting=0)
+
+        assert pred(1, 2, 3) is True
+
     def test_returns_false_when_any_argument_fails(self):
         pred = fn.spread_and(lambda x: x > 0)
 
@@ -62,6 +67,18 @@ class TestSpreadAnd:
         pred = fn.spread_and(lambda x: False)
 
         assert pred() is True
+
+    def test_starting_skips_initial_positional_arguments(self):
+        pred = fn.spread_and(lambda x: x > 0, starting=1)
+
+        assert pred("callable", 1, 2, right=3) is True
+        assert pred("callable", -1, 2, right=3) is False
+
+    def test_starting_does_not_skip_keyword_argument_values(self):
+        pred = fn.spread_and(lambda x: isinstance(x, int), starting=2)
+
+        assert pred("callable", object(), left=3, right=4) is True
+        assert pred("callable", object(), left=3, right="4") is False
 
 
 class TestOrPredicate:

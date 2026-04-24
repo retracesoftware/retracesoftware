@@ -5,6 +5,7 @@ import pytest
 from retracesoftware.install import Recording, ReplayDivergence, install_retrace
 from retracesoftware.install.monitoring import install_monitoring, suppress_monitoring
 from retracesoftware.proxy.io import recorder, replayer
+from retracesoftware.proxy.patchtype import patch_type
 from retracesoftware.testing.memorytape import IOMemoryTape
 
 _RUNNER_SETTINGS_ATTR = "__retrace_runner_settings__"
@@ -129,7 +130,7 @@ class Runner:
             settings["configure_system"](system)
         for obj in settings["patch"]:
             if isinstance(obj, type):
-                system.patch_type(obj)
+                patch_type(system, obj)
             else:
                 system.patch(obj)
 

@@ -6,10 +6,18 @@ import pytest
 from retracesoftware.__main__ import install_and_run
 from retracesoftware.install.patcher import patch
 from retracesoftware.install.installation import Installation
-from retracesoftware.proxy._system_adapters import _run_with_replay
 from retracesoftware.proxy.io import recorder, replayer
 from retracesoftware.proxy.system import System
 from retracesoftware.testing.memorytape import IOMemoryTape
+
+
+def _run_with_replay(ext_runner):
+    def replay_fn(fn, *args, **kwargs):
+        return ext_runner()
+
+    return replay_fn
+
+
 def test_patch_ignores_replay_materialize_when_system_has_no_registry():
     system = System()
 

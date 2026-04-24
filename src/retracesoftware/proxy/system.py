@@ -151,7 +151,8 @@ class System:
     def patch(self, obj, install_session=None):
         """Patch *obj* for proxying — dispatches by type.
 
-        If *obj* is a class, delegates to ``patch_type`` (mutates the
+        If *obj* is a class, delegates to module-level ``patch_type``
+        (mutates the
         class in-place, returns ``None``).
 
         If *obj* is a callable (function, builtin, etc.), delegates to
@@ -160,7 +161,7 @@ class System:
         Raises ``TypeError`` for anything else.
         """
         if isinstance(obj, type):
-            self.patch_type(obj, install_session=install_session)
+            patch_type(self, obj, install_session=install_session)
             return obj
         if callable(obj):
             return self.patch_function(obj)
@@ -385,9 +386,6 @@ class System:
                 slots[name] = self._wrapped_function(self.ext_gateway, cls.__dict__[name])
 
         return type('FOOBAR', (utils.ExternalWrapped,), slots)
-
-    def patch_type(self, cls, install_session=None):
-        return patch_type(self, cls, install_session)
 
     def unpatch_type(self, cls):
         tracked_types = []

@@ -37,7 +37,7 @@ DEBUG_MODE = _DEBUG_MODE and __backend__.startswith("native")
 
 
 _DEPRECATED = frozenset({
-    "MemoryAddresses", "Proxy", "ThreadStatePredicate",
+    "MemoryAddresses", "ThreadStatePredicate",
     "blocking_counter", "chain", "fastset", "has_generic_alloc",
     "has_generic_new", "hashseed", "id_dict", "idset", "instancecheck",
     "intercept__new__", "intercept_dict_set", "is_identity_hash",

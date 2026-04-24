@@ -94,6 +94,46 @@ static PyObject* descr_get(PyObject *self, PyObject *obj, PyObject *type) {
     return obj == NULL || obj == Py_None ? Py_NewRef(self) : PyMethod_New(self, obj);
 }
 
+static PyObject *Compose2_f_get(Compose2 *self, void *) {
+    return self->f.callable ? Py_NewRef(self->f.callable) : Py_NewRef(Py_None);
+}
+
+static int Compose2_f_set(Compose2 *self, PyObject *value, void *) {
+    if (value == nullptr || !PyCallable_Check(value)) {
+        PyErr_SetString(PyExc_TypeError, "f must be callable");
+        return -1;
+    }
+
+    Py_INCREF(value);
+    PyObject *old = self->f.callable;
+    self->f = retracesoftware::FastCall(value);
+    Py_XDECREF(old);
+    return 0;
+}
+
+static PyObject *Compose2_g_get(Compose2 *self, void *) {
+    return self->g.callable ? Py_NewRef(self->g.callable) : Py_NewRef(Py_None);
+}
+
+static int Compose2_g_set(Compose2 *self, PyObject *value, void *) {
+    if (value == nullptr || !PyCallable_Check(value)) {
+        PyErr_SetString(PyExc_TypeError, "g must be callable");
+        return -1;
+    }
+
+    Py_INCREF(value);
+    PyObject *old = self->g.callable;
+    self->g = retracesoftware::FastCall(value);
+    Py_XDECREF(old);
+    return 0;
+}
+
+static PyGetSetDef getset[] = {
+    {"f", (getter)Compose2_f_get, (setter)Compose2_f_set, nullptr, nullptr},
+    {"g", (getter)Compose2_g_get, (setter)Compose2_g_set, nullptr, nullptr},
+    {nullptr}
+};
+
 PyTypeObject Compose2_Type = {
     .ob_base = PyVarObject_HEAD_INIT(NULL, 0)
     .tp_name = MODULE "compose",
@@ -125,6 +165,7 @@ PyTypeObject Compose2_Type = {
     .tp_clear = (inquiry)clear,
     // .tp_methods = methods,
     // .tp_members = members,
+    .tp_getset = getset,
     .tp_descr_get = descr_get,
     .tp_init = (initproc)init,
     .tp_new = PyType_GenericNew,

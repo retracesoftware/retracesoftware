@@ -16,24 +16,15 @@ from typing import Any, Generator
 
 log = logging.getLogger(__name__)
 
-_gates = None
-
-
 def _try_import_gates():
-    """Attempt to import the retrace gate machinery, return None if unavailable."""
-    global _gates
-    if _gates is not None:
-        return _gates
-    try:
-        from retracesoftware.proxy.gateway import Gates
-        from retracesoftware.proxy.record_system import RecordSystem
-        import retracesoftware.proxy.system as system
-        _gates = getattr(system, "gates", None)
-        if _gates is not None:
-            log.debug("Retrace gates available")
-        return _gates
-    except ImportError:
-        return None
+    """Return a process-global gate handle if one exists.
+
+    The legacy proxy gateway/record-system stack used to expose global gate
+    objects here. The current runtime uses per-System gates and does not publish
+    a process-global handle, so DAP replay falls back to a no-op shim.
+    """
+    log.debug("No process-global retrace gates available")
+    return None
 
 
 @contextmanager

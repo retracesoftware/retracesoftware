@@ -9,6 +9,7 @@ import retracesoftware.utils as utils
 import retracesoftware.functional as functional
 import importlib
 from retracesoftware.install.installation import Installation
+from retracesoftware.proxy.patchtype import patch_type
 
 
 # ── Hash patching ──────────────────────────────────────────────────
@@ -208,7 +209,7 @@ def patch(module, spec, installation, update_refs = None, pathpredicate = None):
                     continue
                 value = namespace[name]
                 if isinstance(value, type):
-                    system.patch_type(value, install_session=install_session)
+                    patch_type(system, value, install_session=install_session)
                     installation._track_type(value)
 
         elif directive == 'immutable':

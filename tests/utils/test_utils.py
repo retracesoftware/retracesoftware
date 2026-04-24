@@ -3059,6 +3059,222 @@ class TestThreadLocal:
         assert result['after'] is None
         assert tl.get() == 'main'
 
+    def test_if_then_else_uses_then_branch_when_value_matches(self):
+        tl = _utils.ThreadLocal("mode")
+        dispatch = tl.if_then_else("mode", lambda x: ("then", x), lambda x: ("else", x))
+
+        assert dispatch(7) == ("then", 7)
+
+    def test_if_then_else_uses_else_branch_when_value_differs(self):
+        tl = _utils.ThreadLocal("other")
+        dispatch = tl.if_then_else("mode", lambda x: ("then", x), lambda x: ("else", x))
+
+        assert dispatch(7) == ("else", 7)
+
+    def test_if_then_else_uses_equality_not_only_identity(self):
+        tl = _utils.ThreadLocal("alpha")
+        expected = "".join(["al", "pha"])
+        dispatch = tl.if_then_else(expected, lambda: "then", lambda: "else")
+
+        assert dispatch() == "then"
+
+    def test_if_then_else_sees_per_thread_values(self):
+        tl = _utils.ThreadLocal("main")
+        dispatch = tl.if_then_else("child", lambda: "then", lambda: "else")
+        result = {}
+
+        def child():
+            result["before"] = dispatch()
+            tl.set("child")
+            result["after"] = dispatch()
+
+        t = threading.Thread(target=child)
+        t.start()
+        t.join()
+
+        assert dispatch() == "else"
+        assert result["before"] == "else"
+        assert result["after"] == "then"
+
+    def test_if_then_else_requires_callable_branches(self):
+        tl = _utils.ThreadLocal()
+
+        with pytest.raises(TypeError):
+            tl.if_then_else("mode", 1, lambda: None)
+
+        with pytest.raises(TypeError):
+            tl.if_then_else("mode", lambda: None, 1)
+
+    def test_if_then_else_on_then_and_on_else_getter_setter(self):
+        tl = _utils.ThreadLocal("mode")
+
+        def then_one(x):
+            return ("then-one", x)
+
+        def else_one(x):
+            return ("else-one", x)
+
+        def then_two(x):
+            return ("then-two", x)
+
+        def else_two(x):
+            return ("else-two", x)
+
+        dispatch = tl.if_then_else("mode", then_one, else_one)
+
+        assert dispatch.on_then is then_one
+        assert dispatch.on_else is else_one
+        assert dispatch("x") == ("then-one", "x")
+
+        dispatch.on_then = then_two
+        dispatch.on_else = else_two
+
+        assert dispatch.on_then is then_two
+        assert dispatch.on_else is else_two
+        assert dispatch("x") == ("then-two", "x")
+
+        tl.set("other")
+        assert dispatch("x") == ("else-two", "x")
+
+        with pytest.raises(TypeError):
+            dispatch.on_then = 1
+
+        with pytest.raises(TypeError):
+            dispatch.on_else = None
+
+    def test_cond_uses_first_matching_branch(self):
+        tl = _utils.ThreadLocal("beta")
+        dispatch = tl.cond(
+            "alpha", lambda x: ("alpha", x),
+            "beta", lambda x: ("beta", x),
+            lambda x: ("else", x),
+        )
+
+        assert dispatch(7) == ("beta", 7)
+
+    def test_cond_uses_else_when_no_branch_matches(self):
+        tl = _utils.ThreadLocal("gamma")
+        dispatch = tl.cond(
+            "alpha", lambda: "alpha",
+            "beta", lambda: "beta",
+            lambda: "else",
+        )
+
+        assert dispatch() == "else"
+
+    def test_cond_uses_equality_not_only_identity(self):
+        tl = _utils.ThreadLocal("alpha")
+        expected = "".join(["al", "pha"])
+        dispatch = tl.cond(
+            expected, lambda: "then",
+            lambda: "else",
+        )
+
+        assert dispatch() == "then"
+
+    def test_cond_requires_callable_actions_and_final_else(self):
+        tl = _utils.ThreadLocal("mode")
+
+        with pytest.raises(TypeError):
+            tl.cond("mode", 1, lambda: None)
+
+        with pytest.raises(TypeError):
+            tl.cond("mode", lambda: None, 1)
+
+        with pytest.raises(TypeError):
+            tl.cond("mode", lambda: None)
+
+    def test_apply_with_sets_value_for_duration_of_call(self):
+        tl = _utils.ThreadLocal("before")
+
+        def target(x):
+            return tl.get(), x
+
+        wrapped = tl.apply_with("during", target)
+
+        assert wrapped(7) == ("during", 7)
+        assert tl.get() == "before"
+
+    def test_apply_with_restores_unset_state(self):
+        tl = _utils.ThreadLocal()
+
+        def target():
+            return tl.get()
+
+        wrapped = tl.apply_with("during", target)
+
+        assert wrapped() == "during"
+        assert tl.get() is None
+
+    def test_apply_with_restores_after_exception(self):
+        tl = _utils.ThreadLocal("before")
+
+        def target():
+            assert tl.get() == "during"
+            raise RuntimeError("boom")
+
+        wrapped = tl.apply_with("during", target)
+
+        with pytest.raises(RuntimeError, match="boom"):
+            wrapped()
+
+        assert tl.get() == "before"
+
+    def test_apply_with_uses_per_thread_state(self):
+        tl = _utils.ThreadLocal("main")
+        result = {}
+
+        def target():
+            result["during"] = tl.get()
+            return tl.get()
+
+        wrapped = tl.apply_with("child", target)
+
+        def child():
+            result["before"] = tl.get()
+            result["return"] = wrapped()
+            result["after"] = tl.get()
+
+        t = threading.Thread(target=child)
+        t.start()
+        t.join()
+
+        assert result == {
+            "before": "main",
+            "during": "child",
+            "return": "child",
+            "after": "main",
+        }
+        assert tl.get() == "main"
+
+    def test_apply_with_requires_callable_target(self):
+        tl = _utils.ThreadLocal()
+
+        with pytest.raises(TypeError):
+            tl.apply_with("during", 1)
+
+    def test_apply_with_target_getter_and_setter(self):
+        tl = _utils.ThreadLocal("before")
+
+        def target_one():
+            return "one", tl.get()
+
+        def target_two():
+            return "two", tl.get()
+
+        wrapped = tl.apply_with("during", target_one)
+
+        assert wrapped.target is target_one
+        assert wrapped() == ("one", "during")
+
+        wrapped.target = target_two
+
+        assert wrapped.target is target_two
+        assert wrapped() == ("two", "during")
+
+        with pytest.raises(TypeError):
+            wrapped.target = 1
+
 
 class TestChain:
 
