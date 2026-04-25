@@ -125,11 +125,16 @@ Run these before saying a proxy-kernel change is safe:
 - `tests/proxy/test_monitoring.py`
 - `tests/test_main_memory_tape.py`
 - `tests/install/test_hash_patching.py`
+- `tests/install/stdlib/test_threading_lock_replay_regression.py`
+  (smallest cross-thread sync reproducer; if this fails the
+  higher-level portal/web replay regressions below are likely
+  downstream)
 - `tests/install/stdlib/test_threaded_select_replay_dispatcher_regression.py`
 - `tests/install/external/test_anyio_from_thread_replay_dispatcher_regression.py`
 - `tests/install/external/test_starlette_testclient_replay_regression.py`
 - `tests/install/external/test_fastapi_testclient_replay_regression.py`
 - `tests/test_record_replay.py::test_record_then_replay_fastapi_testclient_request`
+- `tests/test_record_replay.py::test_record_then_replay_asyncio_run_coroutine_threadsafe`
 
 ### Install Session / Callback Sentinel Bundle
 
