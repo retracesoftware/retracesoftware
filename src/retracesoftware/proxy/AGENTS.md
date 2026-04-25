@@ -42,17 +42,11 @@ how divergence is detected. Small changes here can silently corrupt replay.
    Deletion is preferred over generalization. The proxy kernel is
    already large enough.
 8. **Tracing is observational; it must never alter thread scheduling.**
-   Debug, checkpoint, and `--stacktraces` machinery may add trace
-   messages, but it must not hold recorder protocol locks while a
-   thread can block on another retraced thread, change lock/RLock
-   identity or recursion depth, consume event-loop wakeup bytes,
-   delay `notify` / `Future` completion behind unrelated bookkeeping,
-   or cause one logical thread to consume another thread's next
-   message. See `DESIGN.md` -> "Threads" -> "Cross-thread
-   synchronization". The smallest reproducer is
-   `tests/install/stdlib/test_threading_lock_replay_regression.py`;
-   if it fails, higher-level portal/web replay regressions are
-   downstream.
+   See `DESIGN.md` -> "Threads" -> "Cross-thread synchronization".
+   Smallest reproducer:
+   `tests/install/stdlib/test_threading_lock_replay_regression.py`.
+   If it fails, the portal/web replay regressions in the Proxy Kernel
+   Sentinel Bundle are likely downstream.
 
 ## Read Order
 
@@ -123,32 +117,24 @@ it influences runtime behavior.
   `_ext_proxytype_from_spec`, `_NonBindingCallable`, and `fallback`.
   Imported by `proxy/io.py`, by tests, and by `install/`.
 
-  Bind contract (subtle but critical):
-  - `system.is_bound` is a public `utils.WeakSet`. Membership marks an
-    object as "internal to retrace" so the boundary will not record its
-    calls. This is the predicate `System.is_retraced` consults.
-  - `system.bind(obj)` = `is_bound.add(obj)` PLUS firing the optional
-    `on_bind` callback (which during recording writes a `NewBinding`
-    event so replay can rehydrate the object). Use this for everything
-    that user code or replay needs to refer to.
-  - `system.is_bound.add(obj)` (used directly by `__main__._bind_record_runtime`)
-    marks the object as internal **without** emitting a `NewBinding`.
-    Use this only for tape/recorder plumbing that must never appear on
-    the wire. Confusing the two is a determinism bug.
-
-  Thread-propagation contract (do not regress):
-  - `wrap_start_new_thread()` runs the child function under
-    `gate.apply_with('internal', wrapped)` so the child starts in the
-    internal phase with its own logical thread id. A child must not
-    begin as disabled passthrough or its first patched outbound call
-    will escape recording (see `DESIGN.md` -> "Threads").
-  - `disable_for(fn)` stamps `__retrace_disabled_thread_target__` on
-    its result so `wrap_start_new_thread` can recognize and skip
-    CPython/bootstrap synchronization (e.g. `Thread.start()`'s
-    `_started.wait()`). Do not strip this stamp.
+  Code-level facts not in `DESIGN.md` (do not regress):
+  - `system.is_bound` (public `utils.WeakSet`) is the
+    `System.is_retraced` predicate. `system.bind(obj)` =
+    `is_bound.add(obj)` **plus** firing `on_bind` (which during
+    recording writes a `NewBinding`). `__main__._bind_record_runtime`
+    deliberately uses `system.is_bound.add(obj)` for tape/recorder
+    plumbing that must never appear on the wire — confusing the two
+    is a determinism bug.
+  - `wrap_start_new_thread()` runs the child under
+    `gate.apply_with('internal', wrapped)` so it starts in the
+    internal phase with its own logical id (see `DESIGN.md` ->
+    "Thread propagation"). `disable_for(fn)` stamps
+    `__retrace_disabled_thread_target__` so the wrapper can skip
+    `Thread.start()`'s `_started.wait()` and similar bootstrap. Do
+    not strip the stamp.
   - `patch_function()` returns a `_NonBindingCallable` so module-level
-    wrapped functions never accidentally bind as bound methods when
-    accessed through a class.
+    wrapped functions don't bind as methods when accessed through a
+    class.
 - `gateway.py`
   Pure factories that build the boundary pipelines. Module-level
   functions `ext_gateway`, `int_gateway`, `ext_replay_gateway`,
@@ -186,44 +172,22 @@ it influences runtime behavior.
   package imports `proxy.system` plus `ext_replay_gateway` /
   `int_replay_gateway` from `proxy.gateway` (line 31).
 
-  Three contracts in this file routinely break replay if rewritten
-  without reading `DESIGN.md` first:
-
-  1. Per-thread lookahead buffering. `_ReplayBindingState` keeps a
-     `deque` keyed by `_thread_id()` and `_ThreadDemuxSource` exposes
-     `peek_buffered()` so the replayer can ask "what's next for *this*
-     logical thread?" without consuming another thread's message.
-     Reverting to a single global lookahead causes one thread to eat
-     another thread's `RESULT` / `ERROR` / binding event under
-     `--stacktraces`. See `DESIGN.md` -> "Thread message ordering".
-
-  2. Structural `equal()` with marker types. Recorder writers wrap
-     unbound `_thread.lock` / `_thread.RLock` results with
-     `_unbound_external_marker(...)` and `ProxyRef` /
-     `ExternalWrapped` checkpoint values with
-     `_checkpoint_external_marker(...)`. `equal()` matches those
-     markers symbolically against live replay objects, normalizes
-     bound/unbound method-call payloads (`{"function","args","kwargs"}`),
-     and folds `socketpair()` defaults. Adding "obvious" tightenings
-     here (e.g. requiring identity, requiring matching `__objclass__`)
-     reintroduces lock-replay divergence.
-
-  3. Replay-time live materialization. `replayer()` keeps
-     `live_materialized` / `live_file_descriptors` and `ext_execute`
-     escapes into the live callable in three narrow cases:
-     - the call target is in `system.replay_materialize` (registered
-       via `[module] replay_materialize = [...]` in
-       `src/retracesoftware/modules/*.toml`, e.g. `posix.pipe`,
-       `_thread.allocate_lock`, `_thread.RLock`, `threading.Lock`,
-       `threading.RLock`)
-     - the first arg is a previously materialized live file descriptor
-     - the first arg is an unbound `_thread.lock` / `_thread.RLock`
-       (an opaque external type whose identity must keep working
-       with CPython's C-level lock machinery)
-     Every such call still consumes and `diff()`s the recorded result.
-     This is the **only** place replay legitimately calls live
-     external code. Do not generalize it; see `DESIGN.md` ->
-     "Materialized Replay" and the "raw integer handle" paragraph.
+  Three replay-significant contracts live here. Read `DESIGN.md`
+  ("Thread message ordering", "Materialized Replay" + "raw integer
+  handle" paragraph) for the *why*; the symbol names below are where
+  the *what* actually lives:
+  - per-thread lookahead: `_ReplayBindingState._buffers`,
+    `_ThreadDemuxSource.peek_buffered`
+  - structural `equal()` with markers:
+    `_unbound_external_marker`, `_checkpoint_external_marker`,
+    `_equal_call_payload`, `_socketpair_args_with_defaults`
+  - replay-time live materialization escape hatch:
+    `live_materialized`, `live_file_descriptors`,
+    `is_replay_materialize`, `next_materialized_result`, driven by
+    `system.replay_materialize` (registered via
+    `[module] replay_materialize = [...]` in
+    `src/retracesoftware/modules/*.toml`, e.g. `posix.pipe`,
+    `_thread.allocate_lock`, `threading.Lock`)
 - `tape.py` (proxy)
   ≈40 lines. Defines the `Tape`, `TapeReader`, `TapeWriter` `Protocol`
   classes only. The recording I/O implementation lives in top-level
