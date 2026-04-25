@@ -55,7 +55,7 @@ RETRACE_DEBUG=1 python -m retracesoftware \
 | `--verbose` | Enables verbose output on the reader.  Prints every consumed message with byte offsets and message indices. |
 | `--read_timeout N` | Milliseconds to wait for an incomplete read before raising a timeout error (default 1000). |
 | `--fork_path PATH` | Binary string (`010`, `111`, etc.) or keyword (`child`, `parent`) controlling which fork branch to follow.  `0` = parent, `1` = child. |
-| `--list_pids` | Scans the trace file and prints all unique PIDs, then exits. |
+| `--list_pids` | Scans a PID-framed trace and prints all unique PIDs, then exits. For an `unframed_binary` stream, prints the process preamble JSON and exits. |
 | `--skip_weakref_callbacks` | Disables retrace in weakref callbacks on replay. |
 
 ---

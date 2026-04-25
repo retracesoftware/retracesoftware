@@ -184,6 +184,9 @@ func (c *Cursor) ensureReplay(ctx context.Context) (*Replay, error) {
 	if c.replay != nil {
 		return c.replay, nil
 	}
+	if c.provider == nil {
+		return nil, ErrNotImplemented
+	}
 	snap, err := c.provider.ClosestBeforeCall(ctx, c.location.ThreadID, c.location.FunctionCounts)
 	if err != nil {
 		return nil, err

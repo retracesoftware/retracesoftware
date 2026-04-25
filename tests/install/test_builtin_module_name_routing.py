@@ -22,6 +22,7 @@ def test_install_retrace_can_patch_loaded_builtin_modules_via_user_override(
     monkeypatch, tmp_path
 ):
     """Explicit `_io` module overrides should still patch already-loaded builtins."""
+    original_open = _io.open
     module_dir = tmp_path / "modules"
     module_dir.mkdir()
     (module_dir / "_io.toml").write_text(
@@ -33,7 +34,10 @@ def test_install_retrace_can_patch_loaded_builtin_modules_via_user_override(
     system = System()
     uninstall = install_retrace(system=system, retrace_shutdown=False)
     try:
-        assert repr(_io.open).startswith("<BoundGate target=<built-in function open>>")
+        assert _io.open is not original_open
+        assert callable(_io.open)
+        assert repr(_io.open).startswith("<wrapped_function ")
+        assert repr(_io.open) != "<built-in function open>"
     finally:
         uninstall()
 

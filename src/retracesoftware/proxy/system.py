@@ -42,6 +42,27 @@ class ProxyRef:
     def __call__(self):
         return utils.create_wrapped(self.cls, None)
 
+
+class _NonBindingCallable:
+    """Prevent module-level wrapped callables from binding as methods."""
+
+    __slots__ = ("_retrace_wrapped",)
+
+    def __init__(self, wrapped):
+        self._retrace_wrapped = wrapped
+
+    def __call__(self, *args, **kwargs):
+        return self._retrace_wrapped(*args, **kwargs)
+
+    def __get__(self, instance, owner=None):
+        return self
+
+    def __getattr__(self, name):
+        return getattr(self._retrace_wrapped, name)
+
+    def __repr__(self):
+        return repr(self._retrace_wrapped)
+
 def lookup(module, name):
     import sys
 
@@ -112,29 +133,54 @@ def _ext_proxytype_from_spec(system, module, name, methods):
 fallback = functional.mapargs(transform = functional.walker(utils.try_unwrap), function = functional.apply)
 
 
+_DISABLED_THREAD_TARGET_ATTR = "__retrace_disabled_thread_target__"
+
+
+def _is_disabled_thread_target(function):
+    if getattr(function, _DISABLED_THREAD_TARGET_ATTR, False):
+        return True
+
+    owner = getattr(function, "__self__", None)
+    target = getattr(owner, "_target", None)
+    return getattr(target, _DISABLED_THREAD_TARGET_ATTR, False)
+
+
 class System:
     """Mutable runtime state shared by record and replay assemblers."""
 
     def wrap_start_new_thread(self, original_start_new_thread):
         """Wrap ``start_new_thread`` so child threads inherit active retrace state."""
         def wrap_thread_function(function):
+            if _is_disabled_thread_target(function):
+                return function
+
             if self.enabled():
                 next_id = self.counter.next()
                 wrapped = self.thread_wrapper(function)
 
                 def in_child(*args, **kwargs):
                     self._thread_id.set(next_id)
-                    return wrapped(*args, **kwargs)
+                    return self.gate.apply_with('internal', wrapped)(*args, **kwargs)
 
                 return in_child
             else:
                 return function
 
         def wrapped_start_new_thread(function, args, kwargs=None):
+            disabled_thread_target = _is_disabled_thread_target(function)
             wrapped = wrap_thread_function(function)
             if kwargs is None:
-                return original_start_new_thread(wrapped, args)
-            return original_start_new_thread(wrapped, args, kwargs)
+                thread_id = original_start_new_thread(wrapped, args)
+            else:
+                thread_id = original_start_new_thread(wrapped, args, kwargs)
+
+            if disabled_thread_target:
+                owner = getattr(function, "__self__", None)
+                started = getattr(owner, "_started", None)
+                if started is not None:
+                    self.disable_for(started.wait, unwrap_args=False)()
+
+            return thread_id
 
         return wrapped_start_new_thread
 
@@ -145,8 +191,12 @@ class System:
         ``time.time``, ``os.getpid``) that need to be recorded and
         replayed.
         """
-        self.bind(fn)
-        return self._wrapped_function(self.ext_gateway, fn)
+        if not self.is_bound(fn):
+            self.bind(fn)
+        wrapped = self._wrapped_function(self.ext_gateway, fn)
+        standalone = _NonBindingCallable(wrapped)
+        self.bind(standalone)
+        return standalone
 
     def patch(self, obj, install_session=None):
         """Patch *obj* for proxying — dispatches by type.
@@ -184,7 +234,13 @@ class System:
         unchanged via ``utils.try_unwrap_apply``.
         """
         disabled = fallback if unwrap_args else utils.try_unwrap_apply
-        return self.gate.apply_with(None, functional.partial(disabled, function))
+        applied = self.gate.apply_with(None, functional.partial(disabled, function))
+
+        def wrapped(*args, **kwargs):
+            return applied(*args, **kwargs)
+
+        setattr(wrapped, _DISABLED_THREAD_TARGET_ATTR, True)
+        return wrapped
 
     def __init__(self, on_bind = None) -> None:
 

@@ -650,6 +650,9 @@ class ObjectWriter:
 # ---------------------------------------------------------------------------
 
 def call_periodically(interval, func):
+    if interval is None or interval <= 0:
+        return
+
     ref = weakref.ref(func)
     sleep = time.sleep
 
@@ -753,37 +756,48 @@ def read_process_info(path, raw=False):
     import json
 
     with open(str(path), 'rb') as f:
-        _skip_shebang(f)
+        prefix = f.read(2)
+        offset = len(prefix)
+        if prefix == b'#!':
+            shebang = f.readline()
+            offset += len(shebang)
+            prefix = b''
 
         if raw:
-            line = f.readline()
+            rest = f.readline()
+            line = prefix + rest
+            offset += len(rest)
             if not line:
                 raise ValueError("trace file is empty")
             info = json.loads(line)
-            return info, f.tell()
+            return info, offset
 
         # PID-framed path: reassemble the process info payload from
         # PID frames.  The first frames belong to the main PID and
         # contain a JSON line (terminated by \n) which may span
         # multiple PID frames.
-        header = f.read(6)
+        header = prefix + f.read(6 - len(prefix))
+        offset += len(header) - len(prefix)
         if len(header) < 6:
             raise ValueError("trace file too short for process info")
         main_pid = int.from_bytes(header[:4], 'little')
         payload_len = int.from_bytes(header[4:6], 'little')
         data = f.read(payload_len)
+        offset += len(data)
 
         while b'\n' not in data:
             header = f.read(6)
+            offset += len(header)
             if len(header) < 6:
                 raise ValueError("unexpected EOF while reading process info")
             pid = int.from_bytes(header[:4], 'little')
             plen = int.from_bytes(header[4:6], 'little')
             chunk = f.read(plen)
+            offset += len(chunk)
             if pid == main_pid:
                 data += chunk
 
-        file_offset = f.tell()
+        file_offset = offset
 
     json_bytes = data[:data.index(b'\n')]
     info = json.loads(json_bytes)
@@ -992,17 +1006,25 @@ class writer(_backend_mod.ObjectWriter):
     # and the reader demuxes by PID.
 
     def _before_fork(self):
+        fw = getattr(self, "_fw", None)
+        if fw is None:
+            return
+
         self._pre_fork_pid = os.getpid()
         self._fork_count = getattr(self, '_fork_count', 0)
         self.flush()
-        if hasattr(self._queue, 'drain'):
-            self._queue.drain()
-        self._pre_fork_offset = self._fw.bytes_written
+        queue = getattr(self, "_queue", None)
+        if hasattr(queue, 'drain'):
+            queue.drain()
+        self._pre_fork_offset = fw.bytes_written
 
     def _after_fork_parent(self):
-        self._fork_count += 1
-        if hasattr(self._queue, 'resume'):
-            self._queue.resume()
+        if getattr(self, "_fw", None) is None:
+            return
+        self._fork_count = getattr(self, "_fork_count", 0) + 1
+        queue = getattr(self, "_queue", None)
+        if hasattr(queue, 'resume'):
+            queue.resume()
 
     def _after_fork_child(self):
         if self._fw:

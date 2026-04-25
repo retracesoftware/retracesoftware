@@ -4,6 +4,7 @@ import hashlib
 import os
 import stat
 import sys
+import threading
 from pathlib import Path
 
 import retracesoftware.functional as functional
@@ -147,13 +148,15 @@ class RawTapeWriter:
     adapter that preserves the ``TapeWriter`` surface.
     """
 
-    __slots__ = ("_tape_writer",)
+    __slots__ = ("_tape_writer", "_write_lock")
 
     def __init__(self, tape_writer):
         self._tape_writer = tape_writer
+        self._write_lock = threading.RLock()
 
     def write(self, *values):
-        self._tape_writer.write(*values)
+        with self._write_lock:
+            self._tape_writer.write(*values)
 
 
 def create_tape_writer(options, argv, *, thread_getter) -> TapeWriter:

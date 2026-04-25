@@ -84,6 +84,11 @@ func (r *Replay) wrapErr(err error) error {
 // exit status and tears down the socket so any blocked reads unblock with
 // an error.
 func (r *Replay) watchProcess() {
+	if r.proc == nil {
+		close(r.dead)
+		return
+	}
+
 	state, waitErr := r.proc.Wait()
 	if waitErr != nil {
 		r.exitErr = fmt.Errorf("replay process died: %w", ErrReplayProcessDied)

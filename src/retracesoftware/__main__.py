@@ -2,6 +2,7 @@ import sys
 import os
 import argparse
 import tempfile
+import json
 import retracesoftware.functional as functional
 import retracesoftware.utils as utils
 from pathlib import Path
@@ -58,7 +59,7 @@ def _bind_stream_chain(system, stream_obj, seen):
     current = stream_obj
     while current is not None and id(current) not in seen:
         seen.add(id(current))
-        system.bind(current)
+        system.is_bound.add(current)
         next_current = getattr(current, "buffer", None)
         if next_current is None:
             next_current = getattr(current, "raw", None)
@@ -87,7 +88,7 @@ def _bind_record_runtime(system, tape_writer):
     ):
         if obj is not None and id(obj) not in seen:
             seen.add(id(obj))
-            system.bind(obj)
+            system.is_bound.add(obj)
 
     output_stream = getattr(getattr(tape_writer, "_output", None), "_stream", None)
     _bind_stream_chain(system, output_stream, seen)
@@ -150,7 +151,16 @@ def record(options, args):
         else:
             print(f"Retrace enabled, recording to {options.recording}", file=sys.stderr)
 
-    tape_writer = create_tape_writer(options, args, thread_getter=thread_id.id.get)
+    flush_interval = getattr(options, "flush_interval", None)
+    options.flush_interval = 0
+    try:
+        tape_writer = create_tape_writer(options, args, thread_getter=thread_id.id.get)
+    finally:
+        options.flush_interval = flush_interval
+    heartbeat_lock = getattr(tape_writer, "_heartbeat_lock", None)
+    if heartbeat_lock is not None:
+        with heartbeat_lock:
+            tape_writer._heartbeat_enabled = False
     writer_closed = False
 
     def close_tape_writer():
@@ -173,6 +183,7 @@ def record(options, args):
             stacktraces=options.stacktraces,
             gc_collect_multiplier=getattr(options, "gc_collect_multiplier", 0),
         )
+        _bind_record_runtime(system, tape_writer)
 
         with _cli_module_overrides():
             install_and_run(
@@ -187,6 +198,26 @@ def record(options, args):
             close_tape_writer()
 
 def replay(args):
+    if getattr(args, 'list_pids', False):
+        from retracesoftware import stream
+
+        if args.recording is None:
+            raise RecordingNotFoundError("Recording path is required for --list_pids")
+
+        path = Path(args.recording)
+        format_hint = getattr(args, "format", None)
+        is_unframed = format_hint == "unframed_binary"
+        if format_hint is None:
+            is_unframed = stream.detect_raw_trace(path)
+
+        if is_unframed:
+            info, _ = stream.read_process_info(path, raw=True)
+            print(json.dumps(info, separators=(",", ":")))
+        else:
+            for pid in sorted(stream.list_pids(path)):
+                print(pid)
+        return
+
     chunk_ms = getattr(args, 'chunk_ms', None)
     control_socket_path = getattr(args, 'control_socket', None)
     use_stdio = getattr(args, 'stdio', False)
@@ -492,6 +523,11 @@ def main():
             type=float,
             default=None,
             help='Search for replay chunk boundaries every N milliseconds of execution time')
+
+        parser.add_argument(
+            '--list_pids',
+            action='store_true',
+            help='Print PIDs for framed traces, or the process preamble for unframed traces, then exit')
 
         parser.add_argument(
             '--format', choices=('binary', 'unframed_binary', 'json'), default=None,

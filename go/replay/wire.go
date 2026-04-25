@@ -14,22 +14,22 @@ import (
 
 // SizedTypes — lower 4 bits of the control byte when not FIXED_SIZE.
 const (
-	stBytes       = 0
-	stList        = 1
-	stDict        = 2
-	stTuple       = 3
-	stStr         = 4
-	stPickled     = 5
-	stUint        = 6
-	stDelete      = 7
-	stHandle      = 8
-	stBigint      = 9
-	stSet         = 10
-	stFrozenset   = 11
-	stBinding     = 12
-	stBindingDel  = 13
-	stStrRef      = 14
-	stFixedSize   = 15
+	stBytes      = 0
+	stList       = 1
+	stDict       = 2
+	stTuple      = 3
+	stStr        = 4
+	stPickled    = 5
+	stUint       = 6
+	stDelete     = 7
+	stHandle     = 8
+	stBigint     = 9
+	stSet        = 10
+	stFrozenset  = 11
+	stBinding    = 12
+	stBindingDel = 13
+	stStrRef     = 14
+	stFixedSize  = 15
 )
 
 // FixedSizeTypes — upper 4 bits when lower 4 == stFixedSize.
@@ -347,15 +347,19 @@ func MapProcesses(in <-chan string) (<-chan map[string]any, func() error) {
 
 	go func() {
 		defer close(out)
+		var firstErr error
 		for path := range in {
+			if firstErr != nil {
+				continue
+			}
 			m, err := ReadProcess(path)
 			if err != nil {
-				errCh <- err
-				return
+				firstErr = err
+				continue
 			}
 			out <- m
 		}
-		errCh <- nil
+		errCh <- firstErr
 	}()
 
 	return out, func() error { return <-errCh }

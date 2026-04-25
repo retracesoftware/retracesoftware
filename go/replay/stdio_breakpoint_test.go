@@ -4,7 +4,6 @@ import (
 	"bufio"
 	"encoding/json"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"testing"
 )
@@ -21,7 +20,7 @@ func stdioReplay(t *testing.T, python, trace, workDir string, commands []map[str
 		stdinData = append(stdinData, '\n')
 	}
 
-	proc := exec.Command(python, "-m", "retracesoftware",
+	proc := pythonCommand(python, "-m", "retracesoftware",
 		"--recording", trace, "--stdio")
 	proc.Dir = workDir
 	proc.Stderr = os.Stderr
@@ -82,7 +81,7 @@ func TestStdioBreakpointScan(t *testing.T) {
 	}
 
 	trace := filepath.Join(tmpDir, "trace.bin")
-	cmd := exec.Command(python, "-m", "retracesoftware",
+	cmd := pythonCommand(python, "-m", "retracesoftware",
 		"--recording", trace, "--format", "unframed_binary", "--", script)
 	cmd.Stderr = os.Stderr
 	if out, err := cmd.Output(); err != nil {

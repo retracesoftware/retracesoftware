@@ -2,7 +2,6 @@ package replay
 
 import (
 	"os"
-	"os/exec"
 	"path/filepath"
 	"testing"
 )
@@ -31,7 +30,7 @@ func TestStdioThreadBreakpoint(t *testing.T) {
 
 	// --- Record ---
 	trace := filepath.Join(tmpDir, "trace.bin")
-	rec := exec.Command(python, "-m", "retracesoftware",
+	rec := pythonCommand(python, "-m", "retracesoftware",
 		"--recording", trace, "--format", "unframed_binary", "--", script)
 	rec.Stderr = os.Stderr
 	if out, err := rec.Output(); err != nil {

@@ -210,10 +210,6 @@ def test_install_and_run_round_trips_allocate_lock_with_memory_tape():
     assert replayed is recorded
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="In-process Flask record/replay still diverges on the install_and_run + MemoryTape seam",
-)
 def test_install_and_run_replays_flask_request_from_unretraced_client_thread_with_memory_tape():
     pytest.importorskip("flask")
 
@@ -281,7 +277,7 @@ def test_install_and_run_replays_flask_request_from_unretraced_client_thread_wit
         system=record_system,
         options=_options(),
         function=make_roundtrip,
-        args = (record_port_queue, []),
+        args=(record_port_queue, []),
     )
 
     record_thread.join(timeout=5)
@@ -302,7 +298,7 @@ def test_install_and_run_replays_flask_request_from_unretraced_client_thread_wit
         system=replay_system,
         options=_options(),
         function=make_roundtrip,
-        args = (queue.Queue(), []),
+        args=(queue.Queue(), []),
     )
 
     assert replayed_hits == ["hello"]

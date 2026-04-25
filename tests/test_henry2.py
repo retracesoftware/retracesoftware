@@ -70,7 +70,7 @@ def _run_retrace_script(tmp_path, source: str):
     return proc, (proc.stdout or "") + (proc.stderr or "")
 
 
-def test_wsgiref_two_requests_replay_diverges_cleanly(tmp_path):
+def test_wsgiref_two_requests_replay_succeeds_without_timeout(tmp_path):
     proc, output = _run_retrace_script(
         tmp_path,
         """
@@ -165,5 +165,5 @@ def test_wsgiref_two_requests_replay_diverges_cleanly(tmp_path):
     )
 
     assert proc.returncode == 0, output
-    assert "ReplayDivergence" in output, output
+    assert "ReplaySucceeded" in output, output
     assert "timed out" not in output.lower(), output

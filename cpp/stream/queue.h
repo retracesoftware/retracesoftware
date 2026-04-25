@@ -122,6 +122,8 @@ namespace retracesoftware_stream {
         int64_t inflight() const;
         int64_t inflight_limit() const;
         bool accepting_pushes() const;
+        bool consuming_on_current_thread() const;
+        bool target_is_native_persister() const;
         void set_inflight_limit(int64_t value);
         void disable();
         void close();
@@ -196,6 +198,8 @@ namespace retracesoftware_stream {
         }
 
     public:
+        static thread_local Queue* active_consumer_queue;
+
         Queue();
         Queue(size_t capacity, int64_t inflight_limit, int worker_wait_timeout_ms);
         ~Queue();

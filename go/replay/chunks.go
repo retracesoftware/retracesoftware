@@ -5,7 +5,6 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
-	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -83,7 +82,7 @@ func runChunkProbeCommand(path string, preamble map[string]any, chunkMS float64)
 		"--recording", path,
 		"--chunk_ms", strconv.FormatFloat(chunkMS, 'f', -1, 64),
 	}
-	cmd := exec.Command(pythonBin, cmdArgs...)
+	cmd := pythonCommand(pythonBin, cmdArgs...)
 	if cwd, _ := preamble["cwd"].(string); cwd != "" {
 		cmd.Dir = cwd
 	}

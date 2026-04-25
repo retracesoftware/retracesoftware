@@ -120,7 +120,14 @@ struct Dispatcher : public PyObject {
                     PyErr_SetString(PyExc_RuntimeError, "Dispatcher: terminal state missing exception");
                     return nullptr;
                 }
-                buffered.store(LOADING, std::memory_order_release);
+                PyObject *expected = nullptr;
+                if (!buffered.compare_exchange_strong(
+                        expected,
+                        LOADING,
+                        std::memory_order_acq_rel,
+                        std::memory_order_acquire)) {
+                    continue;
+                }
                 next = PyObject_CallNoArgs(source);
                 if (!next) {
                     PyObject *exc = get_raised_exception();

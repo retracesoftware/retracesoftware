@@ -26,6 +26,14 @@ immutable = ["BaseException", "memoryview", "int", "float", "complex", "str", "b
 proxy = ["allocate", "allocate_lock", "RLock"]
 replay_materialize = ["allocate_lock", "RLock"]
 
+[threading]
+bind = ["_active_limbo_lock"]
+replay_materialize = ["Lock", "RLock"]
+
+[logging]
+bind = ["_lock"]
+disable = ["_acquireLock", "_releaseLock"]
+
 [_datetime]
 immutable = ["datetime", "tzinfo", "timezone"]
 
@@ -41,6 +49,7 @@ immutable = ["PosixPath"]
 
 [posix]
 immutable = ["times_result", "statvfs_result", "uname_result", "stat_result", "terminal_size"]
+replay_materialize = ["pipe"]
 
 proxy = [
     "_exit", # Function. Exits the process immediately, bypassing cleanup.

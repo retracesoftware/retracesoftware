@@ -12,12 +12,15 @@ SCRIPTS_DIR = Path(__file__).parent / "scripts"
 
 # Raw Python replay reads a single linear stream. Fork/exec/subprocess traces
 # contain multiple long per-process runs and are only replayable once the Go
-# replay pipeline has split them appropriately.
+# replay pipeline has split them appropriately. The socket makefile crash
+# repro is self-contained and installs a second retrace system inside the
+# script, so it is not a raw-pipe record/replay target.
 RAW_PIPE_REPLAY_UNSUPPORTED = {
     "exec_replacement.py",
     "fork_child.py",
     "fork_tree.py",
     "multiprocess_values.py",
+    "socket_makefile_replay_socket_dealloc_crash.py",
     "subprocess_echo.py",
     "subprocess_time.py",
 }

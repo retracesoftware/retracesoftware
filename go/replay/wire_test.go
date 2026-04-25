@@ -472,13 +472,7 @@ func TestReadProcessWithoutShebang(t *testing.T) {
 
 func makeJSONPayload(info map[string]any) []byte {
 	j, _ := json.Marshal(info)
-	var buf []byte
-	lenBuf := make([]byte, 4)
-	binary.LittleEndian.PutUint32(lenBuf, uint32(len(j)))
-	buf = append(buf, lenBuf...)
-	buf = append(buf, j...)
-	buf = append(buf, '\n')
-	return buf
+	return append(j, '\n')
 }
 
 func makePIDFrame(pid uint32, payload []byte) []byte {

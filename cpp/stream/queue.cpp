@@ -10,6 +10,8 @@
 
 namespace retracesoftware_stream {
 
+    thread_local Queue* Queue::active_consumer_queue = nullptr;
+
     class Persister;
 
     extern bool Persister_write_heartbeat(Persister* persister);
@@ -30,6 +32,19 @@ namespace retracesoftware_stream {
         inline int64_t queue_estimate_size(PyObject* obj) {
             return queue_is_immortal(obj) ? 0 : (int64_t)approximate_size_bytes(obj);
         }
+
+        class ActiveConsumerScope {
+            Queue* previous;
+        public:
+            explicit ActiveConsumerScope(Queue* queue)
+                : previous(Queue::active_consumer_queue) {
+                Queue::active_consumer_queue = queue;
+            }
+
+            ~ActiveConsumerScope() {
+                Queue::active_consumer_queue = previous;
+            }
+        };
 
         PyObject* collection_type_object(Cmd cmd) {
             switch (cmd) {
@@ -308,6 +323,7 @@ namespace retracesoftware_stream {
 
     bool Queue::call_target_intern(PyObject* obj, BindingHandle handle) {
         if (is_persister()) {
+            retracesoftware::GILGuard gstate;
             return Persister_intern_handle(native_persister(target_obj), obj, handle);
         }
         retracesoftware::GILGuard gstate;
@@ -392,6 +408,7 @@ namespace retracesoftware_stream {
 
     bool Queue::call_target_write_object(PyObject* obj) {
         if (is_persister()) {
+            retracesoftware::GILGuard gstate;
             return Persister_write_object(native_persister(target_obj), obj);
         }
         retracesoftware::GILGuard gstate;
@@ -580,6 +597,8 @@ namespace retracesoftware_stream {
     }
 
     void Queue::return_loop() {
+        ActiveConsumerScope active_consumer(this);
+
         while (true) {
             if (!has_returned_entries()) {
                 if (shutdown_flag.load(std::memory_order_acquire)) return;
@@ -637,6 +656,14 @@ namespace retracesoftware_stream {
 
     bool Queue::accepting_pushes() const {
         return !closed && state == QueueState::ACTIVE;
+    }
+
+    bool Queue::consuming_on_current_thread() const {
+        return active_consumer_queue == this;
+    }
+
+    bool Queue::target_is_native_persister() const {
+        return is_persister();
     }
 
     void Queue::set_inflight_limit(int64_t value) {
@@ -1112,6 +1139,8 @@ namespace retracesoftware_stream {
     }
 
     void Queue::worker_loop() {
+        ActiveConsumerScope active_consumer(this);
+
         while (true) {
             if (!has_entries()) {
                 if (shutdown_flag.load(std::memory_order_acquire)) return;

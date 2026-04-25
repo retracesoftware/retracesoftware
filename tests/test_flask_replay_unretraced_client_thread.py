@@ -8,13 +8,6 @@ import sys
 import pytest
 
 
-@pytest.mark.xfail(
-    reason=(
-        "CLI replay bootstrap diverges while patching already-loaded modules "
-        "for Flask with an unretraced client thread"
-    ),
-    strict=False,
-)
 def test_record_then_replay_flask_request_from_unretraced_client_thread(
     tmp_path: Path,
 ):

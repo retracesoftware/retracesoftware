@@ -8,7 +8,7 @@ import (
 )
 
 var (
-	buildCommand = func(name string, args ...string) *exec.Cmd { return exec.Command(name, args...) }
+	buildCommand = pythonCommand
 	runCommand   = func(cmd *exec.Cmd) error { return cmd.Run() }
 	startCommand = func(cmd *exec.Cmd) error { return cmd.Start() }
 	waitCommand  = func(cmd *exec.Cmd) error { return cmd.Wait() }

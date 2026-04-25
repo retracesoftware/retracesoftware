@@ -115,8 +115,8 @@ func findPython312() (string, error) {
 		if _, err := os.Stat(p); err != nil {
 			continue
 		}
-		out, err := exec.Command(p, "-c",
-			"import sys; v=sys.version_info; print(f'{v.major}.{v.minor}'); import retracesoftware").CombinedOutput()
+		out, err := pythonCommand(p, "-c",
+			"import sys; v=sys.version_info; print(f'{v.major}.{v.minor}'); "+pythonImportProbe).CombinedOutput()
 		if err != nil {
 			continue
 		}

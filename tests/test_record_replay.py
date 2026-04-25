@@ -70,10 +70,6 @@ def test_record_then_replay_threading_single(tmpdir):
     assert replay.stdout == record.stdout == "worker ran\n"
 
 
-@pytest.mark.xfail(
-    reason="Replay can reorder plain cross-thread Future handoff",
-    strict=False,
-)
 def test_record_then_replay_concurrent_future_handoff(tmpdir):
     trace_file = os.path.join(tmpdir, "future_handoff.retrace")
     script_file = Path(tmpdir) / "future_handoff.py"
@@ -114,10 +110,6 @@ for i in range(5):
     assert replay.stdout == record.stdout
 
 
-@pytest.mark.xfail(
-    reason="Replay can report lock.acquire() succeeded without locking after thread start",
-    strict=False,
-)
 def test_record_then_replay_plain_lock_acquire_state_after_thread_start(tmpdir):
     trace_file = os.path.join(tmpdir, "plain_lock_acquire_state.retrace")
     script_file = Path(tmpdir) / "plain_lock_acquire_state.py"
@@ -167,10 +159,6 @@ for _ in range(5):
     assert replay.stdout == record.stdout
 
 
-@pytest.mark.xfail(
-    reason="Replay can lose RLock ownership across a Python __enter__ wrapper",
-    strict=False,
-)
 def test_record_then_replay_rlock_enter_wrapper_after_thread_stdout(tmpdir):
     trace_file = os.path.join(tmpdir, "rlock_enter_wrapper.retrace")
     script_file = Path(tmpdir) / "rlock_enter_wrapper.py"
@@ -267,10 +255,6 @@ print("done", flush=True)
     assert replay.stdout == record.stdout
 
 
-@pytest.mark.xfail(
-    reason="Replay diverges on stdlib cross-thread asyncio/future coordination",
-    strict=False,
-)
 def test_record_then_replay_asyncio_run_coroutine_threadsafe(tmpdir):
     trace_file = os.path.join(tmpdir, "asyncio_threadsafe.retrace")
     script_file = Path(tmpdir) / "asyncio_threadsafe.py"
@@ -320,10 +304,6 @@ thread.join()
     assert replay.stdout == record.stdout
 
 
-@pytest.mark.xfail(
-    reason="FastAPI TestClient replay still diverges on internal thread/time bookkeeping",
-    strict=False,
-)
 def test_record_then_replay_fastapi_testclient_request(tmpdir):
     pytest.importorskip("fastapi")
 

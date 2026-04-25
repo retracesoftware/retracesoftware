@@ -11,6 +11,7 @@
 #include <structmember.h>
 #include "wireformat.h"
 #include <algorithm>
+#include <mutex>
 #include <vector>
 #include "unordered_dense.h"
 
@@ -44,6 +45,7 @@ namespace retracesoftware_stream {
     struct ObjectWriter : public PyObject {
 
         Queue * queue = nullptr;
+        std::mutex write_mutex;
         set<BindingHandle> interned_handles;
 
         size_t messages_written = 0;
@@ -55,7 +57,25 @@ namespace retracesoftware_stream {
 
         ObjectWriter() {}
 
-        inline bool is_disabled() const { return queue == nullptr || !queue->accepting_pushes(); }
+        inline bool is_disabled() const {
+            return queue == nullptr
+                || !queue->accepting_pushes()
+                || queue->consuming_on_current_thread();
+        }
+
+        std::unique_lock<std::mutex> acquire_write_lock() {
+            std::unique_lock<std::mutex> lock(write_mutex, std::defer_lock);
+            if (lock.try_lock()) {
+                return lock;
+            }
+            if (PyGILState_Check()) {
+                retracesoftware::GILReleaseGuard release_gil;
+                lock.lock();
+            } else {
+                lock.lock();
+            }
+            return lock;
+        }
 
         void clear_queue_ref() {
             Py_CLEAR(queue);
@@ -222,11 +242,16 @@ namespace retracesoftware_stream {
                 printf("%s\n", debugstr(obj));
             }
 
-            push_value(obj);
+            if (queue->target_is_native_persister()) {
+                disable_if_push_failed(queue->push_obj(obj));
+            } else {
+                push_value(obj);
+            }
             messages_written++;
         }
 
         void write_all(PyObject*const * args, size_t nargs) {
+            auto lock = acquire_write_lock();
 
             if (!is_disabled()) {
                 for (size_t i = 0; i < nargs; i++) {
@@ -255,6 +280,7 @@ namespace retracesoftware_stream {
         static PyObject * py_flush(ObjectWriter * self, PyObject* unused) {
             if (self->is_disabled()) Py_RETURN_NONE;
             try {
+                auto lock = self->acquire_write_lock();
                 self->disable_if_push_failed(self->queue->push_flush());
                 Py_RETURN_NONE;
             } catch (...) {
@@ -276,6 +302,7 @@ namespace retracesoftware_stream {
                 return nullptr;
             }
             try {
+                auto lock = self->acquire_write_lock();
                 if (!self->disable_if_push_failed(self->queue->push_heartbeat())) Py_RETURN_NONE;
                 self->push_value(payload);
                 if (self->is_disabled()) Py_RETURN_NONE;
@@ -380,6 +407,7 @@ namespace retracesoftware_stream {
 
     PyObject* ObjectWriter::py__intern(ObjectWriter* self, PyObject* obj) {
         try {
+            auto lock = self->acquire_write_lock();
             (void)self->ensure_interned(obj);
             Py_RETURN_NONE;
         } catch (...) {

@@ -431,6 +431,14 @@ In replay mode, materialization code associates the recorded binding handle with
 the live object it just created, then checks that replay stayed aligned with the
 recorded result or error.
 
+Some external APIs return raw integer handles instead of objects. A configured
+`replay_materialize` target such as `posix.pipe()` may therefore return live
+file descriptors during replay. Calls that operate on those materialized
+descriptors execute against the live handle only to keep CPython's own C-level
+I/O objects usable; every such call still consumes and compares the recorded
+result. This is an explicit materialization exception, not the normal replay
+path for arbitrary OS I/O.
+
 ## Internal Retrace: Using The Boundary On Ourselves
 
 Retrace does not only proxy user code. Some internal helper work also needs to
@@ -496,15 +504,74 @@ The safe mental model is:
 
 ## Threads
 
-The boundary is thread-aware.
+The boundary is thread-aware. A thread is part of the retraced application
+whenever it can run user/library Python while retrace is active, or whenever it
+can call patched external functions on behalf of that Python.
 
-- `System` assigns stable logical thread ids.
-- recorder mode writes `THREAD_SWITCH` markers
-- replay mode demultiplexes the unified stream back into per-thread delivery
-- `wrap_start_new_thread()` propagates active retrace state into child threads
+### Thread propagation
 
-The invariant is not merely "the same messages eventually occur". It is "the
-same messages occur in the same per-thread order".
+- `System` assigns stable logical thread ids. These are not OS thread ids.
+- `wrap_start_new_thread()` propagates retrace state into child threads.
+- Child threads that run application/library code must start in the internal
+  phase with the assigned logical thread id.
+- A child application thread must not begin as disabled passthrough, or its
+  first outbound external call can escape recording and replay will diverge.
+- CPython/bootstrap synchronization around thread creation is not application
+  work. Changes here must not perturb `threading.Thread.start()`,
+  `_started.wait()`, or similar runtime plumbing.
+
+Control-plane threads are different: debugger/replay infrastructure I/O may
+need to bypass retrace entirely. Do not fix an application-thread miss by making
+all threads retraced indiscriminately.
+
+### Thread message ordering
+
+Record writes one unified stream. To make that stream replayable:
+
+- recorder mode writes `THREAD_SWITCH` before messages from a different logical
+  thread
+- replay mode uses `_ThreadDemuxSource` to route the unified stream back to the
+  logical thread that is currently asking for data
+- `_ReplayBindingState` must buffer lookahead per logical thread, not globally
+
+The invariant is not merely "the same messages eventually occur". It is "each
+logical thread observes the same message sequence in the same order". One
+thread must never consume another thread's `RESULT`, `ERROR`, binding event, or
+debug checkpoint.
+
+### Cross-thread synchronization
+
+Thread synchronization is part of the boundary contract, especially in debug
+checkpoint mode. Common shapes include:
+
+- a main thread schedules work into an event-loop or portal thread and waits on
+  a `Future`
+- a child thread notifies a `Condition`, writes an event-loop wakeup byte, or
+  releases a lock that the main thread is waiting on
+- a replay thread blocks until another logical thread reaches the corresponding
+  recorded message
+
+Blocking synchronization calls are observable external behavior, but tracing
+them must remain observational. Proxy/debug/checkpoint machinery must not:
+
+- hold recorder protocol locks while a thread can block waiting for another
+  retraced thread
+- change lock/RLock identity, ownership, recursion depth, or notification state
+- consume or hide event-loop wakeup bytes
+- delay a `notify`, wakeup write, or future completion behind unrelated
+  protocol bookkeeping
+- introduce checkpoint traffic that causes one logical thread to consume the
+  other thread's next message
+
+The required regression shape is: one thread schedules work into another
+application thread, then blocks on a `Future`/`Condition` while the child thread
+must continue running retraced code. This must make progress in both record and
+replay, with and without `--stacktraces`.
+
+Known examples of this gap are an anyio blocking portal
+(`tests/install/external/test_anyio_from_thread_replay_dispatcher_regression.py`)
+and the stdlib `asyncio.run_coroutine_threadsafe` scenario in
+`tests/test_record_replay.py`.
 
 ## Important Invariants
 
@@ -517,6 +584,9 @@ same messages occur in the same per-thread order".
   later replay depends on their identity.
 - Control-plane work must stay outside retrace unless it is intentionally being
   modeled as retraced helper work.
+- Debug/checkpoint/stacktrace mode may add trace messages, but it must not
+  change thread scheduling, lock wakeups, condition notifications, or event-loop
+  progress.
 - If replay consumes a different message sequence than record produced,
   everything after that point is suspect.
 
@@ -558,7 +628,8 @@ regressions.
 | Replay hydration of `ProxyRef` results | Replay returns a bound proxy-producing handle | `_ReplayBindingState`, binding resolution, `ProxyRef` hydration | Replay deserialization turns the recorded `ProxyRef` into a live proxy shell before user code observes it | [`test_replay_binding_state_hydrates_proxy_ref_bindings`](../../../tests/proxy/test_system_io_tape.py), [`test_system_io_round_trips_external_result_proxy_hydration_with_memory_tape`](../../../tests/proxy/test_system_io_tape.py) |
 | Materialized replay escape hatch | Call a `replay_materialize` target while retrace is disabled on replay | `replay_materialize`, `disable_for()`, stub/materialization path | The unusual disabled replay call materializes the expected object without consuming the next unrelated recorded result | [`test_replay_materialize_disabled_call_does_not_consume_next_recorded_result`](../../../tests/proxy/test_replay_materialize.py) |
 | Control-plane work excluded from retrace | Desync reporting, monitoring, stacktrace bookkeeping | `disable_for()`, gate-cleared execution | Helper plumbing does not generate extra boundary traffic or perturb replay alignment | [`test_replay_materialize_disabled_call_does_not_consume_next_recorded_result`](../../../tests/proxy/test_replay_materialize.py) |
-| Threaded external activity | Child thread performs proxied calls | `wrap_start_new_thread()`, logical thread ids, `THREAD_SWITCH`, replay demux | Record and replay preserve per-thread message order and deliver results to the right logical thread | [`test_replayer_consumes_protocol_result_after_thread_switch`](../../../tests/proxy/test_system_io_tape.py), [`test_install_and_run_replays_flask_request_from_unretraced_client_thread_with_memory_tape` (xfail)](../../../tests/test_main_memory_tape.py) |
+| Threaded external activity | Child thread performs proxied calls | `wrap_start_new_thread()`, logical thread ids, `THREAD_SWITCH`, replay demux | Record and replay preserve per-thread message order and deliver results to the right logical thread | [`test_replayer_consumes_protocol_result_after_thread_switch`](../../../tests/proxy/test_system_io_tape.py), [`test_install_and_run_replays_flask_request_from_unretraced_client_thread_with_memory_tape`](../../../tests/test_main_memory_tape.py) |
+| Cross-thread synchronization under debug checkpoints | Main thread schedules work into an event-loop/portal thread and waits on a `Future`/`Condition` while `--stacktraces` is enabled | Debug `CHECKPOINT` payloads, patched lock/RLock methods, thread propagation, `THREAD_SWITCH` ordering | Debug/checkpoint tracing must not change lock wakeups, condition notifications, or event-loop thread progress during record or replay | [`test_replay_anyio_blocking_portal_does_not_diverge`](../../../tests/install/external/test_anyio_from_thread_replay_dispatcher_regression.py), [`test_record_then_replay_asyncio_run_coroutine_threadsafe`](../../../tests/test_record_replay.py) |
 | Binding cleanup | External object lifetime ends after recorded use | Bind open/close flow, replay binding deletion | Replay drops dead bindings at the right time and does not leak stale handle lookups into later operations | [`test_replay_binding_state_consumes_trailing_binding_deletes`](../../../tests/proxy/test_system_io_tape.py), [`test_raw_tape_source_consumes_binding_delete_before_thread_demux`](../../../tests/proxy/test_system_io_tape.py) |
 
 Taken together, this matrix covers the main boundary directions:

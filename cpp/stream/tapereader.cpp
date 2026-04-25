@@ -2,6 +2,7 @@
 #include "wireformat.h"
 
 #include <chrono>
+#include <mutex>
 #include <sstream>
 #include <stdexcept>
 #include <structmember.h>
@@ -32,6 +33,7 @@ namespace retracesoftware_stream {
         size_t messages_read = 0;
         int read_timeout = 0;
         vectorcallfunc vectorcall;
+        std::mutex * read_mutex = nullptr;
         std::vector<PyObject *> interned_strings;
 
         map<int, PyObject *> interns;
@@ -79,6 +81,7 @@ namespace retracesoftware_stream {
 
             new (&self->interned_strings) std::vector<PyObject *>();
             new (&self->interns) map<int, PyObject *>();
+            self->read_mutex = new std::mutex();
 
             self->create_pickled = Py_NewRef(create_pickled);
             self->create_dropped = Py_XNewRef(create_dropped);
@@ -100,6 +103,8 @@ namespace retracesoftware_stream {
         }
 
         void close() {
+            if (!read_mutex) return;
+            std::lock_guard<std::mutex> lock(*read_mutex);
             if (file) {
                 fclose(file);
                 file = nullptr;
@@ -108,7 +113,11 @@ namespace retracesoftware_stream {
 
         static void dealloc(TapeReader * self) {
             PyObject_GC_UnTrack(self);
+            self->close();
             clear(self);
+
+            delete self->read_mutex;
+            self->read_mutex = nullptr;
 
             self->interned_strings.std::vector<PyObject *>::~vector();
             self->interns.~map<int, PyObject *>();
@@ -144,6 +153,9 @@ namespace retracesoftware_stream {
         }
 
         void read(uint8_t * bytes, size_t size) {
+            if (!file) {
+                throw std::runtime_error("TapeReader is closed");
+            }
             size_t r = fread(bytes, sizeof(uint8_t), size, file);
 
             if (r < size) {
@@ -583,6 +595,11 @@ namespace retracesoftware_stream {
         }
 
         PyObject * next_tuple() {
+            if (!read_mutex) {
+                PyErr_SetString(PyExc_RuntimeError, "TapeReader is not initialized");
+                return nullptr;
+            }
+            std::lock_guard<std::mutex> lock(*read_mutex);
             PyObject * value = read();
             if (!value) {
                 return nullptr;

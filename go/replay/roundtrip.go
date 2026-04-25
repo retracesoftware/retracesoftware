@@ -19,7 +19,7 @@ func findPython() (string, error) {
 		if err != nil {
 			continue
 		}
-		cmd := exec.Command(p, "-c", "import retracesoftware")
+		cmd := pythonCommand(p, "-c", pythonImportProbe)
 		if cmd.Run() == nil {
 			return p, nil
 		}
@@ -110,7 +110,7 @@ func Roundtrip(script string, stdout, stderr io.Writer, extraRecordArgs ...strin
 		"--recording", "/dev/stdin", "--format", "unframed_binary", "--list_pids"}
 	log.Printf("roundtrip replay: %s %v", pythonBin, replayArgs)
 
-	replayCmd := exec.Command(pythonBin, replayArgs...)
+	replayCmd := pythonCommand(pythonBin, replayArgs...)
 	replayCmd.Stdin = pr
 	replayCmd.Stdout = stdout
 	replayCmd.Stderr = stderr
@@ -140,7 +140,7 @@ func Roundtrip(script string, stdout, stderr io.Writer, extraRecordArgs ...strin
 	recordArgs = append(recordArgs, script)
 	log.Printf("roundtrip record: %s %v", pythonBin, recordArgs)
 
-	recordCmd := exec.Command(pythonBin, recordArgs...)
+	recordCmd := pythonCommand(pythonBin, recordArgs...)
 	recordCmd.Stderr = stderr
 
 	if err := recordCmd.Start(); err != nil {

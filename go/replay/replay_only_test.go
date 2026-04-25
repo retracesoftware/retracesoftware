@@ -3,7 +3,6 @@ package replay
 import (
 	"bytes"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -22,7 +21,7 @@ func requirePython(t *testing.T) string {
 // recordTrace records a small Python script and returns the trace path.
 func recordTrace(t *testing.T, python, script, tracePath string) {
 	t.Helper()
-	cmd := exec.Command(python, "-m", "retracesoftware",
+	cmd := pythonCommand(python, "-m", "retracesoftware",
 		"--recording", tracePath, "--", script)
 	cmd.Stderr = os.Stderr
 	if out, err := cmd.Output(); err != nil {

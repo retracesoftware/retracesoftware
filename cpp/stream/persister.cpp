@@ -288,11 +288,34 @@ namespace retracesoftware_stream {
             Py_RETURN_NONE;
         }
 
+        template <typename Fn>
+        PyObject* call_persister_bool_method_with_gil(Fn&& fn) {
+            try {
+                bool ok = std::forward<Fn>(fn)();
+                if (!ok) {
+                    if (!PyErr_Occurred()) {
+                        PyErr_SetString(PyExc_RuntimeError, "Persister operation failed");
+                    }
+                    return nullptr;
+                }
+            } catch (...) {
+                set_python_error_from_current_exception_impl();
+                return nullptr;
+            }
+            Py_RETURN_NONE;
+        }
+
         PyObject* Persister_py_write_object(Persister* self, PyObject* obj) {
             PyObject* owned = Py_NewRef(obj);
-            PyObject* result = call_persister_bool_method([&] { return self->write_object(owned); });
+            PyObject* result = call_persister_bool_method_with_gil([&] { return self->write_object(owned); });
             Py_DECREF(owned);
             return result;
+        }
+
+        PyObject* Persister_py_write_handle_ref(Persister* self, PyObject* arg) {
+            unsigned long long handle = PyLong_AsUnsignedLongLong(arg);
+            if (PyErr_Occurred()) return nullptr;
+            return call_persister_bool_method([&] { return self->write_handle_ref(static_cast<BindingHandle>(handle)); });
         }
 
         PyObject* Persister_py_intern(Persister* self, PyObject* args) {
@@ -302,7 +325,7 @@ namespace retracesoftware_stream {
             PyObject* owned_obj = Py_NewRef(obj);
             PyObject* token = ref ? ref : owned_obj;
             const BindingHandle handle = object_token_handle(token);
-            PyObject* result = call_persister_bool_method([&] { return self->intern(owned_obj, handle); });
+            PyObject* result = call_persister_bool_method_with_gil([&] { return self->intern(owned_obj, handle); });
             Py_DECREF(owned_obj);
             return result;
         }
@@ -376,6 +399,7 @@ namespace retracesoftware_stream {
 
         PyMethodDef Persister_methods[] = {
             {"write_object", (PyCFunction)Persister_py_write_object, METH_O, "Write an object while mimicking consumer threading"},
+            {"write_handle_ref", (PyCFunction)Persister_py_write_handle_ref, METH_O, "Write a binding handle lookup while mimicking consumer threading"},
             {"intern", (PyCFunction)Persister_py_intern, METH_VARARGS, "Write and bind an object while mimicking consumer threading"},
             {"flush", (PyCFunction)Persister_py_flush, METH_NOARGS, "Flush the writer while mimicking consumer threading"},
             {"flush_background", (PyCFunction)Persister_py_flush_background, METH_NOARGS, "Flush buffered output after a worker batch"},
@@ -585,7 +609,46 @@ namespace retracesoftware_stream {
     bool Persister::write(PyObject* obj) {
         assert(obj);
 
-        if (obj == Py_None) {
+        if (Binding_Check(obj)) {
+            return write_handle_ref(Binding_Handle(obj));
+        } else if (PyMemoryView_Check(obj)) {
+            PyObject* bytes = PyObject_Bytes(obj);
+            if (!bytes) {
+                return false;
+            }
+            bool ok = write(bytes);
+            Py_DECREF(bytes);
+            return ok;
+        } else if (Py_TYPE(obj) == &PyList_Type) {
+            Py_ssize_t n = PyList_GET_SIZE(obj);
+            start_collection(collection_type_object(CMD_LIST), static_cast<size_t>(n));
+            for (Py_ssize_t i = 0; i < n; i++) {
+                if (!write(PyList_GET_ITEM(obj, i))) {
+                    return false;
+                }
+            }
+        } else if (Py_TYPE(obj) == &PyTuple_Type) {
+            Py_ssize_t n = PyTuple_GET_SIZE(obj);
+            start_collection(collection_type_object(CMD_TUPLE), static_cast<size_t>(n));
+            for (Py_ssize_t i = 0; i < n; i++) {
+                if (!write(PyTuple_GET_ITEM(obj, i))) {
+                    return false;
+                }
+            }
+        } else if (Py_TYPE(obj) == &PyDict_Type) {
+            Py_ssize_t n = PyDict_Size(obj);
+            if (n < 0) {
+                return false;
+            }
+            start_collection(collection_type_object(CMD_DICT), static_cast<size_t>(n));
+            Py_ssize_t pos = 0;
+            PyObject *key, *value;
+            while (PyDict_Next(obj, &pos, &key, &value)) {
+                if (!write(key) || !write(value)) {
+                    return false;
+                }
+            }
+        } else if (obj == Py_None) {
             emit(FixedSizeTypes::NONE);
         } else if (Py_TYPE(obj) == &PyUnicode_Type) {
             write_string(obj);

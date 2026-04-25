@@ -2,7 +2,6 @@ package replay
 
 import (
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -32,7 +31,7 @@ func TestRoundtripThreads(t *testing.T) {
 
 	// --- Step 1: record ---
 	trace := filepath.Join(tmpDir, "trace.bin")
-	rec := exec.Command(python, "-m", "retracesoftware",
+	rec := pythonCommand(python, "-m", "retracesoftware",
 		"--recording", trace, "--format", "unframed_binary", "--", script)
 	rec.Dir = tmpDir
 	var recStderr strings.Builder
