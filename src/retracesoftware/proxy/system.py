@@ -43,7 +43,7 @@ class ProxyRef:
         return utils.create_wrapped(self.cls, None)
 
 
-class _NonBindingCallable:
+class wrapped_callable:
     """Prevent module-level wrapped callables from binding as methods."""
 
     __slots__ = ("_retrace_wrapped",)
@@ -62,6 +62,20 @@ class _NonBindingCallable:
 
     def __repr__(self):
         return repr(self._retrace_wrapped)
+
+
+class disabled_callable(wrapped_callable):
+    """Callable that intentionally runs with retrace disabled."""
+
+    __slots__ = ("_retrace_call",)
+
+    def __init__(self, wrapped, call):
+        super().__init__(wrapped)
+        self._retrace_call = call
+
+    def __call__(self, *args, **kwargs):
+        return self._retrace_call(*args, **kwargs)
+
 
 def lookup(module, name):
     import sys
@@ -133,16 +147,13 @@ def _ext_proxytype_from_spec(system, module, name, methods):
 fallback = functional.mapargs(transform = functional.walker(utils.try_unwrap), function = functional.apply)
 
 
-_DISABLED_THREAD_TARGET_ATTR = "__retrace_disabled_thread_target__"
-
-
 def _is_disabled_thread_target(function):
-    if getattr(function, _DISABLED_THREAD_TARGET_ATTR, False):
+    if isinstance(function, disabled_callable):
         return True
 
     owner = getattr(function, "__self__", None)
     target = getattr(owner, "_target", None)
-    return getattr(target, _DISABLED_THREAD_TARGET_ATTR, False)
+    return isinstance(target, disabled_callable)
 
 
 class System:
@@ -194,7 +205,7 @@ class System:
         if not self.is_bound(fn):
             self.bind(fn)
         wrapped = self._wrapped_function(self.ext_gateway, fn)
-        standalone = _NonBindingCallable(wrapped)
+        standalone = wrapped_callable(wrapped)
         self.bind(standalone)
         return standalone
 
@@ -235,12 +246,7 @@ class System:
         """
         disabled = fallback if unwrap_args else utils.try_unwrap_apply
         applied = self.gate.apply_with(None, functional.partial(disabled, function))
-
-        def wrapped(*args, **kwargs):
-            return applied(*args, **kwargs)
-
-        setattr(wrapped, _DISABLED_THREAD_TARGET_ATTR, True)
-        return wrapped
+        return disabled_callable(function, applied)
 
     def __init__(self, on_bind = None) -> None:
 
