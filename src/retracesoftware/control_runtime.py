@@ -796,9 +796,10 @@ class Controller:
                 if self._monitor is not None:
                     self._monitor.close()
                 self._current_breakpoint = intent.breakpoint
+                log = self._disable_for(self._control_log) if os.getenv("RETRACE_CONTROL_LOG") == "1" else None
                 self._monitor = register_breakpoint_callback(
                     intent.breakpoint, self._disable_for(self._on_breakpoint_hit),
-                    log=self._disable_for(self._control_log),
+                    log=log,
                     disable_for=self._disable_for,
                 )
 

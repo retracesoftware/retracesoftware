@@ -611,6 +611,9 @@ class _IOThreadAwareTapeReader:
 
     def monitor_checkpoint(self, value):
         marker = self.read()
+        while marker == "BINDING_DELETE":
+            self.read()
+            marker = self.read()
         if marker != "MONITOR":
             raise RuntimeError(f"expected 'MONITOR', got {marker!r}")
         recorded = self.read()

@@ -154,7 +154,7 @@ class Runner:
         write_monitor_disabled = system.disable_for(write_monitor)
 
         def checkpoint_monitor(value):
-            if system._in_sandbox():
+            if system.location == "internal":
                 write_monitor_disabled(value)
 
         uninstall = install_retrace(
@@ -223,7 +223,7 @@ class Runner:
         verify_monitor_disabled = system.disable_for(verify_monitor)
 
         def checkpoint_monitor(value):
-            if system._in_sandbox():
+            if system.location == "internal":
                 verify_monitor_disabled(value)
 
         uninstall = install_retrace(

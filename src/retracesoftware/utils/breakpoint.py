@@ -84,6 +84,16 @@ def _compile_breakpoint(spec: BreakpointSpec) -> Breakpoint:
     return Breakpoint(code_predicate=code_predicate, frame_predicate=frame_predicate)
 
 
+def _find_monitored_frame(code: CodeType) -> Optional[FrameType]:
+    """Return the live frame for a sys.monitoring callback's code object."""
+    frame = sys._getframe(1)
+    while frame is not None:
+        if frame.f_code is code:
+            return frame
+        frame = frame.f_back
+    return None
+
+
 def install_breakpoint(
     breakpoint: BreakpointSpec,
     callback: Callable[[dict], None],
@@ -116,9 +126,9 @@ def install_breakpoint(
             sys.monitoring.set_local_events(tool_id, code, E.LINE)
         return DISABLE
 
-    def on_line(code: CodeType, line: int):  # noqa: ARG001
-        frame = sys._getframe(1)
-        if compiled.frame_predicate(frame):
+    def on_line(code: CodeType, line: int):
+        frame = _find_monitored_frame(code)
+        if frame is not None and compiled.frame_predicate(frame):
             _log(f"LINE hit: {code.co_filename}:{line}")
             callback(cursor_snapshot().to_dict())
         return None
