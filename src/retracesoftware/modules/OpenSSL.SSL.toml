@@ -1,0 +1,19 @@
+package = "pyOpenSSL"
+
+# pyOpenSSL wraps OpenSSL and performs TLS handshakes/read/write/shutdown
+# through CFFI calls rather than Python's `_ssl` module. Proxying these classes
+# records those C-level boundary crossings so replay does not touch live TLS.
+# Add a real close() before proxying because upstream delegates close through
+# __getattr__ to the wrapped socket, and replay Connection shells have no live
+# socket to delegate to.
+wrap = { Connection = "retracesoftware.install.edgecases.openssl_connection_class" }
+proxy = ["Context", "Connection"]
+
+[patch_class.Context]
+set_verify = "retracesoftware.install.edgecases.openssl_set_verify"
+
+[patch_class.Connection]
+# Connection delegates unknown socket-style methods, notably close(), to its
+# wrapped socket. Patching __getattr__ turns that delegated method into a
+# proxied external value and breaks the delegation shape, so restore it.
+__getattr__ = "retracesoftware.utils.try_unwrap"

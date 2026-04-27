@@ -7,7 +7,7 @@ PYTHON = sys.executable
 TIMEOUT = 30
 
 
-def run_record(script_path, recording, extra_args=None, env=None):
+def run_record(script_path, recording, extra_args=None, env=None, stacktraces=True):
     """Run a script under retrace recording.
 
     *recording* is a trace file path (e.g. ``/tmp/dir/trace.retrace``).
@@ -17,9 +17,10 @@ def run_record(script_path, recording, extra_args=None, env=None):
         PYTHON, "-m", "retracesoftware",
         "--recording", recording,
         "--format", "unframed_binary",
-        "--stacktraces",
-        "--", str(script_path),
     ]
+    if stacktraces:
+        cmd.append("--stacktraces")
+    cmd.extend(["--", str(script_path)])
     if extra_args:
         cmd.extend(extra_args)
 

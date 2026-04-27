@@ -90,6 +90,52 @@ def mmap_readinto(target):
         return len(data)
     return wrapper
 
+def openssl_set_verify(target):
+    target = utils.try_unwrap(target)
+
+    @functools.wraps(target)
+    @utils.exclude_from_stacktrace
+    def wrapper(self, mode, callback=None):
+        if not hasattr(self, "_used"):
+            return None
+        if callback is not None:
+            callback = utils.try_unwrap(callback)
+        return target(self, mode, callback)
+    return wrapper
+
+def openssl_connection_class(cls):
+    class Connection(cls):
+        __module__ = cls.__module__
+        __qualname__ = cls.__qualname__
+
+        def close(self):
+            try:
+                sock = object.__getattribute__(self, "_socket")
+            except AttributeError:
+                return None
+            if sock is None:
+                return None
+
+            import _socket
+
+            if isinstance(sock, _socket.socket):
+                try:
+                    sock._closed = True
+                except Exception:
+                    pass
+                try:
+                    io_refs = sock._io_refs
+                except Exception:
+                    io_refs = 0
+                if io_refs <= 0:
+                    return utils.try_unwrap_apply(_socket.socket.close, sock)
+                return None
+
+            return utils.try_unwrap_apply(getattr(sock, "close"))
+
+    Connection.__name__ = cls.__name__
+    return Connection
+
 typewrappers = {
     '_socket': {
         'socket': {

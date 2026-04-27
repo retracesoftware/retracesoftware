@@ -109,6 +109,7 @@ py.install_sources(
 install_data(
   _py_root / 'modules/__init__.py',
   _py_root / 'modules/MySQLdb._mysql.toml',
+  _py_root / 'modules/OpenSSL.SSL.toml',
   _py_root / 'modules/PIL._imaging.toml',
   _py_root / 'modules/_io.toml',
   _py_root / 'modules/_sqlite3.toml',

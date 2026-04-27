@@ -4,3 +4,5 @@ retracesoftware.stream
 opentelemetry-api
 opentelemetry-sdk
 psycopg2-binary
+pyOpenSSL
+cryptography
