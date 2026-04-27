@@ -49,7 +49,7 @@ immutable = ["PosixPath"]
 
 [posix]
 immutable = ["times_result", "statvfs_result", "uname_result", "stat_result", "terminal_size"]
-replay_materialize = ["pipe"]
+replay_materialize = ["open", "pipe"]
 
 proxy = [
     "_exit", # Function. Exits the process immediately, bypassing cleanup.

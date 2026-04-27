@@ -173,6 +173,9 @@ def patch_type(system, cls, install_session=None):
             f"patch_type: {cls.__qualname__} is already patched by another System instance"
         )
 
+    if existing is system and cls in system.patched_types:
+        return cls
+
     assert cls not in system.patched_types
 
     alloc_patch_undo = None

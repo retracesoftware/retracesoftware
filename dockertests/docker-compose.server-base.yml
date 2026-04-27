@@ -21,6 +21,7 @@ services:
     volumes:
       - ./install.sh:/app/install.sh:ro
       - ./base-requirements.txt:/app/dockertests/base-requirements.txt:ro
+      - ..:/app/repo
       - ${TEST_DIR}:/app/test:ro
       - ./.cache/pip:/root/.cache/pip
       - ${TEST_PACKAGES_DIR:-./.cache/packages}:/app/packages
@@ -69,7 +70,10 @@ services:
     environment:
       PYTHONPATH: /app/packages
       RETRACE_CONFIG: debug
-      RETRACE_STACKTRACES: "0"
+      RETRACE_FORMAT: unframed_binary
+      RETRACE_RECORDING: /recording/trace.bin
+      RETRACE_REPLAY_BIN: /app/packages/bin/replay
+      RETRACE_STACKTRACES: ${RETRACE_STACKTRACES:-0}
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:${SERVER_PORT:-5000}${SERVER_HEALTH_PATH:-/health}')"]
       interval: 2s
@@ -101,6 +105,8 @@ services:
       - ${TEST_PACKAGES_DIR:-./.cache/packages}:/app/packages:ro
     environment:
       PYTHONPATH: /app/packages
+      RETRACE_FORMAT: unframed_binary
+      RETRACE_REPLAY_BIN: /app/packages/bin/replay
     command: python -m retracesoftware --recording /recording/trace.bin
 
   # Cleanup

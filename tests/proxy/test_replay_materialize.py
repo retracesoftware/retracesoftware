@@ -7,6 +7,7 @@ from retracesoftware.__main__ import install_and_run
 from retracesoftware.install.patcher import patch
 from retracesoftware.install.installation import Installation
 from retracesoftware.proxy.io import recorder, replayer
+from retracesoftware.proxy.patchtype import patch_type
 from retracesoftware.proxy.system import System
 from retracesoftware.testing.memorytape import IOMemoryTape
 
@@ -58,6 +59,32 @@ def test_patch_proxy_and_replay_materialize_overlap_is_a_no_op_without_registry(
     )
 
     undo()
+
+
+def test_patch_type_is_idempotent_for_subtypes_patched_through_base():
+    bound = []
+    system = System(on_bind=bound.append)
+
+    class Base:
+        def ping(self):
+            return "base"
+
+    class Child(Base):
+        def ping(self):
+            return "child"
+
+    try:
+        patch_type(system, Base)
+        assert Base in system.patched_types
+        assert Child in system.patched_types
+
+        bound_after_base_patch = list(bound)
+
+        assert patch_type(system, Child) is Child
+        assert system.patch(Child) is Child
+        assert bound == bound_after_base_patch
+    finally:
+        system.unpatch_types()
 
 
 def test_patch_replay_materialize_tracks_patched_callable_identity():

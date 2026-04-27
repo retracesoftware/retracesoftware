@@ -1,19 +1,21 @@
 import asyncio
-import random
 from datetime import datetime, timedelta
 
 from async_lru import alru_cache
+
+
+BASE_TIME = datetime(2026, 1, 1, 12, 0, 0)
 
 
 @alru_cache(maxsize=3)  # Cache up to 3 recent requests
 async def get_clinician_availability(clinician_id: str):
     # Simulate a delay for fetching data, like an API or DB call
     await asyncio.sleep(1)
-    # Return a dummy schedule with random availability for the given clinician
+    offset = sum(ord(char) for char in clinician_id) % 7 + 1
     return {
         "clinician_id": clinician_id,
-        "available": bool(random.getrandbits(1)),  # Random availability status
-        "next_available": datetime.now() + timedelta(days=random.randint(1, 7)),
+        "available": offset % 2 == 0,
+        "next_available": BASE_TIME + timedelta(days=offset),
     }
 
 

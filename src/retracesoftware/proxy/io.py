@@ -308,7 +308,9 @@ class _ThreadDemuxSource:
 
         try:
             buffered = self._dispatcher.buffered
-        except Exception:
+        except BaseException as exc:
+            if isinstance(exc, (KeyboardInterrupt, SystemExit)):
+                raise
             buffered = None
         else:
             if buffered[0] == current_thread_id:
@@ -945,6 +947,12 @@ def replayer(*, next_object,
             run_callback(message)
             return expect_message(expected_type)
 
+        if (
+            isinstance(message, (CallbackResultMessage, CallbackErrorMessage))
+            and not isinstance(message, expected_type)
+        ):
+            return expect_message(expected_type)
+
         on_desync(message, expected_type)
 
     def run_callback(message):
@@ -1062,7 +1070,10 @@ def replayer(*, next_object,
                     return replay
                 resolved = tape_reader.resolve(record)
                 if _is_file_descriptor_result(resolved, replay):
-                    live_file_descriptors.update(replay)
+                    if isinstance(replay, tuple):
+                        live_file_descriptors.update(replay)
+                    else:
+                        live_file_descriptors.add(replay)
                     return replay
                 return resolved
 
@@ -1107,7 +1118,46 @@ def replayer(*, next_object,
         on_result=on_materialized_result,
         on_error=on_materialized_error,
     )
-    system.async_new_patched = system.bind
+
+    def bind_new_patched(obj):
+        skipped_callback = False
+
+        def consume_callback_completion():
+            while True:
+                try:
+                    next_value = tape_reader._peek_item(resolve=False)
+                except StopIteration:
+                    return
+
+                if next_value not in ("CALLBACK_RESULT", "CALLBACK_ERROR", "CHECKPOINT"):
+                    return
+
+                message = read_raw_message()
+                if isinstance(message, (CallbackResultMessage, CallbackErrorMessage, CheckpointMessage)):
+                    continue
+
+                return
+
+        while True:
+            try:
+                result = tape_reader.bind(obj)
+                system.is_bound.add(obj)
+                if skipped_callback:
+                    consume_callback_completion()
+                return result
+            except ExpectedBindMarker:
+                message = read_raw_message()
+
+                if isinstance(message, CallbackMessage):
+                    skipped_callback = True
+                    continue
+
+                if isinstance(message, (CallbackResultMessage, CallbackErrorMessage, CallMarkerMessage)):
+                    continue
+
+                return system.disable_for(on_unexpected)(message)
+
+    system.async_new_patched = bind_new_patched
 
     on_callback_result = functional.sequence(
         _on_result, checkpoint) if debug else functional.repeatedly(expect_message, CallbackResultMessage)
@@ -1126,10 +1176,13 @@ def replayer(*, next_object,
         expect_message(OnStartMessage)
 
     def on_end():
-        tape_reader.consume_pending_closes(
-            ignore_end_of_stream=True,
-            buffered_only=True,
-        )
+        try:
+            tape_reader.consume_pending_closes(
+                ignore_end_of_stream=True,
+                buffered_only=True,
+            )
+        except StopIteration:
+            return
 
     system.lifecycle_hooks=LifecycleHooks(
         on_start=on_start,
@@ -1194,6 +1247,8 @@ def replayer(*, next_object,
         return isinstance(value, int) and not isinstance(value, bool)
 
     def _is_file_descriptor_result(record, replay):
+        if _is_file_descriptor(record) and _is_file_descriptor(replay):
+            return True
         return (
             isinstance(record, tuple)
             and isinstance(replay, tuple)

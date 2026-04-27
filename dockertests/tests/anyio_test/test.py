@@ -1,5 +1,3 @@
-import random
-
 import anyio
 
 
@@ -14,9 +12,9 @@ async def main():
 
     # Schedule multiple tasks with different delays to simulate asynchronous work
     async with anyio.create_task_group() as task_group:
-        task_group.start_soon(task, "A", random.uniform(1, 3))
-        task_group.start_soon(task, "B", random.uniform(1, 3))
-        task_group.start_soon(task, "C", random.uniform(1, 3))
+        task_group.start_soon(task, "A", 0.03)
+        task_group.start_soon(task, "B", 0.02)
+        task_group.start_soon(task, "C", 0.01)
 
     print("All tasks completed.", flush=True)
 

@@ -21,6 +21,7 @@
 #include <pthread.h>
 #include <dlfcn.h>
 #include <stdatomic.h>
+#include <stdint.h>
 
 /* ------------------------------------------------------------------ */
 /* Public symbols — discovered via dlsym by the Python extension      */

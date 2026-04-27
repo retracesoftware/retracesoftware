@@ -685,11 +685,11 @@ namespace retracesoftware_stream {
         .tp_doc = "Read a retrace tape as record-domain objects.",
         .tp_traverse = (traverseproc)TapeReader::traverse,
         .tp_clear = (inquiry)TapeReader::clear,
+        .tp_iter = TapeReader::iter,
+        .tp_iternext = (iternextfunc)TapeReader::iternext,
         .tp_methods = tape_methods,
         .tp_members = tape_members,
         .tp_getset = tape_getset,
-        .tp_iter = TapeReader::iter,
-        .tp_iternext = (iternextfunc)TapeReader::iternext,
         .tp_init = (initproc)TapeReader::init,
         .tp_new = PyType_GenericNew,
     };

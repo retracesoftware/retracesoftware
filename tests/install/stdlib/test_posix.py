@@ -41,3 +41,19 @@ def test_urandom():
         return value
 
     runner.run(do_urandom)
+
+
+def test_open_materializes_live_file_descriptor(tmp_path):
+    """os.open() replay returns a live fd for C-level file wrappers."""
+    path = tmp_path / "materialized-fd.txt"
+
+    def work():
+        fd = os.open(str(path), os.O_CREAT | os.O_RDWR | os.O_TRUNC, 0o600)
+        try:
+            os.write(fd, b"ok")
+            os.lseek(fd, 0, os.SEEK_SET)
+            return os.read(fd, 2)
+        finally:
+            os.close(fd)
+
+    assert Runner(matrix="core").run(work) == b"ok"

@@ -890,6 +890,7 @@ class writer(_backend_mod.ObjectWriter):
                     raw=(format == "unframed_binary"),
                 )
                 self._fw = fw
+                self._pid_framed = format == "binary"
 
                 if preamble is not None:
                     _write_process_info(fw, preamble)
@@ -1027,6 +1028,12 @@ class writer(_backend_mod.ObjectWriter):
             queue.resume()
 
     def _after_fork_child(self):
+        if not getattr(self, "_pid_framed", False):
+            with self._heartbeat_lock:
+                self._heartbeat_enabled = False
+                self.disable()
+            return
+
         if self._fw:
             self._fw.resume()
             _write_process_info(self._fw, {

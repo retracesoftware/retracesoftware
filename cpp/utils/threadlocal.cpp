@@ -528,8 +528,8 @@ PyTypeObject ThreadLocalApplyWith_Type = {
                 Py_TPFLAGS_DISALLOW_INSTANTIATION,
     .tp_traverse = (traverseproc)ThreadLocalApplyWith_traverse,
     .tp_clear = (inquiry)ThreadLocalApplyWith_clear,
-    .tp_descr_get = ThreadLocalApplyWith_descr_get,
     .tp_getset = ThreadLocalApplyWith_getset,
+    .tp_descr_get = ThreadLocalApplyWith_descr_get,
 };
 
 static PyObject *ThreadLocal_apply_with(PyObject *self, PyObject *args, PyObject *kwargs) {

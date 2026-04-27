@@ -1,7 +1,7 @@
 #include "utils.h"
 #include <signal.h>
 #include <dlfcn.h>
-#include <stdatomic.h>
+#include <atomic>
 #include "unordered_dense.h"
 #include <internal/pycore_frame.h>
 
@@ -563,10 +563,15 @@ static void gilwatch_trampoline(pthread_t previous, pthread_t current) {
     Py_AddPendingCall(gilwatch_pending_call, nullptr);
 }
 
+static void gilwatch_store_mutex_address(void * addr, uintptr_t value) {
+    std::atomic_ref<uintptr_t>(*reinterpret_cast<uintptr_t *>(addr))
+        .store(value, std::memory_order_relaxed);
+}
+
 static PyObject * gilwatch_activate(PyObject * self, PyObject * callback) {
     if (callback == Py_None) {
-        auto * addr = (_Atomic uintptr_t *)dlsym(RTLD_DEFAULT, "gilwatch_mutex_address");
-        if (addr) atomic_store(addr, (uintptr_t)0);
+        void * addr = dlsym(RTLD_DEFAULT, "gilwatch_mutex_address");
+        if (addr) gilwatch_store_mutex_address(addr, (uintptr_t)0);
 
         auto * slot = (void (**)(pthread_t, pthread_t))dlsym(RTLD_DEFAULT, "gilwatch_callback");
         if (slot) *slot = nullptr;
@@ -581,7 +586,7 @@ static PyObject * gilwatch_activate(PyObject * self, PyObject * callback) {
         return nullptr;
     }
 
-    auto * addr = (_Atomic uintptr_t *)dlsym(RTLD_DEFAULT, "gilwatch_mutex_address");
+    void * addr = dlsym(RTLD_DEFAULT, "gilwatch_mutex_address");
     auto * slot = (void (**)(pthread_t, pthread_t))dlsym(RTLD_DEFAULT, "gilwatch_callback");
     if (!addr || !slot) {
         PyErr_SetString(PyExc_RuntimeError,
@@ -600,7 +605,7 @@ static PyObject * gilwatch_activate(PyObject * self, PyObject * callback) {
     gilwatch_python_callback = Py_NewRef(callback);
 
     *slot = gilwatch_trampoline;
-    atomic_store(addr, (uintptr_t)gil_mutex);
+    gilwatch_store_mutex_address(addr, (uintptr_t)gil_mutex);
 
     Py_RETURN_NONE;
 }

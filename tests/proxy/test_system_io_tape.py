@@ -269,6 +269,114 @@ def test_raw_tape_writer_passes_binding_objects_through_to_stream_writer():
     ]
 
 
+def test_replayer_skips_standalone_callback_result_before_next_call():
+    tape = IOMemoryTape()
+    writer = tape.writer()
+    live_calls = []
+    callback_calls = []
+
+    def callback():
+        callback_calls.append("callback")
+        return "callback-result"
+
+    def external():
+        live_calls.append("external")
+        return 42
+
+    def flow(call, emit_callback):
+        if emit_callback is not None:
+            emit_callback()
+        return call()
+
+    with _entered(writer) as writer:
+        with _recorder_context(IOMode("plain"), writer) as record_system:
+            recorded_external = record_system.patch_function(external)
+
+            def emit_callback_envelope():
+                record_system.primary_hooks.on_call(callback)
+                record_system.secondary_hooks.on_result("callback-result")
+
+            recorded = record_system.run(flow, recorded_external, emit_callback_envelope)
+
+    assert recorded == 42
+    assert live_calls == ["external"]
+    assert callback_calls == []
+
+    raw = _raw_tape(tape)
+    assert raw is not None
+    assert "CALLBACK" in raw
+    assert "CALLBACK_RESULT" in raw
+
+    def on_desync(record, replay):
+        raise AssertionError(f"desync: {record!r} vs {replay!r}")
+
+    def on_unexpected(message):
+        raise AssertionError(f"unexpected: {message!r}")
+
+    reader = tape.reader()
+    with _entered(reader) as reader:
+        replay_system = replayer(
+            next_object=reader.read,
+            close=getattr(reader, "close", None),
+            on_desync=on_desync,
+            on_unexpected=on_unexpected,
+        )
+        try:
+            _configure_system(replay_system)
+            replayed_external = replay_system.patch_function(external)
+            replayed = replay_system.run(flow, replayed_external, None)
+        finally:
+            replay_system.unpatch_types()
+
+    assert replayed == 42
+    assert live_calls == ["external"]
+    assert callback_calls == ["callback"]
+
+
+def test_replayer_skips_stub_callback_before_async_new_patched_bind():
+    tape = IOMemoryTape()
+
+    class External:
+        pass
+
+    def flow(system, obj):
+        system.async_new_patched(obj)
+        assert system.is_bound(obj)
+        return "ok"
+
+    writer = tape.writer()
+    with _entered(writer) as writer:
+        with _recorder_context(IOMode("plain"), writer) as record_system:
+            patch_type(record_system, External)
+            recorded_obj = External()
+            assert record_system.run(flow, record_system, recorded_obj) == "ok"
+
+    raw = _raw_tape(tape)
+    assert raw is not None
+    assert "CALLBACK" in raw
+    assert "NEW_BINDING" in raw
+
+    reader = tape.reader()
+    with _entered(reader) as reader:
+        replay_system = replayer(
+            next_object=reader.read,
+            close=getattr(reader, "close", None),
+            on_desync=lambda record, replay: (_ for _ in ()).throw(
+                AssertionError(f"desync: {record!r} vs {replay!r}")
+            ),
+            on_unexpected=lambda message: (_ for _ in ()).throw(
+                AssertionError(f"unexpected: {message!r}")
+            ),
+        )
+        try:
+            _configure_system(replay_system)
+            patch_type(replay_system, External)
+            replay_obj = External()
+            assert replay_system.run(flow, replay_system, replay_obj) == "ok"
+        finally:
+            replay_system.unpatch_types()
+
+
 def test_system_io_records_callback_for_new_ext_proxy_type_with_memory_tape():
     tape = IOMemoryTape()
     writer = tape.writer()

@@ -210,10 +210,10 @@ PyTypeObject Partial_Type = {
     .tp_dealloc = (destructor)Partial::dealloc,
     .tp_vectorcall_offset = OFFSET_OF_MEMBER(Partial, vectorcall),
     .tp_repr = (reprfunc)repr,
+    .tp_as_sequence = &sequence_methods,
     .tp_call = PyVectorcall_Call,
     .tp_str = (reprfunc)repr,
     .tp_getattro = (getattrofunc)Partial::getattro,
-    .tp_as_sequence = &sequence_methods,
     .tp_flags = Py_TPFLAGS_DEFAULT | 
                 Py_TPFLAGS_HAVE_GC | 
                 Py_TPFLAGS_HAVE_VECTORCALL | 

@@ -53,6 +53,7 @@ _ENV_OVERRIDES = {
     "RETRACE_TRACE_INPUTS":   ("record", "trace_inputs", bool),
     "RETRACE_GC_COLLECT_MULTIPLIER": ("record", "gc_collect_multiplier", str),
     "RETRACE_RECORDING":      ("record", "recording", str),
+    "RETRACE_FORMAT":         ("record", "format", str),
     "RETRACE_WORKSPACE_PATH": ("record", "workspace", str),
     "RETRACE_FILE_PATTERNS":  ("record", "retrace_file_patterns", str),
     "RETRACE_INFLIGHT_LIMIT": ("writer", "inflight_limit", str),
@@ -105,6 +106,8 @@ def config_to_argv(config):
 
     if "recording" in record:
         argv.extend(["--recording", str(record["recording"])])
+    if "format" in record:
+        argv.extend(["--format", str(record["format"])])
     if record.get("verbose"):
         argv.append("--verbose")
     if record.get("stacktraces"):

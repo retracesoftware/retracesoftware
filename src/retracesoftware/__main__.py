@@ -1,8 +1,8 @@
 import sys
 import os
 import argparse
-import tempfile
 import json
+import shutil
 import retracesoftware.functional as functional
 import retracesoftware.utils as utils
 from pathlib import Path
@@ -123,22 +123,27 @@ def _cli_module_overrides():
         yield
         return
 
-    with tempfile.TemporaryDirectory(prefix="retracesoftware-json-modules-") as td:
-        modules_dir = Path(td)
-        # CLI recording uses Python's own `_io` stack for stdio, import
-        # machinery, and JSON persister output. Keeping `_io` unpatched on
-        # this default path avoids crashing live interpreter-owned IO objects
-        # during finalization. Explicit user module overrides still win: if
-        # RETRACE_MODULES_PATH is already set we leave it alone.
-        (modules_dir / "_io.toml").write_text(
-            "proxy = []\nimmutable = []\n",
-            encoding="utf-8",
-        )
-        os.environ["RETRACE_MODULES_PATH"] = str(modules_dir)
-        try:
-            yield
-        finally:
-            os.environ.pop("RETRACE_MODULES_PATH", None)
+    modules_dir = (
+        Path(os.environ.get("TMPDIR") or "/tmp")
+        / f"retracesoftware-json-modules-{os.getpid()}"
+    )
+    shutil.rmtree(modules_dir, ignore_errors=True)
+    modules_dir.mkdir(mode=0o700)
+    # CLI recording uses Python's own `_io` stack for stdio, import
+    # machinery, and JSON persister output. Keeping `_io` unpatched on
+    # this default path avoids crashing live interpreter-owned IO objects
+    # during finalization. Explicit user module overrides still win: if
+    # RETRACE_MODULES_PATH is already set we leave it alone.
+    (modules_dir / "_io.toml").write_text(
+        "proxy = []\nimmutable = []\n",
+        encoding="utf-8",
+    )
+    os.environ["RETRACE_MODULES_PATH"] = str(modules_dir)
+    try:
+        yield
+    finally:
+        os.environ.pop("RETRACE_MODULES_PATH", None)
+        shutil.rmtree(modules_dir, ignore_errors=True)
 
 def record(options, args):
     options.recording = normalize_recording_path(options.recording, args)

@@ -357,8 +357,8 @@ PyTypeObject DisabledCallback_Type = {
     .tp_basicsize = sizeof(DisabledCallback),
     .tp_itemsize = 0,
     .tp_dealloc = (destructor)DisabledCallback::dealloc,
-    .tp_repr = (reprfunc)DisabledCallback::repr,
     .tp_vectorcall_offset = offsetof(DisabledCallback, vectorcall),
+    .tp_repr = (reprfunc)DisabledCallback::repr,
     .tp_call = PyVectorcall_Call,
     .tp_flags = Py_TPFLAGS_DEFAULT | Py_TPFLAGS_HAVE_VECTORCALL,
     .tp_doc = "Internal wrapper that suspends cursor tracking during a call.",
@@ -830,4 +830,3 @@ PyTypeObject CallCounter_Type = {
     .tp_init = (initproc)CallCounter::init,
     .tp_new = PyType_GenericNew,
 };
-

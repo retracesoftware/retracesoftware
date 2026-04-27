@@ -8,7 +8,7 @@ def sync_function(x, y):
 
 
 async def test_sync_to_async():
-    async_function = sync_to_async(sync_function)
+    async_function = sync_to_async(sync_function, thread_sensitive=False)
     result = await async_function(5, 3)
 
     assert result == 8, "Expected the sum to be 8"

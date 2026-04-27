@@ -72,7 +72,7 @@ if [ ! -d "$TEST_DIR/recording" ]; then
     echo "❌ Failed to prepare recording directory: $TEST_DIR/recording"
     exit 1
 fi
-rm -f "$TEST_DIR/recording/trace.bin" "$TEST_DIR/recording/trace.bin.lock"
+find "$TEST_DIR/recording" -mindepth 1 -maxdepth 1 -exec rm -rf {} +
 
 # Detect test type: server (has client.py) or script (default)
 if [ -f "$TEST_DIR/client.py" ]; then
