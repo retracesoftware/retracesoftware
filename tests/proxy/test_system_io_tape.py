@@ -705,3 +705,36 @@ def test_system_ext_proxytype_can_build_for_socket_family_descriptor_type():
 
     assert os.WIFEXITED(status)
     assert os.WEXITSTATUS(status) == 0
+
+
+def test_generated_ext_proxytype_getattr_forwards_declared_descriptor():
+    import _io
+    from retracesoftware.proxy.system import System
+
+    system = System()
+    _configure_system(system)
+    proxy_type = system.ext_proxytype(_io.BufferedReader)
+
+    raw = _io.BufferedReader(_io.BytesIO(b"hello"))
+    wrapped = utils.create_wrapped(proxy_type, raw)
+    try:
+        assert "__getattr__" in proxy_type.__dict__
+        assert wrapped.closed is False
+    finally:
+        raw.close()
+
+
+def test_generated_ext_proxytype_setattr_forwards_dynamic_attrs():
+    from retracesoftware.proxy.system import System
+
+    system = System()
+    _configure_system(system)
+    proxy_type = system.ext_proxytype(FreshExternalResult)
+
+    raw = FreshExternalResult()
+    wrapped = utils.create_wrapped(proxy_type, raw)
+
+    assert "__setattr__" in proxy_type.__dict__
+    wrapped.value = 42
+
+    assert raw.value == 42

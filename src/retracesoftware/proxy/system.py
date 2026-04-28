@@ -85,6 +85,58 @@ def lookup(module, name):
             return sys.modules[module].__dict__[name]
     return None
 
+_MISSING_ATTR = object()
+
+def _lookup_type_attr(cls, name):
+    if not isinstance(cls, type):
+        return _MISSING_ATTR
+
+    for base in cls.__mro__:
+        if name in base.__dict__:
+            return base.__dict__[name]
+
+    return _MISSING_ATTR
+
+def _has_custom_getattr(cls):
+    return _lookup_type_attr(cls, "__getattr__") is not _MISSING_ATTR
+
+def _has_instance_dict(cls):
+    return _lookup_type_attr(cls, "__dict__") is not _MISSING_ATTR
+
+def _raise_missing_generated_attr(cls, name):
+    type_name = cls.__name__ if isinstance(cls, type) else "object"
+    raise AttributeError(f"'{type_name}' object has no attribute '{name}'")
+
+def _generated_proxy_getattr(system, cls, attrs, has_custom_getattr):
+    wrapped_getattr = system._wrapped_function(handler=system.ext_gateway, target=getattr)
+    attrs = frozenset(attrs)
+
+    def __getattr__(instance, name):
+        if (
+            name not in attrs
+            and not has_custom_getattr
+        ):
+            _raise_missing_generated_attr(cls, name)
+
+        return wrapped_getattr(instance, name)
+
+    return __getattr__
+
+def _generated_proxy_setattr(system, cls, attrs, has_instance_dict):
+    wrapped_setattr = system._wrapped_function(handler=system.ext_gateway, target=setattr)
+    attrs = frozenset(attrs)
+
+    def __setattr__(instance, name, value):
+        if (
+            name not in attrs
+            and not has_instance_dict
+        ):
+            _raise_missing_generated_attr(cls, name)
+
+        return wrapped_setattr(instance, name, value)
+
+    return __setattr__
+
 class LifecycleHooks(NamedTuple):
     on_start: Callable[..., Any] | None = None
     on_end: Callable[..., Any] | None = None
@@ -117,7 +169,15 @@ def when_instanceof(cls, on_then, on_else = functional.identity):
 def with_type_of(func):
     return functional.sequence(functional.typeof, func)
 
-def _ext_proxytype_from_spec(system, module, name, methods):
+def _ext_proxytype_from_spec(
+    system,
+    module,
+    name,
+    methods,
+    attrs,
+    has_custom_getattr=False,
+    has_instance_dict=False,
+):
     spec = {
         '__module__': module,
     }
@@ -135,6 +195,9 @@ def _ext_proxytype_from_spec(system, module, name, methods):
 
     for method in methods:
         spec[method] = system._wrapped_function(handler=system.ext_gateway, target=proxy(method))
+
+    spec['__getattr__'] = _generated_proxy_getattr(system, cls, attrs, has_custom_getattr)
+    spec['__setattr__'] = _generated_proxy_setattr(system, cls, attrs, has_instance_dict)
 
     proxytype = type(name, (utils.ExternalWrapped, DynamicProxy,), spec)
 
@@ -541,8 +604,19 @@ class System:
         blacklist = ['__getattribute__', '__hash__', '__del__', '__call__', '__new__']
 
         methods = [method for method in method_names(cls) if method not in blacklist]
+        attrs = [name for name in superdict(cls) if name not in blacklist]
+        has_custom_getattr = _has_custom_getattr(cls)
+        has_instance_dict = _has_instance_dict(cls)
 
-        return self.ext_proxytype_from_spec(self, module = cls.__module__, name = cls.__qualname__, methods = methods)
+        return self.ext_proxytype_from_spec(
+            self,
+            module=cls.__module__,
+            name=cls.__qualname__,
+            methods=methods,
+            attrs=attrs,
+            has_custom_getattr=has_custom_getattr,
+            has_instance_dict=has_instance_dict,
+        )
 
     def install(self):
         import _thread

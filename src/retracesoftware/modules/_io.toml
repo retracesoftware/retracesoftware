@@ -1,37 +1,16 @@
-# Core file I/O — FileIO, BufferedReader, BufferedWriter, BufferedRandom, TextIOWrapper.
-# Direct read/write/open syscalls in C, bypassing posix module.
+# Core file I/O entrypoints.
 #
-# BytesIO and StringIO are in-memory only — no syscalls, no proxy needed.
-# IncrementalNewlineDecoder is deterministic text processing — no proxy needed.
-#
-# Needs patch_class wrappers for readinto/readinto1 on buffered types
-# (see Buffer Protocol section in MODULES_GUIDE.md).
+# `_io` C types are owned heavily by the interpreter itself. Default coverage
+# keeps path-backed IO passthrough and retraces only fd-style open calls through
+# the install-layer fd-only path predicate. Broader `_io` type proxying remains
+# available through explicit user module overrides.
 
-proxy = ["open", "open_code",
-         "FileIO", "BufferedReader", "BufferedWriter",
-         "BufferedRandom", "BufferedRWPair", "TextIOWrapper"]
+proxy = ["open", "open_code"]
 
 immutable = ["BlockingIOError", "UnsupportedOperation"]
 
-# Functions/constructors whose path parameter refers to stable filesystem
-# locations can bypass the proxy. Returned objects are unbound, so their
-# methods also pass through (instance-level binding).
+# Default install gives `_io` an fd-only predicate: all path-like arguments
+# bypass retrace, while integer file descriptors still enter the boundary.
 [pathparam]
 open = "file"
 open_code = "path"
-FileIO = "file"
-
-[patch_class.FileIO]
-readinto = "retracesoftware.install.edgecases.readinto"
-
-[patch_class.BufferedReader]
-readinto = "retracesoftware.install.edgecases.readinto"
-readinto1 = "retracesoftware.install.edgecases.readinto1"
-
-[patch_class.BufferedRandom]
-readinto = "retracesoftware.install.edgecases.readinto"
-readinto1 = "retracesoftware.install.edgecases.readinto1"
-
-[patch_class.BufferedRWPair]
-readinto = "retracesoftware.install.edgecases.readinto"
-readinto1 = "retracesoftware.install.edgecases.readinto1"

@@ -113,24 +113,26 @@ def install_retrace(*, system, retrace_file_patterns=None, monitor_level=0, verb
             pass
 
     module_config = ModuleConfigResolver()
-    if not _user_module_config_exists("_io"):
-        # Keep CPython-owned `_io` objects on the interpreter's own stack unless
-        # the user explicitly opted into a custom `_io` config.
-        module_config._configs["_io"] = {"proxy": [], "immutable": []}
+    default_io_config = not _user_module_config_exists("_io")
     installation = Installation(system)
 
     from retracesoftware.install.pathpredicate import load_patterns, make_pathpredicate
     pathpredicate = make_pathpredicate(load_patterns(retrace_file_patterns), verbose=verbose)
+    io_pathpredicate = make_pathpredicate([], verbose=verbose)
 
     def module_patcher(namespace, update_refs, module_name=None):
         name = module_name or namespace.get('__name__')
         if name and name in module_config:
+            active_pathpredicate = (
+                io_pathpredicate if default_io_config and name == "_io"
+                else pathpredicate
+            )
             undo = patch(
                 namespace,
                 module_config[name],
                 installation,
                 update_refs=update_refs,
-                pathpredicate=pathpredicate,
+                pathpredicate=active_pathpredicate,
             )
             if undo is not None:
                 patch_undos.append(undo)
@@ -239,4 +241,3 @@ class Recording:
         self.tape = tape
         self.result = result
         self.error = error
-

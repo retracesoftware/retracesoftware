@@ -1,6 +1,7 @@
 import _io
 import builtins
 import importlib
+import os
 
 from retracesoftware.install import install_retrace
 from retracesoftware.install.importhook import install_import_hooks
@@ -8,12 +9,42 @@ from retracesoftware.proxy.system import System
 from retracesoftware.modules import ModuleConfigResolver
 
 
-def test_install_retrace_leaves_loaded_io_builtins_unpatched_by_default():
-    """Default install avoids patching live `_io` builtins."""
+def test_install_retrace_patches_loaded_io_open_by_default():
+    """Default install keeps `_io.open` patched so fd calls can be retraced."""
     system = System()
     uninstall = install_retrace(system=system, retrace_shutdown=False)
     try:
-        assert repr(_io.open) == "<built-in function open>"
+        assert repr(_io.open) != "<built-in function open>"
+    finally:
+        uninstall()
+
+
+def test_default_io_pathpredicate_passthroughs_paths_but_retraces_fds(
+    capsys, tmp_path
+):
+    system = System()
+    uninstall = install_retrace(
+        system=system,
+        retrace_shutdown=False,
+        verbose=True,
+    )
+    try:
+        capsys.readouterr()
+
+        path = tmp_path / "default-io-path.txt"
+        file_obj = _io.open(str(path), "w")
+        file_obj.close()
+        path_stderr = capsys.readouterr().err
+        assert "no match" in path_stderr
+        assert "passthrough" in path_stderr
+
+        read_fd, write_fd = os.pipe()
+        os.close(write_fd)
+        file_obj = _io.open(read_fd, "rb")
+        file_obj.close()
+        fd_stderr = capsys.readouterr().err
+        assert f"fd={read_fd}" in fd_stderr
+        assert "retrace" in fd_stderr
     finally:
         uninstall()
 
