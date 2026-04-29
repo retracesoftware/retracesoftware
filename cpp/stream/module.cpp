@@ -2,6 +2,7 @@
 #include "wireformat.h"
 
 static PyTypeObject * hidden_types[] = {
+    &retracesoftware_stream::WeakBindingCallback_Type,
     nullptr
 };
 

@@ -108,6 +108,7 @@ namespace retracesoftware_stream {
     extern PyTypeObject FramedWriter_Type;
     extern PyTypeObject Binding_Type;
     extern PyTypeObject Binder_Type;
+    extern PyTypeObject WeakBindingCallback_Type;
 
     void handle_write_error();
     void handle_debug_error(bool quit_on_error);

@@ -98,6 +98,21 @@ namespace retracesoftware_stream {
 
     struct Binder;
 
+    struct WeakBindingEntry {
+        PyObject * weakref;
+        PyObject * binding;
+    };
+
+    struct WeakBindingCallback : PyObject {
+        Binder * owner;
+        PyObject * key;
+
+        static PyObject * call(PyObject * self_obj, PyObject * args, PyObject * kwargs);
+        static void dealloc(WeakBindingCallback * self);
+    };
+
+    extern PyTypeObject WeakBindingCallback_Type;
+
     struct BoundEntry {
         Binder * binder;
         PyObject * binding;
@@ -125,17 +140,21 @@ namespace retracesoftware_stream {
     struct Binder : PyObject {
         identity_map<PyObject *> bindings;
         identity_map<PyObject *> fallback_bindings;
-        PyObject * weak_bindings = nullptr;
+        identity_map<WeakBindingEntry> weak_bindings;
         PyObject * on_delete = nullptr;
         vectorcallfunc vectorcall = nullptr;
 
         static int clear(Binder * self) {
-            Py_CLEAR(self->weak_bindings);
             Py_CLEAR(self->on_delete);
             for (auto const & [_, binding] : self->bindings) {
                 Py_DECREF(binding);
             }
             self->bindings.clear();
+            for (auto const & [_, entry] : self->weak_bindings) {
+                Py_DECREF(entry.weakref);
+                Py_DECREF(entry.binding);
+            }
+            self->weak_bindings.clear();
             for (auto const & [obj, binding] : self->fallback_bindings) {
                 Py_DECREF(obj);
                 Py_DECREF(binding);
@@ -147,6 +166,7 @@ namespace retracesoftware_stream {
         static void dealloc(Binder * self) {
             clear(self);
             self->bindings.~identity_map<PyObject *>();
+            self->weak_bindings.~identity_map<WeakBindingEntry>();
             self->fallback_bindings.~identity_map<PyObject *>();
             Py_TYPE(self)->tp_free(reinterpret_cast<PyObject *>(self));
         }
@@ -155,8 +175,8 @@ namespace retracesoftware_stream {
             auto * self = reinterpret_cast<Binder *>(type->tp_alloc(type, 0));
             if (!self) return nullptr;
             new (&self->bindings) identity_map<PyObject *>();
+            new (&self->weak_bindings) identity_map<WeakBindingEntry>();
             new (&self->fallback_bindings) identity_map<PyObject *>();
-            self->weak_bindings = nullptr;
             self->on_delete = nullptr;
             return reinterpret_cast<PyObject *>(self);
         }
@@ -220,29 +240,6 @@ namespace retracesoftware_stream {
             return 0;
         }
 
-        bool ensure_weak_bindings() {
-            if (weak_bindings) {
-                return true;
-            }
-
-            PyObject * stream = PyImport_ImportModule("retracesoftware.stream");
-            if (!stream) {
-                return false;
-            }
-
-            PyObject * weak_state_type = PyObject_GetAttrString(stream, "_BinderWeakState");
-            Py_DECREF(stream);
-            if (!weak_state_type) {
-                return false;
-            }
-
-            weak_bindings = PyObject_CallOneArg(
-                weak_state_type,
-                reinterpret_cast<PyObject *>(this));
-            Py_DECREF(weak_state_type);
-            return weak_bindings != nullptr;
-        }
-
         PyObject * lookup(PyObject * obj) {
             auto it = bindings.find(obj);
             if (it != bindings.end()) {
@@ -254,30 +251,34 @@ namespace retracesoftware_stream {
                 return Py_NewRef(fallback->second);
             }
 
-            if (!weak_bindings) {
-                Py_RETURN_NONE;
+            auto weak = weak_bindings.find(obj);
+            if (weak != weak_bindings.end()) {
+                if (PyWeakref_GetObject(weak->second.weakref) == obj) {
+                    return Py_NewRef(weak->second.binding);
+                }
             }
 
-            PyObject * method = PyObject_GetAttrString(weak_bindings, "lookup");
-            if (!method) {
-                return nullptr;
-            }
-
-            PyObject * result = PyObject_CallOneArg(method, obj);
-            Py_DECREF(method);
-            return result;
+            Py_RETURN_NONE;
         }
 
         void forget(PyObject * obj) {
             auto it = bindings.find(obj);
             if (it == bindings.end()) {
                 auto fallback = fallback_bindings.find(obj);
-                if (fallback == fallback_bindings.end()) {
+                if (fallback != fallback_bindings.end()) {
+                    Py_DECREF(fallback->first);
+                    Py_DECREF(fallback->second);
+                    fallback_bindings.erase(fallback);
                     return;
                 }
-                Py_DECREF(fallback->first);
-                Py_DECREF(fallback->second);
-                fallback_bindings.erase(fallback);
+
+                auto weak = weak_bindings.find(obj);
+                if (weak != weak_bindings.end()) {
+                    Py_DECREF(weak->second.weakref);
+                    Py_DECREF(weak->second.binding);
+                    weak_bindings.erase(weak);
+                    return;
+                }
                 return;
             }
             Py_DECREF(it->second);
@@ -309,18 +310,49 @@ namespace retracesoftware_stream {
             PyErr_Restore(exc_type, exc_value, exc_tb);
         }
 
+        void on_weak_collect(PyObject * obj) {
+            auto it = weak_bindings.find(obj);
+            if (it == weak_bindings.end()) {
+                return;
+            }
+
+            PyObject * weakref = it->second.weakref;
+            PyObject * binding = it->second.binding;
+            uint64_t handle = Binding_Handle(binding);
+            weak_bindings.erase(it);
+
+            Py_DECREF(weakref);
+            Py_DECREF(binding);
+            emit_delete(handle);
+        }
+
         PyObject * bind_with_weakref(PyObject * obj, PyObject * binding) {
-            if (!ensure_weak_bindings()) {
+            auto * callback = PyObject_New(WeakBindingCallback, &WeakBindingCallback_Type);
+            if (!callback) {
+                return nullptr;
+            }
+            callback->owner = this;
+            callback->key = obj;
+
+            PyObject * weakref = PyWeakref_NewRef(
+                obj,
+                reinterpret_cast<PyObject *>(callback));
+            Py_DECREF(reinterpret_cast<PyObject *>(callback));
+            if (!weakref) {
                 return nullptr;
             }
 
-            PyObject * method = PyObject_GetAttrString(weak_bindings, "bind");
-            if (!method) {
-                return nullptr;
+            WeakBindingEntry entry = {
+                .weakref = weakref,
+                .binding = Py_NewRef(binding),
+            };
+            auto [it, inserted] = weak_bindings.emplace(obj, entry);
+            if (!inserted) {
+                Py_DECREF(it->second.weakref);
+                Py_DECREF(it->second.binding);
+                it->second = entry;
             }
-            PyObject * result = PyObject_CallFunctionObjArgs(method, obj, binding, nullptr);
-            Py_DECREF(method);
-            return result;
+            return Py_NewRef(binding);
         }
 
         PyObject * bind(PyObject * obj);
@@ -343,6 +375,29 @@ namespace retracesoftware_stream {
         static PyObject * py_lookup(Binder * self, PyObject * obj) {
             return self->lookup(obj);
         }
+    };
+
+    PyObject * WeakBindingCallback::call(PyObject * self_obj, PyObject *, PyObject *) {
+        auto * self = reinterpret_cast<WeakBindingCallback *>(self_obj);
+        PyObject * owner = reinterpret_cast<PyObject *>(self->owner);
+        Py_INCREF(owner);
+        self->owner->on_weak_collect(self->key);
+        Py_DECREF(owner);
+        Py_RETURN_NONE;
+    }
+
+    void WeakBindingCallback::dealloc(WeakBindingCallback * self) {
+        Py_TYPE(self)->tp_free(reinterpret_cast<PyObject *>(self));
+    }
+
+    PyTypeObject WeakBindingCallback_Type = {
+        .ob_base = PyVarObject_HEAD_INIT(NULL, 0)
+        .tp_name = MODULE "WeakBindingCallback",
+        .tp_basicsize = sizeof(WeakBindingCallback),
+        .tp_dealloc = (destructor)WeakBindingCallback::dealloc,
+        .tp_call = WeakBindingCallback::call,
+        .tp_flags = Py_TPFLAGS_DEFAULT,
+        .tp_doc = "Internal weak binding cleanup callback",
     };
 
     static map<PyTypeObject *, destructor> dealloc_patches;

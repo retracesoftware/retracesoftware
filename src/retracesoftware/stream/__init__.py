@@ -68,43 +68,6 @@ if _NativeBinder is not None and "add_bind_support" in globals():
             remove_bind_support = staticmethod(remove_bind_support)
 
 
-class _BinderWeakState:
-    __slots__ = ("binder", "bindings", "refs")
-
-    def __init__(self, binder):
-        self.binder = binder
-        self.bindings = {}
-        self.refs = {}
-
-    def bind(self, obj, binding):
-        obj_id = id(obj)
-        ref = weakref.ref(obj, lambda _ref, key=obj_id: self.on_collect(key))
-        self.refs[obj_id] = ref
-        self.bindings[obj_id] = binding
-        return binding
-
-    def lookup(self, obj):
-        obj_id = id(obj)
-        ref = self.refs.get(obj_id)
-        if ref is None or ref() is not obj:
-            return None
-        return self.bindings.get(obj_id)
-
-    def on_collect(self, obj_id):
-        self.refs.pop(obj_id, None)
-        binding = self.bindings.pop(obj_id, None)
-        if binding is None:
-            return
-
-        on_delete = self.binder.on_delete
-        if on_delete is None:
-            return
-
-        try:
-            on_delete(getattr(binding, "handle", binding))
-        except Exception:
-            pass
-
 _BIND_OPEN_TAG = "__bind__"
 _BIND_CLOSE_TAG = "__unbind__"
 
