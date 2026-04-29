@@ -564,8 +564,8 @@ static void gilwatch_trampoline(pthread_t previous, pthread_t current) {
 }
 
 static void gilwatch_store_mutex_address(void * addr, uintptr_t value) {
-    std::atomic_ref<uintptr_t>(*reinterpret_cast<uintptr_t *>(addr))
-        .store(value, std::memory_order_relaxed);
+    __atomic_store_n(reinterpret_cast<uintptr_t *>(addr),
+                     value, __ATOMIC_RELAXED);
 }
 
 static PyObject * gilwatch_activate(PyObject * self, PyObject * callback) {
