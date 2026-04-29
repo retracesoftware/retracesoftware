@@ -85,3 +85,102 @@ def test_record_does_not_hang_when_threadpool_cleanup_is_atexit(tmp_path: Path):
         f"stdout:\n{proc.stdout}\n"
         f"stderr:\n{proc.stderr}"
     )
+
+
+def test_asyncio_shutdown_thread_stays_retraced_and_threadsafe_schedule_emits_sync():
+    """The shutdown thread stays retraced; cross-thread scheduling emits SYNC."""
+
+    import asyncio
+    import threading
+
+    from retracesoftware.install import install_retrace
+    from retracesoftware.proxy.io import recorder
+    from retracesoftware.proxy.system import _is_disabled_thread_target
+
+    tape = []
+
+    def writer(*values):
+        tape.extend(values)
+
+    system = recorder(writer=writer)
+    uninstall = install_retrace(system=system, retrace_shutdown=False)
+    try:
+        loop = asyncio.new_event_loop()
+        try:
+            target = loop._do_shutdown
+            underlying = getattr(target, "__func__", target)
+            assert not getattr(underlying, "__retrace_disabled_thread_target__", False)
+
+            thread = threading.Thread(target=target, args=(loop.create_future(),))
+            assert not _is_disabled_thread_target(thread._bootstrap)
+
+            system.run(loop.call_soon_threadsafe, lambda: None)
+            assert "SYNC" in tape
+        finally:
+            loop.close()
+    finally:
+        uninstall()
+
+
+def test_asyncio_default_executor_replay_wakeup_progresses(tmp_path: Path):
+    """Executor completion schedules the loop with a live wakeup plus SYNC."""
+
+    script = tmp_path / "asyncio_executor_replay.py"
+    script.write_text(
+        (
+            "import asyncio\n"
+            "\n"
+            "async def one(value):\n"
+            "    loop = asyncio.get_running_loop()\n"
+            "    return await loop.run_in_executor(None, lambda: value * 2)\n"
+            "\n"
+            "async def main():\n"
+            "    for value in range(5):\n"
+            "        print('value', await one(value), flush=True)\n"
+            "\n"
+            "asyncio.run(main())\n"
+        ),
+        encoding="utf-8",
+    )
+
+    recording = tmp_path / "trace.retrace"
+    env = os.environ.copy()
+    env["RETRACE_CONFIG"] = "debug"
+    env["PYTHONFAULTHANDLER"] = "1"
+
+    record = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "retracesoftware",
+            "--recording",
+            str(recording),
+            "--format",
+            "unframed_binary",
+            "--",
+            str(script),
+        ],
+        capture_output=True,
+        text=True,
+        timeout=15,
+        env=env,
+    )
+    assert record.returncode == 0, (
+        f"record run failed (exit {record.returncode})\n"
+        f"stdout:\n{record.stdout}\n"
+        f"stderr:\n{record.stderr}"
+    )
+
+    replay = subprocess.run(
+        [sys.executable, "-m", "retracesoftware", "--recording", str(recording)],
+        capture_output=True,
+        text=True,
+        timeout=15,
+        env=env,
+    )
+    assert replay.returncode == 0, (
+        f"replay run failed (exit {replay.returncode})\n"
+        f"stdout:\n{replay.stdout}\n"
+        f"stderr:\n{replay.stderr}"
+    )
+    assert replay.stdout == record.stdout

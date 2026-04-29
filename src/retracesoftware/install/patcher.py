@@ -77,17 +77,139 @@ def install_hash_patching(system):
 #
 #   proxy          types → system.patch_type
 #                  functions → route through the external gate
+#   ext_proxy_result
+#                  functions → live-run and ext-proxy the returned object
 #   patch_types    system.patch_type (types only)
 #   immutable      system.immutable_types.add
 #   bind           pre-register objects (enums expanded to members)
 #   disable        system.disable_for, replace in namespace
 #   wrap           resolve dotted path, replace in namespace
 #   replay_materialize
-#                  mark functions whose replay path may safely create
-#                  a live backing object (parsing handled elsewhere)
+#                  register disabled-context real-object needs only; normal
+#                  replay must not live-call these targets
+#   sync           functions → emit SYNC, then call normally
 #   patch_class    apply {attr: dotted_path} transforms to a class
 #   type_attributes  recurse — apply directives to a type's attributes
+#   stub_for_replay
+#                  replay-only native-type stubs before normal proxying
 #   patch_hash     handled by install_hash_patching (above)
+
+
+class ReplayStubCallError(RuntimeError):
+    """Raised if replay reaches an inert stub member directly."""
+
+
+class _ReplayStubType(type):
+    def __call__(cls, *args, **kwargs):
+        return cls.__new__(cls, *args, **kwargs)
+
+
+class _ReplayStubDescriptor:
+    __retrace_replay_stub_descriptor__ = True
+
+    def __init__(self, type_name, name):
+        self._type_name = type_name
+        self._name = name
+        self.__name__ = name
+
+    def _raise(self):
+        raise ReplayStubCallError(
+            f"replay stub member {self._type_name}.{self._name} executed "
+            "directly; expected proxy boundary routing"
+        )
+
+    def __get__(self, instance, owner=None):
+        if instance is None:
+            return self
+        self._raise()
+
+    def __set__(self, instance, value):
+        self._raise()
+
+    def __delete__(self, instance):
+        self._raise()
+
+
+def _make_replay_stub_method(type_name, qualname, module, name):
+    def method(self, *args, **kwargs):
+        raise ReplayStubCallError(
+            f"replay stub method {type_name}.{name} executed directly; "
+            "expected proxy boundary routing"
+        )
+
+    method.__module__ = module
+    method.__name__ = name
+    method.__qualname__ = f"{qualname}.{name}"
+    return method
+
+
+def _make_replay_stub_new(type_name, qualname, module):
+    def __new__(cls, *args, **kwargs):
+        return object.__new__(cls)
+
+    __new__.__module__ = module
+    __new__.__qualname__ = f"{qualname}.__new__"
+    return __new__
+
+
+def _replay_stub_source_attrs(cls):
+    attrs = {}
+    for base in list(reversed(cls.__mro__))[1:]:
+        attrs.update(base.__dict__)
+    return attrs
+
+
+def replay_stub_type(cls):
+    """Create an inert replay-time type with the original type's shape."""
+    if not isinstance(cls, type):
+        raise TypeError(f"expected type, got {type(cls).__name__!r}")
+
+    module = getattr(cls, "__module__", "__main__")
+    name = getattr(cls, "__name__", cls.__qualname__.rsplit(".", 1)[-1])
+    qualname = getattr(cls, "__qualname__", name)
+    type_name = f"{module}.{qualname}"
+    namespace = {
+        "__module__": module,
+        "__qualname__": qualname,
+        "__doc__": getattr(cls, "__doc__", None),
+        "__new__": _make_replay_stub_new(type_name, qualname, module),
+        "__retrace_target_type__": cls,
+        "__retrace_stub_for_replay__": True,
+    }
+
+    skip_names = {
+        "__class__",
+        "__dict__",
+        "__doc__",
+        "__getattribute__",
+        "__init__",
+        "__module__",
+        "__new__",
+        "__slots__",
+        "__weakref__",
+    }
+    descriptor_types = (
+        property,
+        types.GetSetDescriptorType,
+        types.MemberDescriptorType,
+    )
+
+    for attr_name, value in _replay_stub_source_attrs(cls).items():
+        if attr_name in skip_names:
+            continue
+        if isinstance(value, descriptor_types):
+            namespace[attr_name] = _ReplayStubDescriptor(type_name, attr_name)
+        elif callable(value) and not isinstance(value, type):
+            namespace[attr_name] = _make_replay_stub_method(
+                type_name,
+                qualname,
+                module,
+                attr_name,
+            )
+
+    stub = _ReplayStubType(name, (object,), namespace)
+    stub.__name__ = name
+    return stub
 
 def _is_function(obj):
     """True for built-in functions, Python functions, and method descriptors."""
@@ -184,6 +306,14 @@ def patch(module, spec, installation, update_refs = None, pathpredicate = None):
             if update_refs:
                 update(old, new)
 
+    if getattr(system, "retrace_mode", None) == "replay":
+        for name in spec.get("stub_for_replay", ()):
+            if name not in namespace:
+                continue
+            value = namespace[name]
+            if isinstance(value, type):
+                _apply(name, value, replay_stub_type(value))
+
     for directive, config in spec.items():
         if directive == 'proxy':
             for name in config:
@@ -202,6 +332,14 @@ def patch(module, spec, installation, update_refs = None, pathpredicate = None):
                 if isinstance(value, type):
                     installation._track_type(value)
                 _apply(name, value, patched)
+
+        elif directive == 'ext_proxy_result':
+            for name in config:
+                if name not in namespace:
+                    continue
+                value = namespace[name]
+                if callable(value) and not isinstance(value, type):
+                    _apply(name, value, system.ext_proxy_result(value))
 
         elif directive == 'patch_types':
             for name in config:
@@ -255,17 +393,26 @@ def patch(module, spec, installation, update_refs = None, pathpredicate = None):
             for name in config:
                 if name not in namespace:
                     continue
-                # Track the post-patch callable identity for names marked
-                # replay-materialize. When a callable is both proxied and in
-                # replay_materialize (for example ``_thread.allocate_lock``),
-                # the live module slot points at the patched wrapper, not the
-                # original builtin, so record the current callable object.
+                # Track the post-patch callable identity for the narrow
+                # disabled-context materialization registry. When a callable is
+                # both proxied and in replay_materialize (for example
+                # ``_thread.allocate_lock``), the live module slot points at
+                # the patched wrapper, not the original builtin, so record the
+                # current callable object.
                 value = namespace[name]
                 if not callable(value):
                     value = originals.get(name, value)
                 if callable(value):
                     replay_materialize.add(value)
                     added_replay_materialize.append(value)
+
+        elif directive == 'sync':
+            for name in config:
+                if name not in namespace:
+                    continue
+                value = namespace[name]
+                if callable(value):
+                    _apply(name, value, system.sync_for(value))
 
         elif directive == 'patch_class':
             for name, transforms in config.items():
@@ -324,7 +471,7 @@ def patch(module, spec, installation, update_refs = None, pathpredicate = None):
         elif directive == 'patch_hash':
             pass  # Deferred — requires deterministic hash counter
 
-        elif directive in ('default', 'ignore'):
+        elif directive in ('default', 'ignore', 'stub_for_replay'):
             pass  # Informational directives, no action needed
 
     def undo():
@@ -448,10 +595,12 @@ def create_patcher(system):
         'disable': foreach(system.disable_for),
         'patch_types': simple_patcher(system.patch_type),
         'proxy': foreach(system),
+        'ext_proxy_result': foreach(system.ext_proxy_result),
         'bind': simple_patcher(bind),
         'wrap': lambda config: {name: resolve(action) for name,action in config.items() },
         'immutable': simple_patcher(add_immutable_type),
         'patch_hash': simple_patcher(patch_hash),
+        'stub_for_replay': foreach(functional.identity),
     })
     return patcher
 

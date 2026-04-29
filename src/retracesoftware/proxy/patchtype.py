@@ -220,7 +220,10 @@ def patch_type(system, cls, install_session=None):
                         wrapped=proxied,
                     )
 
-            if type(value) in [types.MemberDescriptorType, types.GetSetDescriptorType]:
+            if (
+                type(value) in [types.MemberDescriptorType, types.GetSetDescriptorType]
+                or getattr(value, "__retrace_replay_stub_descriptor__", False)
+            ):
                 with_proxied(proxy_member(value))
             elif callable(value) and not isinstance(value, type):
                 with_proxied(proxy_function(value))

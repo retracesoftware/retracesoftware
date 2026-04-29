@@ -1,5 +1,4 @@
-import subprocess
-import sys
+from importlib.util import find_spec
 
 
 def create_large_list(size):
@@ -50,12 +49,8 @@ def test_memray_profiling():
     print(f"Created potential leak data with {len(leak_data)} items", flush=True)
 
     print("\n4. Testing memray availability...", flush=True)
-    proc = subprocess.run(
-        [sys.executable, "-m", "pip", "show", "memray"], capture_output=True, text=True
-    )
-    if proc.returncode == 0:
+    if find_spec("memray") is not None:
         print("memray is available", flush=True)
-        print(proc.stdout, end="", flush=True)
     else:
         print("memray not installed (expected for this test)", flush=True)
 

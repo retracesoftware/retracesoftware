@@ -58,8 +58,6 @@ services:
       - ${TEST_PACKAGES_DIR:-./.cache/packages}:/app/packages:ro
     environment:
       PYTHONPATH: /app/packages
-      RETRACE_FORMAT: unframed_binary
-      RETRACE_REPLAY_BIN: /app/packages/bin/replay
     command: python -m retracesoftware --recording /recording/trace.bin
 
   cleanup:

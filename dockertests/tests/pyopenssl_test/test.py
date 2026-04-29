@@ -1,39 +1,72 @@
 import os
 import socket
-import subprocess
+import tempfile
 import threading
 
 from OpenSSL import SSL
 
 
-def generate_self_signed_cert():
-    """
-    Generate a self-signed certificate for testing via the `openssl` CLI.
+KEY_PEM = b"""-----BEGIN PRIVATE KEY-----
+MIIEvgIBADANBgkqhkiG9w0BAQEFAASCBKgwggSkAgEAAoIBAQDmELBcy0nCGHCu
+8/iy8A5T5gkSYEoQOvLthu3opVfDJKUjRfWvd4bO8pQeRd6uLK7UXxdgSkW96EEZ
+obgS1qJ3F1cNRMdpjnptaHQe3qx9cYd3bND7TewB+XRAujRwGUNcumBh3HpvMqup
+lhZgtD/PuPwfApjwRHt19Mgw9ENDnYY79AkjUHvcUJRLDmlwGY0Qzbf9lIatNYfe
+aylv2Rkv3xFON4pvzohygNwX8VFAAwzYW/aFcjp6lTv4z62UxKX0vqQn8/WFpWxY
+1bRl+hx+uMpql+YqcsLPfSJS//IRQxdo5qgOoOQAQXqqdNswttBNLeMHCz3KQDE3
+AsCsKzXpAgMBAAECggEABfGG27bXUL+0LGRRRWWSqAqj9Fs4UONz1Lyj1zZrb1vM
+fuvbjBGzEe9yg/+yO4OJ20djnP7+NYjTR2685ElpWutC8RqY118Mj1iWiRjESLh8
+nIAkYIrITJGdtgPLv28NXBhChHSxnnY5SzgPm4HO3jZq+0k/rYFYjJkPo8XV9Zc9
+vOd+CL/RKJypbGp6j33mWC5pqyqsEQ8ghOA6J0MrLXIFgrqHLmYLKrF+vDgTSvRH
+BPYFh4Uix3c/C26qWhJfmK8E5fYEaNHyJe9bdMxltiX+dDGixdFXqy072/Gom6bv
+/SXLFFCsmOuLfOVWjYew3V7FR32lO9SXnTFoguIPSwKBgQD0YvP+XLBA5/fFBV/P
+16ylPG9YYZYEjK9J8VxhBi3BAcTu4O/I14es8C5OLgKN6ByRJEOPZ4aLFj5hNVna
+YVJcaZ8vXHeL/yKv5AOwfNn2snCam5LbvhMUHVcXMUfOyhkIBsfb2VQHMrira/+a
+4gWvbC9N6Pe02PuO2baVDz4EfwKBgQDw/4L+lsgIWBfqfPDBaOu54i/CqGrBzZ0K
+VRpr0r15+ohpku9m0YRSr+sm7sn/Ogbd16TO9KY0Ye1NKnluu6BCqnKrzcyaQmz9
+NiJt5y6blxS382Gw38TA/R4Zjj+/48BTQuAh3unQsTdQPb017/q829J+nQCULa3T
+s0wQWiXxlwKBgQDPUvtHeP6VsbUC0fJccs2mSET1p6QLLAaxJi+GqCU8rfGR7gW+
+Twps7j16WZIVLSq+/xLJn7wGVtKIySf3GcUzXO+M0Fciz0lwCnIO0XxfyzW4E+9c
+uD2bPODbbhVLGyxtIMOAgTjF+oOr+a0YilLkZVUkNVWfeMzAfXZlsk6cpQKBgQDJ
+JquCrf2mIUlM+h3FgTqHu0fb9NCulF0IW8IizxJBdqBXZkIWEricf6MJqvPE6P0E
+O1KfPspfHIGCD/qtN0PrgPMXfT3SX7Eyo/WWwAhB65dqdmVKyWsjHeH6uKVzF7jW
+hhInkzSbcN9XRUDhfT1OVzhZX9g01e+prJTHbUcQXwKBgHIvM83EUBBWO7UaISIj
+0aeiC2VjlfXBqLFi6uTS0xIjxGqhpFGOopBFFB44Sn2mxtXuh6/8/E0Tcn3ZFPe2
+IoWJxykdeNvKpCBRxuLJzv2jIf0GcI+cDVC+9PjYiPBU63tIHuLxzfKmLRaAacmg
+O56SEr2V3q0LyeDez8exQuJS
+-----END PRIVATE KEY-----"""
 
-    Note: This requires `openssl` to exist in the container image.
-    """
-    cert_path = "server.crt"
-    key_path = "server.key"
+CERT_PEM = b"""-----BEGIN CERTIFICATE-----
+MIIDCTCCAfGgAwIBAgIUbgYJEOtiHjJ5pYjqPEN7flMS9RkwDQYJKoZIhvcNAQEL
+BQAwFDESMBAGA1UEAwwJbG9jYWxob3N0MB4XDTI2MDQyODE3NDMzOFoXDTM2MDQy
+NTE3NDMzOFowFDESMBAGA1UEAwwJbG9jYWxob3N0MIIBIjANBgkqhkiG9w0BAQEF
+AAOCAQ8AMIIBCgKCAQEA5hCwXMtJwhhwrvP4svAOU+YJEmBKEDry7Ybt6KVXwySl
+I0X1r3eGzvKUHkXeriyu1F8XYEpFvehBGaG4EtaidxdXDUTHaY56bWh0Ht6sfXGH
+d2zQ+03sAfl0QLo0cBlDXLpgYdx6bzKrqZYWYLQ/z7j8HwKY8ER7dfTIMPRDQ52G
+O/QJI1B73FCUSw5pcBmNEM23/ZSGrTWH3mspb9kZL98RTjeKb86IcoDcF/FRQAMM
+2Fv2hXI6epU7+M+tlMSl9L6kJ/P1haVsWNW0ZfocfrjKapfmKnLCz30iUv/yEUMX
+aOaoDqDkAEF6qnTbMLbQTS3jBws9ykAxNwLArCs16QIDAQABo1MwUTAdBgNVHQ4E
+FgQUsuQyYGi78Nt69UmzB1wYo9cA2RIwHwYDVR0jBBgwFoAUsuQyYGi78Nt69Umz
+B1wYo9cA2RIwDwYDVR0TAQH/BAUwAwEB/zANBgkqhkiG9w0BAQsFAAOCAQEACqrH
+EL6VW2AdsG2iiEESjjyEQ14oY8gs4N6s5kcUunaRVeOh7VFDTZHCZxRdgyoMKWtk
+uHg8sbHCML+OJqbBcSNdrTuOlSLfivV8YoWXtIyVVVQjIW7xhLA/APZWgVzI84DV
+SfUQncj1gy5ldoQ6vgFHqov4pEzs3rddhZRsTTzb3w/4rABnEr7GHt2cCPkFh+ad
+DZZehGUPYrKsU5M4qef96ZRj00Ekkd1Tgtjjc0sJ31CDuQHYz2IW4IP/oe+oQN+q
+G433SCIFXArNkaqB2x3nE/PCpGYXKYjseCLF41X8I1YmWiDSABF3Zm5+bbiTD1gf
+0Xn2hYS+/vQW2d4Fww==
+-----END CERTIFICATE-----"""
 
-    subprocess.run(["openssl", "genrsa", "-out", key_path, "2048"], check=True, capture_output=True)
-    subprocess.run(
-        [
-            "openssl",
-            "req",
-            "-new",
-            "-x509",
-            "-key",
-            key_path,
-            "-out",
-            cert_path,
-            "-days",
-            "1",
-            "-subj",
-            "/CN=localhost",
-        ],
-        check=True,
-        capture_output=True,
-    )
+
+def write_static_cert_files():
+    base_dir = "/recording" if os.path.isdir("/recording") else tempfile.gettempdir()
+    cert_path = os.path.join(base_dir, "server.crt")
+    key_path = os.path.join(base_dir, "server.key")
+
+    if not os.path.exists(cert_path):
+        with open(cert_path, "wb") as f:
+            f.write(CERT_PEM)
+    if not os.path.exists(key_path):
+        with open(key_path, "wb") as f:
+            f.write(KEY_PEM)
 
     return cert_path, key_path
 
@@ -72,9 +105,8 @@ def test_pyopenssl_client_server():
     """Test pyOpenSSL client-server communication."""
     print("Testing pyOpenSSL SSL/TLS communication...", flush=True)
 
-    print("1. Generating self-signed certificates...", flush=True)
-    cert_path, key_path = generate_self_signed_cert()
-    print(f"Generated certificates: {cert_path}, {key_path}", flush=True)
+    print("1. Loading static self-signed certificate...", flush=True)
+    cert_path, key_path = write_static_cert_files()
 
     port = 8443
     while True:
@@ -112,13 +144,6 @@ def test_pyopenssl_client_server():
     conn.shutdown()
     conn.close()
     print("SSL client connection successful", flush=True)
-
-    try:
-        os.remove(cert_path)
-        os.remove(key_path)
-        print("Cleaned up certificate files", flush=True)
-    except Exception:
-        pass
 
 
 if __name__ == "__main__":

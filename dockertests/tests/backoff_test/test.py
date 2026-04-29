@@ -1,17 +1,20 @@
-import random
-
 import backoff
 
 
+attempts = 0
+
+
 def unreliable_function():
+    global attempts
+
+    attempts += 1
     print("Trying to perform the task...", flush=True)
-    # Simulate a 50% chance of failure
-    if random.choice([True, False]):
+    if attempts < 3:
         raise Exception("Task failed, retrying...")
     return "Task succeeded!"
 
 
-@backoff.on_exception(backoff.expo, Exception, max_tries=5)
+@backoff.on_exception(backoff.expo, Exception, max_tries=5, jitter=None, factor=0)
 def retry_task():
     return unreliable_function()
 

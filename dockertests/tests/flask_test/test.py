@@ -1,65 +1,65 @@
 """
-Flask server test - the server runs under retrace.
-
-This test demonstrates recording/replaying a Flask server's internal behavior.
-The client is infrastructure that generates load - only the server is recorded.
+Retraced client for the Flask HTTP replay scenario.
 """
-from flask import Flask, jsonify, request
-import time
 import os
+import sys
+import time
 
-app = Flask(__name__)
-
-# In-memory data store (will be recorded/replayed)
-users = {}
-counter = 0
+import requests
 
 
-@app.route('/')
-def home():
-    return jsonify({
-        'message': 'Hello from Flask!',
-        'timestamp': time.time()
-    })
+BASE_URL = os.environ.get("FLASK_URL") or os.environ.get("SERVER_URL", "http://localhost:5000")
 
 
-@app.route('/health')
-def health():
-    return jsonify({'status': 'healthy'})
+def wait_for_server(session, max_retries=30):
+    print(f"Waiting for Flask server at {BASE_URL}...")
+    for _ in range(max_retries):
+        try:
+            response = session.get(f"{BASE_URL}/health", timeout=1)
+            if response.status_code == 200:
+                print("Flask server is ready!")
+                return True
+        except requests.exceptions.RequestException:
+            pass
+        time.sleep(0.5)
+    print("Flask server not ready")
+    return False
 
 
-@app.route('/api/users/<int:user_id>')
-def get_user(user_id):
-    if user_id in users:
-        return jsonify(users[user_id])
-    return jsonify({
-        'id': user_id,
-        'name': f'User {user_id}',
-        'email': f'user{user_id}@example.com'
-    })
+def generate_load(session):
+    print("\n" + "=" * 60)
+    print("Generating load for Flask server")
+    print("=" * 60)
+
+    print("\nGET /")
+    response = session.get(f"{BASE_URL}/")
+    print(f"   {response.status_code}: {response.json()}")
+
+    print("\nPOST /api/users")
+    for name in ["Alice", "Bob", "Charlie"]:
+        response = session.post(f"{BASE_URL}/api/users", json={
+            "name": name,
+            "email": f"{name.lower()}@example.com",
+        })
+        print(f"   Created: {response.json()}")
+
+    print("\nGET /api/users/<id>")
+    for user_id in range(1, 4):
+        response = session.get(f"{BASE_URL}/api/users/{user_id}")
+        print(f"   User {user_id}: {response.json()}")
+
+    print("\nGET /api/count (5 times)")
+    for _ in range(5):
+        response = session.get(f"{BASE_URL}/api/count")
+        print(f"   Count: {response.json()['count']}")
+
+    print("\n" + "=" * 60)
+    print("Load generation complete")
+    print("=" * 60)
 
 
-@app.route('/api/users', methods=['POST'])
-def create_user():
-    data = request.get_json()
-    user_id = len(users) + 1
-    users[user_id] = {
-        'id': user_id,
-        'name': data.get('name', 'Unknown'),
-        'email': data.get('email', 'unknown@example.com'),
-        'created_at': time.time()
-    }
-    return jsonify(users[user_id]), 201
-
-
-@app.route('/api/count')
-def count():
-    global counter
-    counter += 1
-    return jsonify({'count': counter})
-
-
-if __name__ == '__main__':
-    port = int(os.environ.get('PORT', 5000))
-    print(f"Starting Flask server on port {port}")
-    app.run(host='0.0.0.0', port=port, debug=False)
+if __name__ == "__main__":
+    with requests.Session() as http:
+        if not wait_for_server(http):
+            sys.exit(1)
+        generate_load(http)

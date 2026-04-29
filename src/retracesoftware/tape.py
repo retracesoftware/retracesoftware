@@ -159,41 +159,54 @@ class RawTapeWriter:
             self._tape_writer.write(*values)
 
 
+class _DisabledTapeWriter:
+    """Tape writer used when retrace is enabled but recording output is disabled."""
+
+    __slots__ = ()
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *args):
+        return None
+
+    def write(self, *values):
+        return None
+
+
 def create_tape_writer(options, argv, *, thread_getter) -> TapeWriter:
     recording_format = getattr(options, "format", "binary")
     recording = normalize_recording_path(options.recording, argv)
     recording_disabled = recording == "disable"
 
     if recording_disabled:
-        trace_path = None
-    else:
-        trace_path = Path(expand_recording_path(recording))
-        trace_path.parent.mkdir(parents=True, exist_ok=True)
-        replay_bin = _find_replay_bin(getattr(options, "replay_bin", None))
-        if recording_format == "binary" and not is_fifo_path(trace_path):
-            _write_shebang(trace_path, replay_bin)
+        return _DisabledTapeWriter()
 
-    preamble = None
-    if trace_path:
-        path_info = stream.get_path_info()
-        settings = {
-            "argv": argv,
-            "executable": sys.executable,
-            "stacktraces": options.stacktraces,
-            "trace_inputs": options.trace_inputs,
-            "trace_shutdown": options.trace_shutdown,
-            "monitor": getattr(options, "monitor", 0),
-            "python_version": sys.version,
-            "cwd": path_info["cwd"],
-            "sys_path": path_info["sys_path"],
-        }
+    trace_path = Path(expand_recording_path(recording))
+    trace_path.parent.mkdir(parents=True, exist_ok=True)
+    replay_bin = _find_replay_bin(getattr(options, "replay_bin", None))
+    if recording_format == "binary" and not is_fifo_path(trace_path):
+        _write_shebang(trace_path, replay_bin)
 
-        preamble = {
-            "type": "exec",
-            **settings,
-            "checksums": checksums(),
-            "env": dict(os.environ),
-        }
+    path_info = stream.get_path_info()
+    settings = {
+        "argv": argv,
+        "executable": sys.executable,
+        "stacktraces": options.stacktraces,
+        "trace_inputs": options.trace_inputs,
+        "trace_shutdown": options.trace_shutdown,
+        "monitor": getattr(options, "monitor", 0),
+        "python_version": sys.version,
+        "cwd": path_info["cwd"],
+        "sys_path": path_info["sys_path"],
+    }
+
+    preamble = {
+        "type": "exec",
+        **settings,
+        "checksums": checksums(),
+        "env": dict(os.environ),
+    }
 
     return stream.writer(
         path=trace_path,

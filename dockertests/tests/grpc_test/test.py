@@ -1,33 +1,9 @@
-import subprocess
 import sys
-import time
-from concurrent import futures
-from multiprocessing import Process
+from pathlib import Path
 
 import grpc
 
-
-def generate_protobuf() -> None:
-    """
-    Generate patient_pb2.py / patient_pb2_grpc.py into the current working directory.
-    """
-    print("Generating protobuf files...", flush=True)
-    subprocess.run(
-        [
-            sys.executable,
-            "-m",
-            "grpc_tools.protoc",
-            "--python_out=.",
-            "--grpc_python_out=.",
-            "patient.proto",
-        ],
-        check=True,
-    )
-    print("Protobuf files generated successfully!", flush=True)
-
-
-# Generate protobufs before importing generated modules.
-generate_protobuf()
+sys.path.insert(0, str(Path(__file__).parent))
 
 import patient_pb2  # noqa: E402
 import patient_pb2_grpc  # noqa: E402
@@ -51,33 +27,46 @@ class PatientServiceServicer(patient_pb2_grpc.PatientServiceServicer):
         )
 
 
-def serve():
-    server = grpc.server(futures.ThreadPoolExecutor(max_workers=10))
-    patient_pb2_grpc.add_PatientServiceServicer_to_server(PatientServiceServicer(), server)
-    server.add_insecure_port("[::]:50051")
-    server.start()
-    print("Server started on port 50051", flush=True)
-    server.wait_for_termination()
+class FakeRpcContext:
+    def __init__(self):
+        self.code = grpc.StatusCode.OK
+        self.details = ""
+
+    def set_code(self, code):
+        self.code = code
+
+    def set_details(self, details):
+        self.details = details
 
 
-def get_patient_info(patient_id: str):
-    with grpc.insecure_channel("localhost:50051") as channel:
-        stub = patient_pb2_grpc.PatientServiceStub(channel)
-        response = stub.GetPatientInfo(patient_pb2.PatientRequest(patient_id=patient_id))
-        print("Patient Info:", response, flush=True)
+class InProcessChannel:
+    def __init__(self, servicer):
+        self.servicer = servicer
+
+    def unary_unary(self, method, request_serializer, response_deserializer, **kwargs):
+        assert method == "/patient.PatientService/GetPatientInfo"
+
+        def call(request):
+            request_bytes = request_serializer(request)
+            round_tripped = patient_pb2.PatientRequest.FromString(request_bytes)
+            response = self.servicer.GetPatientInfo(round_tripped, FakeRpcContext())
+            return response_deserializer(response.SerializeToString())
+
+        return call
+
+
+def get_patient_info(stub, patient_id: str):
+    response = stub.GetPatientInfo(patient_pb2.PatientRequest(patient_id=patient_id))
+    print("Patient Info:", response, flush=True)
 
 
 def test_grpcio_with_io():
-    server_process = Process(target=serve)
-    server_process.start()
+    servicer = PatientServiceServicer()
+    channel = InProcessChannel(servicer)
+    stub = patient_pb2_grpc.PatientServiceStub(channel)
 
-    time.sleep(2)
-
-    get_patient_info("p123")
-    get_patient_info("p999")
-
-    server_process.terminate()
-    server_process.join(timeout=5)
+    get_patient_info(stub, "p123")
+    get_patient_info(stub, "p999")
 
 
 if __name__ == "__main__":

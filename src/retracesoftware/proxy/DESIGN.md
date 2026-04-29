@@ -110,6 +110,42 @@ Inside an active run, the top-level user function executes under the
 `'internal'` phase so the first patched outbound call enters the external
 gateway instead of falling through as disabled passthrough.
 
+### Gate dispatch diagram
+
+```mermaid
+flowchart TD
+    disabled["disabled phase: gate = None<br/>control-plane work, imports, tape/debugger I/O"]
+    internal["internal phase<br/>retraced Python user/helper code"]
+    external["external phase<br/>external library, OS, or C-extension body"]
+
+    disabled -- "System.run(user function)" --> internal
+
+    internal -- "patched function, patched base method, ExternalWrapped method" --> ext_gate{"ext_gateway<br/>phase == internal?"}
+    ext_gate -- "no" --> ext_fallback["fallback passthrough<br/>disabled or already external"]
+    ext_gate -- "yes" --> ext_pipeline["external gateway pipeline"]
+    ext_pipeline -- "record" --> record_live["CALL hook<br/>run live target under external<br/>RESULT/ERROR hook"]
+    ext_pipeline -- "replay" --> replay_tape["CALL/checkpoint hook<br/>read recorded RESULT/ERROR under external<br/>do not call live target"]
+    record_live --> internal
+    replay_tape --> internal
+
+    external -- "callback or Python override" --> int_gate{"int_gateway<br/>phase == external?"}
+    int_gate -- "no" --> int_fallback["fallback passthrough<br/>disabled or already internal"]
+    int_gate -- "yes" --> int_pipeline["internal gateway pipeline<br/>run Python callback under internal"]
+    int_pipeline -- "callback returns" --> external
+    int_pipeline -- "callback makes patched outbound call" --> ext_gate
+
+    internal -. "disable_for clears phase" .-> disabled
+    external -. "disable_for clears phase" .-> disabled
+    disabled -. "restore caller phase" .-> internal
+    disabled -. "restore caller phase" .-> external
+```
+
+The phase predicate decides whether a gateway is active. `ext_gateway` only
+handles calls that leave retraced Python while the phase is `'internal'`;
+`int_gateway` only handles callbacks that re-enter Python while the phase is
+`'external'`. `disable_for()` is different: it clears the phase for
+control-plane/runtime work and then restores the caller's previous phase.
+
 ## How The Two Gateways Interact
 
 The most important idea in this design is that the two gateways are not two
@@ -176,6 +212,23 @@ That back-and-forth is the core semantic model. The current phase tells Retrace
 which side is currently executing, while the two gateways determine how values
 and hooks are adapted as control crosses the boundary in each direction.
 
+### Hook wiring names
+
+The runtime names `primary_hooks` and `secondary_hooks` are historical and easy
+to misread. They are not "external hooks" and "internal hooks". `System.run()`
+cross-wires them into the two gateways so each boundary direction emits the
+right envelope:
+
+| Gateway | `on_call` source | result/error source | Record messages |
+| --- | --- | --- | --- |
+| external gateway (`internal` -> `external`) | `secondary_hooks.on_call` | `primary_hooks.on_result` / `primary_hooks.on_error` | `CALL`, then `RESULT` / `ERROR` |
+| internal gateway (`external` -> `internal`) | `primary_hooks.on_call` | `secondary_hooks.on_result` / `secondary_hooks.on_error` | `CALLBACK`, then `CALLBACK_RESULT` / `CALLBACK_ERROR` |
+
+Replay uses the same wiring but swaps the hook bodies for message consumption,
+checkpoint comparison, and materialization bookkeeping. When debugging hook
+changes, reason from the gateway direction first; do not infer the message type
+from the word "primary" or "secondary".
+
 ## Record Versus Replay
 
 Record and replay share the same patched code paths. The difference is in what
@@ -237,6 +290,32 @@ For an outbound external call, replay:
 For callbacks, replay still executes the Python callback body live. What changes
 is the external side: replay is driving the boundary from recorded messages
 instead of live nondeterministic behavior.
+
+## Debug Checkpoints And Equality
+
+Debug checkpoints and stacktraces are replay-significant guard rails. They are
+allowed to add messages, but they must not change application scheduling or
+which thread consumes the next protocol item.
+
+Checkpoint comparison is semantic comparison, not raw `==`.
+
+Replay-side `equal()` intentionally normalizes several values that can differ in
+live identity while still representing the same boundary event:
+
+- wrapped callables are compared through their underlying target
+- `ExternalWrapped` values compare by boundary role/type rather than live object
+  identity
+- checkpoint payloads can use external proxy markers for generated proxy types
+  and `ProxyRef` handles
+- unbound `_thread.lock` and `_thread.RLock` values use explicit type markers
+  because those objects may need live replay counterparts
+- call payload comparison normalizes descriptor receivers and known defaulted
+  call shapes such as `_socket.socketpair()`
+
+These normalizations are for detecting real divergence without reporting false
+positives from replay-local object identities. They are not a license to ignore
+message ordering: a checkpoint still belongs to one logical thread and one exact
+place in that thread's message stream.
 
 ## Object Categories At The Boundary
 
@@ -332,6 +411,30 @@ wrap methods twice, emit duplicate bindings, or change binding order. This
 comes up in C extension families that expose both a base class and concrete
 subclasses from the same module.
 
+Patch state is stamped on the class. A type already patched by the same
+`System` is idempotent; a type patched by a different `System` is an error.
+This prevents nested test/runtime systems from silently sharing one mutated type
+family.
+
+Some attributes are deliberately never patched:
+
+- `__new__`
+- `__getattribute__`
+- `__del__`
+- `__dict__`
+
+Those slots are too fundamental or too timing-sensitive to route through the
+ordinary method wrapper path. `types.MemberDescriptorType` and
+`types.GetSetDescriptorType` are not treated as ordinary callables either; they
+are exposed through descriptor proxy types so descriptor access still has the
+right boundary shape.
+
+For extendable bases, the base type is bound before existing subclasses are
+retro-patched. That preserves the same binding order as "patch base, then define
+subclass later". If patching fails partway through, rollback must restore
+wrapped attributes, allocation hooks, bind support, and retrace stamps; a
+half-patched type family is not a valid state.
+
 Pre-existing instances of patched types are not automatically "new" just
 because their type was patched later. If such an instance is an exported module
 singleton, descriptor field, or other stable library object that application
@@ -395,6 +498,23 @@ whatever later tape messages need to refer to by identity, including:
 composed with a `stream.Binder` plus protocol writers. In replay mode it is
 composed with replay-side handle registration.
 
+There are two related but different operations:
+
+- `system.bind(obj)`
+  Marks the object as locally bound and runs the active bind hook. During record
+  this usually emits a `NEW_BINDING`; during replay it usually consumes the next
+  bind marker and maps its handle to `obj`.
+- `system.is_bound.add(obj)`
+  Marks the object as locally trusted without running `on_bind`. This is only
+  for Retrace's own runtime/control-plane objects such as tape writers, stream
+  chains, recorder locks, and protocol helpers that must not appear in the
+  application trace.
+
+Confusing these operations changes the protocol stream. Calling `bind()` for
+control-plane plumbing emits or consumes a binding that application replay does
+not expect; using only `is_bound.add()` for an application-visible object loses
+the handle replay needs later.
+
 ### How record uses binding
 
 Record uses `stream.Binder` to assign stable handles to live objects and types.
@@ -439,25 +559,135 @@ the current phase:
 - `'external'` -> call `async_new_patched`
 - `None` -> do nothing
 
-The `'external'` case exists because sometimes external code allocates an object
-that replay must later materialize and bind in a controlled way rather than
-treating it as an ordinary by-value result.
+During replay, the internal allocation path still has to align with the
+recorded protocol stream before consuming the bind marker. A patched object may
+be allocated while callback/call envelope messages from earlier Retrace helper
+work are still next in that thread's stream. Replay must drain those envelope
+messages, run callback bodies when they are real internal callbacks, and then
+bind the live object to the recorded handle. Normal `ExpectedBindMarker`
+lookahead must not escape from an allocation hook: some native/Cython extension
+types do not safely unwind Python exceptions raised from their allocation path.
+
+This internal allocation path is only for allocation identity. It is not a safe
+place to live-run native extension behavior during replay. If a native type does
+external work in its constructor/`__new__`, replay should use an inert replay
+substitute rather than invoking the native constructor.
+
+### Replay-only native type stubs
+
+Some external native types are opaque handles from the application's point of
+view. `grpc._cython.cygrpc.Server` is the model case: Retrace never needs a real
+grpc C-core server for its own control plane, and application-visible behavior is
+method traffic that belongs on the recorded boundary.
+
+For those types, the preferred design is a replay-only module-config directive:
+
+```toml
+proxy = ["Server"]
+stub_for_replay = ["Server"]
+```
+
+`stub_for_replay` means: during replay, before normal proxy/type machinery
+inspects the module binding, replace the configured native type with a generated
+Python stub type. The stub preserves shape, not behavior:
+
+- it remains a type, so subclass declarations and ordinary type-shape
+  introspection stay locally coherent on replay
+- it preserves the original `__module__`, `__name__`, `__qualname__`, and public
+  method/property names needed by proxy generation
+- `__new__` creates only a minimal inert object that can be bound to the recorded
+  handle
+- non-constructor methods and properties exist only so proxy generation can see
+  them; if one is called directly, that is a proxy-routing logic error and must
+  raise a clear replay-stub exception
+
+The normal proxy machinery then runs against the stub type. Application-visible
+method calls should cross the boundary and consume recorded messages; they
+should not execute stub method bodies, and they must not enter the native
+extension.
+
+This is different from replacing a class with a plain constructor function. A
+function facade can avoid native construction, but it breaks class syntax and
+type checks such as `class Sub(module.Type): ...` or
+`isinstance(value, module.Type)`. A replay stub type preserves more of the Python
+object-model shape while still keeping replay out of native code.
+
+Use `stub_for_replay` only when all of the following are true:
+
+- the type is an opaque external handle, not deterministic local Python state
+- Retrace's own replay/control-plane machinery does not need real instances of
+  the type
+- all meaningful application-visible operations on instances are retraced
+  boundary traffic
+- exact native C struct identity is not required by live replay code
+
+Do not use `stub_for_replay` for public runtime types such as `_socket.socket`
+where real type identity, subclassing across libraries, descriptors, alternate
+native creation paths, or Retrace control-plane use require in-place patching or
+real disabled-context objects.
+
+### Live factory, proxied result
+
+Some callables create local runtime primitives that must exist in both record
+and replay, while the object they return still needs Retrace identity and
+method-boundary handling. For these, use:
+
+```toml
+ext_proxy_result = ["make_handle"]
+```
+
+`ext_proxy_result` means:
+
+- record and replay both call the real function in the caller's current
+  Retrace phase
+- the function call itself is not recorded as an external `CALL`/`RESULT`
+- the returned object is passed through the same proxy/binding machinery used
+  for external results
+- later operations on the returned object use the normal boundary rules for
+  that object
+- the factory must not call back into retraced Python on the current thread,
+  and its inputs must already be ordinary unwrapped values
+- the factory must not allocate through patched Python constructors or otherwise
+  trigger Retrace hooks before the returned value reaches `ext_proxy`
+
+This is intentionally narrower than `proxy`. Ordinary `proxy` means the call is
+external behavior: record runs it and replay consumes the recorded result.
+`ext_proxy_result` means the call is local runtime construction, but the
+returned object is exposed to retraced Python through `System.ext_proxy`. Lock
+factories are the model case, but module configs should not use this directive
+for network, filesystem, database, or native service handles unless replay
+truly needs a live local object.
+
+The `'external'` case exists for the narrow materialized-replay path. This path
+is not a general way to recreate external objects during replay. It exists for
+cases where retrace is disabled but replay still needs a real live object for
+CPython/runtime mechanics to work, with module-level locks as the model case.
 
 In recorder mode, `async_new_patched` synthesizes retraced helper work around
-allocation so replay can recreate the same logical object and bind it to the
-same handle.
+allocation so replay has a recorded marker for the disabled-context object it
+must recreate.
 
-In replay mode, materialization code associates the recorded binding handle with
-the live object it just created, then checks that replay stayed aligned with the
-recorded result or error.
+In replay mode, materialization code may create the minimum real object needed
+while retrace is disabled, associate it with the recorded binding handle, and
+then check that replay stayed aligned with the recorded result or error.
 
-Some external APIs return raw integer handles instead of objects. A configured
-`replay_materialize` target such as `posix.pipe()` may therefore return live
-file descriptors during replay. Calls that operate on those materialized
-descriptors execute against the live handle only to keep CPython's own C-level
-I/O objects usable; every such call still consumes and compares the recorded
-result. This is an explicit materialization exception, not the normal replay
-path for arbitrary OS I/O.
+The point is not identity-preserving reconstruction for ordinary external-call
+results. Normal replay consumes recorded outcomes and must not call the live
+external implementation. Materialized replay is only for the small disabled-gate
+case where a real object is required locally even though the application-visible
+result still comes from the recording.
+
+The materialized object must be:
+
+- created under `disable_for()`
+- limited to current, concrete disabled-runtime needs
+- bound to the recorded handle at the matching point in the stream
+- invisible as general replay-side external execution
+
+Do not expand materialized replay to file descriptors, sockets, SSL objects,
+random generators, or other external resources merely because they have live
+state. If normal replay can return the recorded value or a proxy/stub without a
+real disabled-context object, materialized replay is the wrong tool.
 
 ## Internal Retrace: Using The Boundary On Ourselves
 
@@ -602,6 +832,17 @@ Known examples of this gap are an anyio blocking portal
 and the stdlib `asyncio.run_coroutine_threadsafe` scenario in
 `tests/test_record_replay.py`.
 
+## Hash Determinism
+
+`System.install()` also installs deterministic hash patching. The proxy layer
+cannot allow default memory-address-based object hashes to leak into
+replay-sensitive ordering, because set iteration and other hash-dependent
+behavior can otherwise differ between record and replay.
+
+Hash patching is phase-aware through the same gate dispatch model as the rest of
+the proxy kernel. Changes to `System.install()`, phase dispatch, or the
+disabled/internal/external split must preserve that hash determinism contract.
+
 ## Important Invariants
 
 - The two gateways are complementary halves of one boundary, not separate
@@ -616,8 +857,58 @@ and the stdlib `asyncio.run_coroutine_threadsafe` scenario in
 - Debug/checkpoint/stacktrace mode may add trace messages, but it must not
   change thread scheduling, lock wakeups, condition notifications, or event-loop
   progress.
+- Local-only runtime binding uses `System.is_bound.add()` and must not emit or
+  consume protocol binding markers.
+- Replay live execution is limited to explicit local-runtime factories
+  (`ext_proxy_result`) or the disabled-context materialized replay exception, and
+  must still consume and compare the recorded stream where one exists.
 - If replay consumes a different message sequence than record produced,
   everything after that point is suspect.
+
+## Module Config Interface
+
+The proxy kernel is normally reached through install-layer module config. Many
+boundary bugs are best fixed there instead of in `system.py`, `gateway.py`, or
+`io.py`.
+
+The main TOML directives map to proxy behavior like this:
+
+- `proxy`
+  Patch named types or callables so they route through the external gateway.
+- `ext_proxy_result`
+  Replace named callables with wrappers that live-run the callable in both
+  record and replay, then route only the returned object through `ext_proxy`.
+  Use this for local runtime factories, not ordinary external calls.
+- `patch_types`
+  Patch named types in place without replacing the module attribute.
+- `immutable`
+  Add named types to `System.immutable_types` so values cross by value.
+- `bind`
+  Pre-register stable module objects or enum members that later messages need
+  by identity.
+- `disable`
+  Replace named callables with `system.disable_for(...)` wrappers.
+- `wrap`
+  Apply an explicit wrapper factory before/around proxy behavior.
+- `replay_materialize`
+  Register callables for the narrow disabled-retrace case where replay needs a
+  real local object, such as a module lock. Do not use this for ordinary
+  external resources.
+- `stub_for_replay`
+  Replay-only native-type substitution for opaque external handle types. The
+  generated stub type preserves shape for proxy generation and type syntax, but
+  direct execution of stub members is a logic error. This avoids native
+  constructor/method execution on replay without creating real materialized
+  resources.
+- `pathparam`
+  Route filesystem-like calls through proxying only when the configured path
+  predicate says the path belongs in the recording.
+- `patch_hash`
+  Participates in deterministic hash behavior installed by `System.install()`.
+
+If new nondeterministic library behavior can be described by one of these
+directives, prefer that narrow module-config fix over changing gateway or kernel
+semantics.
 
 ## Reading The Code
 
@@ -650,6 +941,9 @@ regressions.
 | Patched type method returning another external object | `socket.makefile()` or similar | External result proxying, binding, replay-side hydration | Record writes proxy metadata/bindings; replay reconstructs a usable external proxy rather than leaking raw metadata | [`test_system_io_round_trips_external_result_proxy_hydration_with_memory_tape`](../../../tests/proxy/test_system_io_tape.py) |
 | External code calling back into Python | `sorted(items, key=callback)` or `executor.submit(fn)` style callback | Internal gateway, callback hooks, callback result/error recording | The Python callback body executes live on both record and replay, and callback events stay aligned | [`test_system_io_round_trips_simple_override_callback_with_tape`](../../../tests/proxy/test_system_io_tape.py), [`test_system_io_records_and_rebinds_callback_receiver_with_tape`](../../../tests/proxy/test_system_io_tape.py) |
 | Standalone callback envelope before next call or bind | Protocol callback work is emitted before the next external `CALL` or patched-object bind | Replay callback consumption, message lookahead | Replay executes callback envelopes before matching the next outbound call; for async patched-object binding, replay skips the stub-helper envelope and binds the live object to the recorded marker | [`test_replayer_skips_standalone_callback_result_before_next_call`](../../../tests/proxy/test_system_io_tape.py), [`test_replayer_skips_stub_callback_before_async_new_patched_bind`](../../../tests/proxy/test_system_io_tape.py) |
+| Internal patched-object allocation after callback envelope | A patched object is allocated after helper/callback traffic | `System._on_alloc`, replay bind alignment, allocation-hook exception safety | Replay drains allowed envelope messages, binds the live object to the recorded handle, and does not let `ExpectedBindMarker` escape through native allocation | [`test_replayer_runs_callback_before_internal_patched_alloc_bind`](../../../tests/proxy/test_system_io_tape.py) |
+| Native constructor that performs external work | `grpc.server(...)` calls Cython `cygrpc.CompletionQueue(...)` / `cygrpc.Server(...)` | `stub_for_replay`, async patched-object binding | Record may run the native constructor, but replay uses a recorded/stubbed object and does not live-run native constructor code | [`test_replay_grpc_server_construction_does_not_segfault`](../../../tests/install/external/test_grpc_server_replay_regression.py) |
+| Live local factory with ext-proxied result | A lock-like factory returns a runtime object | `ext_proxy_result`, phase-preserving live factory call, returned-object ext-proxying | Record and replay both call the real factory without changing the current phase, the factory call is not a `CALL`/`RESULT`, and the returned proxy shell is not itself bound | [`test_ext_proxy_result_live_runs_factory_and_wraps_returned_object`](../../../tests/proxy/test_system_io_tape.py) |
 | Callback makes another outbound external call | Callback body calls `time.time()` | Internal gateway re-entry back into external gateway | Nested callback-originated external calls preserve ordering and do not bypass retrace | [`test_system_io_round_trips_nested_callback_external_call_with_memory_tape`](../../../tests/proxy/test_system_io_tape.py) |
 | Immutable passthrough value crossing the boundary | `time.sleep(0)` / small ints / strings / bytes | Passthrough predicates, no unnecessary proxying | Immutable values stay unproxied and behavior matches normal Python on both record and replay | [`test_system_io_round_trips_simple_patched_function_with_tape`](../../../tests/proxy/test_system_io_tape.py) |
 | Internal Python object exposed to external code | Python file-like / callback / user object passed into patched library code | `int_proxy`, `InternalWrapped`, external-to-internal callback path | External code sees a stable wrapper and later calls route back into Python through the internal gateway | [`test_system_io_replays_dynamic_internal_proxy_callback_side_effect_with_memory_tape`](../../../tests/proxy/test_system_io_tape.py) |
@@ -658,7 +952,7 @@ regressions.
 | Pre-existing patched singleton | `random._inst` used through module-level `random.uniform()` | Module config `bind`, patched instance identity | Existing singleton objects of patched types are bound explicitly so replay sees the same logical object | [`test_replay_anyio_task_group_with_random_delays_does_not_diverge`](../../../tests/install/external/test_anyio_task_group_random_replay_regression.py), [`test_random_choice_replay_equals_record`](../../../tests/install/stdlib/test_random.py) |
 | Generated external proxy type creation | First encounter of a new external type/spec | `_ext_proxytype_from_spec`, internal retrace of helper work, binding of type + `ProxyRef` | Proxy-type generation is itself captured so replay recreates the same proxy class identity at the right point | [`test_system_io_records_callback_for_new_ext_proxy_type_with_memory_tape`](../../../tests/proxy/test_system_io_tape.py) |
 | Replay hydration of `ProxyRef` results | Replay returns a bound proxy-producing handle | `_ReplayBindingState`, binding resolution, `ProxyRef` hydration | Replay deserialization turns the recorded `ProxyRef` into a live proxy shell before user code observes it | [`test_replay_binding_state_hydrates_proxy_ref_bindings`](../../../tests/proxy/test_system_io_tape.py), [`test_system_io_round_trips_external_result_proxy_hydration_with_memory_tape`](../../../tests/proxy/test_system_io_tape.py) |
-| Materialized replay escape hatch | Call a `replay_materialize` target while retrace is disabled on replay | `replay_materialize`, `disable_for()`, stub/materialization path | The unusual disabled replay call materializes the expected object without consuming the next unrelated recorded result | [`test_replay_materialize_disabled_call_does_not_consume_next_recorded_result`](../../../tests/proxy/test_replay_materialize.py) |
+| Materialized replay escape hatch | Call a configured lock materialization target while retrace is disabled on replay | `replay_materialize`, `disable_for()`, unbound lock/RLock handling | The unusual disabled replay call materializes the expected object without consuming the next unrelated recorded result | [`test_replay_materialize_disabled_call_does_not_consume_next_recorded_result`](../../../tests/proxy/test_replay_materialize.py) |
 | Control-plane work excluded from retrace | Desync reporting, monitoring, stacktrace bookkeeping | `disable_for()`, gate-cleared execution | Helper plumbing does not generate extra boundary traffic or perturb replay alignment | [`test_replay_materialize_disabled_call_does_not_consume_next_recorded_result`](../../../tests/proxy/test_replay_materialize.py) |
 | Threaded external activity | Child thread performs proxied calls | `wrap_start_new_thread()`, logical thread ids, `THREAD_SWITCH`, replay demux | Record and replay preserve per-thread message order and deliver results to the right logical thread | [`test_replayer_consumes_protocol_result_after_thread_switch`](../../../tests/proxy/test_system_io_tape.py), [`test_install_and_run_replays_flask_request_from_unretraced_client_thread_with_memory_tape`](../../../tests/test_main_memory_tape.py) |
 | Cross-thread synchronization under debug checkpoints | Main thread schedules work into an event-loop/portal thread and waits on a `Future`/`Condition` while `--stacktraces` is enabled | Debug `CHECKPOINT` payloads, patched lock/RLock methods, thread propagation, `THREAD_SWITCH` ordering | Debug/checkpoint tracing must not change lock wakeups, condition notifications, or event-loop thread progress during record or replay | [`test_replay_anyio_blocking_portal_does_not_diverge`](../../../tests/install/external/test_anyio_from_thread_replay_dispatcher_regression.py), [`test_record_then_replay_asyncio_run_coroutine_threadsafe`](../../../tests/test_record_replay.py) |

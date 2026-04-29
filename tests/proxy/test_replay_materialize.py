@@ -25,17 +25,17 @@ def test_patch_ignores_replay_materialize_when_system_has_no_registry():
     def allocate_lock():
         return object()
 
-    class MemoryBIO:
-        pass
+    def RLock():
+        return object()
 
     namespace = {
         "__name__": "_thread",
         "allocate_lock": allocate_lock,
-        "MemoryBIO": MemoryBIO,
+        "RLock": RLock,
     }
     undo = patch(
         namespace,
-        {"replay_materialize": ["allocate_lock", "MemoryBIO"]},
+        {"replay_materialize": ["allocate_lock", "RLock"]},
         Installation(system),
     )
 
@@ -120,6 +120,46 @@ def test_patch_replay_materialize_tracks_patched_callable_identity():
         assert allocate_lock not in replay_system.replay_materialize
     finally:
         undo()
+
+
+def test_replay_materialize_registry_does_not_live_call_during_normal_replay():
+    tape = IOMemoryTape()
+    state = {"value": "record"}
+    calls = []
+
+    def target():
+        calls.append(state["value"])
+        return state["value"]
+
+    def configure(system):
+        system.immutable_types.update({str, bool, type(None)})
+
+    record_system = recorder(writer=tape.writer().write, debug=False, stacktraces=False)
+    configure(record_system)
+    record_target = record_system.patch(target)
+    try:
+        assert record_system.run(record_target) == "record"
+    finally:
+        record_system.unpatch_types()
+
+    state["value"] = "live"
+    calls.clear()
+
+    replay_reader = tape.reader()
+    replay_system = replayer(
+        next_object=replay_reader.read,
+        close=getattr(replay_reader, "close", None),
+        debug=False,
+        stacktraces=False,
+    )
+    configure(replay_system)
+    replay_target = replay_system.patch(target)
+    replay_system.replay_materialize.add(replay_target)
+    try:
+        assert replay_system.run(replay_target) == "record"
+        assert calls == []
+    finally:
+        replay_system.unpatch_types()
 
 
 def test_run_with_replay_returns_ext_runner_value():

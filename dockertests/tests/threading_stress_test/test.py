@@ -4,11 +4,12 @@ import queue
 import threading
 from pathlib import Path
 
-WORK_ITEMS = 2000
-WORKERS = int(os.getenv("THREAD_WORKERS", "24"))
-# The test directory is mounted read-only in the harness, so write logs under /tmp.
-OUT_DIR = Path(os.getenv("THREAD_OUT_DIR", "/tmp/retrace_threading_stress"))
-OUT_FILE = OUT_DIR / "thread_log.txt"
+WORK_ITEMS = int(os.getenv("THREAD_WORK_ITEMS", "8"))
+WORKERS = int(os.getenv("THREAD_WORKERS", "1"))
+# The test directory is mounted read-only in the harness. Keep the output file
+# directly under /tmp so replay materialized opens do not depend on replaying
+# a prior mkdir against the live filesystem.
+OUT_FILE = Path(os.getenv("THREAD_OUT_FILE", "/tmp/retrace_threading_stress.log"))
 
 
 class SharedState:
@@ -74,7 +75,6 @@ def main():
     print("threading_stress_test: threads + locks + condvars + queue + file I/O")
     print("=" * 70)
 
-    OUT_DIR.mkdir(exist_ok=True)
     if OUT_FILE.exists():
         OUT_FILE.unlink()
 

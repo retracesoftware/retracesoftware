@@ -5,6 +5,8 @@ from pathlib import Path
 import pytest
 import retracesoftware.stream as stream
 
+from retracesoftware.install.installation import Installation
+from retracesoftware.install.patcher import patch
 from retracesoftware.proxy.io import (
     _ThreadDemuxSource,
     _IoMessageSource,
@@ -375,6 +377,200 @@ def test_replayer_skips_stub_callback_before_async_new_patched_bind():
             assert replay_system.run(flow, replay_system, replay_obj) == "ok"
         finally:
             replay_system.unpatch_types()
+
+
+def test_replayer_runs_callback_before_internal_patched_alloc_bind():
+    tape = IOMemoryTape()
+    callback_calls = []
+
+    class External:
+        pass
+
+    def callback():
+        callback_calls.append("callback")
+        return "callback-result"
+
+    def flow(cls, emit_callback):
+        if emit_callback is not None:
+            emit_callback()
+        obj = cls()
+        return type(obj).__name__
+
+    writer = tape.writer()
+    with _entered(writer) as writer:
+        with _recorder_context(IOMode("plain"), writer) as record_system:
+            patch_type(record_system, External)
+
+            def emit_callback_envelope():
+                record_system.primary_hooks.on_call(callback)
+                record_system.secondary_hooks.on_result("callback-result")
+
+            recorded = record_system.run(flow, External, emit_callback_envelope)
+
+    assert recorded == "External"
+    assert callback_calls == []
+
+    raw = _raw_tape(tape)
+    assert raw is not None
+    assert "CALLBACK" in raw
+    callback_index = raw.index("CALLBACK")
+    assert "NEW_BINDING" in raw[callback_index:]
+
+    reader = tape.reader()
+    with _entered(reader) as reader:
+        replay_system = replayer(
+            next_object=reader.read,
+            close=getattr(reader, "close", None),
+            on_desync=lambda record, replay: (_ for _ in ()).throw(
+                AssertionError(f"desync: {record!r} vs {replay!r}")
+            ),
+            on_unexpected=lambda message: (_ for _ in ()).throw(
+                AssertionError(f"unexpected: {message!r}")
+            ),
+        )
+        try:
+            _configure_system(replay_system)
+            patch_type(replay_system, External)
+            replayed = replay_system.run(flow, External, None)
+        finally:
+            replay_system.unpatch_types()
+
+    assert replayed == recorded
+    assert callback_calls == ["callback"]
+
+
+def test_replayer_skips_call_result_before_internal_patched_alloc_bind():
+    tape = IOMemoryTape()
+
+    class External:
+        pass
+
+    def flow(cls, emit_external_envelope):
+        if emit_external_envelope is not None:
+            emit_external_envelope()
+        obj = cls()
+        return type(obj).__name__
+
+    writer = tape.writer()
+    with _entered(writer) as writer:
+        with _recorder_context(IOMode("plain"), writer) as record_system:
+            patch_type(record_system, External)
+
+            def emit_external_envelope():
+                record_system.secondary_hooks.on_call()
+                record_system.primary_hooks.on_result("external-result")
+
+            recorded = record_system.run(flow, External, emit_external_envelope)
+
+    assert recorded == "External"
+    raw = _raw_tape(tape)
+    assert raw is not None
+    call_index = raw.index("CALL")
+    result_index = raw.index("RESULT")
+    binding_index = raw.index("NEW_BINDING", result_index)
+    assert call_index < result_index < binding_index
+
+    reader = tape.reader()
+    with _entered(reader) as reader:
+        replay_system = replayer(
+            next_object=reader.read,
+            close=getattr(reader, "close", None),
+            on_desync=lambda record, replay: (_ for _ in ()).throw(
+                AssertionError(f"desync: {record!r} vs {replay!r}")
+            ),
+            on_unexpected=lambda message: (_ for _ in ()).throw(
+                AssertionError(f"unexpected: {message!r}")
+            ),
+        )
+        try:
+            _configure_system(replay_system)
+            patch_type(replay_system, External)
+            replayed = replay_system.run(flow, External, None)
+        finally:
+            replay_system.unpatch_types()
+
+    assert replayed == recorded
+
+
+def test_ext_proxy_result_live_runs_factory_and_wraps_returned_object():
+    tape = IOMemoryTape()
+    calls = []
+    gate_values = []
+    proxy_values = []
+    active_system = []
+
+    class ExternalResource:
+        pass
+
+    def factory(label):
+        gate_values.append(active_system[-1].gate.get())
+        calls.append(label)
+        return ExternalResource()
+
+    def flow(make_resource, label):
+        resource = make_resource(label)
+        proxy_values.append(
+            (isinstance(resource, utils.ExternalWrapped), active_system[-1].is_bound(resource))
+        )
+        return type(resource).__name__
+
+    namespace = {"__name__": "local_factory", "factory": factory}
+
+    writer = tape.writer()
+    with _entered(writer) as writer:
+        with _recorder_context(IOMode("plain"), writer) as record_system:
+            undo = patch(
+                namespace,
+                {"ext_proxy_result": ["factory"]},
+                Installation(record_system),
+            )
+            try:
+                active_system.append(record_system)
+                recorded = record_system.run(flow, namespace["factory"], "record")
+            finally:
+                active_system.pop()
+                undo()
+
+    raw = _raw_tape(tape)
+    assert raw is not None
+    assert "CALL" not in raw
+    assert "RESULT" not in raw
+    assert "NEW_BINDING" in raw
+    assert calls == ["record"]
+
+    namespace["factory"] = factory
+    reader = tape.reader()
+    with _entered(reader) as reader:
+        replay_system = replayer(
+            next_object=reader.read,
+            close=getattr(reader, "close", None),
+            on_desync=lambda record, replay: (_ for _ in ()).throw(
+                AssertionError(f"desync: {record!r} vs {replay!r}")
+            ),
+            on_unexpected=lambda message: (_ for _ in ()).throw(
+                AssertionError(f"unexpected: {message!r}")
+            ),
+        )
+        try:
+            _configure_system(replay_system)
+            undo = patch(
+                namespace,
+                {"ext_proxy_result": ["factory"]},
+                Installation(replay_system),
+            )
+            try:
+                active_system.append(replay_system)
+                replayed = replay_system.run(flow, namespace["factory"], "replay")
+            finally:
+                active_system.pop()
+                undo()
+        finally:
+            replay_system.unpatch_types()
+
+    assert replayed == recorded
+    assert calls == ["record", "replay"]
+    assert gate_values == ["internal", "internal"]
+    assert proxy_values == [(True, False), (True, False)]
 
 
 def test_system_io_records_callback_for_new_ext_proxy_type_with_memory_tape():

@@ -1,10 +1,9 @@
 from rich.console import Console
-from rich.table import Table
 from rich.progress import track
+from rich.table import Table
 import time
 
-# Create a Console instance
-console = Console()
+console = Console(force_terminal=False, color_system=None, width=80)
 
 def test_rich_text():
     console.print("Hello, [bold magenta]Rich[/bold magenta]!", style="bold green")
@@ -26,7 +25,7 @@ def test_rich_table():
     console.print(table)
 
 def test_rich_progress():
-    for task in track(range(10), description="Processing..."):
+    for task in track(range(10), description="Processing...", console=console, disable=True):
         time.sleep(0.1)  # Simulate work
 
 if __name__ == "__main__":
@@ -39,4 +38,4 @@ if __name__ == "__main__":
     print("\nTesting progress bar:")
     test_rich_progress()
 
-    console.print("Test complete!", style="bold underline green") 
+    console.print("Test complete!", style="bold underline green")

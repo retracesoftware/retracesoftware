@@ -12,6 +12,9 @@ set -e
 
 TARGET="/app/packages"
 
+export PIP_RETRIES="${PIP_RETRIES:-10}"
+export PIP_DEFAULT_TIMEOUT="${PIP_DEFAULT_TIMEOUT:-60}"
+
 mkdir -p "$TARGET"
 
 # Ensure we don't carry stale wheels/modules across installs.

@@ -1,3 +1,2 @@
 grpcio
-grpcio-tools
 protobuf

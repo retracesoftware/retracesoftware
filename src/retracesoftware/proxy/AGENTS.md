@@ -16,12 +16,14 @@ re-derive the contract from this file.
 
 1. **Replay never calls the live external callable, when retrace is enabled.**
    Replay reads the recorded `RESULT` or `ERROR` from the message stream and
-   returns or raises the recorded outcome. The only exception is
-   `system.replay_materialize`, a narrow opt-in escape hatch.
+   returns or raises the recorded outcome. The only materialized-real-object
+   exception is when retrace is already disabled and replay needs a local
+   runtime object such as a module lock. If a fix appears to require running
+   real external code during normal replay, the diagnosis is wrong.
    See `DESIGN.md` -> "Allocation And Materialization".
-2. **Materialized objects are reconstructed via binding + stub flow**, not by
-   re-executing the original constructor.
-   See `DESIGN.md` -> "Allocation And Materialization" and "Binding".
+2. **Materialized objects are only for disabled-context runtime needs**, not
+   general external-object reconstruction.
+   See `DESIGN.md` -> "Allocation And Materialization".
 3. **Control-plane work must bypass the gates** via `disable_for()`. Recording
    debugger, monitoring, or replay plumbing into the trace causes silent
    desynchronization.
@@ -46,6 +48,8 @@ re-derive the contract from this file.
    See `DESIGN.md` -> "Threads" -> "Cross-thread synchronization".
    Smallest reproducer:
    `tests/install/stdlib/test_threading_lock_replay_regression.py`.
+   If it fails, the portal/web replay regressions in the Proxy Kernel
+   Sentinel Bundle are likely downstream.
 
 ## Required Pre-Edit Statement
 
@@ -103,7 +107,7 @@ notes.
 | `system.py` | Owns `System`, the phase gate thread-local, gateway factories, `run()`, `disable_for`, `wrap_start_new_thread`, `patch`, `patch_function`. | `DESIGN.md` -> "Main Pieces", "Threads" |
 | `gateway.py` | Pure factories: `ext_gateway`, `int_gateway`, `ext_replay_gateway`, `int_replay_gateway`, plus `ext_runner`, `int_runner`, `unproxy_ext`, `unproxy_int`. Zero proxy-internal deps. | `DESIGN.md` -> "How The Two Gateways Interact" |
 | `patchtype.py` | In-place type-patching: `patch_type`, `unpatch_type`, subclass walk, alloc-hook installation, `__init_subclass__` rewriting. | `DESIGN.md` -> "Object Categories At The Boundary" -> "Patched objects and patched types" |
-| `io.py` | `recorder()` / `replayer()` builders. Hosts `_RawTapeSource`, `_ReplayBindingState`, `_ThreadDemuxSource`, `_IoMessageSource`, replay-time live-materialization escape hatch. | `DESIGN.md` -> "Record Versus Replay" and "Allocation And Materialization" |
+| `io.py` | `recorder()` / `replayer()` builders. Hosts `_RawTapeSource`, `_ReplayBindingState`, `_ThreadDemuxSource`, `_IoMessageSource`, replay-time bind parsing, and disabled-context real-object support. | `DESIGN.md` -> "Record Versus Replay" and "Allocation And Materialization" |
 | `tape.py` (proxy) | `Tape` / `TapeReader` / `TapeWriter` `Protocol` declarations only (~40 lines). | n/a — interface declarations |
 | `proxytype.py` | `DynamicProxy`, `superdict`, `dynamic_proxytype`, `dynamic_int_proxytype`. Reached via `system.py` and `patchtype.py`. | `DESIGN.md` -> "Internal Retrace: Using The Boundary On Ourselves" -> "Proxy generation through retrace" |
 | `typeutils.py` | `WithoutFlags`, `modify`. Used by `patchtype.py` and `install/patcher.py`. | n/a — utility |
@@ -165,21 +169,17 @@ enough that AI agents need them visible.
   runs. `System.run()` then installs whatever the factories return into
   the per-thread gateway slots. This is why the same patched call sites
   do completely different things in record vs replay.
-- **`io.replayer()` installs `system.async_new_patched = bind_new_patched`
-  (not `system.bind`).** `bind_new_patched` loops over `tape_reader.bind(obj)`
-  and on `ExpectedBindMarker` consumes the next message: a standalone
-  `CallbackMessage` is skipped (and trailing
-  `CallbackResultMessage`/`CallbackErrorMessage`/`CheckpointMessage` are
-  drained by `consume_callback_completion`); other callback-related messages
-  are also consumed and the bind retried; anything else routes through
-  `system.disable_for(on_unexpected)`. After a successful `tape_reader.bind`,
-  the object is also added to `system.is_bound` so a later use does not
+- **`io.replayer()` installs replay bind helpers instead of plain
+  `system.bind`.** `bind_replay_object()` loops over
+  `tape_reader.bind(obj)` and on `ExpectedBindMarker` consumes replay-side
+  callback/completion/result/checkpoint messages until the recorded bind
+  marker appears. `system.async_new_patched` uses that helper without
+  executing skipped stub-helper callbacks; `_on_alloc` uses it with
+  `run_raw_callback` for real internal callback envelopes. After a successful
+  bind, the object is also added to `system.is_bound` so a later use does not
   re-bind it. Sentinels:
   `tests/proxy/test_system_io_tape.py::test_replayer_skips_standalone_callback_result_before_next_call`,
   `tests/proxy/test_system_io_tape.py::test_replayer_skips_stub_callback_before_async_new_patched_bind`.
-- **`io.py` `live_file_descriptors.update()` accepts both single fds and
-  tuples** — file-descriptor-returning calls may produce either; callers
-  should not assume tuple-shape.
 - **`io.py` `_ThreadDemuxSource` re-raises `KeyboardInterrupt` and
   `SystemExit` cleanly** instead of swallowing them as desync. Keep this
   contract; it is how Ctrl-C escapes a recording.
@@ -309,9 +309,9 @@ the right place to fix a record/replay or boundary bug:
   than the per-call wrapping or message flow.
 - `stubfactory.py` — Replay-time stub generation. Reached via
   `proxytype.py`. Bugs here manifest at materialization time, but the
-  cause is almost always in `_on_alloc`, `async_new_patched`, or
-  `on_materialized_result` / `on_materialized_error`, not in stub
-  construction itself.
+  cause is almost always in `_on_alloc`, `async_new_patched`,
+  `bind_replay_object`, or replay-side unbound lock/RLock handling, not in
+  stub construction itself.
 - Anything in "Dead / unimported" above.
 
 ## High-Risk Hazards
@@ -349,7 +349,7 @@ patch done.
 | `system.py` (`run`, `wrap_start_new_thread`, `disable_for`, `bind`, `patch_function`, `wrap_async`, `disabled_callable`/`wrapped_callable`) | `tests/proxy/test_system_io_tape.py`, `tests/install/stdlib/test_threading_lock_replay_regression.py`, `tests/install/external/test_anyio_from_thread_replay_dispatcher_regression.py`, `tests/test_record_replay.py::test_record_then_replay_asyncio_run_coroutine_threadsafe` |
 | `gateway.py` (any factory, `ext_runner`/`int_runner`, `unproxy_*`, passthrough predicates) | `tests/proxy/test_system_io_tape.py`, `tests/proxy/test_replay_materialize.py`, `tests/test_main_memory_tape.py` |
 | `patchtype.py` (subclass walk, `__init_subclass__`, alloc hook, idempotency) | `tests/install/test_hash_patching.py`, `tests/proxy/test_replay_materialize.py::test_patch_type_is_idempotent_for_subtypes_patched_through_base` |
-| `io.py` replay parsing, `_ReplayBindingState`, `_ThreadDemuxSource`, `equal()` markers, `bind_new_patched`, `consume_callback_completion`, live-materialization escape hatches | `tests/proxy/test_system_io_tape.py`, `tests/proxy/test_replay_materialize.py`, `tests/install/stdlib/test_threading_lock_replay_regression.py` |
+| `io.py` replay parsing, `_ReplayBindingState`, `_ThreadDemuxSource`, `equal()` markers, `bind_replay_object`, `consume_callback_completion`, disabled-context materialization/unbound external support | `tests/proxy/test_system_io_tape.py`, `tests/proxy/test_replay_materialize.py`, `tests/install/stdlib/test_threading_lock_replay_regression.py` |
 | `proxytype.py` / `stubfactory.py` (type construction, stub generation) | `tests/proxy/test_replay_materialize.py`, `tests/proxy/test_system_io_tape.py` |
 | Monitoring or compatibility replay-reader behavior | `tests/proxy/test_monitoring.py`, plus inspect `src/retracesoftware/protocol/replay.py` |
 | Anything that affects exception-in-callback round-tripping | `tests/proxy/test_system_io_tape.py`, `tests/test_record_replay.py` |

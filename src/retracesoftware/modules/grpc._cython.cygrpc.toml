@@ -8,11 +8,19 @@
 
 package = "grpcio"
 
+stub_for_replay = [
+    # These constructors perform C-core initialization in Cython __new__.
+    # Replay uses inert Python stub types first, then applies normal proxying
+    # to the stubs so method traffic still consumes recorded boundary events.
+    "CompletionQueue",
+    "Server",
+]
+
 proxy = [
     # --- Core I/O types (sync) ---
     "Channel",              # Client channel: integrated_call, segregated_call, next_call_event,
                             #   check_connectivity_state, watch_connectivity_state, close
-    "Server",               # Server: add_http2_port, start, request_call,
+    "Server",               # Server constructor plus methods: add_http2_port, start, request_call,
                             #   request_registered_call, shutdown, cancel_all_calls, destroy
     "CompletionQueue",      # Event polling: poll, shutdown, clear
 

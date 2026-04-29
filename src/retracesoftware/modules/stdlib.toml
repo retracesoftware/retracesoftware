@@ -23,8 +23,12 @@ immutable = ["BaseException", "memoryview", "int", "float", "complex", "str", "b
             "type", "slice"]
 
 [_thread]
-proxy = ["allocate", "allocate_lock", "RLock"]
-replay_materialize = ["allocate_lock", "RLock"]
+proxy = ["allocate", "RLock"]
+ext_proxy_result = ["allocate_lock"]
+replay_materialize = ["RLock"]
+
+[_queue.type_attributes.SimpleQueue]
+sync = ["put", "put_nowait"]
 
 [threading]
 bind = ["_active_limbo_lock"]
@@ -33,6 +37,9 @@ replay_materialize = ["Lock", "RLock"]
 [logging]
 bind = ["_lock"]
 disable = ["_acquireLock", "_releaseLock"]
+
+["asyncio.base_events".type_attributes.BaseEventLoop]
+sync = ["_call_soon"]
 
 [_datetime]
 immutable = ["datetime", "tzinfo", "timezone"]
@@ -49,7 +56,6 @@ immutable = ["PosixPath"]
 
 [posix]
 immutable = ["times_result", "statvfs_result", "uname_result", "stat_result", "terminal_size"]
-replay_materialize = ["open", "pipe"]
 
 proxy = [
     "_exit", # Function. Exits the process immediately, bypassing cleanup.
@@ -267,7 +273,6 @@ proxy = ["kevent", "kqueue", "poll", "epoll", "select"]
 
 [_ssl]
 proxy = ["_SSLSocket", "MemoryBIO", "_SSLContext"]
-replay_materialize = ["MemoryBIO"]
 
 [_ssl.patch_class._SSLSocket]
 read = "retracesoftware.install.edgecases.read"
@@ -277,7 +282,6 @@ bind = ["Options"]
 
 [_random]
 proxy = ["Random"]
-replay_materialize = ["Random"]
 
 [_multiprocessing]
 proxy = ["SemLock", "sem_unlink"]

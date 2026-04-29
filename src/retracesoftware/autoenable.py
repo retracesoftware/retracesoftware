@@ -76,10 +76,11 @@ else:
                 pass  # no recording path, nothing to do
             else:
                 recording = config["record"]["recording"]
-                if '{script}' in recording:
-                    recording = recording.format(script=_script_stem())
-                    config["record"]["recording"] = recording
-                _prepare_trace_file(recording)
+                if recording != "disable":
+                    if '{script}' in recording:
+                        recording = recording.format(script=_script_stem())
+                        config["record"]["recording"] = recording
+                    _prepare_trace_file(recording)
 
                 if os.environ.get('RETRACE_GILWATCH', '0').strip().lower() in ('1', 'true', 'yes', 'on'):
                     try:

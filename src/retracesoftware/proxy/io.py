@@ -712,6 +712,7 @@ def recorder(*,
     system = System(
         on_bind = functional.sequence(binder.bind, _binding_handle, tagged("NEW_BINDING")),
     )
+    system.retrace_mode = "record"
 
     for runtime_obj in (
         writer,
@@ -795,6 +796,10 @@ def recorder(*,
     system.checkpoint = functional.if_then_else(
         functional.repeatedly(system.enabled),
         checkpoint, utils.noop)
+    system.sync = system.disable_for(
+        functional.repeatedly(write, "SYNC"),
+        unwrap_args=False,
+    )
 
     system.lifecycle_hooks = LifecycleHooks(
             on_start = on_start,
@@ -904,10 +909,9 @@ def replayer(*, next_object,
     read_message = message_source.read
     read_raw_message = raw_message_source.read
     system = System(tape_reader.bind)
+    system.retrace_mode = "replay"
     system.replay_materialize = set()
-    materializing = utils.ThreadLocal(False)
     live_materialized = {}
-    live_file_descriptors = set()
 
     stack = utils.StackFactory()
     current_stack = utils.ThreadLocal([])
@@ -939,8 +943,18 @@ def replayer(*, next_object,
     @utils.exclude_from_stacktrace
     def expect_message(expected_type):
         message = read_message()
+        expected_is_type = (
+            isinstance(expected_type, type)
+            or (
+                isinstance(expected_type, tuple)
+                and all(isinstance(item, type) for item in expected_type)
+            )
+        )
 
-        if isinstance(message, expected_type):
+        if expected_is_type:
+            if isinstance(message, expected_type):
+                return message
+        elif message == expected_type:
             return message
 
         if isinstance(message, CallbackMessage):
@@ -949,7 +963,10 @@ def replayer(*, next_object,
 
         if (
             isinstance(message, (CallbackResultMessage, CallbackErrorMessage))
-            and not isinstance(message, expected_type)
+            and (
+                (expected_is_type and not isinstance(message, expected_type))
+                or (not expected_is_type and message != expected_type)
+            )
         ):
             return expect_message(expected_type)
 
@@ -982,6 +999,54 @@ def replayer(*, next_object,
         if debug:
             raw_checkpoint(_on_result(result))
         return result
+
+    def consume_callback_completion():
+        while True:
+            try:
+                next_value = tape_reader._peek_item(resolve=False)
+            except StopIteration:
+                return
+
+            if next_value not in ("CALLBACK_RESULT", "CALLBACK_ERROR", "CHECKPOINT"):
+                return
+
+            message = read_raw_message()
+            if isinstance(message, (CallbackResultMessage, CallbackErrorMessage, CheckpointMessage)):
+                continue
+
+            return
+
+    def bind_replay_object(obj, on_callback):
+        skipped_callback = False
+
+        while True:
+            try:
+                result = tape_reader.bind(obj)
+                if skipped_callback:
+                    consume_callback_completion()
+                return result
+            except ExpectedBindMarker:
+                message = read_raw_message()
+
+                if isinstance(message, CallbackMessage):
+                    skipped_callback = True
+                    on_callback(message)
+                    continue
+
+                if isinstance(
+                    message,
+                    (
+                        CallbackResultMessage,
+                        CallbackErrorMessage,
+                        CallMarkerMessage,
+                        ResultMessage,
+                        ErrorMessage,
+                        CheckpointMessage,
+                    ),
+                ):
+                    continue
+
+                return system.disable_for(on_unexpected)(message)
             
     # safeequal = system.disable_for(equal)
     def diff(record, replay):
@@ -998,16 +1063,6 @@ def replayer(*, next_object,
             diff(record=tape_reader.resolve(message.value), replay=replay)
             return
         on_desync(message, CheckpointMessage)
-
-    def is_replay_materialize(fn):
-        if fn in system.replay_materialize:
-            return True
-
-        target = _unwrap_callable(fn)
-        return any(
-            _unwrap_callable(candidate) is target
-            for candidate in system.replay_materialize
-        )
 
     in_sandbox = system.enabled
 
@@ -1033,129 +1088,32 @@ def replayer(*, next_object,
     system.checkpoint = functional.if_then_else(
         functional.repeatedly(system.enabled),
         checkpoint, utils.noop)
-
-    def next_materialized_result(replay):
-        while True:
-            message = read_raw_message()
-
-            if isinstance(message, CallbackMessage):
-                run_raw_callback(message)
-                continue
-
-            if isinstance(message, (CallbackResultMessage, CallbackErrorMessage, CallMarkerMessage)):
-                continue
-
-            if isinstance(message, ResultMessage):
-                record = message.result
-                if isinstance(record, stream.Binding):
-                    try:
-                        factory = tape_reader.lookup_handle(record.handle)
-                    except KeyError:
-                        factory = None
-                    if isinstance(factory, ProxyRef):
-                        materialized = utils.create_wrapped(factory.cls, replay)
-                        live_materialized[id(materialized)] = replay
-                        return materialized
-
-                    try:
-                        materialized = tape_reader.resolve(record)
-                    except KeyError:
-                        materialized = replay
-                    if isinstance(materialized, utils.ExternalWrapped):
-                        materialized = utils.create_wrapped(type(materialized), replay)
-                        live_materialized[id(materialized)] = replay
-                        tape_reader.bind_handle(record.handle, materialized)
-                        return materialized
-                    tape_reader.bind_handle(record.handle, replay)
-                    return replay
-                resolved = tape_reader.resolve(record)
-                if _is_file_descriptor_result(resolved, replay):
-                    if isinstance(replay, tuple):
-                        live_file_descriptors.update(replay)
-                    else:
-                        live_file_descriptors.add(replay)
-                    return replay
-                return resolved
-
-            if isinstance(message, ErrorMessage):
-                raise message.error
-
-            return system.disable_for(on_unexpected)(message)
-
-    def on_materialized_result(replay):
-        if not materializing.get():
-            return None
-
-        materializing.set(False)
-        record = next_materialized_result(replay)
-        diff(record=record, replay=replay)
-
-    def on_materialized_error(exc_type, exc_value, exc_tb):
-        if not materializing.get():
-            return None
-
-        materializing.set(False)
-
-        while True:
-            message = read_raw_message()
-
-            if isinstance(message, CallbackMessage):
-                run_raw_callback(message)
-                continue
-
-            if isinstance(message, (CallbackResultMessage, CallbackErrorMessage, CallMarkerMessage)):
-                continue
-
-            if isinstance(message, ErrorMessage):
-                if type(message.error) is not exc_type or str(message.error) != str(exc_value):
-                    on_desync(message.error, exc_value)
-                return None
-
-            return system.disable_for(on_unexpected)(message)
+    system.sync = system.disable_for(
+        functional.repeatedly(expect_message, "SYNC"),
+        unwrap_args=False,
+    )
 
     system.primary_hooks = CallHooks(
         on_call=None,
-        on_result=on_materialized_result,
-        on_error=on_materialized_error,
+        on_result=None,
+        on_error=None,
+    )
+
+    def bind_internal_patched(obj):
+        result = bind_replay_object(obj, run_raw_callback)
+        system.is_bound.add(obj)
+        return result
+
+    system._on_alloc = system.create_dispatch(
+        disabled=utils.noop,
+        external=system._call_async_new_patched,
+        internal=bind_internal_patched,
     )
 
     def bind_new_patched(obj):
-        skipped_callback = False
-
-        def consume_callback_completion():
-            while True:
-                try:
-                    next_value = tape_reader._peek_item(resolve=False)
-                except StopIteration:
-                    return
-
-                if next_value not in ("CALLBACK_RESULT", "CALLBACK_ERROR", "CHECKPOINT"):
-                    return
-
-                message = read_raw_message()
-                if isinstance(message, (CallbackResultMessage, CallbackErrorMessage, CheckpointMessage)):
-                    continue
-
-                return
-
-        while True:
-            try:
-                result = tape_reader.bind(obj)
-                system.is_bound.add(obj)
-                if skipped_callback:
-                    consume_callback_completion()
-                return result
-            except ExpectedBindMarker:
-                message = read_raw_message()
-
-                if isinstance(message, CallbackMessage):
-                    skipped_callback = True
-                    continue
-
-                if isinstance(message, (CallbackResultMessage, CallbackErrorMessage, CallMarkerMessage)):
-                    continue
-
-                return system.disable_for(on_unexpected)(message)
+        result = bind_replay_object(obj, utils.noop)
+        system.is_bound.add(obj)
+        return result
 
     system.async_new_patched = bind_new_patched
 
@@ -1243,50 +1201,8 @@ def replayer(*, next_object,
         live_materialized[id(value)] = live
         return live
 
-    def _is_file_descriptor(value):
-        return isinstance(value, int) and not isinstance(value, bool)
-
-    def _is_file_descriptor_result(record, replay):
-        if _is_file_descriptor(record) and _is_file_descriptor(replay):
-            return True
-        return (
-            isinstance(record, tuple)
-            and isinstance(replay, tuple)
-            and len(record) == len(replay)
-            and all(_is_file_descriptor(fd) for fd in record)
-            and all(_is_file_descriptor(fd) for fd in replay)
-        )
-
-    def _uses_materialized_file_descriptor(args):
-        return (
-            bool(args)
-            and _is_file_descriptor(args[0])
-            and args[0] in live_file_descriptors
-        )
-
-    def _remember_file_descriptor_result(fn, args, replay):
-        target = _unwrap_callable(fn)
-        name = getattr(target, "__name__", "")
-        if name == "close":
-            live_file_descriptors.discard(args[0])
-        elif name == "dup" and _is_file_descriptor(replay):
-            live_file_descriptors.add(replay)
-
     @utils.exclude_from_stacktrace
     def ext_execute(fn, *args, **kwargs):
-        if is_replay_materialize(fn):
-            replay = system.disable_for(utils.try_unwrap_apply, unwrap_args=False)(
-                fn, *args, **kwargs
-            )
-            return next_materialized_result(replay)
-        if _uses_materialized_file_descriptor(args):
-            replay = system.disable_for(utils.try_unwrap_apply, unwrap_args=False)(
-                fn, *args, **kwargs
-            )
-            record = next_result_message()
-            diff(record=record, replay=replay)
-            _remember_file_descriptor_result(fn, args, replay)
-            return replay
         if args and _external_type_key(args[0]) in _UNBOUND_EXTERNAL_TYPES:
             live_args = (_live_unbound_external(args[0]), *args[1:])
             replay = system.disable_for(utils.try_unwrap_apply, unwrap_args=False)(

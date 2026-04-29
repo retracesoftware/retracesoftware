@@ -13,6 +13,7 @@ gateway factories plus lifecycle/hook attributes.
 """
 
 from typing import NamedTuple, Callable, Any
+import functools
 import retracesoftware.functional as functional
 import retracesoftware.stream as stream
 import retracesoftware.utils as utils
@@ -67,6 +68,7 @@ class wrapped_callable:
 class disabled_callable(wrapped_callable):
     """Callable that intentionally runs with retrace disabled."""
 
+    __retrace_disabled_thread_target__ = True
     __slots__ = ("_retrace_call",)
 
     def __init__(self, wrapped, call):
@@ -213,10 +215,20 @@ fallback = functional.mapargs(transform = functional.walker(utils.try_unwrap), f
 def _is_disabled_thread_target(function):
     if isinstance(function, disabled_callable):
         return True
+    if _has_disabled_thread_target_marker(function):
+        return True
 
     owner = getattr(function, "__self__", None)
     target = getattr(owner, "_target", None)
-    return isinstance(target, disabled_callable)
+    return isinstance(target, disabled_callable) or _has_disabled_thread_target_marker(target)
+
+
+def _has_disabled_thread_target_marker(function):
+    if getattr(function, "__retrace_disabled_thread_target__", False):
+        return True
+
+    underlying = getattr(function, "__func__", None)
+    return getattr(underlying, "__retrace_disabled_thread_target__", False)
 
 
 class System:
@@ -252,7 +264,10 @@ class System:
                 owner = getattr(function, "__self__", None)
                 started = getattr(owner, "_started", None)
                 if started is not None:
-                    self.disable_for(started.wait, unwrap_args=False)()
+                    try:
+                        started.wait = self.disable_for(started.wait, unwrap_args=False)
+                    except Exception:
+                        self.disable_for(started.wait, unwrap_args=False)()
 
             return thread_id
 
@@ -268,6 +283,29 @@ class System:
         if not self.is_bound(fn):
             self.bind(fn)
         wrapped = self._wrapped_function(self.ext_gateway, fn)
+        standalone = wrapped_callable(wrapped)
+        self.bind(standalone)
+        return standalone
+
+    def ext_proxy_result(self, fn):
+        """Return a wrapper that live-runs *fn* and proxies its result.
+
+        ``ext_proxy_result`` is for local runtime factories whose returned object
+        must enter Retrace's binding/proxy world, but whose call itself should
+        run in both record and replay rather than being replayed from a recorded
+        ``RESULT``. These factories must not call back into retraced Python on
+        the current thread, and their inputs must already be ordinary unwrapped
+        values. They also must not allocate through patched Python constructors
+        before the result reaches ``ext_proxy``.
+        """
+        call_real = fn
+        ext_proxy_result = functional.sequence(call_real, self.ext_proxy)
+        wrapped = self.create_dispatch(
+            disabled=call_real,
+            external=ext_proxy_result,
+            internal=ext_proxy_result,
+        )
+
         standalone = wrapped_callable(wrapped)
         self.bind(standalone)
         return standalone
@@ -310,6 +348,28 @@ class System:
         disabled = fallback if unwrap_args else utils.try_unwrap_apply
         applied = self.gate.apply_with(None, functional.partial(disabled, function))
         return disabled_callable(function, applied)
+
+    def sync_for(self, function):
+        """Run *function* normally while emitting a synchronization marker."""
+        return utils.observer(
+            function=function,
+            on_call=self.gate.cond(
+                "internal",
+                functional.repeatedly(self.sync),
+                utils.noop,
+            ),
+        )
+
+    def disable_method_for(self, function):
+        """Descriptor-friendly disabled wrapper for class methods."""
+
+        disabled = self.disable_for(function, unwrap_args=False)
+
+        @functools.wraps(function)
+        def wrapped(*args, **kwargs):
+            return disabled(*args, **kwargs)
+
+        return wrapped
 
     def __init__(self, on_bind = None) -> None:
 
@@ -369,6 +429,7 @@ class System:
             when_instanceof(utils.ExternalWrapped, with_type_of(self.proxy_ref)))
 
         self.checkpoint = utils.noop
+        self.sync = utils.noop
 
         self.descriptor_proxytype = functional.memoize_one_arg(self.descriptor_proxytype)
 

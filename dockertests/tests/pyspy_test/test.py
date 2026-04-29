@@ -1,6 +1,5 @@
-import os
-import subprocess
-import sys
+from importlib.util import find_spec
+import io
 import time
 
 
@@ -19,12 +18,11 @@ def memory_intensive_function():
 
 
 def io_intensive_function():
-    import tempfile
-
-    with tempfile.NamedTemporaryFile(mode="w", delete=False) as f:
-        for i in range(1000):
-            f.write(f"Line {i}\n")
-    os.unlink(f.name)
+    buffer = io.StringIO()
+    for i in range(1000):
+        buffer.write(f"Line {i}\n")
+    buffer.seek(0)
+    return sum(1 for _line in buffer)
 
 
 def test_pyspy_profiling():
@@ -44,17 +42,13 @@ def test_pyspy_profiling():
 
     print("\n3. Running I/O-intensive function...", flush=True)
     start_time = time.time()
-    io_intensive_function()
+    result = io_intensive_function()
     io_time = time.time() - start_time
-    print(f"I/O function completed in {io_time:.3f}s", flush=True)
+    print(f"I/O function completed in {io_time:.3f}s, result: {result}", flush=True)
 
     print("\n4. Testing py-spy availability...", flush=True)
-    proc = subprocess.run(
-        [sys.executable, "-m", "pip", "show", "py-spy"], capture_output=True, text=True
-    )
-    if proc.returncode == 0:
+    if find_spec("py_spy") is not None:
         print("py-spy is available", flush=True)
-        print(proc.stdout, end="", flush=True)
     else:
         print("py-spy not installed (expected for this test)", flush=True)
 

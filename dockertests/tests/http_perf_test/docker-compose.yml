@@ -23,7 +23,7 @@ services:
       SERVER_PORT: 5000
       SERVER_HEALTH_PATH: /health
       PING_PATH: /ping
-      RETRACE_RECORDING_PATH: disable
+      RETRACE_RECORDING: disable
 
   record:
     volumes:
@@ -49,4 +49,12 @@ services:
     volumes:
       - ${TEST_DIR}:/app/test:rw
       - ${TEST_DIR}/recording:/recording:rw
-    command: bash -c "python /app/test/compare.py && if [ -z \"$(ls -A /recording 2>/dev/null)\" ]; then echo '✓ No recording created (RETRACE_RECORDING_PATH=disable working)'; else echo '❌ ERROR: recording directory should be empty' && ls -la /recording && exit 1; fi"
+    command: >
+      bash -c "python /app/test/compare.py &&
+      if [ -z \"$(ls -A /recording 2>/dev/null)\" ]; then
+        echo 'No recording created (RETRACE_RECORDING=disable working)';
+      else
+        echo 'ERROR: recording directory should be empty';
+        ls -la /recording;
+        exit 1;
+      fi"
