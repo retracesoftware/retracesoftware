@@ -1,6 +1,7 @@
 """IO bridge helpers for the gate-based ``System``."""
 from collections import deque
 from contextlib import contextmanager
+import enum
 import retracesoftware.functional as functional
 import retracesoftware.stream as stream
 import retracesoftware.utils as utils
@@ -25,9 +26,9 @@ from retracesoftware.proxy.system import (
     System,
 )
 import gc
-import threading
 import sys
 import os
+import types
 from retracesoftware.proxy.gateway import ext_replay_gateway, int_replay_gateway
 
 class _MarkerMessage:
@@ -389,6 +390,21 @@ def _is_socketpair_function(fn):
     )
 
 
+def _is_descriptor_get_function(fn):
+    objclass = getattr(fn, "__objclass__", None)
+    return (
+        getattr(fn, "__name__", "") == "__get__"
+        and getattr(objclass, "__name__", "") in {"getset_descriptor", "member_descriptor"}
+    )
+
+
+def _is_dynamic_proxy_shim(fn):
+    return (
+        getattr(fn, "__qualname__", "")
+        == "_ext_proxytype_from_spec.<locals>.unbound_function.<locals>.<lambda>"
+    )
+
+
 def _socketpair_args_with_defaults(args):
     if len(args) > 3:
         return args
@@ -410,10 +426,23 @@ def _socketpair_args_with_defaults(args):
     return tuple(args) + defaults[len(args):]
 
 
+def _descriptor_get_args_without_owner(args):
+    if len(args) == 3 and args[1] is not None:
+        return args[:2]
+    return args
+
+
 def _equal_call_payload(a, b):
     fn_a = a.get("function")
     fn_b = b.get("function")
-    if not equal(fn_a, fn_b):
+    target_a = _unwrap_callable(fn_a)
+    target_b = _unwrap_callable(fn_b)
+    same_dynamic_proxy_shim = (
+        _is_dynamic_proxy_shim(target_a)
+        and _is_dynamic_proxy_shim(target_b)
+    )
+
+    if not equal(fn_a, fn_b) and not same_dynamic_proxy_shim:
         return False
 
     args_a = a.get("args", ())
@@ -422,28 +451,28 @@ def _equal_call_payload(a, b):
     kwargs_b = b.get("kwargs", {})
     normalized_a = _normalized_call_args(fn_a, args_a)
     normalized_b = _normalized_call_args(fn_b, args_b)
-    if kwargs_a == kwargs_b and equal(normalized_a, normalized_b):
+    args_equal = equal(normalized_a, normalized_b)
+    if kwargs_a == kwargs_b and args_equal:
         return True
 
-    target = _unwrap_callable(fn_a)
-
-    if kwargs_a == kwargs_b and _is_socketpair_function(target):
+    if kwargs_a == kwargs_b and _is_socketpair_function(target_a):
         return (
             _socketpair_args_with_defaults(normalized_a)
             == _socketpair_args_with_defaults(normalized_b)
         )
 
-    qualname = getattr(target, "__qualname__", "")
-    is_dynamic_proxy_shim = (
-        qualname == "_ext_proxytype_from_spec.<locals>.unbound_function.<locals>.<lambda>"
-    )
+    if kwargs_a == kwargs_b and _is_descriptor_get_function(target_a):
+        return equal(
+            _descriptor_get_args_without_owner(normalized_a),
+            _descriptor_get_args_without_owner(normalized_b),
+        )
 
     if (
         not args_a
         or not args_b
     ) and (
-        getattr(target, "__objclass__", None) is not None
-        or is_dynamic_proxy_shim
+        getattr(target_a, "__objclass__", None) is not None
+        or same_dynamic_proxy_shim
     ):
         return True
 
@@ -453,14 +482,31 @@ def equal(a, b):
     if a is b:
         return True
 
-    if _is_unbound_external_marker(a):
-        return _marker_matches_value(a, b)
-    if _is_unbound_external_marker(b):
-        return _marker_matches_value(b, a)
+    if isinstance(a, memoryview) and isinstance(b, (bytes, bytearray)):
+        return a.tobytes() == bytes(b)
+    if isinstance(b, memoryview) and isinstance(a, (bytes, bytearray)):
+        return b.tobytes() == bytes(a)
+
     if _is_checkpoint_external_marker(a):
         return _checkpoint_marker_matches_value(a, b)
     if _is_checkpoint_external_marker(b):
         return _checkpoint_marker_matches_value(b, a)
+    if _is_checkpoint_descriptor_marker(a):
+        return _checkpoint_descriptor_marker_matches_value(a, b)
+    if _is_checkpoint_descriptor_marker(b):
+        return _checkpoint_descriptor_marker_matches_value(b, a)
+    if _is_checkpoint_enum_marker(a):
+        return _checkpoint_enum_marker_matches_value(a, b)
+    if _is_checkpoint_enum_marker(b):
+        return _checkpoint_enum_marker_matches_value(b, a)
+    if _is_checkpoint_exception_marker(a):
+        return _checkpoint_exception_marker_matches_value(a, b)
+    if _is_checkpoint_exception_marker(b):
+        return _checkpoint_exception_marker_matches_value(b, a)
+    if _is_checkpoint_traceback_marker(a):
+        return _checkpoint_traceback_marker_matches_value(a, b)
+    if _is_checkpoint_traceback_marker(b):
+        return _checkpoint_traceback_marker_matches_value(b, a)
 
     unwrapped_a = _unwrap_callable(a)
     unwrapped_b = _unwrap_callable(b)
@@ -574,12 +620,11 @@ def _on_error(error): return {"error": error}
 def _binding_handle(binding):
     return binding.handle if hasattr(binding, "handle") else binding
 
-_UNBOUND_EXTERNAL_MARKER = "__retrace_unbound_external__"
-_UNBOUND_EXTERNAL_TYPES = {
-    ("_thread", "lock"),
-    ("_thread", "RLock"),
-}
 _CHECKPOINT_EXTERNAL_MARKER = "__retrace_checkpoint_external__"
+_CHECKPOINT_DESCRIPTOR_MARKER = "__retrace_checkpoint_descriptor__"
+_CHECKPOINT_ENUM_MARKER = "__retrace_checkpoint_enum__"
+_CHECKPOINT_EXCEPTION_MARKER = "__retrace_checkpoint_exception__"
+_CHECKPOINT_TRACEBACK_MARKER = "__retrace_checkpoint_traceback__"
 
 
 def _external_type_key(value):
@@ -588,25 +633,6 @@ def _external_type_key(value):
         getattr(cls, "__module__", ""),
         getattr(cls, "__qualname__", getattr(cls, "__name__", "")),
     )
-
-
-def _unbound_external_marker(value):
-    type_key = _external_type_key(value)
-    if type_key in _UNBOUND_EXTERNAL_TYPES:
-        return (_UNBOUND_EXTERNAL_MARKER, *type_key)
-    return value
-
-
-def _is_unbound_external_marker(value):
-    return (
-        isinstance(value, tuple)
-        and len(value) == 3
-        and value[0] == _UNBOUND_EXTERNAL_MARKER
-    )
-
-
-def _marker_matches_value(marker, value):
-    return marker[1:] == _external_type_key(value)
 
 
 def _unwrap_callable(value):
@@ -640,6 +666,119 @@ def _checkpoint_external_marker(value):
     return (_CHECKPOINT_EXTERNAL_MARKER, *type_key)
 
 
+def _raw_checkpoint_descriptor_key(value):
+    if isinstance(value, utils.ExternalWrapped):
+        return None
+
+    descriptor_type_name = type(value).__name__
+    if descriptor_type_name not in ("getset_descriptor", "member_descriptor"):
+        return None
+
+    owner = getattr(value, "__objclass__", None)
+    if owner is None:
+        return None
+
+    return (
+        descriptor_type_name,
+        getattr(owner, "__module__", ""),
+        getattr(owner, "__qualname__", getattr(owner, "__name__", "")),
+        getattr(value, "__name__", ""),
+    )
+
+
+def _checkpoint_descriptor_key(value):
+    descriptor_key = _raw_checkpoint_descriptor_key(value)
+    if descriptor_key is not None:
+        return descriptor_key
+
+    try:
+        if isinstance(value, utils._WrappedBase):
+            unwrapped = utils.unwrap(value)
+        else:
+            unwrapped = utils.try_unwrap(value)
+    except Exception:
+        return None
+
+    if unwrapped is value:
+        return None
+    return _raw_checkpoint_descriptor_key(unwrapped)
+
+
+def _checkpoint_descriptor_marker(value):
+    descriptor_key = _checkpoint_descriptor_key(value)
+    if descriptor_key is None:
+        return value
+    return (_CHECKPOINT_DESCRIPTOR_MARKER, *descriptor_key)
+
+
+def _checkpoint_descriptor_proxy_type_name(value):
+    if not isinstance(value, utils.ExternalWrapped):
+        return None
+
+    cls = type(value)
+    type_name = getattr(cls, "__qualname__", getattr(cls, "__name__", ""))
+    if type_name in ("getset_descriptor", "member_descriptor"):
+        return type_name
+    return None
+
+
+def _checkpoint_enum_key(value):
+    if not isinstance(value, enum.Enum):
+        return None
+
+    cls = type(value)
+    return (
+        getattr(cls, "__module__", ""),
+        getattr(cls, "__qualname__", getattr(cls, "__name__", "")),
+        value.value,
+    )
+
+
+def _checkpoint_enum_marker(value):
+    enum_key = _checkpoint_enum_key(value)
+    if enum_key is None:
+        return value
+    return (_CHECKPOINT_ENUM_MARKER, *enum_key)
+
+
+def _checkpoint_exception_type_key(value):
+    if not isinstance(value, BaseException):
+        return None
+
+    cls = type(value)
+    return (
+        getattr(cls, "__module__", ""),
+        getattr(cls, "__qualname__", getattr(cls, "__name__", "")),
+    )
+
+
+def _checkpoint_exception_marker(value):
+    type_key = _checkpoint_exception_type_key(value)
+    if type_key is None:
+        return value
+    return (_CHECKPOINT_EXCEPTION_MARKER, *type_key)
+
+
+def _checkpoint_traceback_marker(value):
+    if not isinstance(value, types.TracebackType):
+        return value
+    return (_CHECKPOINT_TRACEBACK_MARKER,)
+
+
+def _checkpoint_stable_marker(value):
+    for marker in (
+        _checkpoint_descriptor_marker,
+        _checkpoint_enum_marker,
+        _checkpoint_external_marker,
+        _checkpoint_exception_marker,
+        _checkpoint_traceback_marker,
+    ):
+        marked = marker(value)
+        if marked is not value:
+            return marked
+    return value
+
+
 def _is_checkpoint_external_marker(value):
     return (
         isinstance(value, tuple)
@@ -648,8 +787,70 @@ def _is_checkpoint_external_marker(value):
     )
 
 
+def _is_checkpoint_descriptor_marker(value):
+    return (
+        isinstance(value, tuple)
+        and len(value) == 5
+        and value[0] == _CHECKPOINT_DESCRIPTOR_MARKER
+    )
+
+
+def _is_checkpoint_enum_marker(value):
+    return (
+        isinstance(value, tuple)
+        and len(value) == 4
+        and value[0] == _CHECKPOINT_ENUM_MARKER
+    )
+
+
+def _is_checkpoint_exception_marker(value):
+    return (
+        isinstance(value, tuple)
+        and len(value) == 3
+        and value[0] == _CHECKPOINT_EXCEPTION_MARKER
+    )
+
+
+def _is_checkpoint_traceback_marker(value):
+    return (
+        isinstance(value, tuple)
+        and len(value) == 1
+        and value[0] == _CHECKPOINT_TRACEBACK_MARKER
+    )
+
+
 def _checkpoint_marker_matches_value(marker, value):
+    if _is_checkpoint_external_marker(value):
+        return marker == value
     return marker[1:] == _checkpoint_external_type_key(value)
+
+
+def _checkpoint_descriptor_marker_matches_value(marker, value):
+    if _is_checkpoint_descriptor_marker(value):
+        return marker == value
+    key = _checkpoint_descriptor_key(value)
+    if marker[1:] == key:
+        return True
+
+    return marker[1] == _checkpoint_descriptor_proxy_type_name(value)
+
+
+def _checkpoint_enum_marker_matches_value(marker, value):
+    if _is_checkpoint_enum_marker(value):
+        return marker == value
+    return marker[1:] == _checkpoint_enum_key(value)
+
+
+def _checkpoint_exception_marker_matches_value(marker, value):
+    if _is_checkpoint_exception_marker(value):
+        return marker == value
+    return marker[1:] == _checkpoint_exception_type_key(value)
+
+
+def _checkpoint_traceback_marker_matches_value(marker, value):
+    if _is_checkpoint_traceback_marker(value):
+        return True
+    return isinstance(value, types.TracebackType)
 
 
 def normalize_stack_delta(delta):
@@ -671,36 +872,14 @@ def recorder(*,
     stacktraces: bool = False,
     gc_collect_multiplier: int = None) -> System:
 
-    system = None
-    write_lock = threading.RLock()
-    write_lock_acquire = write_lock.acquire
-    write_lock_release = write_lock.release
-    writing_protocol = threading.local()
-    last_thread_id = [None]
-    write_protocol = [None]
+    system = System()
+    system.retrace_mode = "record"
 
-    def write_raw_protocol(*values):
-        if getattr(writing_protocol, "active", False):
-            return None
-
-        write_lock_acquire()
-        try:
-            writing_protocol.active = True
-            if system is not None:
-                thread_id = system.thread_id()
-                if last_thread_id[0] != thread_id:
-                    writer("THREAD_SWITCH", thread_id)
-                    last_thread_id[0] = thread_id
-            writer(*values)
-        finally:
-            writing_protocol.active = False
-            write_lock_release()
-
-    def write(*values):
-        protected_write = write_protocol[0]
-        if protected_write is None:
-            return write_raw_protocol(*values)
-        return protected_write(*values)
+    write_thread_switch = functional.sequence(
+        functional.repeatedly(system.thread_id),
+        functional.partial(writer, "THREAD_SWITCH"),
+    )
+    write = utils.thread_switch(writer, on_thread_switch=write_thread_switch)
 
     def tagged(tag):
         return functional.partial(write, tag)
@@ -708,11 +887,10 @@ def recorder(*,
     binder = stream.Binder(
         on_delete=functional.sequence(_binding_handle, tagged("BINDING_DELETE"))
     )
-
-    system = System(
-        on_bind = functional.sequence(binder.bind, _binding_handle, tagged("NEW_BINDING")),
+    system.bind = utils.runall(
+        system.is_bound.add,
+        functional.sequence(binder.bind, _binding_handle, tagged("NEW_BINDING")),
     )
-    system.retrace_mode = "record"
 
     for runtime_obj in (
         writer,
@@ -721,24 +899,15 @@ def recorder(*,
         getattr(getattr(writer, "__self__", None), "_write_lock", None),
         getattr(getattr(writer, "__self__", None), "_write_object", None),
         write,
-        write_raw_protocol,
+        write_thread_switch,
         tagged,
     ):
         if runtime_obj is not None:
             system.is_bound.add(runtime_obj)
-    system.is_bound.add(write_lock)
-    last_thread_id[0] = system.thread_id()
-    write_protocol[0] = system.disable_for(write_raw_protocol, unwrap_args=False)
+    system.bind(system.ext_proxytype_from_spec)
+    system.bind(system)
 
-    def record_binding(value):
-        binding = binder.lookup(value)
-        if binding is not None:
-            return binding
-        if not isinstance(value, type) and system.is_patched(value):
-            return system.bind(value)
-        return _unbound_external_marker(value)
-
-    add_bindings = functional.walker(record_binding)
+    add_bindings = functional.walker(binder)
 
     def binding_writer(writer):
         return functional.sequence(add_bindings, writer)
@@ -761,7 +930,7 @@ def recorder(*,
     on_start = functional.repeatedly(write, "ON_START")
 
     checkpoint = functional.sequence(
-        functional.walker(_checkpoint_external_marker),
+        functional.walker(_checkpoint_stable_marker),
         binding_writer(tagged("CHECKPOINT")),
     )
 
@@ -909,9 +1078,10 @@ def replayer(*, next_object,
     read_message = message_source.read
     read_raw_message = raw_message_source.read
     system = System(tape_reader.bind)
+    on_unexpected = system.disable_for(on_unexpected, unwrap_args=False)
+    on_desync = system.disable_for(on_desync, unwrap_args=False)
     system.retrace_mode = "replay"
     system.replay_materialize = set()
-    live_materialized = {}
 
     stack = utils.StackFactory()
     current_stack = utils.ThreadLocal([])
@@ -1001,35 +1171,36 @@ def replayer(*, next_object,
         return result
 
     def consume_callback_completion():
-        while True:
-            try:
-                next_value = tape_reader._peek_item(resolve=False)
-            except StopIteration:
-                return
+        try:
+            next_value = tape_reader._peek_item(resolve=False)
+        except StopIteration:
+            return False
 
-            if next_value not in ("CALLBACK_RESULT", "CALLBACK_ERROR", "CHECKPOINT"):
-                return
+        if next_value not in ("CALLBACK_RESULT", "CALLBACK_ERROR", "CHECKPOINT"):
+            return False
 
-            message = read_raw_message()
-            if isinstance(message, (CallbackResultMessage, CallbackErrorMessage, CheckpointMessage)):
-                continue
-
-            return
+        message = read_raw_message()
+        return isinstance(
+            message,
+            (CallbackResultMessage, CallbackErrorMessage, CheckpointMessage),
+        )
 
     def bind_replay_object(obj, on_callback):
-        skipped_callback = False
+        pending_callback_completions = 0
 
         while True:
             try:
                 result = tape_reader.bind(obj)
-                if skipped_callback:
-                    consume_callback_completion()
+                while pending_callback_completions:
+                    if not consume_callback_completion():
+                        break
+                    pending_callback_completions -= 1
                 return result
             except ExpectedBindMarker:
                 message = read_raw_message()
 
                 if isinstance(message, CallbackMessage):
-                    skipped_callback = True
+                    pending_callback_completions += 1
                     on_callback(message)
                     continue
 
@@ -1046,7 +1217,7 @@ def replayer(*, next_object,
                 ):
                     continue
 
-                return system.disable_for(on_unexpected)(message)
+                return on_unexpected(message)
             
     # safeequal = system.disable_for(equal)
     def diff(record, replay):
@@ -1166,53 +1337,11 @@ def replayer(*, next_object,
             if isinstance(message, ErrorMessage):
                 raise message.error
 
-            return system.disable_for(on_unexpected)(message)
-
-    def _create_live_unbound_external(type_key):
-        import _thread
-
-        if type_key == ("_thread", "lock"):
-            return system.disable_for(utils.try_unwrap_apply, unwrap_args=False)(
-                _thread.allocate_lock
-            )
-        if type_key == ("_thread", "RLock"):
-            return system.disable_for(utils.try_unwrap_apply, unwrap_args=False)(
-                _thread.RLock
-            )
-        raise TypeError(f"unsupported unbound external type: {type_key!r}")
-
-    def _live_unbound_external(value):
-        type_key = _external_type_key(value)
-        if type_key not in _UNBOUND_EXTERNAL_TYPES:
-            return value
-
-        live = live_materialized.get(id(value))
-        if live is not None:
-            return live
-
-        try:
-            target = utils.try_unwrap(value)
-        except Exception:
-            target = value
-        if target is not None:
-            return target
-
-        live = _create_live_unbound_external(type_key)
-        live_materialized[id(value)] = live
-        return live
+            return on_unexpected(message)
 
     @utils.exclude_from_stacktrace
     def ext_execute(fn, *args, **kwargs):
-        if args and _external_type_key(args[0]) in _UNBOUND_EXTERNAL_TYPES:
-            live_args = (_live_unbound_external(args[0]), *args[1:])
-            replay = system.disable_for(utils.try_unwrap_apply, unwrap_args=False)(
-                fn, *live_args, **kwargs
-            )
-            record = next_result_message()
-            diff(record=record, replay=replay)
-            return replay
-        result = next_result_message()
-        return result
+        return next_result_message()
 
     system.ext_gateway_factory = functional.partial(ext_replay_gateway, ext_execute)
     system.int_gateway_factory = int_replay_gateway

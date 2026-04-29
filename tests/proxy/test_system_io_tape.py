@@ -12,11 +12,13 @@ from retracesoftware.proxy.io import (
     _IoMessageSource,
     _RawTapeSource,
     _ReplayBindingState,
+    _checkpoint_descriptor_marker,
+    equal,
     recorder_context,
     replayer,
 )
 from retracesoftware.proxy.patchtype import patch_type
-from retracesoftware.proxy.system import ProxyRef
+from retracesoftware.proxy.system import ProxyRef, System
 from retracesoftware.proxy.tape import Tape
 from retracesoftware.tape import RawTapeWriter
 from retracesoftware.testing.memorytape import IOMemoryTape
@@ -224,6 +226,34 @@ def test_replay_binding_state_hydrates_proxy_ref_bindings():
     resolved = reader.resolve({"value": [stream.Binding(7)]})
 
     assert isinstance(resolved["value"][0], DemoExternalWrapped)
+
+
+def test_checkpoint_equal_matches_descriptor_marker_to_proxy_shell():
+    import ssl
+
+    descriptor = super(ssl.SSLContext, ssl.SSLContext).minimum_version
+    marker = _checkpoint_descriptor_marker(descriptor)
+
+    system = System()
+    try:
+        descriptor_proxy = system.descriptor_proxytype(type(descriptor))(descriptor)
+        assert equal(marker, descriptor_proxy)
+
+        ProxyDescriptor = type(
+            "getset_descriptor",
+            (utils.ExternalWrapped,),
+            {"__module__": "builtins"},
+        )
+        proxy_shell = utils.create_wrapped(ProxyDescriptor, None)
+        assert equal(marker, proxy_shell)
+    finally:
+        system.unpatch_types()
+
+
+def test_checkpoint_equal_matches_memoryview_and_bytes_by_content():
+    assert equal(memoryview(b"abc"), b"abc")
+    assert equal(b"abc", memoryview(b"abc"))
+    assert not equal(memoryview(b"abc"), b"abd")
 
 
 def test_raw_tape_source_consumes_binding_delete_before_thread_demux():

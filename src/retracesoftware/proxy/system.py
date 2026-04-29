@@ -13,7 +13,6 @@ gateway factories plus lifecycle/hook attributes.
 """
 
 from typing import NamedTuple, Callable, Any
-import functools
 import retracesoftware.functional as functional
 import retracesoftware.stream as stream
 import retracesoftware.utils as utils
@@ -246,6 +245,7 @@ class System:
 
                 def in_child(*args, **kwargs):
                     self._thread_id.set(next_id)
+                    self.sync()
                     return self.gate.apply_with('internal', wrapped)(*args, **kwargs)
 
                 return in_child
@@ -359,17 +359,6 @@ class System:
                 utils.noop,
             ),
         )
-
-    def disable_method_for(self, function):
-        """Descriptor-friendly disabled wrapper for class methods."""
-
-        disabled = self.disable_for(function, unwrap_args=False)
-
-        @functools.wraps(function)
-        def wrapped(*args, **kwargs):
-            return disabled(*args, **kwargs)
-
-        return wrapped
 
     def __init__(self, on_bind = None) -> None:
 

@@ -39,7 +39,7 @@ bind = ["_lock"]
 disable = ["_acquireLock", "_releaseLock"]
 
 ["asyncio.base_events".type_attributes.BaseEventLoop]
-sync = ["_call_soon"]
+sync = ["call_soon_threadsafe"]
 
 [_datetime]
 immutable = ["datetime", "tzinfo", "timezone"]
