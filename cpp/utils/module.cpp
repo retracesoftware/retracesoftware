@@ -779,6 +779,7 @@ PyMODINIT_FUNC CONCAT(PyInit_, MODULE_NAME)(void) {
         &retracesoftware::Wrapped_Type,
         &retracesoftware::Proxy_Type,
         &retracesoftware::WrappedFunction_Type,
+        &retracesoftware::WrappedCallable_Type,
         &retracesoftware::MutableFunctionWrapper_Type,
         &retracesoftware::WrappedMember_Type,
         &retracesoftware::Reference_Type,

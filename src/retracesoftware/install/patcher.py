@@ -227,7 +227,14 @@ def param_predicate(signature, param_name, predicate):
     extractor = functional.param(str(param_name), idx)
     return functional.sequence(extractor, predicate) 
 
-def patch(module, spec, installation, update_refs = None, pathpredicate = None):
+def patch(
+    module,
+    spec,
+    installation,
+    update_refs=None,
+    pathpredicate=None,
+    module_ref_index=None,
+):
     """Apply a TOML-derived patch spec to *module* using *installation*.
 
     Parameters
@@ -251,6 +258,9 @@ def patch(module, spec, installation, update_refs = None, pathpredicate = None):
         and returns True if the call should be retraced (proxied),
         False if it should passthrough to the original function.
         Used by the ``pathparam`` directive.
+    module_ref_index : ModuleRefIndex or None
+        Optional install-scoped module-reference index used to avoid scanning
+        every loaded module for every already-loaded symbol replacement.
 
     Returns
     -------
@@ -300,7 +310,11 @@ def patch(module, spec, installation, update_refs = None, pathpredicate = None):
             namespace[name] = new
             module_ref_changes = []
             if update_refs:
-                module_ref_changes = update_module_refs(old, new)
+                module_ref_changes = (
+                    module_ref_index.replace(old, new)
+                    if module_ref_index is not None
+                    else update_module_refs(old, new)
+                )
             ns_undos.append((name, old, new, "all" if update_refs else None, module_ref_changes))
             originals.setdefault(name, old)
             if update_refs:
@@ -443,6 +457,7 @@ def patch(module, spec, installation, update_refs = None, pathpredicate = None):
                                 installation,
                                 update_refs=update_refs,
                                 pathpredicate=pathpredicate,
+                                module_ref_index=module_ref_index,
                             )
                         for attr, new_val in cls_ns.items():
                             old_val = getattr(cls, attr, None)
@@ -464,7 +479,11 @@ def patch(module, spec, installation, update_refs = None, pathpredicate = None):
                         namespace[name] = wrapped
                         module_ref_changes = []
                         if update_refs:
-                            module_ref_changes = update_module_refs(patched, wrapped)
+                            module_ref_changes = (
+                                module_ref_index.replace(patched, wrapped)
+                                if module_ref_index is not None
+                                else update_module_refs(patched, wrapped)
+                            )
                         ns_undos.append((name, patched, wrapped, "module", module_ref_changes))
                         originals.setdefault(name, patched)
 

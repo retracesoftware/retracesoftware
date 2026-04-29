@@ -146,6 +146,116 @@ namespace retracesoftware {
         .tp_new = (newfunc)WrappedFunction::create,
     };
 
+    struct WrappedCallable : public PyObject {
+        PyObject * target;
+        vectorcallfunc target_vectorcall;
+        vectorcallfunc vectorcall;
+
+        static int traverse(WrappedCallable* self, visitproc visit, void* arg) {
+            Py_VISIT(self->target);
+            return 0;
+        }
+
+        static int clear(WrappedCallable * self) {
+            Py_CLEAR(self->target);
+            return 0;
+        }
+
+        static void dealloc(WrappedCallable * self) {
+            PyObject_GC_UnTrack(self);
+            Py_TYPE(self)->tp_clear(reinterpret_cast<PyObject *>(self));
+            Py_TYPE(self)->tp_free(reinterpret_cast<PyObject *>(self));
+        }
+
+        static PyObject * create(PyTypeObject * cls, PyObject * args, PyObject * kwargs) {
+            PyObject * target;
+            static const char *kwlist[] = {"wrapped", NULL};
+
+            if (!PyArg_ParseTupleAndKeywords(args, kwargs, "O", (char **)kwlist, &target)) {
+                return nullptr;
+            }
+
+            if (!PyCallable_Check(target)) {
+                PyErr_Format(PyExc_TypeError, "wrapped must be callable, but was: %S", target);
+                return nullptr;
+            }
+
+            WrappedCallable * self = reinterpret_cast<WrappedCallable *>(cls->tp_alloc(cls, 0));
+            if (!self) return nullptr;
+
+            self->target = Py_NewRef(target);
+            self->target_vectorcall = extract_vectorcall(target);
+            self->vectorcall = py_vectorcall;
+
+            return reinterpret_cast<PyObject *>(self);
+        }
+
+        PyObject * call(PyObject* const * args, size_t nargsf, PyObject* kwnames) {
+            if (Py_EnterRecursiveCall(" while calling wrapped_callable")) {
+                return nullptr;
+            }
+
+            PyObject * result = target_vectorcall(target, args, nargsf, kwnames);
+            Py_LeaveRecursiveCall();
+            return result;
+        }
+
+        static PyObject * py_vectorcall(PyObject * self, PyObject* const * args, size_t nargsf, PyObject* kwnames) {
+            return reinterpret_cast<WrappedCallable *>(self)->call(args, nargsf, kwnames);
+        }
+
+        static PyObject * tp_descr_get(PyObject * self, PyObject * obj, PyObject * type) {
+            return Py_NewRef(self);
+        }
+
+        static PyObject * tp_getattro(PyObject * self, PyObject * name) {
+            PyObject * result = PyObject_GenericGetAttr(self, name);
+            if (result) return result;
+
+            PyErr_Clear();
+            return PyObject_GetAttr(reinterpret_cast<WrappedCallable *>(self)->target, name);
+        }
+
+        static PyObject * get_wrapped(WrappedCallable * self, void * closure) {
+            return Py_NewRef(self->target);
+        }
+
+        static PyObject * repr(WrappedCallable * self) {
+            return PyObject_Repr(self->target);
+        }
+
+        static PyGetSetDef getset[];
+    };
+
+    PyGetSetDef WrappedCallable::getset[] = {
+        {"_retrace_wrapped", (getter)WrappedCallable::get_wrapped, NULL, "wrapped callable", NULL},
+        {"__wrapped__", (getter)WrappedCallable::get_wrapped, NULL, "wrapped callable", NULL},
+        {NULL}
+    };
+
+    PyTypeObject WrappedCallable_Type = {
+        .ob_base = PyVarObject_HEAD_INIT(NULL, 0)
+        .tp_name = MODULE "wrapped_callable",
+        .tp_basicsize = sizeof(WrappedCallable),
+        .tp_itemsize = 0,
+        .tp_dealloc = (destructor)WrappedCallable::dealloc,
+        .tp_vectorcall_offset = OFFSET_OF_MEMBER(WrappedCallable, vectorcall),
+        .tp_repr = (reprfunc)WrappedCallable::repr,
+        .tp_call = PyVectorcall_Call,
+        .tp_getattro = WrappedCallable::tp_getattro,
+        .tp_str = (reprfunc)WrappedCallable::repr,
+        .tp_flags = Py_TPFLAGS_DEFAULT |
+                    Py_TPFLAGS_HAVE_GC |
+                    Py_TPFLAGS_HAVE_VECTORCALL |
+                    Py_TPFLAGS_BASETYPE,
+        .tp_doc = "Non-binding callable wrapper.",
+        .tp_traverse = (traverseproc)WrappedCallable::traverse,
+        .tp_clear = (inquiry)WrappedCallable::clear,
+        .tp_getset = WrappedCallable::getset,
+        .tp_descr_get = WrappedCallable::tp_descr_get,
+        .tp_new = (newfunc)WrappedCallable::create,
+    };
+
     // struct Getter : public Wrapped {
 
     // };

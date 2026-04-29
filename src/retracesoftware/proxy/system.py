@@ -43,25 +43,7 @@ class ProxyRef:
         return utils.create_wrapped(self.cls, None)
 
 
-class wrapped_callable:
-    """Prevent module-level wrapped callables from binding as methods."""
-
-    __slots__ = ("_retrace_wrapped",)
-
-    def __init__(self, wrapped):
-        self._retrace_wrapped = wrapped
-
-    def __call__(self, *args, **kwargs):
-        return self._retrace_wrapped(*args, **kwargs)
-
-    def __get__(self, instance, owner=None):
-        return self
-
-    def __getattr__(self, name):
-        return getattr(self._retrace_wrapped, name)
-
-    def __repr__(self):
-        return repr(self._retrace_wrapped)
+wrapped_callable = utils.wrapped_callable
 
 
 class disabled_callable(wrapped_callable):
@@ -70,8 +52,10 @@ class disabled_callable(wrapped_callable):
     __retrace_disabled_thread_target__ = True
     __slots__ = ("_retrace_call",)
 
+    def __new__(cls, wrapped, call):
+        return super().__new__(cls, wrapped)
+
     def __init__(self, wrapped, call):
-        super().__init__(wrapped)
         self._retrace_call = call
 
     def __call__(self, *args, **kwargs):

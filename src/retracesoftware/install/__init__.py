@@ -120,7 +120,7 @@ def install_retrace(*, system, retrace_file_patterns=None, monitor_level=0, verb
     pathpredicate = make_pathpredicate(load_patterns(retrace_file_patterns), verbose=verbose)
     io_pathpredicate = make_pathpredicate([], verbose=verbose)
 
-    def module_patcher(namespace, update_refs, module_name=None):
+    def module_patcher(namespace, update_refs, module_name=None, module_ref_index=None):
         name = module_name or namespace.get('__name__')
         if name and name in module_config:
             active_pathpredicate = (
@@ -133,6 +133,7 @@ def install_retrace(*, system, retrace_file_patterns=None, monitor_level=0, verb
                 installation,
                 update_refs=update_refs,
                 pathpredicate=active_pathpredicate,
+                module_ref_index=module_ref_index,
             )
             if undo is not None:
                 patch_undos.append(undo)

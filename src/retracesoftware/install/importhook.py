@@ -131,6 +131,14 @@ def patch_already_loaded(module_patcher, module_config):
         The TOML config resolver — ``module_config.keys()`` yields the
         module names that have configurations.
     """
+    from retracesoftware.install.replace import ModuleRefIndex
+
+    module_ref_index = ModuleRefIndex()
     for modname in list(module_config.keys()):
         if modname in sys.modules:
-            module_patcher(sys.modules[modname].__dict__, True, modname)
+            module_patcher(
+                sys.modules[modname].__dict__,
+                True,
+                modname,
+                module_ref_index=module_ref_index,
+            )

@@ -22,6 +22,13 @@ def _make_dispatcher(events, **kwargs):
     return _utils.Dispatcher(source, **kwargs)
 
 
+def _wait_for_waiters(dispatcher, count, timeout=5):
+    deadline = time.monotonic() + timeout
+    while dispatcher.waiting_thread_count < count and time.monotonic() < deadline:
+        time.sleep(0.001)
+    assert dispatcher.waiting_thread_count == count
+
+
 class TestNextPredicate:
     """Basic next(predicate) dispatch."""
 
@@ -81,6 +88,162 @@ class TestNextPredicate:
         assert results[1] == ["a", "c"]
         assert results[2] == ["b", "d"]
 
+    def test_waiting_matching_thread_is_not_deadlock(self):
+        """A waiter for the buffered item means another thread should keep waiting."""
+        d = _make_dispatcher([
+            (1, "worker-first"),
+            (0, "main-middle"),
+            (1, "worker-last"),
+        ])
+        ready = threading.Event()
+        results = {}
+        errors = []
+
+        def waiting_for_main_item():
+            ready.set()
+            try:
+                results["main"] = d.next(lambda item: item[0] == 0)
+            except BaseException as exc:
+                errors.append(exc)
+
+        t = threading.Thread(target=waiting_for_main_item)
+        t.start()
+        assert ready.wait(timeout=5)
+
+        _wait_for_waiters(d, 1)
+
+        try:
+            first = d.next(lambda item: item[0] == 1)
+            second = d.next(lambda item: item[0] == 1)
+        finally:
+            t.join(timeout=5)
+
+        assert not t.is_alive()
+        assert errors == []
+        assert first == (1, "worker-first")
+        assert second == (1, "worker-last")
+        assert results == {"main": (0, "main-middle")}
+        assert d.waiting_thread_count == 0
+
+    def test_repeated_waiting_matching_thread_handoffs_are_not_deadlock(self):
+        d = _make_dispatcher([
+            (1, "worker-1"),
+            (0, "main-1"),
+            (1, "worker-2"),
+            (0, "main-2"),
+            (1, "worker-3"),
+        ])
+        ready = threading.Event()
+        main_results = []
+        errors = []
+
+        def waiting_for_main_items():
+            try:
+                ready.set()
+                main_results.append(d.next(lambda item: item[0] == 0))
+                main_results.append(d.next(lambda item: item[0] == 0))
+            except BaseException as exc:
+                errors.append(exc)
+
+        t = threading.Thread(target=waiting_for_main_items)
+        t.start()
+        assert ready.wait(timeout=5)
+        _wait_for_waiters(d, 1)
+
+        try:
+            worker_results = [
+                d.next(lambda item: item[0] == 1),
+                d.next(lambda item: item[0] == 1),
+                d.next(lambda item: item[0] == 1),
+            ]
+        finally:
+            t.join(timeout=5)
+
+        assert not t.is_alive()
+        assert errors == []
+        assert main_results == [(0, "main-1"), (0, "main-2")]
+        assert worker_results == [
+            (1, "worker-1"),
+            (1, "worker-2"),
+            (1, "worker-3"),
+        ]
+        assert d.waiting_thread_count == 0
+
+    def test_wait_for_all_pending_returns_when_other_threads_are_waiting(self):
+        d = _make_dispatcher([(0, "main"), (1, "worker")])
+        ready = threading.Event()
+        results = {}
+        errors = []
+
+        def waiting_for_worker_item():
+            ready.set()
+            try:
+                results["worker"] = d.next(lambda item: item[0] == 1)
+            except BaseException as exc:
+                errors.append(exc)
+
+        t = threading.Thread(target=waiting_for_worker_item)
+        t.start()
+        assert ready.wait(timeout=5)
+
+        d.wait_for_all_pending()
+        assert d.waiting_thread_count == 1
+
+        results["main"] = d.next(lambda item: item[0] == 0)
+        t.join(timeout=5)
+
+        assert not t.is_alive()
+        assert errors == []
+        assert results == {
+            "main": (0, "main"),
+            "worker": (1, "worker"),
+        }
+        assert d.waiting_thread_count == 0
+
+    def test_interrupt_runs_waiter_callback_and_restores_buffered_item(self):
+        d = _make_dispatcher([(0, "main"), (1, "worker")])
+        ready = threading.Event()
+        callback_seen = threading.Event()
+        callback_calls = []
+        results = {}
+        errors = []
+
+        def waiting_for_worker_item():
+            ready.set()
+            try:
+                results["worker"] = d.next(lambda item: item[0] == 1)
+            except BaseException as exc:
+                errors.append(exc)
+
+        t = threading.Thread(target=waiting_for_worker_item)
+        t.start()
+        assert ready.wait(timeout=5)
+        _wait_for_waiters(d, 1)
+        assert d.buffered == (0, "main")
+
+        def on_waiting_thread():
+            callback_calls.append(threading.get_ident())
+            callback_seen.set()
+
+        def while_interrupted():
+            assert callback_seen.wait(timeout=5)
+            return "interrupted"
+
+        assert d.interrupt(on_waiting_thread, while_interrupted) == "interrupted"
+        assert len(callback_calls) == 1
+        assert d.buffered == (0, "main")
+
+        results["main"] = d.next(lambda item: item[0] == 0)
+        t.join(timeout=5)
+
+        assert not t.is_alive()
+        assert errors == []
+        assert results == {
+            "main": (0, "main"),
+            "worker": (1, "worker"),
+        }
+        assert d.waiting_thread_count == 0
+
 
 class TestNoMatch:
     """Error detection when no thread's predicate matches the buffered item."""
@@ -101,6 +264,34 @@ class TestNoMatch:
 
         with pytest.raises(RuntimeError, match="too many threads waiting"):
             d.next(lambda x: x[0] == 1)
+
+    def test_multi_thread_no_match_still_errors_and_can_be_cleaned_up(self):
+        d = _make_dispatcher([(99, "orphan")])
+        ready = threading.Event()
+        errors = []
+
+        def waiting_for_missing_item():
+            ready.set()
+            try:
+                d.next(lambda item: item[0] == 1)
+            except BaseException as exc:
+                errors.append(exc)
+
+        t = threading.Thread(target=waiting_for_missing_item)
+        t.start()
+        assert ready.wait(timeout=5)
+        _wait_for_waiters(d, 1)
+
+        with pytest.raises(RuntimeError, match="too many threads waiting"):
+            d.next(lambda item: item[0] == 2)
+
+        assert d.next(lambda item: item[0] == 99) == (99, "orphan")
+        t.join(timeout=5)
+
+        assert not t.is_alive()
+        assert len(errors) == 1
+        assert isinstance(errors[0], StopIteration)
+        assert d.waiting_thread_count == 0
 
 
 class TestTerminalState:

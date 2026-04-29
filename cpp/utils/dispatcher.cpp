@@ -63,7 +63,11 @@ struct Dispatcher : public PyObject {
 
     PyObject* source;
     std::atomic<PyObject*> buffered;
+    std::atomic<unsigned long long> buffered_generation;
     std::atomic<int> num_waiting_threads;
+    // Deadlock detection only counts waiters parked on the current buffered item.
+    std::atomic<unsigned long long> waiting_generation;
+    std::atomic<int> num_waiting_generation_threads;
 
     // ------------------------------------------------------------------
     // Init
@@ -80,9 +84,25 @@ struct Dispatcher : public PyObject {
 
         self->source = Py_NewRef(source);
         self->buffered.store(nullptr, std::memory_order_relaxed);
+        self->buffered_generation.store(0, std::memory_order_relaxed);
         self->num_waiting_threads.store(0, std::memory_order_relaxed);
+        self->waiting_generation.store(0, std::memory_order_relaxed);
+        self->num_waiting_generation_threads.store(0, std::memory_order_relaxed);
 
         return 0;
+    }
+
+    void store_buffered(PyObject *value) {
+        buffered.store(value, std::memory_order_release);
+        buffered_generation.fetch_add(1, std::memory_order_release);
+        atomic_notify_all_compat(buffered);
+    }
+
+    PyObject *exchange_buffered(PyObject *value) {
+        PyObject *previous = buffered.exchange(value, std::memory_order_acq_rel);
+        buffered_generation.fetch_add(1, std::memory_order_release);
+        atomic_notify_all_compat(buffered);
+        return previous;
     }
 
     // ------------------------------------------------------------------
@@ -128,17 +148,16 @@ struct Dispatcher : public PyObject {
                         std::memory_order_acquire)) {
                     continue;
                 }
+                buffered_generation.fetch_add(1, std::memory_order_release);
                 next = PyObject_CallNoArgs(source);
                 if (!next) {
                     PyObject *exc = get_raised_exception();
                     Py_CLEAR(source);
-                    buffered.store(exc, std::memory_order_release);
-                    atomic_notify_all_compat(buffered);
+                    store_buffered(exc);
                     restore_raised_exception(exc);
                     return nullptr;
                 }
-                buffered.store(next, std::memory_order_release);
-                atomic_notify_all_compat(buffered);
+                store_buffered(next);
                 return next;
             }
         }
@@ -161,6 +180,9 @@ struct Dispatcher : public PyObject {
                 return nullptr;
             }
 
+            unsigned long long generation =
+                self->buffered_generation.load(std::memory_order_acquire);
+
             PyObject * should_take = PyObject_CallOneArg(predicate, next);
 
             if (!should_take) {
@@ -174,20 +196,38 @@ struct Dispatcher : public PyObject {
             }
 
             if (truthy) {
-                PyObject *taken = self->buffered.exchange(nullptr, std::memory_order_acq_rel);
-                atomic_notify_all_compat(self->buffered);
+                PyObject *taken = self->exchange_buffered(nullptr);
                 if (taken) return taken;
-            } else if (self->num_waiting_threads.load(std::memory_order_acquire) < count_interpreter_tstates() - 1) {
+            } else {
+                int target = count_interpreter_tstates() - 1;
+                unsigned long long active_waiting_generation =
+                    self->waiting_generation.load(std::memory_order_acquire);
+                int generation_waiters =
+                    active_waiting_generation == generation
+                        ? self->num_waiting_generation_threads.load(std::memory_order_acquire)
+                        : 0;
+
+                if (generation_waiters >= target) {
+                    PyErr_SetString(PyExc_RuntimeError, "Dispatcher: too many threads waiting for item");
+                    return nullptr;
+                }
+
+                if (active_waiting_generation != generation) {
+                    self->waiting_generation.store(generation, std::memory_order_release);
+                    self->num_waiting_generation_threads.store(0, std::memory_order_release);
+                }
+
                 self->num_waiting_threads.fetch_add(1, std::memory_order_release);
+                self->num_waiting_generation_threads.fetch_add(1, std::memory_order_release);
                 atomic_notify_all_compat(self->num_waiting_threads);
                 Py_BEGIN_ALLOW_THREADS
                 atomic_wait_compat(self->buffered, next);
                 self->num_waiting_threads.fetch_sub(1, std::memory_order_release);
                 atomic_notify_all_compat(self->num_waiting_threads);
                 Py_END_ALLOW_THREADS
-            } else {
-                PyErr_SetString(PyExc_RuntimeError, "Dispatcher: too many threads waiting for item");
-                return nullptr;
+                if (self->waiting_generation.load(std::memory_order_acquire) == generation) {
+                    self->num_waiting_generation_threads.fetch_sub(1, std::memory_order_release);
+                }
             }
         }
     }
@@ -231,13 +271,11 @@ struct Dispatcher : public PyObject {
 
         PyObject *saved = self->buffered.load(std::memory_order_acquire);
         PyObject *tagged = (PyObject *)((uintptr_t)on_waiting | 1);
-        self->buffered.store(tagged, std::memory_order_release);
-        atomic_notify_all_compat(self->buffered);
+        self->store_buffered(tagged);
 
         PyObject *result = PyObject_CallNoArgs(while_interrupted);
 
-        self->buffered.store(saved, std::memory_order_release);
-        atomic_notify_all_compat(self->buffered);
+        self->store_buffered(saved);
 
         if (!result) return nullptr;
         return result;
@@ -270,7 +308,7 @@ struct Dispatcher : public PyObject {
 
     static int clear(Dispatcher *self) {
         Py_CLEAR(self->source);
-        PyObject *buf = self->buffered.exchange(nullptr, std::memory_order_acq_rel);
+        PyObject *buf = self->exchange_buffered(nullptr);
         if (is_buffered_pyobject(buf)) {
             Py_XDECREF(buf);
         }

@@ -1489,6 +1489,50 @@ class TestWrappedUnwrap:
         assert calls[0][1] is wf
         assert calls[0][2] == (5,)
 
+    def test_wrapped_callable_calls_wrapped_target_without_binding_as_method(self):
+        calls = []
+
+        def original(self, x):
+            calls.append(("original", self, x))
+            return x + 1
+
+        def handler(wrapped, *args, **kwargs):
+            calls.append(("handler", wrapped, args))
+            return _utils.unwrap_apply(wrapped, *args, **kwargs)
+
+        wf = _utils.wrapped_function(target=original, handler=handler)
+        wc = _utils.wrapped_callable(wf)
+
+        class Owner:
+            method = wc
+
+        owner = Owner()
+
+        assert Owner.method is wc
+        assert owner.method is wc
+        assert wc(owner, 5) == 6
+        assert calls == [
+            ("handler", wf, (owner, 5)),
+            ("original", owner, 5),
+        ]
+
+    def test_wrapped_callable_forwards_attrs_and_is_not_unwrapped_by_utils(self):
+        def original():
+            return "ok"
+
+        def handler(wrapped, *args, **kwargs):
+            return _utils.unwrap_apply(wrapped, *args, **kwargs)
+
+        wf = _utils.wrapped_function(target=original, handler=handler)
+        wc = _utils.wrapped_callable(wf)
+
+        assert wc.__name__ == original.__name__
+        assert wc._retrace_wrapped is wf
+        assert wc.__wrapped__ is wf
+        assert repr(wc) == repr(wf)
+        assert not _utils.is_wrapped(wc)
+        assert _utils.try_unwrap(wc) is wc
+
     def test_try_unwrap_wrapped_function(self):
         def original(x):
             return x + 1
