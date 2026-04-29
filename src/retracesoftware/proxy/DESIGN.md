@@ -55,6 +55,10 @@ At a high level:
 - `recorder()` / `replayer()`
   Build protocol hooks and replay sources, then configure a `System` instance
   with the right gateways, lifecycle hooks, and binding behavior.
+- `stream.writer` / top-level `create_tape_writer()`
+  Provide the record sink for the CLI path. `io.recorder()` receives the writer
+  as a callable and calls it directly; the native writer owns multi-value
+  batching, serialization, locking, and reentrancy for trace output.
 
 ## Core Runtime Model
 
@@ -261,6 +265,48 @@ So a recorded external operation may write a sequence like:
 Record mode is therefore the mode that executes live nondeterministic behavior
 and turns it into an ordered message stream.
 
+### Record hot path
+
+The record hot path is every operation that runs for each boundary call or each
+recorded protocol value. This path must stay in native/combinator code unless a
+Python call is the actual application callback or live external behavior being
+recorded.
+
+Do not add Python helper functions, lambdas, locks, thread-locals, or gate
+wrappers to this path as convenience glue. Prefer the existing native
+functional primitives (`functional.sequence`, `functional.partial`,
+`functional.repeatedly`, `functional.firstof`, `functional.if_then_else`,
+`functional.walker`, `utils.runall`, `utils.thread_switch`, and related
+combinators). If the writer is native, it owns serialization, locking, and
+reentrancy. If a test or alternate writer is Python, that writer owns any
+locking or reentrancy it requires; `io.recorder()` must not compensate by adding
+per-message Python scaffolding.
+
+The record writer contract is `writer(*values)`. On the CLI path,
+`src/retracesoftware/__main__.py` passes the native `stream.writer` object
+itself into `io.recorder()`, not `stream.writer.write` and not a Python tape
+writer adapter. `stream.ObjectWriter.__call__` accepts all positional protocol
+values for a logical write and holds the native writer lock for that batch.
+Disabled recording mirrors the same callable shape with a no-op writer.
+
+Concrete expectations:
+
+- binding payloads are walked with `functional.walker(stream.Binder)`; the
+  binder already returns the original object when no binding exists
+- thread-switch detection uses the native `utils.thread_switch` monitor with a
+  combinator callback, not a Python `last_thread_id` comparison in the write path
+- protocol writers are called directly; do not add a Python lock/batching
+  adapter around the native stream writer, and do not wrap the hot writer in
+  `disable_for()` unless the writer itself is control-plane Python that must be
+  hidden from retrace
+- `FastTypePredicate(lambda ...)` is acceptable because the C++ predicate layer
+  memoizes by type and calls the Python lambda only on type cache misses
+
+The purpose is both performance and correctness. Extra Python on the record path
+adds frames, allocation, lock traffic, and new places to accidentally change
+message order. When in doubt, keep the hot path smaller and move policy into the
+native writer, binder, predicate, or functional layer that already owns it.
+
 ### Replay
 
 Replay mode does not execute live external behavior on the normal path. Instead
@@ -307,8 +353,8 @@ live identity while still representing the same boundary event:
   identity
 - checkpoint payloads can use external proxy markers for generated proxy types
   and `ProxyRef` handles
-- unbound `_thread.lock` and `_thread.RLock` values use explicit type markers
-  because those objects may need live replay counterparts
+- materialized replay objects are represented by explicit binding and
+  materialization rules, not by record-path unbound-object special cases
 - call payload comparison normalizes descriptor receivers and known defaulted
   call shapes such as `_socket.socketpair()`
 
@@ -507,7 +553,7 @@ There are two related but different operations:
 - `system.is_bound.add(obj)`
   Marks the object as locally trusted without running `on_bind`. This is only
   for Retrace's own runtime/control-plane objects such as tape writers, stream
-  chains, recorder locks, and protocol helpers that must not appear in the
+  chains, writer internals, and protocol helpers that must not appear in the
   application trace.
 
 Confusing these operations changes the protocol stream. Calling `bind()` for
@@ -954,6 +1000,7 @@ regressions.
 | Replay hydration of `ProxyRef` results | Replay returns a bound proxy-producing handle | `_ReplayBindingState`, binding resolution, `ProxyRef` hydration | Replay deserialization turns the recorded `ProxyRef` into a live proxy shell before user code observes it | [`test_replay_binding_state_hydrates_proxy_ref_bindings`](../../../tests/proxy/test_system_io_tape.py), [`test_system_io_round_trips_external_result_proxy_hydration_with_memory_tape`](../../../tests/proxy/test_system_io_tape.py) |
 | Materialized replay escape hatch | Call a configured lock materialization target while retrace is disabled on replay | `replay_materialize`, `disable_for()`, unbound lock/RLock handling | The unusual disabled replay call materializes the expected object without consuming the next unrelated recorded result | [`test_replay_materialize_disabled_call_does_not_consume_next_recorded_result`](../../../tests/proxy/test_replay_materialize.py) |
 | Control-plane work excluded from retrace | Desync reporting, monitoring, stacktrace bookkeeping | `disable_for()`, gate-cleared execution | Helper plumbing does not generate extra boundary traffic or perturb replay alignment | [`test_replay_materialize_disabled_call_does_not_consume_next_recorded_result`](../../../tests/proxy/test_replay_materialize.py) |
+| Record writer call surface | CLI recording writes protocol values through `stream.writer(*values)` | Native `ObjectWriter.__call__`, writer batching/locking, disabled writer callable shape | Multi-value protocol writes use the native writer directly, disabled recording accepts direct calls, and no Python tape-writer adapter is needed | [`test_multiple_writes_single_call`](../../../tests/stream/test_stream_smoke.py), [`test_create_tape_writer_disable_discards_protocol_writes`](../../../tests/test_tape_disabled.py) |
 | Threaded external activity | Child thread performs proxied calls | `wrap_start_new_thread()`, logical thread ids, `THREAD_SWITCH`, replay demux | Record and replay preserve per-thread message order and deliver results to the right logical thread | [`test_replayer_consumes_protocol_result_after_thread_switch`](../../../tests/proxy/test_system_io_tape.py), [`test_install_and_run_replays_flask_request_from_unretraced_client_thread_with_memory_tape`](../../../tests/test_main_memory_tape.py) |
 | Cross-thread synchronization under debug checkpoints | Main thread schedules work into an event-loop/portal thread and waits on a `Future`/`Condition` while `--stacktraces` is enabled | Debug `CHECKPOINT` payloads, patched lock/RLock methods, thread propagation, `THREAD_SWITCH` ordering | Debug/checkpoint tracing must not change lock wakeups, condition notifications, or event-loop thread progress during record or replay | [`test_replay_anyio_blocking_portal_does_not_diverge`](../../../tests/install/external/test_anyio_from_thread_replay_dispatcher_regression.py), [`test_record_then_replay_asyncio_run_coroutine_threadsafe`](../../../tests/test_record_replay.py) |
 | Binding cleanup | External object lifetime ends after recorded use | Bind open/close flow, replay binding deletion | Replay drops dead bindings at the right time and does not leak stale handle lookups into later operations | [`test_replay_binding_state_consumes_trailing_binding_deletes`](../../../tests/proxy/test_system_io_tape.py), [`test_raw_tape_source_consumes_binding_delete_before_thread_demux`](../../../tests/proxy/test_system_io_tape.py) |

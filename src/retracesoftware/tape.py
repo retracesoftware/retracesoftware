@@ -4,7 +4,6 @@ import hashlib
 import os
 import stat
 import sys
-import threading
 from pathlib import Path
 
 import retracesoftware.functional as functional
@@ -139,26 +138,6 @@ class _ReplayTapeReader:
         return self._tape_reader.messages_read
 
 
-class RawTapeWriter:
-    """Adapt raw protocol writes onto a native stream writer.
-
-    ``proxy.io.recorder`` now emits raw protocol values directly. The native
-    stream writer already knows how to serialize those values, including plain
-    ``stream.Binding`` lookups, so this adapter is now just a small shape
-    adapter that preserves the ``TapeWriter`` surface.
-    """
-
-    __slots__ = ("_tape_writer", "_write_lock")
-
-    def __init__(self, tape_writer):
-        self._tape_writer = tape_writer
-        self._write_lock = threading.RLock()
-
-    def write(self, *values):
-        with self._write_lock:
-            self._tape_writer.write(*values)
-
-
 class _DisabledTapeWriter:
     """Tape writer used when retrace is enabled but recording output is disabled."""
 
@@ -170,8 +149,10 @@ class _DisabledTapeWriter:
     def __exit__(self, *args):
         return None
 
-    def write(self, *values):
+    def __call__(self, *values):
         return None
+
+    write = __call__
 
 
 def create_tape_writer(options, argv, *, thread_getter) -> TapeWriter:
@@ -253,7 +234,6 @@ def open_tape_reader(args, *, thread_id):
 
 
 __all__ = [
-    "RawTapeWriter",
     "checksums",
     "create_tape_writer",
     "expand_recording_path",

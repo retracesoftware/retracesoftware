@@ -20,7 +20,6 @@ from retracesoftware.proxy.io import (
 from retracesoftware.proxy.patchtype import patch_type
 from retracesoftware.proxy.system import ProxyRef, System
 from retracesoftware.proxy.tape import Tape
-from retracesoftware.tape import RawTapeWriter
 from retracesoftware.testing.memorytape import IOMemoryTape
 import retracesoftware.utils as utils
 
@@ -280,25 +279,6 @@ def test_raw_tape_source_consumes_binding_delete_before_thread_demux():
 
     assert demux.read() == "RESULT"
     assert deleted == [7]
-
-
-def test_raw_tape_writer_passes_binding_objects_through_to_stream_writer():
-    class FakeTapeWriter:
-        def __init__(self):
-            self.written = []
-
-        def write(self, *values):
-            self.written.append(values)
-
-    writer = FakeTapeWriter()
-    raw_writer = RawTapeWriter(writer)
-    binding = stream.Binding(7)
-
-    raw_writer.write("RESULT", {"value": [binding]})
-
-    assert writer.written == [
-        ("RESULT", {"value": [binding]}),
-    ]
 
 
 def test_replayer_skips_standalone_callback_result_before_next_call():

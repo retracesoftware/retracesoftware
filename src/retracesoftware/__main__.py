@@ -17,7 +17,6 @@ from retracesoftware.proxy.io import recorder, replayer
 from retracesoftware.stream.reader import ExpectedBindMarker
 from retracesoftware.run import run_python_command
 from retracesoftware.tape import (
-    RawTapeWriter,
     checksums,
     create_tape_writer,
     normalize_recording_path,
@@ -155,9 +154,8 @@ def record(options, args):
         atexit.register(close_tape_writer)
 
     try:
-        raw_tape_writer = RawTapeWriter(tape_writer)
         system = recorder(
-            writer=raw_tape_writer.write,
+            writer=tape_writer,
             debug=options.stacktraces,
             stacktraces=options.stacktraces,
             gc_collect_multiplier=getattr(options, "gc_collect_multiplier", 0),
