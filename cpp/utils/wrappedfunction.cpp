@@ -242,8 +242,8 @@ namespace retracesoftware {
         .tp_vectorcall_offset = OFFSET_OF_MEMBER(WrappedCallable, vectorcall),
         .tp_repr = (reprfunc)WrappedCallable::repr,
         .tp_call = PyVectorcall_Call,
-        .tp_getattro = WrappedCallable::tp_getattro,
         .tp_str = (reprfunc)WrappedCallable::repr,
+        .tp_getattro = WrappedCallable::tp_getattro,
         .tp_flags = Py_TPFLAGS_DEFAULT |
                     Py_TPFLAGS_HAVE_GC |
                     Py_TPFLAGS_HAVE_VECTORCALL |

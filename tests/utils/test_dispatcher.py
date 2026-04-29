@@ -250,14 +250,14 @@ class TestNoMatch:
 
     def test_single_thread_no_match(self):
         """One thread, predicate never matches -- RuntimeError."""
-        d = _make_dispatcher([(99, "orphan")])
+        d = _make_dispatcher([(99, "orphan")], deadlock_timeout_seconds=0.01)
 
         with pytest.raises(RuntimeError, match="too many threads waiting"):
             d.next(lambda x: x[0] == 1)
 
     def test_error_on_retry(self):
         """After error, subsequent next() calls also raise."""
-        d = _make_dispatcher([(99, "orphan")])
+        d = _make_dispatcher([(99, "orphan")], deadlock_timeout_seconds=0.01)
 
         with pytest.raises(RuntimeError, match="too many threads waiting"):
             d.next(lambda x: x[0] == 1)
@@ -266,7 +266,7 @@ class TestNoMatch:
             d.next(lambda x: x[0] == 1)
 
     def test_multi_thread_no_match_still_errors_and_can_be_cleaned_up(self):
-        d = _make_dispatcher([(99, "orphan")])
+        d = _make_dispatcher([(99, "orphan")], deadlock_timeout_seconds=0.05)
         ready = threading.Event()
         errors = []
 
@@ -290,8 +290,125 @@ class TestNoMatch:
 
         assert not t.is_alive()
         assert len(errors) == 1
-        assert isinstance(errors[0], StopIteration)
+        assert isinstance(errors[0], (RuntimeError, StopIteration))
         assert d.waiting_thread_count == 0
+
+    def test_unrelated_thread_does_not_hide_no_match_deadlock(self):
+        d = _make_dispatcher([(99, "orphan")], deadlock_timeout_seconds=0.05)
+        idle_stop = threading.Event()
+        idle = threading.Thread(target=idle_stop.wait)
+        idle.start()
+
+        completed = threading.Event()
+        lock = threading.Lock()
+        errors = []
+        results = []
+
+        def waiting_for_missing_item(key):
+            try:
+                result = d.next(lambda item: item[0] == key)
+            except BaseException as exc:
+                with lock:
+                    errors.append(exc)
+            else:
+                with lock:
+                    results.append(result)
+            finally:
+                completed.set()
+
+        t1 = threading.Thread(target=waiting_for_missing_item, args=(1,))
+        t1.start()
+        _wait_for_waiters(d, 1)
+
+        t2 = threading.Thread(target=waiting_for_missing_item, args=(2,))
+        t2.start()
+
+        try:
+            assert completed.wait(timeout=2), (
+                "non-dispatcher thread hid Dispatcher no-match detection"
+            )
+            with lock:
+                assert results == []
+                assert any(
+                    isinstance(exc, RuntimeError)
+                    and "too many threads waiting" in str(exc)
+                    for exc in errors
+                )
+        finally:
+            try:
+                d.next(lambda item: item[0] == 99)
+            except (RuntimeError, StopIteration):
+                pass
+            idle_stop.set()
+            idle.join(timeout=5)
+            t1.join(timeout=5)
+            t2.join(timeout=5)
+
+        assert not idle.is_alive()
+        assert not t1.is_alive()
+        assert not t2.is_alive()
+        assert d.waiting_thread_count == 0
+
+    def test_fresh_thread_can_take_item_before_deadlock_timeout(self):
+        d = _make_dispatcher(
+            [(99, "fresh"), (2, "after")],
+            deadlock_timeout_seconds=1.0,
+        )
+        lock = threading.Lock()
+        errors = []
+        results = {}
+        candidate_started = threading.Event()
+        candidate_done = threading.Event()
+
+        def waiting_for_missing_item():
+            try:
+                d.next(lambda item: item[0] == 1)
+            except BaseException as exc:
+                with lock:
+                    errors.append(("waiter", exc))
+
+        def waiting_for_later_item():
+            candidate_started.set()
+            try:
+                result = d.next(lambda item: item[0] == 2)
+            except BaseException as exc:
+                with lock:
+                    errors.append(("candidate", exc))
+            else:
+                with lock:
+                    results["candidate"] = result
+            finally:
+                candidate_done.set()
+
+        t1 = threading.Thread(target=waiting_for_missing_item)
+        t1.start()
+        _wait_for_waiters(d, 1)
+
+        t2 = threading.Thread(target=waiting_for_later_item)
+        t2.start()
+        assert candidate_started.wait(timeout=5)
+        assert not candidate_done.wait(timeout=0.05)
+
+        results["fresh"] = d.next(lambda item: item[0] == 99)
+
+        t2.join(timeout=5)
+        t1.join(timeout=5)
+
+        assert not t2.is_alive()
+        assert not t1.is_alive()
+        assert results == {
+            "fresh": (99, "fresh"),
+            "candidate": (2, "after"),
+        }
+        assert len(errors) == 1
+        name, exc = errors[0]
+        assert name == "waiter"
+        assert isinstance(exc, StopIteration)
+        assert d.waiting_thread_count == 0
+
+    def test_deadlock_timeout_must_be_non_negative(self):
+        with pytest.raises(ValueError, match="deadlock timeout"):
+            _make_dispatcher([(99, "orphan")], deadlock_timeout_seconds=-1)
 
 
 class TestTerminalState:

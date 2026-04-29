@@ -2,6 +2,7 @@
 
 #include <structmember.h>
 #include <atomic>
+#include <chrono>
 #include <thread>
 
 namespace retracesoftware {
@@ -68,6 +69,7 @@ struct Dispatcher : public PyObject {
     // Deadlock detection only counts waiters parked on the current buffered item.
     std::atomic<unsigned long long> waiting_generation;
     std::atomic<int> num_waiting_generation_threads;
+    long long deadlock_timeout_ns;
 
     // ------------------------------------------------------------------
     // Init
@@ -75,12 +77,40 @@ struct Dispatcher : public PyObject {
 
     static int init(Dispatcher *self, PyObject *args, PyObject *kwds) {
         PyObject *source;
+        PyObject *deadlock_timeout_obj = nullptr;
+        PyObject *timeout_obj = nullptr;
 
-        static const char *kwlist[] = {"source", nullptr};
+        static const char *kwlist[] = {
+            "source",
+            "deadlock_timeout_seconds",
+            "timeout_seconds",
+            nullptr,
+        };
 
-        if (!PyArg_ParseTupleAndKeywords(args, kwds, "O", (char **)kwlist,
-                &source))
+        if (!PyArg_ParseTupleAndKeywords(args, kwds, "O|OO", (char **)kwlist,
+                &source, &deadlock_timeout_obj, &timeout_obj))
             return -1;
+
+        if (deadlock_timeout_obj != nullptr && timeout_obj != nullptr) {
+            PyErr_SetString(
+                PyExc_TypeError,
+                "Dispatcher accepts either deadlock_timeout_seconds or timeout_seconds, not both");
+            return -1;
+        }
+
+        double deadlock_timeout_seconds = 1.0;
+        PyObject *selected_timeout =
+            deadlock_timeout_obj != nullptr ? deadlock_timeout_obj : timeout_obj;
+        if (selected_timeout != nullptr && selected_timeout != Py_None) {
+            deadlock_timeout_seconds = PyFloat_AsDouble(selected_timeout);
+            if (PyErr_Occurred()) {
+                return -1;
+            }
+        }
+        if (deadlock_timeout_seconds < 0.0) {
+            PyErr_SetString(PyExc_ValueError, "deadlock timeout must be non-negative");
+            return -1;
+        }
 
         self->source = Py_NewRef(source);
         self->buffered.store(nullptr, std::memory_order_relaxed);
@@ -88,6 +118,8 @@ struct Dispatcher : public PyObject {
         self->num_waiting_threads.store(0, std::memory_order_relaxed);
         self->waiting_generation.store(0, std::memory_order_relaxed);
         self->num_waiting_generation_threads.store(0, std::memory_order_relaxed);
+        self->deadlock_timeout_ns =
+            static_cast<long long>(deadlock_timeout_seconds * 1000000000.0);
 
         return 0;
     }
@@ -103,6 +135,31 @@ struct Dispatcher : public PyObject {
         buffered_generation.fetch_add(1, std::memory_order_release);
         atomic_notify_all_compat(buffered);
         return previous;
+    }
+
+    bool wait_for_buffer_change(PyObject *expected) {
+        if (deadlock_timeout_ns <= 0) {
+            return buffered.load(std::memory_order_acquire) != expected;
+        }
+
+        auto deadline = std::chrono::steady_clock::now()
+            + std::chrono::nanoseconds(deadlock_timeout_ns);
+
+        while (buffered.load(std::memory_order_acquire) == expected) {
+            auto now = std::chrono::steady_clock::now();
+            if (now >= deadline) {
+                return false;
+            }
+
+            auto remaining = deadline - now;
+            if (remaining > std::chrono::milliseconds(1)) {
+                std::this_thread::sleep_for(std::chrono::milliseconds(1));
+            } else {
+                std::this_thread::sleep_for(remaining);
+            }
+        }
+
+        return true;
     }
 
     // ------------------------------------------------------------------
@@ -199,18 +256,16 @@ struct Dispatcher : public PyObject {
                 PyObject *taken = self->exchange_buffered(nullptr);
                 if (taken) return taken;
             } else {
-                int target = count_interpreter_tstates() - 1;
                 unsigned long long active_waiting_generation =
                     self->waiting_generation.load(std::memory_order_acquire);
+                int total_waiters =
+                    self->num_waiting_threads.load(std::memory_order_acquire);
                 int generation_waiters =
                     active_waiting_generation == generation
                         ? self->num_waiting_generation_threads.load(std::memory_order_acquire)
                         : 0;
 
-                if (generation_waiters >= target) {
-                    PyErr_SetString(PyExc_RuntimeError, "Dispatcher: too many threads waiting for item");
-                    return nullptr;
-                }
+                bool possible_deadlock = generation_waiters >= total_waiters;
 
                 if (active_waiting_generation != generation) {
                     self->waiting_generation.store(generation, std::memory_order_release);
@@ -220,13 +275,27 @@ struct Dispatcher : public PyObject {
                 self->num_waiting_threads.fetch_add(1, std::memory_order_release);
                 self->num_waiting_generation_threads.fetch_add(1, std::memory_order_release);
                 atomic_notify_all_compat(self->num_waiting_threads);
+                bool changed = false;
                 Py_BEGIN_ALLOW_THREADS
-                atomic_wait_compat(self->buffered, next);
+                if (possible_deadlock) {
+                    changed = self->wait_for_buffer_change(next);
+                } else {
+                    atomic_wait_compat(self->buffered, next);
+                    changed = true;
+                }
                 self->num_waiting_threads.fetch_sub(1, std::memory_order_release);
                 atomic_notify_all_compat(self->num_waiting_threads);
                 Py_END_ALLOW_THREADS
                 if (self->waiting_generation.load(std::memory_order_acquire) == generation) {
                     self->num_waiting_generation_threads.fetch_sub(1, std::memory_order_release);
+                }
+                if (
+                    !changed
+                    && self->buffered.load(std::memory_order_acquire) == next
+                    && self->buffered_generation.load(std::memory_order_acquire) == generation
+                ) {
+                    PyErr_SetString(PyExc_RuntimeError, "Dispatcher: too many threads waiting for item");
+                    return nullptr;
                 }
             }
         }
@@ -360,7 +429,7 @@ PyTypeObject Dispatcher_Type = {
     .tp_itemsize = 0,
     .tp_dealloc = (destructor)Dispatcher::dealloc,
     .tp_flags = Py_TPFLAGS_DEFAULT | Py_TPFLAGS_HAVE_GC,
-    .tp_doc = "Dispatcher(source)\n\n"
+    .tp_doc = "Dispatcher(source, deadlock_timeout_seconds=1.0)\n\n"
               "Replay stream dispatcher.\n\n"
               "Threads call next(predicate) to receive items.\n"
               "Coordinator calls interrupt() to inject callbacks.",
