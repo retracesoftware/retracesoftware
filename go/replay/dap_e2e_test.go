@@ -101,14 +101,23 @@ func isEvent(event string) func(map[string]any) bool {
 }
 
 // findPython312 searches for a Python >=3.12 with retracesoftware installed.
-// Checks well-known venv locations and PATH.
+// Checks checkout-local venvs, an optional override, and PATH.
 func findPython312() (string, error) {
-	candidates := []string{
-		"/Users/nathanmatthews/Documents/venv/3.12.10/bin/python3",
-	}
-	// Also try PATH-based python3
-	if p, err := exec.LookPath("python3"); err == nil {
+	var candidates []string
+	if p := os.Getenv("RETRACE_TEST_PYTHON312"); p != "" {
 		candidates = append(candidates, p)
+	}
+	if src := checkoutSrcDir(); src != "" {
+		root := filepath.Dir(src)
+		candidates = append(candidates,
+			filepath.Join(root, ".venv312", "bin", "python"),
+			filepath.Join(root, ".venv", "bin", "python"),
+		)
+	}
+	for _, name := range []string{"python3.12", "python3"} {
+		if p, err := exec.LookPath(name); err == nil {
+			candidates = append(candidates, p)
+		}
 	}
 
 	for _, p := range candidates {
@@ -310,7 +319,39 @@ func TestDAPBreakpointE2E(t *testing.T) {
 	}
 	t.Log("OK: continue → stopped(breakpoint)")
 
-	// 6. disconnect
+	// 6. stackTrace → top frame should point at an openable source path
+	client.send("stackTrace", map[string]any{"threadId": 1})
+	msgs, ok = client.readUntil(isResponse("stackTrace"), 10)
+	if !ok {
+		t.Fatalf("never got stackTrace response; messages: %v", msgs)
+	}
+	var stackResp map[string]any
+	for _, m := range msgs {
+		if m["type"] == "response" && m["command"] == "stackTrace" {
+			stackResp = m
+			break
+		}
+	}
+	if stackResp == nil || stackResp["success"] != true {
+		t.Fatalf("stackTrace failed: %v", stackResp)
+	}
+	body, _ := stackResp["body"].(map[string]any)
+	frames, _ := body["stackFrames"].([]any)
+	if len(frames) == 0 {
+		t.Fatalf("stackTrace returned no frames: %v", stackResp)
+	}
+	topFrame, _ := frames[0].(map[string]any)
+	source, _ := topFrame["source"].(map[string]any)
+	sourcePath, _ := source["path"].(string)
+	if sourcePath != script {
+		t.Fatalf("top frame source path = %q, want %q", sourcePath, script)
+	}
+	if !fileExists(sourcePath) {
+		t.Fatalf("top frame source path does not exist: %s", sourcePath)
+	}
+	t.Log("OK: stackTrace source path")
+
+	// 7. disconnect
 	client.send("disconnect", nil)
 	client.readUntil(isResponse("disconnect"), 5)
 	clientToProxyW.Close()

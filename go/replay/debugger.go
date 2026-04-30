@@ -61,7 +61,7 @@ func (d *SimpleDebugger) runBreakpointScan(ctx context.Context, id int, spec Bre
 	for loc := range locations {
 		count++
 		log.Printf("breakpoint scan[%d]: hit at message_index=%d", id, loc.MessageIndex)
-		d.hits.Insert(BreakpointHit{BreakpointID: id, Location: loc})
+		d.hits.Insert(BreakpointHit{BreakpointID: id, Spec: spec, Location: loc})
 	}
 	if err := <-errs; err != nil {
 		log.Printf("breakpoint scan[%d]: error: %v", id, err)

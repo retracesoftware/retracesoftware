@@ -4,10 +4,11 @@ import argparse
 import json
 import retracesoftware.functional as functional
 import retracesoftware.utils as utils
+import retracesoftware.cursor as cursor
 from pathlib import Path
 import gc
 import atexit
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 
 from retracesoftware.threadid import ThreadId
 
@@ -291,6 +292,7 @@ def replay(args):
                 on_before_fork=_before_fork,
                 on_after_fork=_after_fork,
                 disable_for=system.disable_for,
+                get_thread_id=system.thread_id,
             )
             controller_ref[0] = controller
 
@@ -323,14 +325,18 @@ def replay(args):
 
                 system._startup_bindings = _consume_replay_startup_bindings(system)
 
-                if replay_options.trace_shutdown:
-                    atexit.register(uninstall)
-                    system.run(run_python_command, header["argv"])
-                else:
-                    try:
+                replay_cursor_context = (
+                    cursor._get_shared_cc()() if controller is not None else nullcontext()
+                )
+                with replay_cursor_context:
+                    if replay_options.trace_shutdown:
+                        atexit.register(uninstall)
                         system.run(run_python_command, header["argv"])
-                    finally:
-                        uninstall()
+                    else:
+                        try:
+                            system.run(run_python_command, header["argv"])
+                        finally:
+                            uninstall()
         finally:
             if controller:
                 controller.on_replay_finished()

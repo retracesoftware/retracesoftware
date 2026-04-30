@@ -44,6 +44,7 @@ func (b BreakpointSpec) Arg() (string, error) {
 // where the breakpoint was hit.
 type BreakpointHit struct {
 	BreakpointID int
+	Spec         BreakpointSpec
 	Location     Location
 }
 

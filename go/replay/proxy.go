@@ -37,7 +37,8 @@ type setBreakpointsArgs struct {
 // Proxy is the Go-owned DAP endpoint that maps requests to Debugger calls.
 type Proxy struct {
 	pidFile      string
-	recordingDir string // directory the recording was made from
+	recordingDir string // directory containing the recording/extracted pidfiles
+	processCWD   string // cwd recorded in the process preamble
 	debugger     Debugger
 	provider     SnapshotProvider
 	clientR      *bufio.Reader
@@ -53,9 +54,18 @@ type Proxy struct {
 func NewProxy(pidFile string, clientIn io.Reader, clientW *Writer) *Proxy {
 	// pidFile is <recording>.d/<pid>.bin — parent of parent is the recording dir
 	recDir := filepath.Dir(filepath.Dir(pidFile))
+	processCWD := ""
+	if pidFile != "" {
+		if process, err := ReadProcess(pidFile); err == nil {
+			processCWD, _ = process["cwd"].(string)
+		} else {
+			log.Printf("warning: could not read pidfile cwd: %v", err)
+		}
+	}
 	return &Proxy{
 		pidFile:       pidFile,
 		recordingDir:  recDir,
+		processCWD:    processCWD,
 		clientR:       bufio.NewReader(clientIn),
 		clientW:       clientW,
 		breakpointIDs: make(map[string]int),
@@ -395,11 +405,17 @@ func (p *Proxy) handleContinue(ctx context.Context, reverse bool) error {
 		rp, err := snap.Replay(ctx)
 		if err != nil {
 			log.Printf("warning: failed to fork snapshot: %v", err)
-		} else if _, err := rp.RunToCursor(ctx, hit.Location.RawCursor()); err != nil {
-			log.Printf("warning: failed to materialise replay: %v", err)
-			rp.Close()
 		} else {
-			p.currentCursor = NewCursor(rp.Location(), p.provider, rp)
+			loc, err := rp.FindFirstBreakpoint(ctx, hit.Spec.ToMap())
+			if err != nil {
+				log.Printf("warning: failed to materialise breakpoint: %v", err)
+				rp.Close()
+			} else if loc == nil {
+				log.Printf("warning: failed to materialise breakpoint: hit not found")
+				rp.Close()
+			} else {
+				p.currentCursor = NewCursor(*loc, p.provider, rp)
+			}
 		}
 	}
 
@@ -503,15 +519,27 @@ func (p *Proxy) handleSource(args json.RawMessage) json.RawMessage {
 }
 
 // resolveSourcePath converts a potentially relative co_filename to an
-// absolute path. It tries the recording directory first, then falls back
-// to the process CWD.
+// absolute path. Relative filenames are authored by the target process,
+// so the recorded process cwd is the canonical base.
 func (p *Proxy) resolveSourcePath(filename string) string {
 	if filepath.IsAbs(filename) {
 		return filename
 	}
-	candidate := filepath.Join(p.recordingDir, filename)
-	if _, err := os.Stat(candidate); err == nil {
-		return candidate
+	var processCandidate string
+	if p.processCWD != "" {
+		processCandidate = filepath.Join(p.processCWD, filename)
+		if _, err := os.Stat(processCandidate); err == nil {
+			return processCandidate
+		}
+	}
+	if p.recordingDir != "" {
+		candidate := filepath.Join(p.recordingDir, filename)
+		if _, err := os.Stat(candidate); err == nil {
+			return candidate
+		}
+	}
+	if processCandidate != "" {
+		return processCandidate
 	}
 	if abs, err := filepath.Abs(filename); err == nil {
 		return abs

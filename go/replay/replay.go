@@ -46,7 +46,7 @@ type Replay struct {
 	location  Location
 
 	dead      chan struct{} // closed when the process exits
-	exitErr   error        // set once by watchProcess, then immutable
+	exitErr   error         // set once by watchProcess, then immutable
 	closeOnce sync.Once
 }
 
@@ -252,6 +252,9 @@ func (r *Replay) RunToCursor(ctx context.Context, cursor RawCursor) (ControlStop
 	result, err := r.client.RunToCursor(ctx, cursor)
 	if err != nil {
 		return result, r.wrapErr(err)
+	}
+	if isStopFailure(result.Reason) {
+		return result, r.wrapErr(fmt.Errorf("run_to_cursor stopped with %s", result.Reason))
 	}
 	r.location = Location{
 		ThreadID:       result.Cursor.ThreadID,

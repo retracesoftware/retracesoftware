@@ -476,7 +476,7 @@ def control_event_loop(
                     assert isinstance(cursor_dict, dict)
                     _write_stop(control_socket.write_response, {
                         "reason": "cursor",
-                        "message_index": 0,
+                        "message_index": get_message_index(),
                         "cursor": cursor_dict,
                         "thread_cursors": {},
                     })
@@ -653,34 +653,33 @@ def register_cursor_callback(cursor_dict, callback, on_missed=None):
         return
 
     os_tid = _thread.get_ident()
+    tool_id = _acquire_tool_id("retrace_cursor_advance")
+    E = sys.monitoring.events
+    monitor = utils.InstructionMonitor(tool_id)
 
-    def _on_counts_match():
-        frame = _find_user_frame()
-        target_code = frame.f_code if frame else None
-        tool_id = _acquire_tool_id("retrace_cursor_advance")
-        E = sys.monitoring.events
+    def _on_instruction(code, offset):
+        if _thread.get_ident() != os_tid:
+            return
+        if tuple(cursor.current_call_counts()) != counts:
+            return
+        if offset != target_f_lasti:
+            return
+        monitor.close()
+        callback(_find_frame_for_code(code))
 
-        def _on_instruction(code, offset):
-            if _thread.get_ident() != os_tid:
-                return
-            if code is not target_code:
-                return
-            if offset != target_f_lasti:
-                return
-            sys.monitoring.set_events(tool_id, 0)
-            sys.monitoring.register_callback(tool_id, E.INSTRUCTION, None)
-            sys.monitoring.free_tool_id(tool_id)
-            callback()
+    sys.monitoring.register_callback(
+        tool_id, E.INSTRUCTION,
+        cursor.call_counter_disable_for(_on_instruction),
+    )
+    sys.monitoring.set_events(tool_id, E.INSTRUCTION)
 
-        sys.monitoring.register_callback(
-            tool_id, E.INSTRUCTION,
-            cursor.call_counter_disable_for(_on_instruction),
-        )
-        sys.monitoring.set_events(tool_id, E.INSTRUCTION)
-
-    cursor.watch(counts,
-                 on_start=cursor.call_counter_disable_for(_on_counts_match),
-                 on_missed=on_missed)
+def _find_frame_for_code(code: CodeType):
+    frame = sys._getframe(1)
+    while frame is not None:
+        if frame.f_code is code:
+            return frame
+        frame = frame.f_back
+    return None
 
 def _find_user_frame():
     """Walk the call stack to find the first frame outside retracesoftware internals."""
@@ -715,6 +714,7 @@ class Controller:
         self._done = False
         self._stopped_frame = None
         self._last_code: CodeType | None = None
+        self._event_loop_lock = _thread.allocate_lock()
 
         self.event_loop = control_event_loop(
             set_backstop=self._set_backstop,
@@ -728,10 +728,27 @@ class Controller:
         )
 
         try:
-            intent = self._disable_for(lambda: next(self.event_loop))()
-            self._handle_intent(intent)
+            self._event_loop_lock.acquire()
+            try:
+                intent = self._disable_for(lambda: next(self.event_loop))()
+                self._handle_intent(intent)
+            finally:
+                self._event_loop_lock.release()
         except StopIteration:
             self._done = True
+
+    def _send_and_handle_locked(self, value: Any) -> None:
+        self._event_loop_lock.acquire()
+        try:
+            if self._done:
+                return
+            try:
+                intent = self.event_loop.send(value)
+                self._handle_intent(intent)
+            except StopIteration:
+                self._cleanup()
+        finally:
+            self._event_loop_lock.release()
 
     def _cursor_dict(self, snapshot: Optional[dict] = None) -> dict[str, Any]:
         """Build a cursor dict using the configured thread_id source.
@@ -766,6 +783,13 @@ class Controller:
             return FrameInspector(self._stopped_frame)
         return None
 
+    def _stopped_cursor_snapshot(self) -> dict[str, Any]:
+        snapshot = cursor.cursor_snapshot().to_dict()
+        if self._stopped_frame is not None:
+            snapshot["f_lasti"] = self._stopped_frame.f_lasti
+            snapshot["lineno"] = FrameInspector._frame_lineno(self._stopped_frame)
+        return self._cursor_dict(snapshot)
+
     def on_new_message(self, message):
         self._message_index += 1
         if self._done:
@@ -775,10 +799,15 @@ class Controller:
                 message_index=self._message_index,
                 cursor=self._cursor_dict(cursor.cursor_snapshot().to_dict()),
             )
+            self._event_loop_lock.acquire()
             try:
-                self.event_loop.throw(err)
-            except StopIteration:
-                self._cleanup()
+                if not self._done:
+                    try:
+                        self.event_loop.throw(err)
+                    except StopIteration:
+                        self._cleanup()
+            finally:
+                self._event_loop_lock.release()
 
     def _control_log(self, message: str) -> None:
         """Send a diagnostic log message over the control socket."""
@@ -827,13 +856,19 @@ class Controller:
         cursor.install_call_counter()
 
         def _on_return():
-            snapshot = self._cursor_dict(cursor.cursor_snapshot().to_dict())
+            self._event_loop_lock.acquire()
             try:
-                self.event_loop.send(snapshot)
-                intent2 = self.event_loop.send("return")
-                self._handle_intent(intent2)
-            except StopIteration:
-                self._cleanup()
+                if self._done:
+                    return
+                snapshot = self._cursor_dict(cursor.cursor_snapshot().to_dict())
+                try:
+                    self.event_loop.send(snapshot)
+                    intent2 = self.event_loop.send("return")
+                    self._handle_intent(intent2)
+                except StopIteration:
+                    self._cleanup()
+            finally:
+                self._event_loop_lock.release()
 
         def _on_missed():
             self._send_reason("overshoot")
@@ -873,11 +908,7 @@ class Controller:
                 "f_lasti": offset,
                 "lineno": self._lineno_from_code(code, offset),
             }
-            try:
-                intent = self.event_loop.send(cursor_dict)
-                self._handle_intent(intent)
-            except StopIteration:
-                self._cleanup()
+            self._send_and_handle_locked(cursor_dict)
 
         sys.monitoring.register_callback(
             tool_id, E.INSTRUCTION, self._disable_for(on_hit)
@@ -887,13 +918,19 @@ class Controller:
     def _install_wait_for_thread_change(self):
         def on_switch():
             cursor.set_on_thread_switch(None)
-            self._stopped_frame = _find_user_frame()
-            cursor_dict = self._cursor_dict(cursor.cursor_snapshot().to_dict())
+            self._event_loop_lock.acquire()
             try:
-                next_intent = self.event_loop.send(cursor_dict)
-                self._handle_intent(next_intent)
-            except StopIteration:
-                self._cleanup()
+                if self._done:
+                    return
+                self._stopped_frame = _find_user_frame()
+                cursor_dict = self._cursor_dict(cursor.cursor_snapshot().to_dict())
+                try:
+                    next_intent = self.event_loop.send(cursor_dict)
+                    self._handle_intent(next_intent)
+                except StopIteration:
+                    self._cleanup()
+            finally:
+                self._event_loop_lock.release()
 
         cursor.set_on_thread_switch(self._disable_for(on_switch))
 
@@ -923,47 +960,56 @@ class Controller:
             "f_lasti": offset,
             "lineno": self._lineno_from_code(code, offset),
         }
-        try:
-            intent = self.event_loop.send(cursor_dict)
-            self._handle_intent(intent)
-        except StopIteration:
-            self._cleanup()
+        self._send_and_handle_locked(cursor_dict)
 
     def _on_trace_complete(self):
         self._trace_monitor = None
         self._send_reason("return")
 
     def _send_reason(self, reason: str):
-        try:
-            intent = self.event_loop.send(reason)
-            self._handle_intent(intent)
-        except StopIteration:
-            self._cleanup()
+        self._send_and_handle_locked(reason)
 
     def on_replay_finished(self):
         if self._done:
             return
         err = ReplayEOF(message_index=self._message_index)
+        self._event_loop_lock.acquire()
         try:
-            self.event_loop.throw(err)
-        except (StopIteration, ReplayEOF):
-            self._cleanup()
+            if not self._done:
+                try:
+                    self.event_loop.throw(err)
+                except (StopIteration, ReplayEOF):
+                    self._cleanup()
+        finally:
+            self._event_loop_lock.release()
 
     def _on_breakpoint_hit(self, frame):
-        self._stopped_frame = _find_user_frame()
+        self._event_loop_lock.acquire()
         try:
-            intent = self.event_loop.send(self._cursor_dict(cursor.cursor_snapshot().to_dict()))
-            self._handle_intent(intent)
-        except StopIteration:
-            self._cleanup()
+            if self._done:
+                return
+            self._stopped_frame = _find_user_frame()
+            try:
+                intent = self.event_loop.send(self._stopped_cursor_snapshot())
+                self._handle_intent(intent)
+            except StopIteration:
+                self._cleanup()
+        finally:
+            self._event_loop_lock.release()
 
-    def _on_cursor_hit(self):
-        self._stopped_frame = _find_user_frame()
+    def _on_cursor_hit(self, frame=None):
+        self._event_loop_lock.acquire()
         try:
-            intent = self.event_loop.send(self._cursor_dict(cursor.cursor_snapshot().to_dict()))
-            self._handle_intent(intent)
-        except StopIteration:
-            self._cleanup()
+            if self._done:
+                return
+            self._stopped_frame = frame if frame is not None else _find_user_frame()
+            try:
+                intent = self.event_loop.send(self._stopped_cursor_snapshot())
+                self._handle_intent(intent)
+            except StopIteration:
+                self._cleanup()
+        finally:
+            self._event_loop_lock.release()
 
     def _cleanup(self):
         self._done = True
