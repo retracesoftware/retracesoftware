@@ -8,10 +8,10 @@ import (
 	"path/filepath"
 )
 
-// Linearize generates one unframed replay file per leaf in the process
-// tree.  Each file is named <leaf_pid>.bin and contains the stitched
-// raw payload from root through to that leaf — parent data up to the
-// fork point, then child data (preamble stripped), and so on.
+// Linearize generates one unframed replay file for the root process and one
+// per leaf in the process tree. Each leaf file is named <leaf_pid>.bin and
+// contains the stitched raw payload from root through to that leaf — parent
+// data up to the fork point, then child data (preamble stripped), and so on.
 //
 // The root preamble is preserved at the start of every file so Python
 // can read process info normally.
@@ -44,6 +44,22 @@ func linearize(idx *TraceIndex, outDir, shebang string) ([]string, error) {
 	collectPaths(idx.Root, nil, &paths)
 
 	var outputs []string
+	if len(idx.Root.Children) > 0 {
+		rootOut := filepath.Join(outDir, fmt.Sprintf("%d.bin", idx.Root.PID))
+		if err := stitchPath([]*Process{idx.Root}, tmpDir, rootOut); err != nil {
+			return nil, fmt.Errorf("stitch root pid %d: %w", idx.Root.PID, err)
+		}
+		if shebang != "" {
+			if err := prependShebang(rootOut, shebang); err != nil {
+				return nil, fmt.Errorf("shebang root pid %d: %w", idx.Root.PID, err)
+			}
+			if err := os.Chmod(rootOut, 0755); err != nil {
+				return nil, fmt.Errorf("chmod root pid %d: %w", idx.Root.PID, err)
+			}
+		}
+		outputs = append(outputs, rootOut)
+	}
+
 	for _, path := range paths {
 		leaf := path[len(path)-1]
 		outPath := filepath.Join(outDir, fmt.Sprintf("%d.bin", leaf.PID))

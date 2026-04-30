@@ -182,6 +182,7 @@ func (c *Cursor) Location() Location { return c.location }
 // ensureReplay lazily materialises a Replay at the cursor's location.
 func (c *Cursor) ensureReplay(ctx context.Context) (*Replay, error) {
 	if c.replay != nil {
+		c.replay.location = c.location
 		return c.replay, nil
 	}
 	if c.provider == nil {
@@ -301,6 +302,12 @@ func (c *Cursor) StepInto(ctx context.Context) (*Cursor, error) {
 	if _, err := rp.RunToCursor(ctx, target.RawCursor()); err != nil {
 		rp.Close()
 		return nil, err
+	}
+	entryLine, err := sourceLine(ctx, rp)
+	if err == nil && entryLine != 0 {
+		if err := AdvanceTo(ctx, rp, DifferentLine(entryLine)); err != nil {
+			log.Printf("StepInto: staying at function entry after first-line advance failed: %v", err)
+		}
 	}
 	return NewCursor(rp.Location(), c.provider, rp), nil
 }
@@ -556,40 +563,42 @@ func (c *Cursor) PreviousStatement(ctx context.Context) (*Cursor, error) {
 	log.Printf("PreviousStatement: start fc=%v flasti=%v line=%d",
 		loc.FunctionCounts, loc.FLasti, currentLine)
 
-	// Sequential fast path: DISABLED for now — needs a way to know
-	// whether FunctionCounts changed within the sequential window
-	// (any opcode can dispatch a child call via dunder methods).
-	// TODO: re-enable once we have runtime FC-aware gating.
-	if false && loc.FLasti != nil {
+	// Same-frame fast path. This handles the common reverse-step-over case:
+	// the current line is in the same code object as the previous source line,
+	// but the slow call-count walk may not have a valid boundary to land on.
+	if loc.FLasti != nil {
 		info, infoErr := rp.InstructionToLineno(ctx)
-		if infoErr == nil && len(info.SequentialBefore) > 0 {
+		if infoErr == nil {
 			curIdx := *loc.FLasti / 2
-			if curIdx >= 0 && curIdx < len(info.SequentialBefore) {
-				seqBefore := info.SequentialBefore[curIdx]
-				if seqBefore > 0 {
-					minIdx := curIdx - seqBefore
-					targetIdx := -1
-					for i := curIdx - 1; i >= minIdx; i-- {
-						if info.Linenos[i] != currentLine && info.Linenos[i] != 0 && info.SequentialBefore[i] > 0 {
-							targetIdx = i
-							break
-						}
+			if curIdx >= 0 && curIdx < len(info.Linenos) {
+				targetIdx := -1
+				targetLine := 0
+				for i := curIdx - 1; i >= 0; i-- {
+					line := info.Linenos[i]
+					if line == 0 || line == currentLine {
+						continue
 					}
-					if targetIdx >= 0 {
-						targetFLasti := targetIdx * 2
-						targetLoc := Location{
-							ThreadID:       loc.ThreadID,
-							FunctionCounts: loc.FunctionCounts,
-							FLasti:         &targetFLasti,
-							Lineno:         info.Linenos[targetIdx],
-							MessageIndex:   loc.MessageIndex,
-						}
-						log.Printf("PreviousStatement: fast path fc=%v flasti=%d->%d line=%d->%d",
-							loc.FunctionCounts, *loc.FLasti, targetFLasti, currentLine, info.Linenos[targetIdx])
-						c.replay = nil
-						rp.Close()
-						return NewCursor(targetLoc, c.provider, nil), nil
+					targetIdx = i
+					targetLine = line
+					break
+				}
+				for targetIdx > 0 && info.Linenos[targetIdx-1] == targetLine {
+					targetIdx--
+				}
+				if targetIdx >= 0 {
+					targetFLasti := targetIdx * 2
+					targetLoc := Location{
+						ThreadID:       loc.ThreadID,
+						FunctionCounts: loc.FunctionCounts,
+						FLasti:         &targetFLasti,
+						Lineno:         targetLine,
+						MessageIndex:   loc.MessageIndex,
 					}
+					log.Printf("PreviousStatement: fast path fc=%v flasti=%d->%d line=%d->%d",
+						loc.FunctionCounts, *loc.FLasti, targetFLasti, currentLine, targetLine)
+					c.replay = nil
+					rp.Close()
+					return NewCursor(targetLoc, c.provider, nil), nil
 				}
 			}
 		}

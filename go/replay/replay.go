@@ -234,6 +234,7 @@ func (r *Replay) FindFirstBreakpoint(ctx context.Context, breakpoint map[string]
 		}
 		if msg.Kind == "event" && msg.Event == "breakpoint_hit" {
 			loc := parseLocationFromPayload(msg.Payload)
+			r.location = loc
 			return &loc, nil
 		}
 		if msg.Kind == "stop" {

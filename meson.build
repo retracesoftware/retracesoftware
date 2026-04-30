@@ -116,6 +116,7 @@ install_data(
   _py_root / 'modules/babel.localedata.toml',
   _py_root / 'modules/confluent_kafka.cimpl.toml',
   _py_root / 'modules/debuggers.toml',
+  _py_root / 'modules/fsspec.spec.toml',
   _py_root / 'modules/grpc._cython.cygrpc.toml',
   _py_root / 'modules/mmap.toml',
   _py_root / 'modules/numpy.random.toml',

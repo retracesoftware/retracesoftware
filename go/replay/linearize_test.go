@@ -105,8 +105,14 @@ func TestLinearizeWithForks(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if len(files) != 2 {
-		t.Fatalf("expected 2 files, got %d: %v", len(files), files)
+	if len(files) != 3 {
+		t.Fatalf("expected root plus 2 leaf files, got %d: %v", len(files), files)
+	}
+
+	rootFile, _ := os.ReadFile(filepath.Join(outDir, "100.bin"))
+	expectedRoot := string(rootPreamble) + string(rootData1) + string(rootData2) + string(rootData3)
+	if string(rootFile) != expectedRoot {
+		t.Fatalf("root mismatch:\ngot:    %q\nexpect: %q", rootFile, expectedRoot)
 	}
 
 	// Child 1: root preamble + rootData1 + child1Data
@@ -161,8 +167,13 @@ print("done")
 	}
 
 	t.Logf("generated %d linear files", len(files))
-	if len(files) != 2 {
-		t.Fatalf("expected 2 leaf files (2 children), got %d", len(files))
+	if len(files) != 3 {
+		t.Fatalf("expected root plus 2 leaf files, got %d", len(files))
+	}
+
+	rootPath := filepath.Join(outDir, idStr(idx.Root.PID)+".bin")
+	if _, err := os.Stat(rootPath); err != nil {
+		t.Fatalf("root pidfile not found: %v", err)
 	}
 
 	for _, f := range files {

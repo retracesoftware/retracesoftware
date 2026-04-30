@@ -136,6 +136,69 @@ def openssl_connection_class(cls):
     Connection.__name__ = cls.__name__
     return Connection
 
+
+def fsspec_cached_call(target):
+    """Keep fsspec's PID cache check to one recorded boundary call.
+
+    fsspec initializes class-level cache PIDs while imports are disabled, then
+    compares that value with os.getpid() during filesystem construction. Replay
+    sees a live import-time PID but a recorded os.getpid() result, so the stock
+    implementation calls os.getpid() a second time to refresh the cache.
+    """
+    target_globals = target.__globals__
+
+    @functools.wraps(target)
+    @utils.exclude_from_stacktrace
+    def wrapper(cls, *args, **kwargs):
+        apply_config = target_globals["apply_config"]
+        tokenize = target_globals["tokenize"]
+        threading = target_globals["threading"]
+        os = target_globals["os"]
+
+        kwargs = apply_config(cls, kwargs)
+        extra_tokens = tuple(
+            getattr(cls, attr, None)
+            for attr in getattr(cls, "_extra_tokenize_attributes", ())
+        )
+        strip_tokenize_options = {
+            k: kwargs.pop(k)
+            for k in getattr(cls, "_strip_tokenize_options", ())
+            if k in kwargs
+        }
+        current_pid = os.getpid()
+        token = tokenize(
+            cls,
+            current_pid,
+            threading.get_ident(),
+            *args,
+            *extra_tokens,
+            **kwargs,
+        )
+        skip = kwargs.pop("skip_instance_cache", False)
+        if current_pid != cls._pid:
+            cls._cache.clear()
+            cls._pid = current_pid
+        if not skip and cls.cachable and token in cls._cache:
+            cls._latest = token
+            return cls._cache[token]
+
+        obj = type.__call__(cls, *args, **kwargs, **strip_tokenize_options)
+        obj._fs_token_ = token
+        obj.storage_args = args
+        obj.storage_options = kwargs
+        if obj.async_impl and obj.mirror_sync_methods:
+            from fsspec.asyn import mirror_sync_methods
+
+            mirror_sync_methods(obj)
+
+        if cls.cachable and not skip:
+            cls._latest = token
+            cls._cache[token] = obj
+        return obj
+
+    return wrapper
+
+
 typewrappers = {
     '_socket': {
         'socket': {

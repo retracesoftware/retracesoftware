@@ -34,6 +34,8 @@ type setBreakpointsArgs struct {
 	Breakpoints []dapBreakpoint `json:"breakpoints"`
 }
 
+const defaultNavigationTimeout = 30 * time.Second
+
 // Proxy is the Go-owned DAP endpoint that maps requests to Debugger calls.
 type Proxy struct {
 	pidFile      string
@@ -49,6 +51,7 @@ type Proxy struct {
 	currentMessageIndex uint64
 	currentCursor       *Cursor // current position, nil until first navigation
 	navigatedFromHit    bool    // true after step/nav, false after continue lands on a hit
+	navTimeout          time.Duration
 }
 
 func NewProxy(pidFile string, clientIn io.Reader, clientW *Writer) *Proxy {
@@ -69,6 +72,7 @@ func NewProxy(pidFile string, clientIn io.Reader, clientW *Writer) *Proxy {
 		clientR:       bufio.NewReader(clientIn),
 		clientW:       clientW,
 		breakpointIDs: make(map[string]int),
+		navTimeout:    defaultNavigationTimeout,
 	}
 }
 
@@ -285,6 +289,10 @@ func breakpointKey(spec BreakpointSpec) string {
 }
 
 func (p *Proxy) handleSetBreakpoints(argsRaw json.RawMessage) (json.RawMessage, error) {
+	if p.debugger == nil {
+		return nil, fmt.Errorf("no active debugger")
+	}
+
 	var args setBreakpointsArgs
 	if len(argsRaw) > 0 {
 		if err := json.Unmarshal(argsRaw, &args); err != nil {
@@ -341,7 +349,7 @@ func (p *Proxy) runToNextStop(command string) error {
 		return fmt.Errorf("no active debugger")
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), p.navTimeout)
 	defer cancel()
 
 	switch command {

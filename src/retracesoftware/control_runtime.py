@@ -24,6 +24,7 @@ import retracesoftware.cursor as cursor
 from retracesoftware.utils.breakpoint import BreakpointSpec, install_breakpoint, install_function_breakpoint, _acquire_tool_id
 
 _real_fork = os.fork
+_RETRACE_PACKAGE_DIR = os.path.dirname(os.path.realpath(__file__))
 
 @dataclass
 class StopAtBreakpoint:
@@ -681,6 +682,14 @@ def _find_frame_for_code(code: CodeType):
         frame = frame.f_back
     return None
 
+def _is_retrace_internal_code(code: CodeType) -> bool:
+    filename = code.co_filename
+    if not filename:
+        return False
+    if filename.startswith("<"):
+        return True
+    return os.path.realpath(filename).startswith(_RETRACE_PACKAGE_DIR + os.sep)
+
 def _find_user_frame():
     """Walk the call stack to find the first frame outside retracesoftware internals."""
     frame = sys._getframe(1)
@@ -890,18 +899,33 @@ class Controller:
             self._trace_monitor.close()
 
         os_tid = _thread.get_ident()
+        target_code = self._stopped_frame.f_code if self._stopped_frame is not None else None
+        start_offset = self._stopped_frame.f_lasti if self._stopped_frame is not None else None
+        skipped_start_offset = False
         tool_id = _acquire_tool_id("retrace_next_instr")
         E = sys.monitoring.events
         monitor = utils.InstructionMonitor(tool_id)
         self._trace_monitor = monitor
 
         def on_hit(code, offset):
+            nonlocal skipped_start_offset
             if _thread.get_ident() != os_tid:
+                return
+            if _is_retrace_internal_code(code):
+                return
+            if (
+                target_code is not None
+                and code is target_code
+                and start_offset is not None
+                and offset == start_offset
+                and not skipped_start_offset
+            ):
+                skipped_start_offset = True
                 return
             monitor.close()
             self._trace_monitor = None
             self._last_code = code
-            self._stopped_frame = _find_user_frame()
+            self._stopped_frame = _find_frame_for_code(code) or _find_user_frame()
             cursor_dict = {
                 "thread_id": self._get_thread_id(),
                 "function_counts": list(cursor.current_call_counts()),

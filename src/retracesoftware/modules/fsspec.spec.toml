@@ -1,0 +1,9 @@
+package = "fsspec"
+
+# fsspec caches filesystem instances by process id. The class-level pid is set
+# during import while retrace's import gate is disabled, but constructor-time
+# os.getpid() is a recorded boundary call. Reuse that single recorded pid for
+# both cache-token generation and fork-cache invalidation so replay does not
+# make an extra os.getpid() call.
+[patch_class._Cached]
+__call__ = "retracesoftware.install.edgecases.fsspec_cached_call"

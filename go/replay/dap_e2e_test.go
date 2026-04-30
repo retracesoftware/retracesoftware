@@ -88,6 +88,30 @@ func (c *dapClient) readUntil(pred func(map[string]any) bool, limit int) ([]map[
 	return msgs, false
 }
 
+func (c *dapClient) readUntilTimeout(pred func(map[string]any) bool, timeout time.Duration) ([]map[string]any, bool) {
+	var msgs []map[string]any
+	deadline := time.After(timeout)
+	for {
+		done := make(chan map[string]any, 1)
+		go func() {
+			done <- c.read()
+		}()
+
+		select {
+		case m := <-done:
+			if m == nil {
+				return msgs, false
+			}
+			msgs = append(msgs, m)
+			if pred(m) {
+				return msgs, true
+			}
+		case <-deadline:
+			return msgs, false
+		}
+	}
+}
+
 func isResponse(command string) func(map[string]any) bool {
 	return func(m map[string]any) bool {
 		return m["type"] == "response" && m["command"] == command
@@ -150,6 +174,240 @@ func requirePython312(t *testing.T) string {
 	return p
 }
 
+type dapSession struct {
+	t              *testing.T
+	client         *dapClient
+	clientToProxyW *io.PipeWriter
+	proxyToClientR *io.PipeReader
+	proxyDone      chan error
+	cleanup        func()
+	script         string
+	closed         bool
+}
+
+func newDAPSession(t *testing.T, python, scriptName, source string) *dapSession {
+	t.Helper()
+	tmpDir := t.TempDir()
+
+	scriptDir := filepath.Join(tmpDir, "src")
+	if err := os.MkdirAll(scriptDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	script := filepath.Join(scriptDir, scriptName)
+	if err := os.WriteFile(script, []byte(source), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	tracePath := filepath.Join(tmpDir, "trace.retrace")
+	pidFile, cleanup := extractPidFile(t, python, script, tracePath)
+
+	clientToProxyR, clientToProxyW := io.Pipe()
+	proxyToClientR, proxyToClientW := io.Pipe()
+
+	dapWriter := NewWriter(proxyToClientW)
+	proxy := NewProxy(pidFile, clientToProxyR, dapWriter)
+	proxy.navTimeout = 5 * time.Second
+
+	proxyDone := make(chan error, 1)
+	go func() {
+		proxyDone <- proxy.Run()
+		proxyToClientW.Close()
+	}()
+
+	session := &dapSession{
+		t:              t,
+		client:         &dapClient{r: bufio.NewReader(proxyToClientR), w: clientToProxyW},
+		clientToProxyW: clientToProxyW,
+		proxyToClientR: proxyToClientR,
+		proxyDone:      proxyDone,
+		cleanup:        cleanup,
+		script:         script,
+	}
+	t.Cleanup(session.close)
+
+	session.initialize()
+	session.launch(pidFile)
+	return session
+}
+
+func (s *dapSession) close() {
+	if s.closed {
+		return
+	}
+	s.closed = true
+
+	s.client.send("disconnect", nil)
+	s.client.readUntilTimeout(isResponse("disconnect"), 500*time.Millisecond)
+	_ = s.clientToProxyW.Close()
+	_ = s.proxyToClientR.Close()
+
+	select {
+	case err := <-s.proxyDone:
+		if err != nil {
+			s.t.Logf("proxy exited with: %v (may be expected)", err)
+		}
+	case <-time.After(5 * time.Second):
+		s.t.Fatal("proxy didn't shut down in time")
+	}
+	if s.cleanup != nil {
+		s.cleanup()
+	}
+}
+
+func (s *dapSession) initialize() {
+	s.t.Helper()
+	s.client.send("initialize", map[string]any{
+		"clientID":  "test",
+		"adapterID": "retrace",
+	})
+	msgs, ok := s.client.readUntilTimeout(isResponse("initialize"), 5*time.Second)
+	if !ok {
+		s.t.Fatalf("never got initialize response; messages: %v", msgs)
+	}
+	hasInitialized := false
+	for _, m := range msgs {
+		if m["type"] == "event" && m["event"] == "initialized" {
+			hasInitialized = true
+		}
+	}
+	if !hasInitialized {
+		msgs2, ok2 := s.client.readUntilTimeout(isEvent("initialized"), 5*time.Second)
+		if !ok2 {
+			s.t.Fatalf("never got initialized event; messages: %v", append(msgs, msgs2...))
+		}
+	}
+}
+
+func (s *dapSession) launch(pidFile string) {
+	s.t.Helper()
+	s.client.send("launch", map[string]any{
+		"type":      "retrace",
+		"request":   "launch",
+		"recording": pidFile,
+	})
+	s.expectResponse("launch", 10*time.Second)
+}
+
+func (s *dapSession) setBreakpoint(line int) {
+	s.t.Helper()
+	s.client.send("setBreakpoints", map[string]any{
+		"source": map[string]any{
+			"name": filepath.Base(s.script),
+			"path": s.script,
+		},
+		"lines":       []int{line},
+		"breakpoints": []map[string]any{{"line": line}},
+	})
+	resp := s.expectResponse("setBreakpoints", 15*time.Second)
+	body, _ := resp["body"].(map[string]any)
+	breakpoints, _ := body["breakpoints"].([]any)
+	if len(breakpoints) == 0 {
+		s.t.Fatalf("setBreakpoints returned no breakpoints: %v", resp)
+	}
+	first, _ := breakpoints[0].(map[string]any)
+	if first["verified"] != true {
+		s.t.Fatalf("breakpoint was not verified: %v", resp)
+	}
+}
+
+func (s *dapSession) configurationDone() {
+	s.t.Helper()
+	s.client.send("configurationDone", nil)
+	s.expectStopped("entry", 10*time.Second)
+}
+
+func (s *dapSession) continueToBreakpoint() {
+	s.t.Helper()
+	s.client.send("continue", map[string]any{"threadId": 1})
+	s.expectStopped("breakpoint", 30*time.Second)
+}
+
+func (s *dapSession) step(command string) {
+	s.t.Helper()
+	s.client.send(command, map[string]any{"threadId": 1})
+	s.expectStopped("step", 15*time.Second)
+}
+
+func (s *dapSession) expectResponse(command string, timeout time.Duration) map[string]any {
+	s.t.Helper()
+	msgs, ok := s.client.readUntilTimeout(isResponse(command), timeout)
+	if !ok {
+		s.t.Fatalf("never got %s response; messages: %v", command, msgs)
+	}
+	for _, m := range msgs {
+		if m["type"] == "response" && m["command"] == command {
+			if m["success"] != true {
+				s.t.Fatalf("%s failed: %v", command, m)
+			}
+			return m
+		}
+	}
+	s.t.Fatalf("missing %s response in messages: %v", command, msgs)
+	return nil
+}
+
+func (s *dapSession) expectStopped(reason string, timeout time.Duration) map[string]any {
+	s.t.Helper()
+	msgs, ok := s.client.readUntilTimeout(func(m map[string]any) bool {
+		if m["type"] != "event" {
+			return false
+		}
+		return m["event"] == "stopped" || m["event"] == "terminated"
+	}, timeout)
+	if !ok {
+		s.t.Fatalf("never got stopped/terminated event; messages: %v", msgs)
+	}
+	for _, m := range msgs {
+		if m["type"] != "event" {
+			continue
+		}
+		switch m["event"] {
+		case "terminated":
+			s.t.Fatalf("session terminated while waiting for stopped(%s); messages:\n%v", reason, formatMsgs(msgs))
+		case "stopped":
+			body, _ := m["body"].(map[string]any)
+			if body["reason"] != reason {
+				s.t.Fatalf("stopped with reason %v, want %s; messages:\n%v", body["reason"], reason, formatMsgs(msgs))
+			}
+			return body
+		}
+	}
+	s.t.Fatalf("missing stopped event in messages: %v", msgs)
+	return nil
+}
+
+func (s *dapSession) topFrame() map[string]any {
+	s.t.Helper()
+	s.client.send("stackTrace", map[string]any{"threadId": 1})
+	resp := s.expectResponse("stackTrace", 10*time.Second)
+	body, _ := resp["body"].(map[string]any)
+	frames, _ := body["stackFrames"].([]any)
+	if len(frames) == 0 {
+		s.t.Fatalf("stackTrace returned no frames: %v", resp)
+	}
+	topFrame, _ := frames[0].(map[string]any)
+	return topFrame
+}
+
+func assertTopFrame(t *testing.T, frame map[string]any, script string, line int, function string) {
+	t.Helper()
+	source, _ := frame["source"].(map[string]any)
+	sourcePath, _ := source["path"].(string)
+	if sourcePath != script {
+		t.Fatalf("top frame source path = %q, want %q", sourcePath, script)
+	}
+	if !fileExists(sourcePath) {
+		t.Fatalf("top frame source path does not exist: %s", sourcePath)
+	}
+	gotLine, _ := frame["line"].(float64)
+	if int(gotLine) != line {
+		t.Fatalf("top frame line = %v, want %d; frame: %v", frame["line"], line, frame)
+	}
+	if function != "" && frame["name"] != function {
+		t.Fatalf("top frame function = %v, want %s; frame: %v", frame["name"], function, frame)
+	}
+}
+
 // TestDAPBreakpointE2E records a Python script, starts a Proxy, drives the
 // full DAP flow (initialize → launch → setBreakpoints → configurationDone →
 // continue), and verifies that the breakpoint is hit (stopped event with
@@ -186,6 +444,7 @@ func TestDAPBreakpointE2E(t *testing.T) {
 
 	dapWriter := NewWriter(proxyToClientW)
 	proxy := NewProxy(pidFile, clientToProxyR, dapWriter)
+	proxy.navTimeout = 5 * time.Second
 
 	proxyDone := make(chan error, 1)
 	go func() {
@@ -351,7 +610,60 @@ func TestDAPBreakpointE2E(t *testing.T) {
 	}
 	t.Log("OK: stackTrace source path")
 
-	// 7. disconnect
+	// 7. next / step-over -> expect a step stop on the next source line
+	client.send("next", map[string]any{"threadId": 1})
+	msgs, ok = client.readUntilTimeout(func(m map[string]any) bool {
+		if m["type"] != "event" {
+			return false
+		}
+		return m["event"] == "stopped" || m["event"] == "terminated"
+	}, 10*time.Second)
+	if !ok {
+		t.Fatalf("never got stopped/terminated after next; messages: %v", msgs)
+	}
+	for _, m := range msgs {
+		if m["type"] != "event" {
+			continue
+		}
+		if m["event"] == "terminated" {
+			t.Fatalf("session terminated during next; messages:\n%v", formatMsgs(msgs))
+		}
+		if m["event"] == "stopped" {
+			body, _ := m["body"].(map[string]any)
+			if body["reason"] != "step" {
+				t.Fatalf("next stopped with reason %v; messages:\n%v", body["reason"], formatMsgs(msgs))
+			}
+		}
+	}
+
+	client.send("stackTrace", map[string]any{"threadId": 1})
+	msgs, ok = client.readUntil(isResponse("stackTrace"), 10)
+	if !ok {
+		t.Fatalf("never got stackTrace response after next; messages: %v", msgs)
+	}
+	stackResp = nil
+	for _, m := range msgs {
+		if m["type"] == "response" && m["command"] == "stackTrace" {
+			stackResp = m
+			break
+		}
+	}
+	if stackResp == nil || stackResp["success"] != true {
+		t.Fatalf("stackTrace after next failed: %v", stackResp)
+	}
+	body, _ = stackResp["body"].(map[string]any)
+	frames, _ = body["stackFrames"].([]any)
+	if len(frames) == 0 {
+		t.Fatalf("stackTrace after next returned no frames: %v", stackResp)
+	}
+	topFrame, _ = frames[0].(map[string]any)
+	gotLine, _ := topFrame["line"].(float64)
+	if int(gotLine) != 2 {
+		t.Fatalf("top frame line after next = %v, want 2; response: %v", topFrame["line"], stackResp)
+	}
+	t.Log("OK: next → stopped(step) on line 2")
+
+	// 8. disconnect
 	client.send("disconnect", nil)
 	client.readUntil(isResponse("disconnect"), 5)
 	clientToProxyW.Close()
@@ -365,6 +677,50 @@ func TestDAPBreakpointE2E(t *testing.T) {
 		t.Fatal("proxy didn't shut down in time")
 	}
 	t.Log("OK: disconnect")
+}
+
+// TestDAPDebuggerControlsE2E drives the common VS Code stepping requests
+// against a real recording. It covers step-over (next), reverse step-over
+// (stepBack), step-into, and step-out through the Go DAP proxy.
+func TestDAPDebuggerControlsE2E(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping e2e test in short mode")
+	}
+	python := requirePython312(t)
+
+	const source = `def add(a, b):
+    c = a + b
+    return c
+
+value = 1
+other = 2
+total = add(value, other)
+after = total + 1
+print(after)
+`
+
+	session := newDAPSession(t, python, "controls_target.py", source)
+	session.setBreakpoint(7)
+	session.configurationDone()
+	session.continueToBreakpoint()
+	assertTopFrame(t, session.topFrame(), session.script, 7, "<module>")
+	t.Log("OK: continue -> line 7")
+
+	session.step("next")
+	assertTopFrame(t, session.topFrame(), session.script, 8, "<module>")
+	t.Log("OK: next -> line 8")
+
+	session.step("stepBack")
+	assertTopFrame(t, session.topFrame(), session.script, 7, "<module>")
+	t.Log("OK: stepBack -> line 7")
+
+	session.step("stepIn")
+	assertTopFrame(t, session.topFrame(), session.script, 2, "add")
+	t.Log("OK: stepIn -> add line 2")
+
+	session.step("stepOut")
+	assertTopFrame(t, session.topFrame(), session.script, 7, "<module>")
+	t.Log("OK: stepOut -> caller line 7")
 }
 
 func fileExists(path string) bool {
