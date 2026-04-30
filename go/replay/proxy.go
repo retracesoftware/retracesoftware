@@ -50,7 +50,8 @@ type Proxy struct {
 	breakpointIDs       map[string]int // "file:line[:cond]" -> debugger breakpoint ID
 	currentMessageIndex uint64
 	currentCursor       *Cursor // current position, nil until first navigation
-	navigatedFromHit    bool    // true after step/nav, false after continue lands on a hit
+	navHistory          []*Cursor
+	navigatedFromHit    bool // true after step/nav, false after continue lands on a hit
 	navTimeout          time.Duration
 }
 
@@ -360,19 +361,24 @@ func (p *Proxy) runToNextStop(command string) error {
 	case "next":
 		return p.handleCursorNav(ctx, "step", func() (*Cursor, error) {
 			return p.currentCursor.Next(ctx)
-		})
+		}, true)
 	case "stepIn":
 		return p.handleCursorNav(ctx, "step", func() (*Cursor, error) {
 			return p.currentCursor.StepInto(ctx)
-		})
+		}, true)
 	case "stepOut":
 		return p.handleCursorNav(ctx, "step", func() (*Cursor, error) {
 			return p.currentCursor.Return(ctx)
-		})
+		}, true)
 	case "stepBack":
 		return p.handleCursorNav(ctx, "step", func() (*Cursor, error) {
+			if n := len(p.navHistory); n > 0 {
+				prev := p.navHistory[n-1]
+				p.navHistory = p.navHistory[:n-1]
+				return prev, nil
+			}
 			return p.currentCursor.PreviousStatement(ctx)
-		})
+		}, false)
 	default:
 		return fmt.Errorf("unhandled navigation command: %s", command)
 	}
@@ -406,6 +412,7 @@ func (p *Proxy) handleContinue(ctx context.Context, reverse bool) error {
 
 	p.currentMessageIndex = hit.Location.MessageIndex
 	p.navigatedFromHit = false
+	p.navHistory = nil
 	snap, err := p.provider.ClosestBeforeCall(ctx, hit.Location.ThreadID, hit.Location.FunctionCounts)
 	if err != nil {
 		log.Printf("warning: failed to get snapshot: %v", err)
@@ -434,7 +441,7 @@ func (p *Proxy) handleContinue(ctx context.Context, reverse bool) error {
 	}))
 }
 
-func (p *Proxy) handleCursorNav(ctx context.Context, reason string, nav func() (*Cursor, error)) (retErr error) {
+func (p *Proxy) handleCursorNav(ctx context.Context, reason string, nav func() (*Cursor, error), recordHistory bool) (retErr error) {
 	defer func() {
 		if r := recover(); r != nil {
 			log.Printf("PANIC in handleCursorNav (%s): %v", reason, r)
@@ -454,6 +461,10 @@ func (p *Proxy) handleCursorNav(ctx context.Context, reason string, nav func() (
 	log.Printf("handleCursorNav: reason=%s msgIdx=%d flasti=%s fc=%v",
 		reason, loc.MessageIndex, flasti(loc.FLasti), loc.FunctionCounts)
 
+	var previous *Cursor
+	if recordHistory {
+		previous = NewCursor(loc, p.provider, nil)
+	}
 	next, err := nav()
 	if err != nil {
 		log.Printf("navigation failed (%s): %v, staying at current position", reason, err)
@@ -461,6 +472,9 @@ func (p *Proxy) handleCursorNav(ctx context.Context, reason string, nav func() (
 		nl := next.Location()
 		log.Printf("handleCursorNav: advanced to msgIdx=%d flasti=%s fc=%v",
 			nl.MessageIndex, flasti(nl.FLasti), nl.FunctionCounts)
+		if previous != nil && !previous.Location().Equal(nl) {
+			p.navHistory = append(p.navHistory, previous)
+		}
 		p.currentCursor = next
 		p.navigatedFromHit = true
 	}

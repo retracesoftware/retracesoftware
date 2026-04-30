@@ -408,6 +408,41 @@ func assertTopFrame(t *testing.T, frame map[string]any, script string, line int,
 	}
 }
 
+type dapFramePoint struct {
+	Line     int
+	Function string
+}
+
+func topFramePoint(t *testing.T, session *dapSession) dapFramePoint {
+	t.Helper()
+	frame := session.topFrame()
+	source, _ := frame["source"].(map[string]any)
+	sourcePath, _ := source["path"].(string)
+	if sourcePath != session.script {
+		t.Fatalf("top frame source path = %q, want %q", sourcePath, session.script)
+	}
+	if !fileExists(sourcePath) {
+		t.Fatalf("top frame source path does not exist: %s", sourcePath)
+	}
+	line, _ := frame["line"].(float64)
+	function, _ := frame["name"].(string)
+	return dapFramePoint{Line: int(line), Function: function}
+}
+
+func readExampleTargetHello(t *testing.T) string {
+	t.Helper()
+	src := checkoutSrcDir()
+	if src == "" {
+		t.Fatal("could not locate checkout src dir")
+	}
+	root := filepath.Dir(src)
+	data, err := os.ReadFile(filepath.Join(root, "examples", "target_hello.py"))
+	if err != nil {
+		t.Fatalf("read examples/target_hello.py: %v", err)
+	}
+	return string(data)
+}
+
 // TestDAPBreakpointE2E records a Python script, starts a Proxy, drives the
 // full DAP flow (initialize → launch → setBreakpoints → configurationDone →
 // continue), and verifies that the breakpoint is hit (stopped event with
@@ -721,6 +756,59 @@ print(after)
 	session.step("stepOut")
 	assertTopFrame(t, session.topFrame(), session.script, 7, "<module>")
 	t.Log("OK: stepOut -> caller line 7")
+}
+
+// TestDAPStepForwardThenBackToBeginningE2E records target_hello.py, walks
+// forward with DAP next to the final module line, then walks backward with DAP
+// stepBack and verifies the exact reverse line/function path.
+func TestDAPStepForwardThenBackToBeginningE2E(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping e2e test in short mode")
+	}
+	python := requirePython312(t)
+
+	session := newDAPSession(t, python, "target_hello.py", readExampleTargetHello(t))
+	session.setBreakpoint(1)
+	session.configurationDone()
+	session.continueToBreakpoint()
+
+	start := topFramePoint(t, session)
+	if start != (dapFramePoint{Line: 1, Function: "<module>"}) {
+		t.Fatalf("start point = %+v, want module line 1", start)
+	}
+
+	forward := []dapFramePoint{start}
+	for i := 0; i < 80; i++ {
+		session.step("next")
+		point := topFramePoint(t, session)
+		if point == forward[len(forward)-1] {
+			t.Fatalf("forward walk stopped advancing before final line after %d steps at %+v; path: %+v",
+				i+1, point, forward)
+		}
+		forward = append(forward, point)
+		if point.Line == 12 && point.Function == "<module>" {
+			t.Logf("forward reached final target_hello.py line after %d steps", i+1)
+			break
+		}
+	}
+	if len(forward) < 20 {
+		t.Fatalf("forward walk too short (%d points): %+v", len(forward), forward)
+	}
+	if last := forward[len(forward)-1]; last.Line != 12 || last.Function != "<module>" {
+		t.Fatalf("forward walk ended at %+v, want module line 12; path: %+v", last, forward)
+	}
+
+	backward := []dapFramePoint{forward[len(forward)-1]}
+	for i := len(forward) - 2; i >= 0; i-- {
+		session.step("stepBack")
+		point := topFramePoint(t, session)
+		backward = append(backward, point)
+		if point != forward[i] {
+			t.Fatalf("stepBack returned %+v, want forward[%d]=%+v; forward=%+v backward=%+v",
+				point, i, forward[i], forward, backward)
+		}
+	}
+	t.Logf("OK: walked %d points forward and %d points back", len(forward), len(backward))
 }
 
 func fileExists(path string) bool {
