@@ -451,3 +451,87 @@ def test_asyncio_default_executor_replay_wakeup_progresses(tmp_path: Path):
         f"stderr:\n{replay.stderr}"
     )
     assert replay.stdout == record.stdout
+
+
+def test_replay_post_run_daemon_thread_cleanup_does_not_consume_trace(
+    tmp_path: Path,
+):
+    """Daemon cleanup after the trace window should not keep replay gateways live."""
+
+    script = tmp_path / "daemon_atexit_cleanup.py"
+    script.write_text(
+        (
+            "import atexit\n"
+            "import threading\n"
+            "\n"
+            "ready = threading.Event()\n"
+            "\n"
+            "def worker():\n"
+            "    ready.wait()\n"
+            "    print('worker flushed', flush=True)\n"
+            "\n"
+            "thread = threading.Thread(target=worker, daemon=True, name='flush-worker')\n"
+            "thread.start()\n"
+            "\n"
+            "def shutdown():\n"
+            "    ready.set()\n"
+            "    thread.join(timeout=5)\n"
+            "    print('shutdown done', flush=True)\n"
+            "\n"
+            "atexit.register(shutdown)\n"
+            "print('main done', flush=True)\n"
+        ),
+        encoding="utf-8",
+    )
+
+    recording = tmp_path / "trace.retrace"
+    env = os.environ.copy()
+    env["PYTHONFAULTHANDLER"] = "1"
+    env["RETRACE_CONFIG"] = "debug"
+    env["RETRACE_SKIP_CHECKSUMS"] = "1"
+
+    record = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "retracesoftware",
+            "--recording",
+            str(recording),
+            "--format",
+            "unframed_binary",
+            "--",
+            str(script),
+        ],
+        capture_output=True,
+        text=True,
+        timeout=15,
+        env=env,
+    )
+    assert record.returncode == 0, (
+        f"record run failed (exit {record.returncode})\n"
+        f"stdout:\n{record.stdout}\n"
+        f"stderr:\n{record.stderr}"
+    )
+
+    replay = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "retracesoftware",
+            "--recording",
+            str(recording),
+            "--read_timeout",
+            "1000",
+        ],
+        capture_output=True,
+        text=True,
+        timeout=15,
+        env=env,
+    )
+    assert replay.returncode == 0, (
+        f"replay run failed (exit {replay.returncode})\n"
+        f"stdout:\n{replay.stdout}\n"
+        f"stderr:\n{replay.stderr}"
+    )
+    assert replay.stderr == ""
+    assert replay.stdout == record.stdout

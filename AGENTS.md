@@ -204,8 +204,15 @@ if needed.
 - For changes touching replay-sensitive boundary logic, threading, weakrefs,
   finalizers, fork behavior, or module interception coverage, consider running
   the repo skill `$determinism-check`.
-- When debugging replay failures, prefer locating the first divergence or
-  misalignment instead of patching symptoms.
+- Replay failures must be debugged in this order:
+  1. Find the fundamental divergence between record and replay.
+  2. Build the smallest failing regression that reproduces that divergence
+     without the original application or dockertest when possible.
+  3. Fix the fundamental shared cause, then verify the regression and the
+     original failing scenario.
+  Do not patch the library or symptom that happened to expose the bug before
+  this workflow has identified the actual boundary, scheduling, binding, or
+  message-order contract being violated.
 - For proxy-boundary bugs, explain which `src/retracesoftware/proxy/DESIGN.md`
   expectation is being violated before proposing a fix. If you cannot name the
   violated gate, phase, binding, or message-order invariant, inspect the

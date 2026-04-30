@@ -34,12 +34,24 @@ sync = ["put", "put_nowait"]
 bind = ["_active_limbo_lock"]
 replay_materialize = ["Lock", "RLock"]
 
+[threading.type_attributes.Semaphore]
+proxy = ["acquire", "release"]
+
+[threading.type_attributes.Condition]
+disable = ["wait", "__enter__", "__exit__"]
+sync_disable = ["notify", "notify_all"]
+
+[threading.type_attributes.Event]
+disable = ["wait", "clear"]
+sync_disable = ["set"]
+
 [logging]
 bind = ["_lock"]
 disable = ["_acquireLock", "_releaseLock"]
 
 ["asyncio.base_events".type_attributes.BaseEventLoop]
 sync = ["call_soon_threadsafe"]
+wrap = { shutdown_asyncgens = "retracesoftware.install.edgecases.collect_before" }
 
 [_datetime]
 immutable = ["datetime", "tzinfo", "timezone"]

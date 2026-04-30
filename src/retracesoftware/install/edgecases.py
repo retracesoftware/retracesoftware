@@ -1,6 +1,7 @@
 # from .proxytype import *
 
 import functools
+import gc
 
 from retracesoftware.install import globals
 import retracesoftware.utils as utils
@@ -102,6 +103,17 @@ def openssl_set_verify(target):
             callback = utils.try_unwrap(callback)
         return target(self, mode, callback)
     return wrapper
+
+
+def collect_before(target):
+    @functools.wraps(target)
+    @utils.exclude_from_stacktrace
+    def wrapper(*args, **kwargs):
+        gc.collect()
+        return target(*args, **kwargs)
+
+    return wrapper
+
 
 def openssl_connection_class(cls):
     class Connection(cls):

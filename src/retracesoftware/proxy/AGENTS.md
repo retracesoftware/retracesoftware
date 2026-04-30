@@ -50,6 +50,16 @@ re-derive the contract from this file.
    `tests/install/stdlib/test_threading_lock_replay_regression.py`.
    If it fails, the portal/web replay regressions in the Proxy Kernel
    Sentinel Bundle are likely downstream.
+9. **Fix divergence causes, not exposed symptoms.** The mandatory replay
+   debugging loop is:
+   1. Find the fundamental record/replay divergence.
+   2. Build the smallest failing regression that reproduces that divergence.
+   3. Fix the shared cause named by the relevant `DESIGN.md` contract.
+   If replay has recorded messages for a logical thread that replay never
+   starts, the primary bug is the nondeterministic branch that controlled
+   thread birth or wakeup. Do not add a library-specific patch just because the
+   failure surfaced in a dockertest. See `DESIGN.md` -> "Threads" ->
+   "Cross-thread synchronization".
 
 ## Required Pre-Edit Statement
 
@@ -64,6 +74,10 @@ Before editing any file under `src/retracesoftware/proxy/`, state in chat:
    out (module config in `src/retracesoftware/modules/*.toml`, install
    patcher, proxy handler, or proxy kernel).
 4. Which sentinel tests from "Sentinel Tests" below will be re-run.
+5. The smallest failing regression you will add or update for the fundamental
+   divergence. For any missing/extra-thread failure, this must be a stdlib or
+   local-module reproducer that proves the thread scheduling decision itself
+   diverges.
 
 If steps 1-3 cannot be completed from `DESIGN.md` and the live runtime path,
 re-read `DESIGN.md` and trace the call flow again before editing. Do not
@@ -219,24 +233,29 @@ yet understand the bug. Stop and re-trace.
    should hold for the failing scenario: which gate should run, which
    phase, what message comes next, what binding/materialization step is
    expected. If you cannot find the rule, re-read `DESIGN.md`.
-2. **Find the first observed mismatch.** Wrong gate? Wrong phase? A
+2. **Find the fundamental divergence.** Wrong gate? Wrong phase? A
    message consumed at the wrong index? A bind that did not happen, or
    one that fired twice? An external call entering the gateway in the
    `external` phase? Materialization in a context where it should have
-   been a normal patched call? The first mismatch is where to look; later
+   been a normal patched call? A logical thread present in the trace but
+   not started during replay? The first mismatch is where to look; later
    symptoms are downstream noise.
-3. **Trace the CLI runtime path before editing.** `__main__.py` ->
+3. **Build the smallest failing regression.** Prefer a stdlib or local-module
+   reproducer over the original dockertest/application. The regression should
+   prove the divergent contract directly, not merely assert the high-level
+   library scenario still fails.
+4. **Trace the CLI runtime path before editing.** `__main__.py` ->
    `proxy/io.py` -> `proxy/system.py` -> `proxy/gateway.py` (with
    `proxy/patchtype.py`, `proxy/proxytype.py`, and `install/`). For
    "what does the boundary actually do to arguments and hooks?",
    `gateway.py` is the source of truth. For "how do types get patched?",
    `patchtype.py` is. For "how is the kernel wired and how does `run()`
    install gateways?", `system.py` is.
-4. **Pick the narrowest fix layer.** Module config (`modules/*.toml`) ->
+5. **Pick the narrowest fix layer.** Module config (`modules/*.toml`) ->
    install patcher -> gateway pipeline / `io.py` hook -> kernel
    (`system.py`). Move outward only when the inner layer cannot express
    the fix.
-5. **Re-run the matching sentinel tests** (see "Sentinel Tests" below)
+6. **Re-run the matching sentinel tests** (see "Sentinel Tests" below)
    before declaring the fix done.
 
 ### How to read retrace debug output

@@ -13,6 +13,7 @@ gateway factories plus lifecycle/hook attributes.
 """
 
 from typing import NamedTuple, Callable, Any
+import functools
 import retracesoftware.functional as functional
 import retracesoftware.stream as stream
 import retracesoftware.utils as utils
@@ -24,7 +25,7 @@ from retracesoftware.proxy.proxytype import method_names, superdict
 from retracesoftware.proxy.proxytype import DynamicProxy
 from retracesoftware.install.patcher import install_hash_patching
 from retracesoftware.install.edgecases import patchtype
-from retracesoftware.proxy.gateway import ext_gateway, int_gateway
+from retracesoftware.proxy.gateway import ext_gateway, ext_method_gateway, int_gateway
 from retracesoftware.proxy.patchtype import patch_type, _module_unpatch_type
 
 def proxy(proxytype_from):
@@ -385,6 +386,28 @@ class System:
             ),
         )
 
+    def sync_disabled_for(self, function):
+        """Run *function* disabled while emitting a synchronization marker."""
+        disabled_function = self.disable_for(function, unwrap_args=False)
+        return utils.observer(
+            function=disabled_function,
+            on_call=self.gate.cond(
+                "internal",
+                functional.repeatedly(self.sync),
+                utils.noop,
+            ),
+        )
+
+    def disabled_method_for(self, function):
+        """Disable a method while preserving descriptor binding."""
+        disabled_function = self.disable_for(function, unwrap_args=False)
+
+        @functools.wraps(function)
+        def wrapper(*args, **kwargs):
+            return disabled_function(*args, **kwargs)
+
+        return wrapper
+
     def __init__(self, on_bind = None) -> None:
 
         self.gate = utils.ThreadLocal(None)
@@ -392,6 +415,7 @@ class System:
         self.ext_gateway = self.gate.if_then_else('internal', fallback, fallback)
 
         self.ext_gateway_factory = ext_gateway
+        self.ext_method_gateway_factory = ext_method_gateway
         self.int_gateway_factory = int_gateway
 
         self.lifecycle_hooks = LifecycleHooks(
@@ -423,6 +447,7 @@ class System:
             utils.noop)
 
         self.ext_proxytype_from_spec = self._wrapped_function(self.int_gateway, _ext_proxytype_from_spec)
+        self.ext_method_gateway = self.gate.if_then_else('internal', fallback, fallback)
         self.bind(self)
 
         self.proxy_ref = functional.memoize_one_arg(ProxyRef)
@@ -521,6 +546,15 @@ class System:
                 on_error = self.secondary_hooks.on_error if self.secondary_hooks else None))
             
         self.ext_gateway.on_then = self.ext_gateway_factory(
+            gate = self.gate,
+            int_proxy = self.int_proxy,
+            ext_proxy = self.ext_proxy,
+            hooks = CallHooks(
+                on_call = self.secondary_hooks.on_call if self.primary_hooks else None,
+                on_result = self.primary_hooks.on_result if self.primary_hooks else None,
+                on_error = self.primary_hooks.on_error if self.primary_hooks else None))
+
+        self.ext_method_gateway.on_then = self.ext_method_gateway_factory(
             gate = self.gate,
             int_proxy = self.int_proxy,
             ext_proxy = self.ext_proxy,
@@ -628,6 +662,9 @@ class System:
         self.bind(wrapped)
         return wrapped
 
+    def _wrapped_method(self, target):
+        return self._wrapped_function(self.ext_method_gateway, target)
+
     def int_proxytype(self, cls):
 
         self.checkpoint(f'creating internal proxytype for {cls}')
@@ -706,6 +743,11 @@ class System:
         uninstall_hash_patching = install_hash_patching(self)
 
         def uninstall():
+            if getattr(self, "retrace_mode", None) == "replay":
+                self._replay_trace_active = False
+                self.int_gateway.on_then = fallback
+                self.ext_gateway.on_then = fallback
+                self.ext_method_gateway.on_then = fallback
             _thread.start_new_thread = original_start_new_thread
             threading._start_new_thread = original_start_new_thread
             threading.Thread.start = original_thread_start

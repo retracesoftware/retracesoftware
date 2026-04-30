@@ -29,7 +29,11 @@ import gc
 import sys
 import os
 import types
-from retracesoftware.proxy.gateway import ext_replay_gateway, int_replay_gateway
+from retracesoftware.proxy.gateway import (
+    ext_replay_gateway,
+    ext_replay_method_gateway,
+    int_replay_gateway,
+)
 
 class _MarkerMessage:
     __slots__ = ("thread_id",)
@@ -378,9 +382,21 @@ def _normalized_call_args(fn, args):
     target = _unwrap_callable(fn)
 
     objclass = getattr(target, "__objclass__", None)
-    if objclass is not None and args and isinstance(args[0], objclass):
+    if objclass is not None and args and (
+        isinstance(args[0], objclass)
+        or _checkpoint_marker_matches_type(args[0], objclass)
+    ):
         return args[1:]
     return args
+
+
+def _checkpoint_marker_matches_type(value, cls):
+    if not _is_checkpoint_sync_marker(value):
+        return False
+    return value[1:] == (
+        getattr(cls, "__module__", ""),
+        getattr(cls, "__qualname__", getattr(cls, "__name__", "")),
+    )
 
 
 def _is_socketpair_function(fn):
@@ -402,6 +418,19 @@ def _is_dynamic_proxy_shim(fn):
     return (
         getattr(fn, "__qualname__", "")
         == "_ext_proxytype_from_spec.<locals>.unbound_function.<locals>.<lambda>"
+    )
+
+
+def _is_checkpoint_sync_value(value):
+    return _is_checkpoint_sync_marker(value) or _checkpoint_sync_key(value) is not None
+
+
+def _call_payload_has_sync_receivers(args_a, args_b):
+    return (
+        bool(args_a)
+        and bool(args_b)
+        and _is_checkpoint_sync_value(args_a[0])
+        and _is_checkpoint_sync_value(args_b[0])
     )
 
 
@@ -442,13 +471,14 @@ def _equal_call_payload(a, b):
         and _is_dynamic_proxy_shim(target_b)
     )
 
-    if not equal(fn_a, fn_b) and not same_dynamic_proxy_shim:
-        return False
-
     args_a = a.get("args", ())
     args_b = b.get("args", ())
     kwargs_a = a.get("kwargs", {})
     kwargs_b = b.get("kwargs", {})
+
+    if not equal(fn_a, fn_b) and not same_dynamic_proxy_shim:
+        return kwargs_a == kwargs_b and _call_payload_has_sync_receivers(args_a, args_b)
+
     normalized_a = _normalized_call_args(fn_a, args_a)
     normalized_b = _normalized_call_args(fn_b, args_b)
     args_equal = equal(normalized_a, normalized_b)
@@ -507,6 +537,10 @@ def equal(a, b):
         return _checkpoint_traceback_marker_matches_value(a, b)
     if _is_checkpoint_traceback_marker(b):
         return _checkpoint_traceback_marker_matches_value(b, a)
+    if _is_checkpoint_sync_marker(a):
+        return _checkpoint_sync_marker_matches_value(a, b)
+    if _is_checkpoint_sync_marker(b):
+        return _checkpoint_sync_marker_matches_value(b, a)
 
     unwrapped_a = _unwrap_callable(a)
     unwrapped_b = _unwrap_callable(b)
@@ -625,6 +659,18 @@ _CHECKPOINT_DESCRIPTOR_MARKER = "__retrace_checkpoint_descriptor__"
 _CHECKPOINT_ENUM_MARKER = "__retrace_checkpoint_enum__"
 _CHECKPOINT_EXCEPTION_MARKER = "__retrace_checkpoint_exception__"
 _CHECKPOINT_TRACEBACK_MARKER = "__retrace_checkpoint_traceback__"
+_CHECKPOINT_SYNC_MARKER = "__retrace_checkpoint_sync__"
+
+_CHECKPOINT_SYNC_TYPES = frozenset(
+    {
+        ("_thread", "lock"),
+        ("_thread", "RLock"),
+        ("threading", "Semaphore"),
+        ("threading", "BoundedSemaphore"),
+        ("threading", "Condition"),
+        ("threading", "Event"),
+    }
+)
 
 
 def _external_type_key(value):
@@ -765,6 +811,24 @@ def _checkpoint_traceback_marker(value):
     return (_CHECKPOINT_TRACEBACK_MARKER,)
 
 
+def _checkpoint_sync_key(value):
+    cls = type(value)
+    key = (
+        getattr(cls, "__module__", ""),
+        getattr(cls, "__qualname__", getattr(cls, "__name__", "")),
+    )
+    if key in _CHECKPOINT_SYNC_TYPES:
+        return key
+    return None
+
+
+def _checkpoint_sync_marker(value):
+    key = _checkpoint_sync_key(value)
+    if key is None:
+        return value
+    return (_CHECKPOINT_SYNC_MARKER, *key)
+
+
 def _checkpoint_stable_marker(value):
     for marker in (
         _checkpoint_descriptor_marker,
@@ -772,6 +836,7 @@ def _checkpoint_stable_marker(value):
         _checkpoint_external_marker,
         _checkpoint_exception_marker,
         _checkpoint_traceback_marker,
+        _checkpoint_sync_marker,
     ):
         marked = marker(value)
         if marked is not value:
@@ -819,6 +884,14 @@ def _is_checkpoint_traceback_marker(value):
     )
 
 
+def _is_checkpoint_sync_marker(value):
+    return (
+        isinstance(value, tuple)
+        and len(value) == 3
+        and value[0] == _CHECKPOINT_SYNC_MARKER
+    )
+
+
 def _checkpoint_marker_matches_value(marker, value):
     if _is_checkpoint_external_marker(value):
         return marker == value
@@ -851,6 +924,12 @@ def _checkpoint_traceback_marker_matches_value(marker, value):
     if _is_checkpoint_traceback_marker(value):
         return True
     return isinstance(value, types.TracebackType)
+
+
+def _checkpoint_sync_marker_matches_value(marker, value):
+    if _is_checkpoint_sync_marker(value):
+        return marker == value
+    return marker[1:] == _checkpoint_sync_key(value)
 
 
 def normalize_stack_delta(delta):
@@ -1081,6 +1160,7 @@ def replayer(*, next_object,
     on_unexpected = system.disable_for(on_unexpected, unwrap_args=False)
     on_desync = system.disable_for(on_desync, unwrap_args=False)
     system.retrace_mode = "replay"
+    system._replay_trace_active = True
     system.replay_materialize = set()
 
     stack = utils.StackFactory()
@@ -1339,11 +1419,32 @@ def replayer(*, next_object,
 
             return on_unexpected(message)
 
+    unwrap_value = functional.walker(utils.try_unwrap)
+
+    @utils.exclude_from_stacktrace
+    def live_external_call(fn, *args, **kwargs):
+        return utils.try_unwrap_apply(
+            fn,
+            *unwrap_value(args),
+            **unwrap_value(kwargs),
+        )
+
+    live_external_call = system.disable_for(live_external_call, unwrap_args=False)
+
     @utils.exclude_from_stacktrace
     def ext_execute(fn, *args, **kwargs):
-        return next_result_message()
+        try:
+            return next_result_message()
+        except Exception:
+            if getattr(system, "_replay_trace_active", True):
+                raise
+            return live_external_call(fn, *args, **kwargs)
 
     system.ext_gateway_factory = functional.partial(ext_replay_gateway, ext_execute)
+    system.ext_method_gateway_factory = functional.partial(
+        ext_replay_method_gateway,
+        ext_execute,
+    )
     system.int_gateway_factory = int_replay_gateway
 
     # system.ext_execute = ext_execute

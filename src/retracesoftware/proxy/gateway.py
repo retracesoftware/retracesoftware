@@ -35,6 +35,22 @@ def ext_gateway(gate, int_proxy, ext_proxy, hooks):
                 function = observer),
             unproxy_int)
 
+def ext_method_gateway(gate, int_proxy, ext_proxy, hooks):
+    runner = ext_runner(gate, ext_proxy)
+
+    observer = utils.observer(
+        on_call = hooks.on_call,
+        on_result = hooks.on_result,
+        on_error = hooks.on_error,
+        function = runner)
+
+    return functional.sequence(
+            functional.mapargs(
+                starting = 2,
+                transform = int_proxy,
+                function = observer),
+            unproxy_int)
+
 def ext_replay_gateway(ext_runner, gate, int_proxy, ext_proxy, hooks):
     
     observer = utils.observer(
@@ -46,6 +62,20 @@ def ext_replay_gateway(ext_runner, gate, int_proxy, ext_proxy, hooks):
     return functional.sequence(
             functional.mapargs(
                 starting = 1,
+                transform = int_proxy,
+                function = observer),
+            unproxy_int)
+def ext_replay_method_gateway(ext_runner, gate, int_proxy, ext_proxy, hooks):
+
+    observer = utils.observer(
+        on_call = hooks.on_call,
+        on_result = hooks.on_result,
+        on_error = hooks.on_error,
+        function = gate.apply_with('external', ext_runner))
+
+    return functional.sequence(
+            functional.mapargs(
+                starting = 2,
                 transform = int_proxy,
                 function = observer),
             unproxy_int)

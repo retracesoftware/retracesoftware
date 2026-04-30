@@ -1,12 +1,20 @@
 import sys
 import types
 
+import retracesoftware.functional as functional
 import retracesoftware.utils as utils
 
 from retracesoftware.install.installation import Installation
 from retracesoftware.install.patcher import patch
 from retracesoftware.install.replace import ModuleRefIndex, restore_module_refs
 from retracesoftware.proxy.system import CallHooks, LifecycleHooks, System
+
+
+def _wrap_marker(target):
+    def wrapper(self):
+        return ("wrapped", target(self))
+
+    return wrapper
 
 
 def _system():
@@ -210,3 +218,92 @@ def test_patcher_patch_accepts_installation():
     undo()
 
     assert namespace["add"] is add
+
+
+def test_type_attribute_proxy_preserves_method_binding_and_uninstalls():
+    system = _system()
+
+    class Example:
+        def ping(self, value):
+            return value + 1
+
+    original = Example.__dict__["ping"]
+    namespace = {"__name__": "test_type_attribute_proxy", "Example": Example}
+
+    undo = patch(
+        namespace,
+        {"type_attributes": {"Example": {"proxy": ["ping"]}}},
+        Installation(system),
+    )
+
+    try:
+        assert Example().ping(41) == 42
+    finally:
+        undo()
+
+    assert Example.__dict__["ping"] is original
+
+
+def test_type_attribute_mixed_directives_all_apply_and_uninstall():
+    system = _system()
+    calls = []
+    system.sync = lambda: calls.append("sync")
+
+    class Example:
+        def wake(self):
+            calls.append("wake")
+
+        def close(self):
+            return "close"
+
+    original_wake = Example.__dict__["wake"]
+    original_close = Example.__dict__["close"]
+    namespace = {"__name__": "test_type_attribute_mixed", "Example": Example}
+
+    undo = patch(
+        namespace,
+        {
+            "type_attributes": {
+                "Example": {
+                    "sync": ["wake"],
+                    "wrap": {
+                        "close": "tests.test_installation._wrap_marker",
+                    },
+                },
+            },
+        },
+        Installation(system),
+    )
+
+    try:
+        example = Example()
+        system.gate.apply_with("internal", example.wake)()
+        assert calls == ["sync", "wake"]
+        assert example.close() == ("wrapped", "close")
+    finally:
+        undo()
+
+    assert Example.__dict__["wake"] is original_wake
+    assert Example.__dict__["close"] is original_close
+
+
+def test_pathparam_skips_callables_without_inspectable_signature():
+    system = _system()
+    target = functional.if_then_else(
+        lambda path: True,
+        lambda path: path,
+        lambda path: path,
+    )
+    namespace = {"__name__": "test_pathparam_no_signature", "target": target}
+
+    undo = patch(
+        namespace,
+        {"pathparam": {"target": "path"}},
+        Installation(system),
+        pathpredicate=lambda path: True,
+    )
+
+    try:
+        assert namespace["target"] is target
+    finally:
+        undo()

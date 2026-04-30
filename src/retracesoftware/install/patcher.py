@@ -11,6 +11,8 @@ import importlib
 from retracesoftware.install.installation import Installation
 from retracesoftware.proxy.patchtype import patch_type
 
+_MISSING_ATTR = object()
+
 
 # ── Hash patching ──────────────────────────────────────────────────
 
@@ -285,6 +287,7 @@ def patch(
 
     # Record every mutation so we can undo them.
     ns_undos = []       # (name, old_value, new_value, ref_update_mode, module_ref_changes)
+    type_attr_undos = []  # (cls, attr, old_value)
     originals = {}      # name → first (pre-patch) value
     added_immutables = []  # types added to system.immutable_types
     added_replay_materialize = []  # callables added to system.replay_materialize
@@ -428,6 +431,14 @@ def patch(
                 if callable(value):
                     _apply(name, value, system.sync_for(value))
 
+        elif directive == 'sync_disable':
+            for name in config:
+                if name not in namespace:
+                    continue
+                value = namespace[name]
+                if callable(value):
+                    _apply(name, value, system.sync_disabled_for(value))
+
         elif directive == 'patch_class':
             for name, transforms in config.items():
                 if name not in namespace:
@@ -445,7 +456,62 @@ def patch(
                     continue
                 cls = namespace[name]
                 with modify(cls):
+                        cls_ns = {}
+                        def set_type_attr(attr, new_value):
+                            old_value = cls.__dict__.get(attr, _MISSING_ATTR)
+                            setattr(cls, attr, new_value)
+                            type_attr_undos.append((cls, attr, old_value))
+
                         for sub_directive, sub_names in sub_spec.items():
+                            if sub_directive == 'proxy':
+                                for attr in sub_names:
+                                    if not hasattr(cls, attr):
+                                        continue
+                                    value = getattr(cls, attr)
+                                    if not callable(value) or isinstance(value, type):
+                                        continue
+                                    set_type_attr(attr, system._wrapped_method(value))
+                                continue
+
+                            if sub_directive == 'disable':
+                                for attr in sub_names:
+                                    if not hasattr(cls, attr):
+                                        continue
+                                    value = getattr(cls, attr)
+                                    if not callable(value) or isinstance(value, type):
+                                        continue
+                                    set_type_attr(attr, system.disabled_method_for(value))
+                                continue
+
+                            if sub_directive == 'sync':
+                                for attr in sub_names:
+                                    if not hasattr(cls, attr):
+                                        continue
+                                    value = getattr(cls, attr)
+                                    if not callable(value) or isinstance(value, type):
+                                        continue
+                                    set_type_attr(attr, system.sync_for(value))
+                                continue
+
+                            if sub_directive == 'sync_disable':
+                                for attr in sub_names:
+                                    if not hasattr(cls, attr):
+                                        continue
+                                    value = getattr(cls, attr)
+                                    if not callable(value) or isinstance(value, type):
+                                        continue
+                                    set_type_attr(attr, system.sync_disabled_for(value))
+                                continue
+
+                            if sub_directive == 'wrap':
+                                for attr, dotted_path in sub_names.items():
+                                    if not hasattr(cls, attr):
+                                        continue
+                                    value = getattr(cls, attr)
+                                    wrapper_factory = resolve(dotted_path)
+                                    set_type_attr(attr, wrapper_factory(value))
+                                continue
+
                             # Recurse: sub_spec is e.g. {"proxy": ["now", "utcnow"]}
                             # but targets are attributes on the class, not the module
                             cls_ns = {attr: getattr(cls, attr)
@@ -469,9 +535,13 @@ def patch(
                 for name, param_name in config.items():
                     if name in namespace:
                         patched = namespace[name]
+                        try:
+                            signature = inspect.signature(patched)
+                        except (TypeError, ValueError):
+                            continue
 
                         should_retrace = param_predicate(
-                            signature = inspect.signature(patched), 
+                            signature = signature,
                             param_name = param_name,
                             predicate=pathpredicate)
 
@@ -509,6 +579,12 @@ def patch(
         if replay_materialize is not None:
             for fn in added_replay_materialize:
                 replay_materialize.discard(fn)
+        for cls, attr, old_value in reversed(type_attr_undos):
+            with modify(cls):
+                if old_value is _MISSING_ATTR:
+                    delattr(cls, attr)
+                else:
+                    setattr(cls, attr, old_value)
 
     return undo
 

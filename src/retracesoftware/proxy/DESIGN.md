@@ -71,11 +71,18 @@ expected contract before editing code:
    internal -> external call, external -> internal callback, disabled
    control-plane work, bind/materialization, or thread replay.
 2. Identify which phase and gate should be active at that point.
-3. Trace the current CLI runtime path from `src/retracesoftware/__main__.py`
+3. Find the fundamental record/replay divergence. The first mismatch in gate,
+   phase, binding, message ordering, thread scheduling, or materialization is
+   the bug to explain; later dispatcher timeouts, EOFs, or library exceptions
+   are usually symptoms.
+4. Build the smallest failing regression that reproduces that divergence,
+   preferably with stdlib or a tiny local module rather than the full
+   dockertest/application that exposed it.
+5. Trace the current CLI runtime path from `src/retracesoftware/__main__.py`
    through `io.py`, `gateway.py`, `patchtype.py`, and `system.py` (with
    `proxytype.py` and `install/`).
-4. Find the first mismatch between the observed behavior and this design.
-5. Only then choose the narrowest responsible fix.
+6. Only then choose the narrowest responsible fix for the shared contract
+   violation.
 
 If you cannot say which design rule is being violated, keep tracing instead of
 editing proxy-kernel code.
@@ -855,6 +862,37 @@ Control-plane threads are different: debugger/replay infrastructure I/O may
 need to bypass retrace entirely. Do not fix an application-thread miss by making
 all threads retraced indiscriminately.
 
+### Trace lifetime and shutdown
+
+`trace_shutdown` decides whether exit-time cleanup is part of the trace. When
+shutdown tracing is off, `install_retrace()` is uninstalled after the target
+command returns and before ordinary Python `atexit` callbacks run. Replay
+uninstall must also reset the installed gateway handlers to passthrough
+behavior, because daemon or background threads that were started inside the
+trace window may still hold an internal thread-local gate while they finish
+cleanup. Those post-window calls are outside the recording and must not consume
+replay messages after EOF.
+
+Replay deactivation is explicit: uninstall marks the replay trace inactive
+before swapping the gateway handlers back to passthrough. If a background
+thread was already blocked inside `ext_replay_gateway` waiting for a result
+when the trace window closed, EOF/read-timeout after deactivation is treated as
+the post-window passthrough case for that same live external call. While the
+trace is still active, the same EOF/read-timeout is a real divergence and must
+not be masked.
+
+When `trace_shutdown` is on, atexit callbacks are wrapped in `System.run()` and
+remain inside the normal record/replay boundary until the registered retrace
+uninstall runs at process exit.
+
+Asyncio loop shutdown has one extra GC-sensitive edge: `BaseEventLoop`
+`shutdown_asyncgens()` branches on the loop's weak set of live asynchronous
+generators. Replay can retain helper references slightly longer than record,
+so the branch is normalized by collecting cyclic garbage immediately before
+that shutdown step. This is a shutdown-shape fix, not a general license to run
+live external code during replay; ordinary external calls must still consume
+recorded results while the trace is active.
+
 ### Thread message ordering
 
 Record writes one unified stream. To make that stream replayable:
@@ -898,6 +936,42 @@ The required regression shape is: one thread schedules work into another
 application thread, then blocks on a `Future`/`Condition` while the child thread
 must continue running retraced code. This must make progress in both record and
 replay, with and without `--stacktraces`.
+
+Deterministic thread scheduling is a core replay contract, not a patching
+detail. Replay must create the same logical application threads through the
+same application scheduling decisions as record. If the trace contains messages
+for logical thread `N`, but replay never reaches the application branch that
+starts logical thread `N`, the bug is the nondeterministic scheduling decision
+that led to different thread birth, not the later dispatcher timeout or the
+library that happened to expose it.
+
+Fixes for this class of bug must start from a minimal scheduling reproducer and
+then repair the shared synchronization/thread-lifecycle boundary. Do not make a
+library-specific patch that only causes the current dockertest to pass. The
+right fix makes the branch that controls thread creation, wakeup, or parking
+deterministic across record and replay.
+
+Thread-pool sizing decisions are synchronization too. For example,
+`ThreadPoolExecutor._adjust_thread_count()` branches on
+`threading.Semaphore.acquire(timeout=0)`. If record observes "no idle worker"
+and replay observes "idle worker available", record may contain messages for a
+logical worker thread that replay never starts. Semaphore acquire/release calls
+therefore belong at the boundary when they decide worker availability.
+
+Some synchronization primitives are better modeled as live synchronization
+edges than as result-producing external calls. `threading.Condition` waits and
+context-manager plumbing run disabled, while notify operations emit `SYNC` and
+then run disabled. `threading.Event.wait/clear` also run disabled, and
+`Event.set` emits `SYNC` before running disabled. These Python implementations
+are built out of locks/RLocks; tracing their private lock operations exposes
+partial internal waits and can perturb debug checkpoint ordering across
+threads.
+
+Debug checkpoints normalize synchronization receiver objects such as
+`_thread.lock`, `_thread.RLock`, `threading.Condition`, and
+`threading.Event`. Checkpoints are there to catch replay drift, not to require
+the record and replay runtimes to expose the exact same private lock helper
+method while they are still following the same logical synchronization edge.
 
 Known examples of this gap are an anyio blocking portal
 (`tests/install/external/test_anyio_from_thread_replay_dispatcher_regression.py`)
@@ -953,6 +1027,12 @@ The main TOML directives map to proxy behavior like this:
   Use this for local runtime factories, not ordinary external calls.
 - `patch_types`
   Patch named types in place without replacing the module attribute.
+- `type_attributes`
+  Apply directives to attributes on a named type. Proxied method attributes
+  must keep descriptor binding semantics; replacing an instance method with a
+  non-binding module-function wrapper is a bug. The receiver is the local
+  object whose method is being intercepted, so method proxying must not create
+  a new internal proxy type for that receiver just to record the method result.
 - `immutable`
   Add named types to `System.immutable_types` so values cross by value.
 - `bind`
@@ -975,6 +1055,13 @@ The main TOML directives map to proxy behavior like this:
 - `pathparam`
   Route filesystem-like calls through proxying only when the configured path
   predicate says the path belongs in the recording.
+- `sync`
+  Emit a synchronization marker before calling the target normally.
+- `sync_disable`
+  Emit a synchronization marker before calling the target with retrace disabled.
+  Use this for synchronization primitives whose implementation is itself built
+  out of patched locks/conditions; the boundary event is the wake or wait, not
+  the primitive's internal bookkeeping.
 - `patch_hash`
   Participates in deterministic hash behavior installed by `System.install()`.
 

@@ -56,7 +56,11 @@ def _run_retrace_script(tmp_path, source: str):
     env["PYTHONPATH"] = _local_pythonpath()
     env["MESONPY_EDITABLE_SKIP"] = _editable_skip()
     env["RETRACE_DEBUG"] = "1"
-    env["RETRACE_CONFIG"] = "debug"
+    # This script records/replays through tests.runner.Runner. Do not also
+    # auto-enable the whole subprocess: nested Systems cannot both own the same
+    # process-global type patches.
+    env.pop("RETRACE_CONFIG", None)
+    env.pop("RETRACE_RECORDING", None)
 
     proc = subprocess.run(
         [sys.executable, str(script)],
