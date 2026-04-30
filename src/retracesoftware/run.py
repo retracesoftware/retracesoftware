@@ -67,9 +67,9 @@ def run_python_command(argv):
                 return 1
             module_name = argv[1]
             module_args = argv[2:]
-            sys.argv = ['-m', module_name] + module_args
+            sys.argv = [module_name] + module_args
             try:
-                runpy.run_module(module_name, run_name="__main__")
+                runpy.run_module(module_name, run_name="__main__", alter_sys=True)
             except ModuleNotFoundError as e:
                 if e.name == module_name:
                     print(f"Error: No module named '{module_name}'", file=sys.stderr)

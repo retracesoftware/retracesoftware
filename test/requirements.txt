@@ -6,3 +6,4 @@ opentelemetry-sdk
 psycopg2-binary
 pyOpenSSL
 cryptography
+psutil

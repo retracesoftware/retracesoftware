@@ -1,0 +1,7 @@
+package = "psutil"
+
+# psutil reads live OS process state. In particular, Process() defaults to
+# os.getpid(); on replay that value is the recorded application PID, not the
+# live replay process PID, so Process and its methods must replay recorded
+# boundary results instead of querying the live process table.
+proxy = ["Process"]

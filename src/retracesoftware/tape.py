@@ -39,11 +39,20 @@ def file_md5(path):
     return hashlib.md5(path.read_bytes()).hexdigest()
 
 
+def _is_checksum_entry(entry):
+    name = entry.name
+    if name == "__pycache__":
+        return False
+    if name == "AGENTS.md" or name == "DESIGN.md" or name.endswith("_DESIGN.md"):
+        return False
+    return True
+
+
 def checksum(path):
     return file_md5(path) if path.is_file() else {
         entry.name: checksum(entry)
         for entry in path.iterdir()
-        if entry.name != "__pycache__"
+        if _is_checksum_entry(entry)
     }
 
 

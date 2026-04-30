@@ -345,9 +345,17 @@ def pth_target():
 def cmd_install(args):
     """Install the .pth file so retrace auto-activates via RETRACE=1."""
     import shutil
+    import stat
     source = pth_source()
     target = pth_target()
     shutil.copy(source, target)
+    if hasattr(os, "chflags") and hasattr(stat, "UF_HIDDEN"):
+        try:
+            flags = os.stat(target).st_flags
+            if flags & stat.UF_HIDDEN:
+                os.chflags(target, flags & ~stat.UF_HIDDEN)
+        except OSError:
+            pass
     print(f'Retrace auto-enable installed: {target}')
 
 def cmd_uninstall(args):
