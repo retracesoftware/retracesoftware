@@ -5,12 +5,15 @@ namespace retracesoftware {
 
     struct ThreadSwitchMonitor : public PyObject {
         FastCall on_thread_switch;
-        PyThreadState * last_thread_state;
+        uint64_t last_thread_state_id;
         vectorcallfunc vectorcall;
 
         static PyObject * call(ThreadSwitchMonitor * self, PyObject* const* args, size_t nargsf, PyObject* kwnames) {
-            if (PyThreadState_Get() != self->last_thread_state) {
-                self->last_thread_state = PyThreadState_Get();
+            PyThreadState *thread_state = PyThreadState_Get();
+            uint64_t thread_state_id = PyThreadState_GetID(thread_state);
+
+            if (thread_state_id != self->last_thread_state_id) {
+                self->last_thread_state_id = thread_state_id;
 
                 PyObject * res = self->on_thread_switch();
                 
@@ -52,7 +55,7 @@ namespace retracesoftware {
             
             self->on_thread_switch = FastCall(on_thread_switch);
             Py_NewRef(self->on_thread_switch.callable);
-            self->last_thread_state = PyThreadState_Get();
+            self->last_thread_state_id = PyThreadState_GetID(PyThreadState_Get());
             self->vectorcall = (vectorcallfunc)call;
 
             return 0;

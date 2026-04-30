@@ -257,6 +257,47 @@ class System:
 
         return wrapped_start_new_thread
 
+    def wrap_thread_start(self, original_start):
+        """Wrap ``threading.Thread.start`` without tracing CPython startup locks."""
+        disabled_start = self.disable_for(original_start, unwrap_args=False)
+
+        def wrapped_thread_start(thread, *args, **kwargs):
+            if not self.enabled():
+                return original_start(thread, *args, **kwargs)
+
+            if (
+                _is_disabled_thread_target(thread.run)
+                or _is_disabled_thread_target(getattr(thread, "_bootstrap", None))
+            ):
+                return disabled_start(thread, *args, **kwargs)
+
+            next_id = self.counter.next()
+            original_run = thread.run
+            wrapped_run = self.thread_wrapper(original_run)
+            start_barrier = self.disable_for(threading.Event, unwrap_args=False)()
+            barrier_set = self.disable_for(start_barrier.set, unwrap_args=False)
+            barrier_wait = self.disable_for(start_barrier.wait, unwrap_args=False)
+
+            def retraced_run(*run_args, **run_kwargs):
+                thread.run = original_run
+                self._thread_id.set(next_id)
+                try:
+                    self.sync()
+                finally:
+                    barrier_set()
+                return self.gate.apply_with('internal', wrapped_run)(*run_args, **run_kwargs)
+
+            thread.run = retraced_run
+            try:
+                result = disabled_start(thread, *args, **kwargs)
+            except Exception:
+                thread.run = original_run
+                raise
+            barrier_wait()
+            return result
+
+        return wrapped_thread_start
+
     def patch_function(self, fn):
         """Return a wrapper that routes *fn* through the external gate.
 
@@ -656,15 +697,18 @@ class System:
         import _thread
         import threading
         original_start_new_thread = _thread.start_new_thread
+        original_thread_start = threading.Thread.start
 
         _thread.start_new_thread = self.wrap_start_new_thread(_thread.start_new_thread)
         threading._start_new_thread = _thread.start_new_thread
+        threading.Thread.start = self.wrap_thread_start(threading.Thread.start)
 
         uninstall_hash_patching = install_hash_patching(self)
 
         def uninstall():
             _thread.start_new_thread = original_start_new_thread
             threading._start_new_thread = original_start_new_thread
+            threading.Thread.start = original_thread_start
             uninstall_hash_patching()
 
         return uninstall

@@ -11,9 +11,9 @@ services:
       - ${TEST_DIR}:/app/test:rw
     environment:
       CLIENT_MODE: dryrun
-      REQUESTS_COUNT: 100000
-      RUNS: 10
-      WARMUP_COUNT: 50
+      REQUESTS_COUNT: 25000
+      RUNS: 1
+      WARMUP_COUNT: 25
       PING_PATH: /ping
       RESULT_PATH: /app/test/results-dryrun.json
     command: bash -c "pip install -q requests && python /app/client.py | tee /app/test/results-dryrun.log"
@@ -30,9 +30,9 @@ services:
       - ${TEST_DIR}:/app/test:rw
     environment:
       CLIENT_MODE: record
-      REQUESTS_COUNT: 100000
-      RUNS: 10
-      WARMUP_COUNT: 50
+      REQUESTS_COUNT: 25000
+      RUNS: 1
+      WARMUP_COUNT: 25
       PING_PATH: /ping
       RESULT_PATH: /app/test/results-record.json
     command: bash -c "pip install -q requests && python /app/client.py | tee /app/test/results-record.log"

@@ -123,8 +123,8 @@ def test_asyncio_shutdown_thread_stays_retraced_and_threadsafe_schedule_emits_sy
         uninstall()
 
 
-def test_thread_start_child_bootstrap_emits_sync():
-    """Thread creation has a tape-visible handoff before child bootstrap locks."""
+def test_thread_start_child_user_body_emits_sync_without_bootstrap_lock_traffic():
+    """Thread.start() startup plumbing is disabled; the child user body syncs."""
 
     import threading
 
@@ -150,7 +150,75 @@ def test_thread_start_child_bootstrap_emits_sync():
         thread.join(timeout=5)
 
         assert done == [True]
-        assert "SYNC" in tape
+        assert tape == ["ON_START", "THREAD_SWITCH", 1, "SYNC", "ON_START"]
+    finally:
+        uninstall()
+
+
+def test_disabled_thread_target_start_stays_outside_retrace():
+    """Disabled thread targets must not be re-enabled by Thread.start wrapping."""
+
+    import threading
+
+    from retracesoftware.install import install_retrace
+    from retracesoftware.proxy.io import recorder
+
+    tape = []
+
+    def writer(*values):
+        tape.extend(values)
+
+    system = recorder(writer=writer)
+    uninstall = install_retrace(system=system, retrace_shutdown=False)
+    try:
+        enabled_states = []
+
+        def target():
+            enabled_states.append(system.enabled())
+
+        thread = threading.Thread(
+            target=system.disable_for(target, unwrap_args=False),
+        )
+        tape.clear()
+        system.run(thread.start)
+        thread.join(timeout=5)
+
+        assert enabled_states == [False]
+        assert tape == ["ON_START"]
+    finally:
+        uninstall()
+
+
+def test_direct_start_new_thread_still_propagates_retrace_state():
+    """The lower-level _thread API keeps its existing child propagation path."""
+
+    import _thread
+    import time
+
+    from retracesoftware.install import install_retrace
+    from retracesoftware.proxy.io import recorder
+
+    tape = []
+
+    def writer(*values):
+        tape.extend(values)
+
+    system = recorder(writer=writer)
+    uninstall = install_retrace(system=system, retrace_shutdown=False)
+    try:
+        thread_ids = []
+
+        def target():
+            thread_ids.append(system.thread_id())
+
+        tape.clear()
+        system.run(_thread.start_new_thread, target, ())
+        deadline = time.time() + 5
+        while not thread_ids and time.time() < deadline:
+            time.sleep(0.01)
+
+        assert thread_ids == [1]
+        assert tape == ["ON_START", "THREAD_SWITCH", 1, "SYNC", "ON_START"]
     finally:
         uninstall()
 

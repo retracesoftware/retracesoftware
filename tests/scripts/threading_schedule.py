@@ -3,12 +3,6 @@
 Spawns threads that each compute and print a result.
 The output order depends on thread scheduling, so replay
 must reproduce the exact same interleaving to match stdout.
-
-Known issue: replay fails because threading.Thread.start()
-internally calls self._started.wait(), which uses Condition/Lock
-primitives. During replay, _allocate_lock() is proxied and returns
-the replayed value (None) instead of an actual lock object, causing
-AttributeError: 'NoneType' object has no attribute 'acquire'.
 """
 import threading
 

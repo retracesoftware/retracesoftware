@@ -294,7 +294,10 @@ Concrete expectations:
 - binding payloads are walked with `functional.walker(stream.Binder)`; the
   binder already returns the original object when no binding exists
 - thread-switch detection uses the native `utils.thread_switch` monitor with a
-  combinator callback, not a Python `last_thread_id` comparison in the write path
+  combinator callback, not a Python `last_thread_id` comparison in the write path.
+  The native monitor compares CPython thread-state ids rather than raw
+  `PyThreadState *` addresses, because short-lived threads may reuse the same
+  memory address while still representing distinct logical execution routes.
 - protocol writers are called directly; do not add a Python lock/batching
   adapter around the native stream writer, and do not wrap the hot writer in
   `disable_for()` unless the writer itself is control-plane Python that must be
@@ -824,6 +827,29 @@ can call patched external functions on behalf of that Python.
 - CPython/bootstrap synchronization around thread creation is not application
   work. Changes here must not perturb `threading.Thread.start()`,
   `_started.wait()`, or similar runtime plumbing.
+
+For the high-level `threading.Thread` API, the parent `Thread.start()` call is
+the identity-assignment point, but not the retraced execution boundary. When
+`Thread.start()` is called while retrace is enabled, Retrace allocates the
+child's logical thread id in the parent, installs a per-instance `run()`
+trampoline on that `Thread`, and then calls the real `Thread.start()` with the
+phase disabled. CPython's `_active_limbo_lock`, `_started.wait()`, and
+`_bootstrap_inner()` readiness handshake therefore remain live runtime
+bookkeeping and do not emit application trace events. When the child reaches
+`Thread.run()`, the trampoline sets the stable logical thread id, performs the
+recorded/replayed `SYNC`, emits the normal thread `ON_START`, and runs the
+user target or subclass `run()` body in the internal phase. `Thread.start()`
+waits on a disabled Retrace-owned barrier until that child `SYNC` has happened,
+so callers keep the important "child is registered with replay before start
+returns" ordering without recording CPython's private `_started` condition
+traffic. The lifecycle `ON_START` marker remains part of normal child execution;
+it may occur after the parent has resumed when recorded application scheduling
+requires that ordering.
+
+The lower-level `_thread.start_new_thread()` API has no `Thread` object or
+`run()` hook, so it keeps the direct child wrapper path: the wrapper assigns the
+logical thread id and enters the internal phase at the start of the supplied
+callable.
 
 Control-plane threads are different: debugger/replay infrastructure I/O may
 need to bypass retrace entirely. Do not fix an application-thread miss by making

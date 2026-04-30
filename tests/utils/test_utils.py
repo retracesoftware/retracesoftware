@@ -3621,6 +3621,26 @@ def test_thread_switch_direct_wrapper_preserves_result_and_fires_on_thread_chang
     assert events[5][0] == "target"
 
 
+def test_thread_switch_detects_short_lived_thread_state_reuse():
+    events = []
+
+    def on_thread_switch():
+        events.append(("switch", threading.get_ident()))
+
+    def target(value):
+        events.append(("target", threading.get_ident(), value))
+
+    wrapped = _utils.thread_switch(target, on_thread_switch=on_thread_switch)
+
+    for value in range(8):
+        thread = threading.Thread(target=wrapped, args=(value,))
+        thread.start()
+        thread.join()
+
+    assert [event[0] for event in events] == ["switch", "target"] * 8
+    assert [event[2] for event in events if event[0] == "target"] == list(range(8))
+
+
 def test_thread_switch_supports_decorator_form():
     events = []
 

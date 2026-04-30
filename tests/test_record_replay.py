@@ -70,6 +70,44 @@ def test_record_then_replay_threading_single(tmpdir):
     assert replay.stdout == record.stdout == "worker ran\n"
 
 
+def test_record_then_replay_minimal_future_handoff_loop(tmpdir):
+    trace_file = os.path.join(tmpdir, "minimal_future_handoff.retrace")
+    script_file = Path(tmpdir) / "minimal_future_handoff.py"
+    script_file.write_text(
+        """\
+import threading
+from concurrent.futures import Future
+
+for i in range(2):
+    future = Future()
+
+    def worker():
+        future.set_result(123)
+
+    thread = threading.Thread(target=worker)
+    thread.start()
+    print(f"main_result {i} {future.result()}", flush=True)
+    thread.join()
+""",
+        encoding="utf-8",
+    )
+
+    record = run_record(script_file, trace_file)
+    assert record.returncode == 0, (
+        f"Record failed (exit {record.returncode}):\n"
+        f"stdout:\n{record.stdout}\n"
+        f"stderr:\n{record.stderr}"
+    )
+
+    replay = run_replay(trace_file)
+    assert replay.returncode == 0, (
+        f"Replay failed (exit {replay.returncode}):\n"
+        f"stdout:\n{replay.stdout}\n"
+        f"stderr:\n{replay.stderr}"
+    )
+    assert replay.stdout == record.stdout == "main_result 0 123\nmain_result 1 123\n"
+
+
 def test_record_then_replay_concurrent_future_handoff(tmpdir):
     trace_file = os.path.join(tmpdir, "future_handoff.retrace")
     script_file = Path(tmpdir) / "future_handoff.py"
