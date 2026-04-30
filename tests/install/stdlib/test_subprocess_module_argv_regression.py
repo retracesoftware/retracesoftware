@@ -1,4 +1,4 @@
-"""Regression: recorded child `python -m module` gets incorrect argv.
+"""Regression coverage for recorded Python command argv shapes.
 
 Observed user-facing failure:
 - `dockertests/tests/grpc_test/test.py` passes normally
@@ -8,12 +8,14 @@ Observed user-facing failure:
   `Could not make proto path relative: grpc_tools.protoc: No such file or directory`
 
 Root component:
-- `retracesoftware.run.run_python_command` handling of `-m` execution in
-  auto-enabled child processes.
-- It sets `sys.argv` in a way that injects module metadata into user args,
-  which breaks module CLIs that parse argv positionally.
+- `retracesoftware.run.run_python_command` handling of non-script execution
+  modes in auto-enabled child processes.
+- For `-m`, it used to inject module metadata into user args, which breaks
+  module CLIs that parse argv positionally.
+- For `-c`, it used to reject the recorded child process as
+  `Not a Python script: -c`, which breaks replay of spawn-based subprocesses.
 
-This test isolates that component behavior using a tiny synthetic module.
+These tests isolate those component behaviors with tiny synthetic commands.
 """
 
 from __future__ import annotations
@@ -23,6 +25,19 @@ import os
 from pathlib import Path
 import subprocess
 import sys
+
+from retracesoftware.run import run_python_command
+
+
+def test_run_python_command_c_preserves_command_argv_shape(capsys):
+    rc = run_python_command([
+        "-c",
+        "import json, sys; print(json.dumps(sys.argv), flush=True)",
+        "OK",
+    ])
+
+    assert rc == 0
+    assert json.loads(capsys.readouterr().out) == ["-c", "OK"]
 
 
 def test_record_child_python_m_preserves_module_argv_shape(tmp_path: Path):
@@ -108,3 +123,62 @@ def test_record_child_python_m_preserves_module_argv_shape(tmp_path: Path):
         f"stdout:\n{proc.stdout}\n"
         f"stderr:\n{proc.stderr}"
     )
+
+
+def test_record_replay_python_c_command_preserves_argv_shape(tmp_path: Path):
+    recording = tmp_path / "trace.retrace"
+    command = (
+        "import json, sys\n"
+        "print(json.dumps(sys.argv), flush=True)\n"
+        "if sys.argv != ['-c', 'OK']:\n"
+        "    raise SystemExit(f'BAD_ARGV:{sys.argv!r}')\n"
+    )
+
+    env = os.environ.copy()
+    env["PYTHONFAULTHANDLER"] = "1"
+    env["RETRACE_CONFIG"] = "debug"
+
+    record = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "retracesoftware",
+            "--recording",
+            str(recording),
+            "--format",
+            "unframed_binary",
+            "--",
+            "-c",
+            command,
+            "OK",
+        ],
+        capture_output=True,
+        text=True,
+        timeout=90,
+        env=env,
+    )
+    assert record.returncode == 0, (
+        f"record -c run failed (exit {record.returncode})\n"
+        f"stdout:\n{record.stdout}\n"
+        f"stderr:\n{record.stderr}"
+    )
+
+    replay = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "retracesoftware",
+            "--recording",
+            str(recording),
+        ],
+        capture_output=True,
+        text=True,
+        timeout=90,
+        env=env,
+    )
+    assert replay.returncode == 0, (
+        f"replay -c run failed (exit {replay.returncode})\n"
+        f"stdout:\n{replay.stdout}\n"
+        f"stderr:\n{replay.stderr}"
+    )
+    assert replay.stdout == record.stdout

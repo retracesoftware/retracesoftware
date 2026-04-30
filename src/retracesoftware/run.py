@@ -51,6 +51,7 @@ def run_python_command(argv):
 
     Supports:
         ['-m', 'module', 'arg1', ...]     → like `python -m module arg1 ...`
+        ['-c', 'code', 'arg1', ...]       → like `python -c 'code' arg1 ...`
         ['script.py', 'arg1', ...]        → like `python script.py arg1 ...`
     """
     if not argv:
@@ -74,6 +75,24 @@ def run_python_command(argv):
                     print(f"Error: No module named '{module_name}'", file=sys.stderr)
                     return 1
                 raise
+            return 0
+
+        if argv[0] == '-c':
+            if len(argv) < 2:
+                print("Error: -c requires a command string", file=sys.stderr)
+                return 1
+            command = argv[1]
+            command_args = argv[2:]
+            sys.argv = ['-c'] + command_args
+            globals_dict = {
+                "__name__": "__main__",
+                "__doc__": None,
+                "__package__": None,
+                "__loader__": None,
+                "__spec__": None,
+                "__builtins__": builtins,
+            }
+            exec(compile(command, "<string>", "exec"), globals_dict)
             return 0
 
         else:
