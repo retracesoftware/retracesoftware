@@ -10,6 +10,13 @@ import tempfile
 
 import pytest
 
+_REPO_ROOT = Path(__file__).resolve().parents[1]
+_BUILD_TAG = f"cp{sys.version_info.major}{sys.version_info.minor}{getattr(sys, 'abiflags', '')}"
+_LOCAL_BUILD_DIR = _REPO_ROOT / "build" / _BUILD_TAG
+
+if str(_REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT))
+
 from tests.helpers import run_record, run_replay  # noqa: F401 — re-exported for fixtures
 
 
@@ -39,11 +46,6 @@ def _prepend_python_path(path: Path) -> None:
         os.environ["PYTHONPATH"] = os.pathsep.join([value, *parts]) if parts else value
 
 
-_REPO_ROOT = Path(__file__).resolve().parents[1]
-_BUILD_TAG = f"cp{sys.version_info.major}{sys.version_info.minor}{getattr(sys, 'abiflags', '')}"
-_LOCAL_BUILD_DIR = _REPO_ROOT / "build" / _BUILD_TAG
-
-
 def _configure_local_imports() -> None:
     # Import local Python sources and native extensions directly during tests.
     # This avoids Meson editable-loader rebuilds in both pytest and child
@@ -61,10 +63,12 @@ def _configure_local_imports() -> None:
             _prepend_python_path(_LOCAL_BUILD_DIR / relpath)
 
 
-_configure_local_imports()
-_append_mesonpy_editable_skip(
-    Path(__file__).resolve().parents[2] / "utils" / "build" / _BUILD_TAG
-)
+_prepend_python_path(_REPO_ROOT)
+if os.environ.get("RETRACE_TEST_INSTALLED_WHEEL") != "1":
+    _configure_local_imports()
+    _append_mesonpy_editable_skip(
+        Path(__file__).resolve().parents[2] / "utils" / "build" / _BUILD_TAG
+    )
 
 
 _TEST_GROUP_ORDER = {
