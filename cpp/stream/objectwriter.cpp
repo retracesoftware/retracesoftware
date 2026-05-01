@@ -191,6 +191,8 @@ namespace retracesoftware_stream {
 
             if (Binding_Check(obj)) {
                 disable_if_push_failed(queue->push_ref(Binding_Handle(obj)));
+            } else if (interned_handles.contains(intern_handle(obj))) {
+                disable_if_push_failed(queue->push_ref(intern_handle(obj)));
             } else {
                 PyTypeObject* tp = Py_TYPE(obj);
                 

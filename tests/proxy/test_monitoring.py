@@ -147,6 +147,17 @@ class TestMemoryWriterReader:
 class TestRunnerMonitoring:
     """Test monitoring through the new in-process Runner."""
 
+    def test_retrace_filename_matches_symlinked_package_path(self, tmp_path):
+        from retracesoftware.install import monitoring
+
+        real_pkg = tmp_path / "real" / "retracesoftware"
+        real_pkg.mkdir(parents=True)
+        link_root = tmp_path / "link"
+        link_root.symlink_to(tmp_path / "real", target_is_directory=True)
+
+        filename = str(link_root / "retracesoftware" / "memorytape.py")
+        assert monitoring._is_retrace_filename(filename, (str(real_pkg),))
+
     def test_run_with_monitor_level_1(self):
         """Record+replay with monitor=1 — should not raise."""
         import socket

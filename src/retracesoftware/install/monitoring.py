@@ -97,6 +97,12 @@ else:
                         dirs.add(d)
         return tuple(sorted(dirs))
 
+    def _is_retrace_filename(filename, retrace_dirs):
+        return (
+            filename.startswith(retrace_dirs)
+            or os.path.realpath(filename).startswith(retrace_dirs)
+        )
+
     def install_monitoring(checkpoint_fn, level):
         """Register ``sys.monitoring`` callbacks for divergence detection.
 
@@ -122,7 +128,7 @@ else:
         retrace_dirs = _build_retrace_dirs()
 
         def _is_retrace(filename):
-            return filename.startswith(retrace_dirs)
+            return _is_retrace_filename(filename, retrace_dirs)
 
         def _is_suppressed():
             return getattr(_monitor_state, "suppressed", 0) > 0

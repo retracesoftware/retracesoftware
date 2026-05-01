@@ -2,6 +2,7 @@
 #include "wireformat.h"
 
 #include <chrono>
+#include <limits>
 #include <mutex>
 #include <sstream>
 #include <stdexcept>
@@ -13,6 +14,22 @@ namespace retracesoftware_stream {
 
     static PyObject * binding_lookup(uint64_t handle) {
         return Binding_New(handle);
+    }
+
+    static size_t checked_size(uint64_t value, const char* label) {
+        if (value > static_cast<uint64_t>(std::numeric_limits<size_t>::max())) {
+            PyErr_Format(PyExc_OverflowError, "%s too large for this platform: %llu", label, (unsigned long long)value);
+            throw nullptr;
+        }
+        return static_cast<size_t>(value);
+    }
+
+    static int checked_index(uint64_t value, const char* label) {
+        if (value > static_cast<uint64_t>(std::numeric_limits<int>::max())) {
+            PyErr_Format(PyExc_OverflowError, "%s too large for this platform: %llu", label, (unsigned long long)value);
+            throw nullptr;
+        }
+        return static_cast<int>(value);
     }
 
     static FILE * open(PyObject * path) {
@@ -237,18 +254,18 @@ namespace retracesoftware_stream {
             return Control(read<uint8_t>());
         }
 
-        size_t read_unsigned_number(Control control) {
+        uint64_t read_unsigned_number(Control control) {
             switch (control.Sized.size) {
                 case ONE_BYTE_SIZE:
-                    return (size_t)read<uint8_t>();
+                    return read<uint8_t>();
                 case TWO_BYTE_SIZE:
-                    return (size_t)read<uint16_t>();
+                    return read<uint16_t>();
                 case FOUR_BYTE_SIZE:
-                    return (size_t)read<uint32_t>();
+                    return read<uint32_t>();
                 case EIGHT_BYTE_SIZE:
-                    return (size_t)read<uint64_t>();
+                    return read<uint64_t>();
                 default:
-                    return (size_t)(control.Sized.size);
+                    return control.Sized.size;
             }
         }
 
@@ -414,52 +431,57 @@ namespace retracesoftware_stream {
         }
 
         PyObject * read_sized(Control control) {
-            size_t size = read_unsigned_number(control);
+            uint64_t raw_size = read_unsigned_number(control);
 
             switch (control.Sized.type) {
                 case SizedTypes::UINT: {
-                    PyObject * result = PyLong_FromLongLong(size);
+                    PyObject * result = PyLong_FromUnsignedLongLong(raw_size);
                     if (!result) throw nullptr;
                     return result;
                 }
                 case SizedTypes::BINDING:
-                    return binding_lookup(size);
+                    return binding_lookup(raw_size);
 
                 case SizedTypes::INTERN: {
-                    auto it = interns.find(size);
+                    int index = checked_index(raw_size, "intern index");
+                    auto it = interns.find(index);
                     if (it == interns.end() || it->second == nullptr) {
-                        PyErr_Format(PyExc_RuntimeError, "unknown intern index: %zu", size);
+                        PyErr_Format(PyExc_RuntimeError, "unknown intern index: %d", index);
                         throw nullptr;
                     }
                     return Py_NewRef(it->second);
                 }
                 case SizedTypes::BYTES:
-                    return read_bytes(size);
+                    return read_bytes(checked_size(raw_size, "bytes size"));
                 case SizedTypes::LIST:
-                    return read_list(size);
+                    return read_list(checked_size(raw_size, "list size"));
                 case SizedTypes::DICT:
-                    return read_dict(size);
+                    return read_dict(checked_size(raw_size, "dict size"));
                 case SizedTypes::TUPLE:
-                    return read_tuple(size);
+                    return read_tuple(checked_size(raw_size, "tuple size"));
                 case SizedTypes::SET:
-                    return read_set(size, false);
+                    return read_set(checked_size(raw_size, "set size"), false);
                 case SizedTypes::FROZENSET:
-                    return read_set(size, true);
+                    return read_set(checked_size(raw_size, "frozenset size"), true);
                 case SizedTypes::STR: {
+                    size_t size = checked_size(raw_size, "string size");
                     PyObject * str = read_str(size);
                     interned_strings.push_back(Py_NewRef(str));
                     return str;
                 }
                 case SizedTypes::STR_REF:
+                {
+                    size_t size = checked_size(raw_size, "string ref index");
                     if (size >= interned_strings.size() || interned_strings[size] == nullptr) {
                         PyErr_Format(PyExc_RuntimeError, "unknown string intern index: %zu", size);
                         throw nullptr;
                     }
                     return Py_NewRef(interned_strings[size]);
+                }
                 case SizedTypes::PICKLED:
-                    return read_pickled(size);
+                    return read_pickled(checked_size(raw_size, "pickled size"));
                 case SizedTypes::BIGINT:
-                    return read_bigint(size);
+                    return read_bigint(checked_size(raw_size, "bigint size"));
                 default:
                     PyErr_Format(PyExc_RuntimeError, "unknown sized type: %i", control.Sized.type);
                     throw nullptr;

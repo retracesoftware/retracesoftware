@@ -107,7 +107,7 @@ namespace retracesoftware_stream {
         bool write_long(PyObject* value);
         void write_string(PyObject* obj);
         void write_memory_view(PyObject* obj);
-        void write_size(SizedTypes type, Py_ssize_t size);
+        void write_size(SizedTypes type, uint64_t size);
         void write_unsigned_number(SizedTypes type, uint64_t value);
         void write_binding_lookup(BindingHandle ref);
         void write_intern_lookup(int ref);
@@ -435,11 +435,11 @@ namespace retracesoftware_stream {
         PyErr_Clear();
     }
 
-    void Persister::write_size(SizedTypes type, Py_ssize_t size) {
+    void Persister::write_size(SizedTypes type, uint64_t size) {
         assert(type < 16);
 
         if (verbose) {
-            printf("%s(%i) ", SizedTypes_Name(type), (int)size);
+            printf("%s(%llu) ", SizedTypes_Name(type), (unsigned long long)size);
         }
 
         Control control;

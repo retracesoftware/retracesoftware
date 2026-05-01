@@ -95,7 +95,6 @@ proxy = [
     "fork", # Function. Creates a child process (os.fork).
     "forkpty", # Function. Creates a child process with a pseudo-terminal.
     "fpathconf", # Function. Gets configuration values for a file descriptor (os.fpathconf).
-    "fspath", # Function. Converts a path-like object to a string or bytes (os.fspath).
     "fstat", # Function. Gets file status for a file descriptor (os.fstat).
     "fstatvfs", # Function. Gets filesystem information for a file descriptor.
     "fsync", # Function. Synchronizes file contents to disk (os.fsync).
@@ -209,7 +208,6 @@ proxy = [
 [posix.pathparam]
 stat = "path"
 lstat = "path"
-fspath = "path"
 access = "path"
 readlink = "path"
 listdir = "path"

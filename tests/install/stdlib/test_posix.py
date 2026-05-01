@@ -44,7 +44,12 @@ def test_urandom():
 
 
 def test_open_replays_file_descriptor_operations(tmp_path):
-    """os.open() and fd operations replay from recorded results."""
+    """os.open() and fd operations replay from recorded results.
+
+    Keep the path coercion inside the recorded function: CPython may cache
+    path string conversion between record and replay, so deterministic fspath
+    conversion must not shift the external-call tape.
+    """
     path = tmp_path / "recorded-fd.txt"
 
     def work():

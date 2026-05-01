@@ -72,15 +72,17 @@ def test_socket_makefile_recursion_reproducer(tmp_path):
 
         def main():
             server = HTTPServer(("127.0.0.1", 0), Handler)
+            server.timeout = 5
             port = server.server_port
-            t = threading.Thread(target=server.serve_forever, daemon=True)
+            t = threading.Thread(target=server.handle_request, daemon=True)
             t.start()
             try:
                 with urllib.request.urlopen(f"http://127.0.0.1:{port}/", timeout=2) as resp:
                     assert resp.read() == b"ok"
             finally:
-                server.shutdown()
+                t.join(timeout=5)
                 server.server_close()
+            assert not t.is_alive()
 
         if __name__ == "__main__":
             main()
