@@ -224,6 +224,23 @@ def _is_function(obj):
                              types.ClassMethodDescriptorType))
             or callable(obj) and not isinstance(obj, type))
 
+def _sync_for_unless(system, function, predicate):
+    emit_sync = system.gate.cond(
+        "internal",
+        functional.repeatedly(system.sync),
+        utils.noop,
+    )
+
+    def on_call(*args, **kwargs):
+        try:
+            if predicate(*args, **kwargs):
+                return None
+        except Exception:
+            pass
+        return emit_sync()
+
+    return utils.observer(function=function, on_call=on_call)
+
 def param_predicate(signature, param_name, predicate):
     idx = list(signature.parameters.keys()).index(str(param_name))
     extractor = functional.param(str(param_name), idx)
@@ -491,6 +508,20 @@ def patch(
                                     if not callable(value) or isinstance(value, type):
                                         continue
                                     set_type_attr(attr, system.sync_for(value))
+                                continue
+
+                            if sub_directive == 'sync_unless':
+                                for attr, dotted_path in sub_names.items():
+                                    if not hasattr(cls, attr):
+                                        continue
+                                    value = getattr(cls, attr)
+                                    if not callable(value) or isinstance(value, type):
+                                        continue
+                                    predicate = resolve(dotted_path)
+                                    set_type_attr(
+                                        attr,
+                                        _sync_for_unless(system, value, predicate),
+                                    )
                                 continue
 
                             if sub_directive == 'sync_disable':

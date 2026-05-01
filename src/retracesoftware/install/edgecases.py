@@ -2,6 +2,7 @@
 
 import functools
 import gc
+import sys
 
 from retracesoftware.install import globals
 import retracesoftware.utils as utils
@@ -113,6 +114,20 @@ def collect_before(target):
         return target(*args, **kwargs)
 
     return wrapper
+
+def concurrent_futures_threadpool_shutdown_sentinel(*args, **kwargs):
+    if len(args) < 2 or args[1] is not None:
+        return False
+
+    frame = sys._getframe()
+    while frame is not None:
+        if (
+            frame.f_globals.get("__name__") == "concurrent.futures.thread"
+            and frame.f_code.co_name in {"_worker", "shutdown"}
+        ):
+            return True
+        frame = frame.f_back
+    return False
 
 
 def openssl_connection_class(cls):

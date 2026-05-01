@@ -28,7 +28,10 @@ ext_proxy_result = ["allocate_lock"]
 replay_materialize = ["RLock"]
 
 [_queue.type_attributes.SimpleQueue]
-sync = ["put", "put_nowait"]
+
+[_queue.type_attributes.SimpleQueue.sync_unless]
+put = "retracesoftware.install.edgecases.concurrent_futures_threadpool_shutdown_sentinel"
+put_nowait = "retracesoftware.install.edgecases.concurrent_futures_threadpool_shutdown_sentinel"
 
 [threading]
 bind = ["_active_limbo_lock"]

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import concurrent.futures.thread
 import queue
 from collections import deque
 
@@ -90,6 +91,56 @@ def test_queue_simplequeue_enqueue_ops_emit_sync():
             tape.clear()
             system.run(operation, *args)
             assert "SYNC" in tape
+    finally:
+        uninstall()
+
+
+def test_queue_simplequeue_user_none_enqueue_still_emits_sync():
+    """User sentinels remain synchronization boundaries."""
+
+    tape = []
+
+    def writer(*values):
+        tape.extend(values)
+
+    system = recorder(writer=writer)
+    uninstall = install_retrace(system=system, retrace_shutdown=False)
+    try:
+        items = queue.SimpleQueue()
+
+        tape.clear()
+        system.run(items.put, None)
+        assert "SYNC" in tape
+    finally:
+        uninstall()
+
+
+def test_threadpool_worker_shutdown_sentinel_does_not_emit_sync():
+    """ThreadPoolExecutor's internal shutdown broadcast is cleanup plumbing."""
+
+    tape = []
+
+    def writer(*values):
+        tape.extend(values)
+
+    system = recorder(writer=writer)
+    uninstall = install_retrace(system=system, retrace_shutdown=False)
+    try:
+        class Executor:
+            _shutdown = True
+
+        items = queue.SimpleQueue()
+        items.put(None)
+
+        tape.clear()
+        system.run(
+            concurrent.futures.thread._worker,
+            lambda: Executor(),
+            items,
+            None,
+            (),
+        )
+        assert "SYNC" not in tape
     finally:
         uninstall()
 
