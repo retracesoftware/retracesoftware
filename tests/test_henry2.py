@@ -8,10 +8,13 @@ editable loader state of local native builds.
 from __future__ import annotations
 
 import os
+import platform
 import subprocess
 import sys
 import textwrap
 from pathlib import Path
+
+import pytest
 
 
 _ROOT = Path(__file__).resolve().parents[1]
@@ -74,6 +77,12 @@ def _run_retrace_script(tmp_path, source: str):
     return proc, (proc.stdout or "") + (proc.stderr or "")
 
 
+@pytest.mark.skipif(
+    os.environ.get("RETRACE_TEST_INSTALLED_WHEEL") == "1"
+    and sys.version_info[:2] == (3, 12)
+    and platform.machine().lower() in {"aarch64", "arm64"},
+    reason="ARM Python 3.12 installed-wheel CI can hang this heavyweight WSGI replay smoke",
+)
 def test_wsgiref_two_requests_replay_succeeds_without_timeout(tmp_path):
     proc, output = _run_retrace_script(
         tmp_path,
