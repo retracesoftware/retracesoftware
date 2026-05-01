@@ -106,7 +106,8 @@ tc_current(ThreadCallCounts *self, PyObject *Py_UNUSED(ignored))
 {
     if (reject_active_context_call(self, "current")) return nullptr;
     tc = self;
-    if (self->suspend_depth == 0 && self->cursor_stack.size() > 1 &&
+    if (self->suspend_depth == 0 && self->check_watches_depth == 0 &&
+        self->cursor_stack.size() > 1 &&
         self->cursor_stack.back().call_count > 0) {
         self->cursor_stack.back().call_count--;
     }
@@ -126,7 +127,8 @@ tc_position(ThreadCallCounts *self, PyObject *Py_UNUSED(ignored))
 {
     if (reject_active_context_call(self, "position")) return nullptr;
     tc = self;
-    if (self->suspend_depth == 0 && self->cursor_stack.size() > 1 &&
+    if (self->suspend_depth == 0 && self->check_watches_depth == 0 &&
+        self->cursor_stack.size() > 1 &&
         self->cursor_stack.back().call_count > 0) {
         self->cursor_stack.back().call_count--;
     }

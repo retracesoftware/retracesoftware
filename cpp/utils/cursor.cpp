@@ -30,6 +30,7 @@ struct WatchState {
 struct ThreadCounts {
     std::vector<CursorEntry> cursor_stack;
     int suspend_depth = 0;
+    int check_watches_depth = 0;
     std::vector<WatchState> watches;
 
     // Root parent tracking
@@ -139,15 +140,19 @@ maybe_fire_start(ThreadCounts &t, WatchState &w)
 static void
 check_watches_start(ThreadCounts &t)
 {
+    t.check_watches_depth++;
     for (size_t i = 0; i < t.watches.size(); i++)
         maybe_fire_start(t, t.watches[i]);
+    t.check_watches_depth--;
 }
 
 static void
 check_watches_slot(ThreadCounts &t, CallbackSlot WatchState::*slot)
 {
+    t.check_watches_depth++;
     for (size_t i = 0; i < t.watches.size(); i++)
         maybe_fire_slot(t, t.watches[i], t.watches[i].*slot);
+    t.check_watches_depth--;
 }
 
 // ---------------------------------------------------------------------------
@@ -157,7 +162,7 @@ check_watches_slot(ThreadCounts &t, CallbackSlot WatchState::*slot)
 static PyObject *
 on_py_start(PyObject *self, PyObject *const *args, Py_ssize_t nargs)
 {
-    if (tc.suspend_depth > 0) Py_RETURN_NONE;
+    if (tc.suspend_depth > 0 || tc.check_watches_depth > 0) Py_RETURN_NONE;
 
     int new_count = 0;
     if (!tc.cursor_stack.empty()) {
@@ -193,7 +198,7 @@ on_py_start(PyObject *self, PyObject *const *args, Py_ssize_t nargs)
 static PyObject *
 on_py_return(PyObject *self, PyObject *const *args, Py_ssize_t nargs)
 {
-    if (tc.suspend_depth > 0) Py_RETURN_NONE;
+    if (tc.suspend_depth > 0 || tc.check_watches_depth > 0) Py_RETURN_NONE;
 
     check_watches_slot(tc, &WatchState::return_slot);
     if (!tc.cursor_stack.empty()) {
@@ -206,7 +211,7 @@ on_py_return(PyObject *self, PyObject *const *args, Py_ssize_t nargs)
 static PyObject *
 on_py_unwind(PyObject *self, PyObject *const *args, Py_ssize_t nargs)
 {
-    if (tc.suspend_depth > 0) Py_RETURN_NONE;
+    if (tc.suspend_depth > 0 || tc.check_watches_depth > 0) Py_RETURN_NONE;
 
     check_watches_slot(tc, &WatchState::unwind_slot);
     if (!tc.cursor_stack.empty()) {
@@ -219,7 +224,7 @@ on_py_unwind(PyObject *self, PyObject *const *args, Py_ssize_t nargs)
 static PyObject *
 on_py_jump(PyObject *self, PyObject *const *args, Py_ssize_t nargs)
 {
-    if (tc.suspend_depth > 0) Py_RETURN_NONE;
+    if (tc.suspend_depth > 0 || tc.check_watches_depth > 0) Py_RETURN_NONE;
     if (nargs < 3) Py_RETURN_NONE;
 
     long src = PyLong_AsLong(args[1]);
@@ -317,6 +322,7 @@ reset_cursor_state()
     tc.root_parent_lasti = -1;
     tc.root_repeat_count = 0;
     tc.suspend_depth = 0;
+    tc.check_watches_depth = 0;
     tc.suspended_frame = nullptr;
     disarm_all(tc.watches);
 }
@@ -357,7 +363,7 @@ eval_frame(PyThreadState *tstate,
            struct _PyInterpreterFrame *frame,
            int throw_flag)
 {
-    if (tstate->tracing || tc.suspend_depth > 0) {
+    if (tstate->tracing || tc.suspend_depth > 0 || tc.check_watches_depth > 0) {
         return real_eval(tstate, frame, throw_flag);
     }
 
@@ -804,6 +810,12 @@ struct CallCounter : public PyObject {
             w.target.push_back((int)value);
         }
 
+        if (tc.check_watches_depth > 0) {
+            PyErr_SetString(PyExc_RuntimeError,
+                "cannot add watch while processing watch callbacks");
+            return nullptr;
+        }
+
         if (kw_start && kw_start != Py_None)
             arm_slot(w.start_slot, kw_start);
         if (kw_return && kw_return != Py_None)
@@ -845,6 +857,11 @@ struct CallCounter : public PyObject {
                 return nullptr;
             }
             w.target.push_back((int)value);
+        }
+        if (tc.check_watches_depth > 0) {
+            PyErr_SetString(PyExc_RuntimeError,
+                "cannot add watch while processing watch callbacks");
+            return nullptr;
         }
         arm_slot(w.start_slot, callback);
         tc.watches.push_back(std::move(w));

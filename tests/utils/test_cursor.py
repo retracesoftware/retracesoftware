@@ -503,6 +503,29 @@ class TestYieldAt:
 
         assert hits == [True]
 
+    def test_callback_does_not_advance_cursor(self, call_counter):
+        call_counter.install()
+
+        with call_counter():
+            first_run = self._sequence_with_setup(call_counter, lambda: None)
+        target = first_run[1]
+
+        observations = []
+
+        def on_hit():
+            def nested():
+                return len(call_counter), call_counter.current()
+
+            observations.append(nested())
+
+        with call_counter():
+            self._sequence_with_setup(
+                call_counter,
+                lambda: call_counter.yield_at(on_hit, threading.get_ident(), target),
+            )
+
+        assert observations == [(len(target), target)]
+
     def test_thread_id_filter(self, call_counter):
         call_counter.install()
 

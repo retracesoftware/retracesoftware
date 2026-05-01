@@ -57,7 +57,7 @@ on_py_start(PyObject *self, PyObject *const *args, Py_ssize_t nargs)
 {
     get_tc(self);
     check_thread_switch((CallCounter *)self);
-    if (tc->suspend_depth > 0) Py_RETURN_NONE;
+    if (tc->suspend_depth > 0 || tc->check_watches_depth > 0) Py_RETURN_NONE;
 
     ensure_synthetic_root();
     tc->cursor_stack.back().call_count++;
@@ -71,7 +71,7 @@ on_py_return(PyObject *self, PyObject *const *args, Py_ssize_t nargs)
 {
     get_tc(self);
     check_thread_switch((CallCounter *)self);
-    if (tc->suspend_depth > 0) Py_RETURN_NONE;
+    if (tc->suspend_depth > 0 || tc->check_watches_depth > 0) Py_RETURN_NONE;
 
     check_watches(WatchSlot::on_return);
     if (tc->cursor_stack.size() > 1) {
@@ -86,7 +86,7 @@ on_py_unwind(PyObject *self, PyObject *const *args, Py_ssize_t nargs)
 {
     get_tc(self);
     check_thread_switch((CallCounter *)self);
-    if (tc->suspend_depth > 0) Py_RETURN_NONE;
+    if (tc->suspend_depth > 0 || tc->check_watches_depth > 0) Py_RETURN_NONE;
 
     check_watches(WatchSlot::unwind);
     if (tc->cursor_stack.size() > 1) {
@@ -101,7 +101,7 @@ on_py_jump(PyObject *self, PyObject *const *args, Py_ssize_t nargs)
 {
     get_tc(self);
     check_thread_switch((CallCounter *)self);
-    if (tc->suspend_depth > 0) Py_RETURN_NONE;
+    if (tc->suspend_depth > 0 || tc->check_watches_depth > 0) Py_RETURN_NONE;
     if (nargs < 3) Py_RETURN_NONE;
 
     long src = PyLong_AsLong(args[1]);
@@ -269,7 +269,7 @@ eval_frame(PyThreadState *tstate,
 
     get_tc((PyObject *)s_active_frame_eval_cc);
 
-    if (tstate->tracing || tc->suspend_depth > 0) {
+    if (tstate->tracing || tc->suspend_depth > 0 || tc->check_watches_depth > 0) {
         return real_eval(tstate, frame, throw_flag);
     }
 
@@ -625,7 +625,8 @@ struct CallCounter : public PyObject {
     static PyObject *current_impl(CallCounter *self, PyObject *Py_UNUSED(ignored)) {
         get_tc((PyObject *)self);
         if (reject_active_context_call(tc, "current")) return nullptr;
-        if (tc->suspend_depth == 0 && tc->cursor_stack.size() > 1 &&
+        if (tc->suspend_depth == 0 && tc->check_watches_depth == 0 &&
+            tc->cursor_stack.size() > 1 &&
             tc->cursor_stack.back().call_count > 0) {
             tc->cursor_stack.back().call_count--;
         }

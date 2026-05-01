@@ -97,6 +97,7 @@ class CallCounter:
         return self().position()
 
     def _yield_at_impl(self, callback, thread_id, call_counts):
+        callback = self._cc.disable_for(callback)
         if thread_id == _thread.get_ident():
             self._cc.yield_at(callback, call_counts)
             return
@@ -104,7 +105,7 @@ class CallCounter:
         def _arm_on_target_thread():
             callback_on_thread(thread_id, callback)
 
-        self._cc.yield_at(_arm_on_target_thread, call_counts)
+        self._cc.yield_at(self._cc.disable_for(_arm_on_target_thread), call_counts)
 
     def yield_at(self, callback, thread_id, call_counts):
         wrapped = getattr(self, "_yield_at_wrapped", None)
