@@ -1,0 +1,152 @@
+{
+  "name": "retrace",
+  "displayName": "Retrace",
+  "description": "Time-travel debugging for Python recordings",
+  "version": "0.0.1",
+  "publisher": "retracesoftware",
+  "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/retracesoftware/retracesoftware",
+    "directory": "vscode"
+  },
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "categories": [
+    "Debuggers"
+  ],
+  "activationEvents": [
+    "onDebug",
+    "onView:retrace.sidebar",
+    "onCommand:retrace.openRecording",
+    "onCommand:retrace.openRecordingFromFile",
+    "onCommand:retrace.replayProcess"
+  ],
+  "main": "./dist/extension.js",
+  "contributes": {
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "retrace",
+          "title": "Retrace",
+          "icon": "retrace-icon.svg"
+        }
+      ]
+    },
+    "views": {
+      "retrace": [
+        {
+          "id": "retrace.sidebar",
+          "name": "Recordings"
+        }
+      ]
+    },
+    "debuggers": [
+      {
+        "type": "retrace",
+        "label": "Retrace",
+        "languages": [
+          "python"
+        ],
+        "configurationAttributes": {
+          "launch": {
+            "required": [
+              "recording"
+            ],
+            "properties": {
+              "recording": {
+                "type": "string",
+                "description": "Path to the trace file (.retrace)"
+              },
+              "pid": {
+                "type": "number",
+                "description": "PID to replay (defaults to main process)"
+              },
+              "replayBinary": {
+                "type": "string",
+                "description": "Path to the replay binary (normally embedded in the trace file shebang)",
+                "deprecationMessage": "The trace file is executed directly via its shebang. This option is rarely needed."
+              }
+            }
+          }
+        },
+        "configurationSnippets": [
+          {
+            "label": "Retrace: Replay Recording",
+            "description": "Replay a Retrace recording with time-travel debugging",
+            "body": {
+              "type": "retrace",
+              "request": "launch",
+              "name": "Retrace: ${1:recording}",
+              "recording": "^\"\\${workspaceFolder}/${2:recording.retrace}\""
+            }
+          }
+        ]
+      }
+    ],
+    "viewsWelcome": [
+      {
+        "view": "retrace.sidebar",
+        "contents": "Open a Retrace recording to start time-travel debugging.\n[Open Recording...](command:retrace.openRecording)"
+      }
+    ],
+    "menus": {
+      "view/title": [
+        {
+          "command": "retrace.openRecording",
+          "when": "view == retrace.sidebar",
+          "group": "navigation"
+        }
+      ],
+      "explorer/context": [
+        {
+          "command": "retrace.openRecordingFromFile",
+          "when": "resourceExtname == .retrace",
+          "group": "navigation"
+        }
+      ]
+    },
+    "configuration": {
+      "title": "Retrace",
+      "properties": {
+        "retrace.debugProtocol": {
+          "type": "boolean",
+          "default": false,
+          "description": "Log all commands sent to and received from the Python replay process (sets RETRACE_DEBUG_PROTOCOL)."
+        }
+      }
+    },
+    "commands": [
+      {
+        "command": "retrace.openRecording",
+        "title": "Open Recording...",
+        "category": "Retrace",
+        "icon": "$(folder-opened)"
+      },
+      {
+        "command": "retrace.openRecordingFromFile",
+        "title": "Open as Retrace Recording",
+        "category": "Retrace"
+      },
+      {
+        "command": "retrace.replayProcess",
+        "title": "Replay Process",
+        "category": "Retrace"
+      }
+    ]
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run build",
+    "build": "node esbuild.js",
+    "watch": "node esbuild.js --watch",
+    "package": "vsce package",
+    "lint": "eslint src --ext ts"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "@types/vscode": "^1.85.0",
+    "esbuild": "^0.24.0",
+    "typescript": "^5.5.0"
+  }
+}

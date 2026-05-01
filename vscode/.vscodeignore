@@ -1,0 +1,6 @@
+**/*
+!dist/extension.js
+!dist/extension.js.map
+!package.json
+!retrace-icon.svg
+!LICENSE

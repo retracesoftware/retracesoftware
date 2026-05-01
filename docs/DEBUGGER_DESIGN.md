@@ -30,7 +30,7 @@ recording flow currently uses the Go-owned DAP proxy in `go/replay/proxy.go`.
 
 ```mermaid
 flowchart TD
-    VS["VS Code extension\n../vscode"]
+    VS["VS Code extension\nvscode/"]
     WS["Generated workspace / process tree\nreplay --workspace / --index"]
     DAP["Go DAP proxy\ngo/replay/proxy.go"]
     DBG["Go debugger state\ndebugger.go, engine.go, hitlist.go"]
@@ -68,7 +68,7 @@ pointing at the replay binary:
 #!/path/to/replay --recording
 ```
 
-The VS Code extension reads that shebang in `../vscode/src/trace.ts` to find
+The VS Code extension reads that shebang in `vscode/src/trace.ts` to find
 the correct replay binary for this recording.
 
 ### PidFile
@@ -123,7 +123,7 @@ autoload the process tree.
 
 ## VS Code Extension Layer
 
-The active extension project is the sibling repo at `../vscode`.
+The active extension project lives in this repository under `vscode/`.
 
 Important files:
 
@@ -620,7 +620,7 @@ different runtime. Regenerate the recording for normal validation.
 ### Missing Debug Adapter Descriptor
 
 VS Code did not load an extension that contributes debug type `retrace` or did
-not register the descriptor factory. The active extension is `../vscode`; its
+not register the descriptor factory. The active extension is `vscode/`; its
 `package.json` has the `debuggers` contribution and `src/extension.ts`
 registers the factory.
 

@@ -77,6 +77,9 @@ hard constraints, not as an encyclopedia.
   Replay debugger, DAP control plane, extraction/index tooling. The Go binary
   built from `go/cmd/replay/` is what `RETRACE_REPLAY_BIN` / `REPLAY_BIN`
   point at.
+- `vscode/`
+  VS Code extension UI and launch wiring for opening `.retrace` recordings and
+  starting the Go-owned DAP adapter. Read `vscode/AGENTS.md` before editing it.
 - `src/retracesoftware/modules/*.toml`
   Module interception config for stdlib and third-party libraries.
 - Top-level Python helpers in `src/retracesoftware/`:
@@ -194,7 +197,7 @@ if needed.
 - If you touch `cpp/`, `src/retracesoftware/dap/`,
   `src/retracesoftware/stream/`, `src/retracesoftware/protocol/`,
   `src/retracesoftware/install/`, `src/retracesoftware/modules/`,
-  `tests/`, `dockertests/`, or `go/`, read the local `AGENTS.md` in that
+  `tests/`, `dockertests/`, `vscode/`, or `go/`, read the local `AGENTS.md` in that
   directory before editing — and any `DESIGN.md` in that directory if one
   exists.
 - If you touch `meson.build`, package install lists, or runtime entrypoints,
@@ -244,6 +247,7 @@ Per-directory AGENTS.md files (read before editing the matching area):
 
 - `cpp/AGENTS.md`
 - `go/AGENTS.md`
+- `vscode/AGENTS.md`
 - `tests/AGENTS.md`
 - `dockertests/AGENTS.md`
 - `src/retracesoftware/proxy/AGENTS.md`
