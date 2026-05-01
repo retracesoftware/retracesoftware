@@ -1,3 +1,7 @@
+#if defined(__linux__) && !defined(_GNU_SOURCE)
+#define _GNU_SOURCE
+#endif
+
 /*
  * gilwatch — preload library for detecting GIL thread switches.
  *
