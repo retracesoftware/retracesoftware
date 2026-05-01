@@ -60,6 +60,7 @@ jobs:
         if: runner.os == 'macOS'
         with:
           go-version-file: go/go.mod
+          cache: false
 
       - name: Install build tools
         run: pip install cibuildwheel==2.21.3 meson-python meson ninja setuptools_scm
