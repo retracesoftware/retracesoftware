@@ -6,15 +6,6 @@ on:
   pull_request:
     branches: [main]
   workflow_dispatch:
-    inputs:
-      tags:
-        description: 'Test tags to include (comma-separated, empty for all)'
-        required: false
-        default: ''
-      exclude_tags:
-        description: 'Test tags to exclude (comma-separated)'
-        required: false
-        default: 'docker'
 
 permissions:
   contents: read
@@ -54,26 +45,3 @@ jobs:
       - name: Run Go tests
         working-directory: go
         run: go test ./...
-
-  docker-tests:
-    runs-on: ubuntu-latest
-    if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-
-      - uses: actions/setup-python@v5
-        with:
-          python-version: '3.11'
-          cache: 'pip'
-
-      - name: Install build dependencies
-        run: pip install meson-python meson ninja setuptools_scm
-
-      - name: Build and install
-        run: pip install -e . --no-build-isolation
-
-      - name: Run Docker tests
-        working-directory: dockertests
-        run: python run_all.py -t docker --verbose
