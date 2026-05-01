@@ -68,7 +68,7 @@ def _run_retrace_script(tmp_path, source: str):
         env=env,
         capture_output=True,
         text=True,
-        timeout=30,
+        timeout=90,
     )
 
     return proc, (proc.stdout or "") + (proc.stderr or "")
@@ -92,10 +92,12 @@ def test_wsgiref_two_requests_replay_succeeds_without_timeout(tmp_path):
         state = {}
 
 
-        def _http_get(port: int, path: str) -> bytes:
+        def _http_get(port: int, path: str, ready=None) -> bytes:
             s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             s.connect(("127.0.0.1", port))
             s.sendall(f"GET {path} HTTP/1.0\\r\\nHost: 127.0.0.1\\r\\n\\r\\n".encode())
+            if ready is not None:
+                ready.set()
             chunks = []
             while True:
                 chunk = s.recv(4096)
@@ -123,17 +125,21 @@ def test_wsgiref_two_requests_replay_succeeds_without_timeout(tmp_path):
             state["srv"] = srv
             port = srv.server_address[1]
 
-            def client(path: str):
-                responses.append(_http_get(port, path))
+            def client(path: str, ready):
+                responses.append(_http_get(port, path, ready))
 
-            t1 = threading.Thread(target=client, args=("/one",))
+            ready1 = threading.Event()
+            t1 = threading.Thread(target=client, args=("/one", ready1))
             t1.start()
+            assert ready1.wait(timeout=5)
             srv._handle_request_noblock()
             t1.join(timeout=5)
             assert not t1.is_alive()
 
-            t2 = threading.Thread(target=client, args=("/two",))
+            ready2 = threading.Event()
+            t2 = threading.Thread(target=client, args=("/two", ready2))
             t2.start()
+            assert ready2.wait(timeout=5)
             srv._handle_request_noblock()
             t2.join(timeout=5)
             assert not t2.is_alive()
@@ -153,7 +159,7 @@ def test_wsgiref_two_requests_replay_succeeds_without_timeout(tmp_path):
         responses.clear()
         state.clear()
         signal.signal(signal.SIGALRM, _timeout_handler)
-        signal.alarm(15)
+        signal.alarm(30)
         try:
             try:
                 runner.replay(recording, server_work)

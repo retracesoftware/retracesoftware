@@ -52,6 +52,9 @@ def _local_pythonpath() -> str:
 def test_debug_record_flask_with_only_bufferedreader_proxy_does_not_crash(
     tmp_path: Path,
 ):
+    pytest.importorskip("flask")
+    pytest.importorskip("werkzeug")
+
     script = tmp_path / "flask_repro.py"
     script.write_text(
         (

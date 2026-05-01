@@ -15,8 +15,12 @@ from pathlib import Path
 import subprocess
 import sys
 
+import pytest
+
 
 def test_werkzeug_record_teardown_does_not_crash(tmp_path: Path):
+    pytest.importorskip("werkzeug")
+
     script = tmp_path / "werkzeug_repro.py"
     script.write_text(
         (

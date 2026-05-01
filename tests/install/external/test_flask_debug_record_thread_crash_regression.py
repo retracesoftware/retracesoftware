@@ -17,8 +17,13 @@ from pathlib import Path
 import subprocess
 import sys
 
+import pytest
+
 
 def test_flask_record_teardown_does_not_crash_background_writer(tmp_path: Path):
+    pytest.importorskip("flask")
+    pytest.importorskip("werkzeug")
+
     script = tmp_path / "flask_repro.py"
     script.write_text(
         (
