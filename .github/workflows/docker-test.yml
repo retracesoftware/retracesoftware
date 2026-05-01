@@ -24,6 +24,19 @@ jobs:
         with:
           python-version: '3.11'
 
+      - name: Build Docker test image
+        run: |
+          docker build -t retracesoftware-test -f - . <<'DOCKERFILE'
+          FROM python:3.11-slim
+
+          RUN apt-get update -qq \
+              && apt-get install -y -qq --no-install-recommends g++ \
+              && rm -rf /var/lib/apt/lists/*
+
+          RUN pip install --no-cache-dir \
+              meson-python meson ninja setuptools_scm
+          DOCKERFILE
+
       - name: Run Docker scenario tests
         working-directory: dockertests
-        run: python run.py --clean
+        run: python run.py --clean --image retracesoftware-test

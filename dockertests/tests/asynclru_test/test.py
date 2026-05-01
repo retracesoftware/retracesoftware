@@ -1,5 +1,5 @@
 import asyncio
-from datetime import datetime
+from datetime import datetime, timedelta
 
 import httpx
 from async_lru import alru_cache
@@ -7,18 +7,25 @@ from async_lru import alru_cache
 
 # Mock API endpoint for testing purposes
 MOCK_API_URL = "https://jsonplaceholder.typicode.com/posts"
+BASE_TIME = datetime(2026, 1, 1, 12, 0, 0)
+
+
+def mock_api_response(request: httpx.Request) -> httpx.Response:
+    clinician_id = int(request.url.path.rsplit("/", 1)[-1])
+    return httpx.Response(200, json={"id": clinician_id})
 
 
 @alru_cache(maxsize=3)  # Cache up to 3 recent requests
 async def get_clinician_availability(clinician_id: str):
-    async with httpx.AsyncClient() as client:
+    transport = httpx.MockTransport(mock_api_response)
+    async with httpx.AsyncClient(transport=transport) as client:
         response = await client.get(f"{MOCK_API_URL}/{clinician_id}")
         response.raise_for_status()
         data = response.json()
         return {
             "clinician_id": clinician_id,
             "available": data["id"] % 2 == 0,
-            "next_available": datetime.now(),
+            "next_available": BASE_TIME + timedelta(days=data["id"]),
         }
 
 

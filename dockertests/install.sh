@@ -50,8 +50,14 @@ if [ -f "/app/repo/pyproject.toml" ]; then
     fi
 
     echo "[install.sh] Installing local retracesoftware checkout to $TARGET..."
+    PIP_BUILD_OPTIONS=()
+    if command -v ninja >/dev/null 2>&1 && python -c "import mesonbuild, mesonpy, setuptools_scm" >/dev/null 2>&1; then
+        echo "[install.sh] Using existing Python build backend without build isolation"
+        PIP_BUILD_OPTIONS+=(--no-build-isolation)
+    fi
+
     SETUPTOOLS_SCM_PRETEND_VERSION="${SETUPTOOLS_SCM_PRETEND_VERSION:-0.0.0}" \
-        pip install --no-cache-dir --upgrade --target "$TARGET" /app/repo
+        pip install --no-cache-dir --upgrade "${PIP_BUILD_OPTIONS[@]}" --target "$TARGET" /app/repo
 fi
 
 echo "[install.sh] Dependencies installed to $TARGET"
