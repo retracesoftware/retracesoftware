@@ -83,6 +83,10 @@ jobs:
             MESONPY_EDITABLE_VERBOSE=1
             GOTOOLCHAIN=local
             PATH="/usr/local/go/bin:$PATH"
+          CIBW_ENVIRONMENT_MACOS: >-
+            MESONPY_EDITABLE_VERBOSE=1
+            GOTOOLCHAIN=local
+            MACOSX_DEPLOYMENT_TARGET=12.0
           CIBW_BEFORE_ALL_LINUX: >
             bash -eux -c '
               go_version=1.25.7
