@@ -164,6 +164,49 @@ py.install_sources(
   subdir: 'retracesoftware/replay',
 )
 
+_go = find_program('go')
+_go_env = environment()
+_go_env.set('CGO_ENABLED', '0')
+_go_env.set('GOTOOLCHAIN', 'local')
+
+_go_system = host_machine.system()
+if _go_system == 'darwin'
+  _go_env.set('GOOS', 'darwin')
+elif _go_system == 'linux'
+  _go_env.set('GOOS', 'linux')
+else
+  error('Unsupported Go replay binary platform: ' + _go_system)
+endif
+
+_go_cpu_family = host_machine.cpu_family()
+if _go_cpu_family == 'aarch64'
+  _go_env.set('GOARCH', 'arm64')
+elif _go_cpu_family == 'x86_64'
+  _go_env.set('GOARCH', 'amd64')
+elif _go_cpu_family == 'x86'
+  _go_env.set('GOARCH', '386')
+else
+  error('Unsupported Go replay binary architecture: ' + _go_cpu_family)
+endif
+
+custom_target(
+  'go-replay-binary',
+  output: 'replay',
+  command: [
+    _go,
+    '-C', meson.project_source_root() / 'go',
+    'build',
+    '-trimpath',
+    '-o', meson.current_build_dir() / 'replay',
+    './cmd/replay',
+  ],
+  env: _go_env,
+  build_by_default: true,
+  install: true,
+  install_dir: py.get_install_dir() / 'retracesoftware/replay',
+  install_mode: 'rwxr-xr-x',
+)
+
 # dap
 py.install_sources(
   _py_root / 'dap/__init__.py',

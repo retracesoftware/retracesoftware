@@ -24,6 +24,11 @@ jobs:
           python-version: "3.11"
           cache: 'pip'
 
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go/go.mod
+          cache: false
+
       - name: Install Build & Test Dependencies
         run: pip install meson-python meson ninja pytest setuptools_scm
 
@@ -57,7 +62,6 @@ jobs:
           python-version: ${{ matrix.python-version }}
 
       - uses: actions/setup-go@v5
-        if: runner.os == 'macOS'
         with:
           go-version-file: go/go.mod
           cache: false
@@ -74,11 +78,35 @@ jobs:
           CIBW_BUILD: ${{ matrix.py-tag }}
           CIBW_ENVIRONMENT: >-
             MESONPY_EDITABLE_VERBOSE=1
+            GOTOOLCHAIN=local
+          CIBW_ENVIRONMENT_LINUX: >-
+            MESONPY_EDITABLE_VERBOSE=1
+            GOTOOLCHAIN=local
+            PATH="/usr/local/go/bin:$PATH"
+          CIBW_BEFORE_ALL_LINUX: >
+            bash -eux -c '
+              go_version=1.25.7
+              machine="$(uname -m)"
+              bits="$(getconf LONG_BIT || true)"
+              case "${machine}:${bits}" in
+                x86_64:32|i386:*|i686:*) go_arch=386 ;;
+                x86_64:*) go_arch=amd64 ;;
+                aarch64:*|arm64:*) go_arch=arm64 ;;
+                *) echo "Unsupported Go bootstrap architecture: ${machine}" >&2; exit 1 ;;
+              esac
+              url="https://go.dev/dl/go${go_version}.linux-${go_arch}.tar.gz"
+              if command -v curl >/dev/null 2>&1; then
+                curl -fsSL "${url}" -o /tmp/go.tgz
+              else
+                python -c "import sys, urllib.request; urllib.request.urlretrieve(sys.argv[1], '/tmp/go.tgz')" "${url}"
+              fi
+              rm -rf /usr/local/go
+              tar -C /usr/local -xzf /tmp/go.tgz
+              /usr/local/go/bin/go version
+            '
           CIBW_BEFORE_BUILD: pip install meson-python meson ninja
-          CIBW_BEFORE_TEST_MACOS: cd {project} && go -C go build -o .retrace-replay-bin ./cmd/replay
           CIBW_TEST_REQUIRES: pytest
           CIBW_TEST_COMMAND: RETRACE_TEST_INSTALLED_WHEEL=1 PYTHONPATH={project} pytest {project}/tests
-          CIBW_TEST_COMMAND_MACOS: RETRACE_TEST_INSTALLED_WHEEL=1 RETRACE_REPLAY_BIN={project}/.retrace-replay-bin PYTHONPATH={project} pytest {project}/tests
 
       - name: Upload wheels
         uses: actions/upload-artifact@v4
