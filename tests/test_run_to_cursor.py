@@ -15,7 +15,7 @@ from collections import deque
 import pytest
 
 import retracesoftware.utils as utils
-from retracesoftware.control_runtime import Controller
+from retracesoftware.control_runtime import Controller, StopAtCursor, control_event_loop
 
 requires_312 = pytest.mark.skipif(
     sys.version_info < (3, 12),
@@ -179,6 +179,50 @@ TARGET_SOURCE = textwrap.dedent("""\
 
 def _init_controller(sock):
     Controller(control_socket=sock)
+
+
+class RunToCursorSocket:
+    def __init__(self, cursor):
+        self._requests = deque([{
+            "request_id": "cursor-1",
+            "command": "run_to_cursor",
+            "params": {"cursor": cursor},
+        }])
+        self.responses = []
+
+    def read_request(self):
+        if not self._requests:
+            return None
+        return self._requests.popleft()
+
+    def write_response(self, payload):
+        self.responses.append(payload)
+
+    def close(self):
+        pass
+
+
+def test_run_to_cursor_overshoot_reports_stop_reason():
+    """run_to_cursor should report an unreachable cursor, not assert."""
+
+    socket = RunToCursorSocket({"thread_id": 1, "function_counts": [999]})
+    loop = control_event_loop(lambda _: None, socket, get_message_index=lambda: 42)
+
+    intent = next(loop)
+    assert isinstance(intent, StopAtCursor)
+
+    with pytest.raises(StopIteration):
+        loop.send("overshoot")
+
+    assert socket.responses == [{
+        "kind": "stop",
+        "payload": {
+            "reason": "overshoot",
+            "message_index": 42,
+            "cursor": {},
+            "thread_cursors": {},
+        },
+    }]
 
 
 @pytest.fixture

@@ -272,44 +272,44 @@ func (c *Cursor) Next(ctx context.Context) (*Cursor, error) {
 	return NewCursor(rp.Location(), c.provider, rp), nil
 }
 
-// StepInto enters the next child call from the current position (DAP stepIn).
-// It increments the parent's call count and appends a zero for the child frame,
-// so the target matches PY_START of the callee at exact depth.
+// StepInto advances along the recorded execution until it either enters a
+// child frame or reaches a different source line. It must follow the live
+// replay instead of synthesizing a child FunctionCounts path: not every stop
+// position is followed by a reachable child call.
 func (c *Cursor) StepInto(ctx context.Context) (*Cursor, error) {
-	loc := c.location
-	if len(loc.FunctionCounts) == 0 {
-		return nil, ErrNotImplemented
-	}
-	childCounts := make(FunctionCounts, len(loc.FunctionCounts)+1)
-	copy(childCounts, loc.FunctionCounts)
-	childCounts[len(loc.FunctionCounts)-1]++
-	childCounts[len(loc.FunctionCounts)] = 0
-
-	target := Location{ThreadID: loc.ThreadID, FunctionCounts: childCounts}
-
-	rp := c.takeReplay()
-	if rp == nil {
-		snap, err := c.provider.ClosestBeforeCall(ctx, target.ThreadID, target.FunctionCounts)
-		if err != nil {
-			return nil, err
-		}
-		rp, err = snap.Replay(ctx)
-		if err != nil {
-			return nil, err
-		}
-	}
-
-	if _, err := rp.RunToCursor(ctx, target.RawCursor()); err != nil {
-		rp.Close()
+	rp, err := c.ensureReplay(ctx)
+	if err != nil {
 		return nil, err
 	}
-	entryLine, err := sourceLine(ctx, rp)
-	if err == nil && entryLine != 0 {
-		if err := AdvanceTo(ctx, rp, DifferentLine(entryLine)); err != nil {
-			log.Printf("StepInto: staying at function entry after first-line advance failed: %v", err)
+
+	currentLine, err := sourceLine(ctx, rp)
+	if err != nil {
+		return nil, err
+	}
+
+	rp = c.takeReplay()
+	baseDepth := len(c.location.FunctionCounts)
+
+	for {
+		if _, err := rp.NextInstruction(ctx); err != nil {
+			rp.Close()
+			return nil, err
+		}
+
+		nextLoc := rp.Location()
+		if len(nextLoc.FunctionCounts) != baseDepth {
+			return NewCursor(nextLoc, c.provider, rp), nil
+		}
+
+		line, err := sourceLine(ctx, rp)
+		if err != nil {
+			rp.Close()
+			return nil, err
+		}
+		if currentLine == 0 || (line != 0 && line != currentLine) {
+			return NewCursor(nextLoc, c.provider, rp), nil
 		}
 	}
-	return NewCursor(rp.Location(), c.provider, rp), nil
 }
 
 // Return runs forward until the current function returns (DAP stepOut).

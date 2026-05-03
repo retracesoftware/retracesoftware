@@ -473,7 +473,16 @@ def control_event_loop(
 
                 elif command == "run_to_cursor":
                     target = _parse_cursor_param(params, request_id)
-                    cursor_dict = yield StopAtCursor(cursor=target)
+                    result = yield StopAtCursor(cursor=target)
+                    if isinstance(result, str):
+                        _write_stop(control_socket.write_response, {
+                            "reason": result,
+                            "message_index": get_message_index(),
+                            "cursor": {},
+                            "thread_cursors": {},
+                        })
+                        continue
+                    cursor_dict = result
                     assert isinstance(cursor_dict, dict)
                     _write_stop(control_socket.write_response, {
                         "reason": "cursor",
