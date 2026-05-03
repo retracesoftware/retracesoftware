@@ -1,0 +1,6 @@
+.venv/
+__pycache__/
+*.pyc
+medium.code-workspace
+medium.d/
+medium.retrace
