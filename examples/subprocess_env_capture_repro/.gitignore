@@ -1,0 +1,5 @@
+.venv/
+__pycache__/
+*.pyc
+subprocess-env-capture.d/
+subprocess-env-capture.retrace
