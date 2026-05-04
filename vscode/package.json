@@ -1,9 +1,9 @@
 {
-  "name": "retrace",
-  "displayName": "Retrace",
+  "name": "retrace-debug-extension",
+  "displayName": "Retrace Debug Extension",
   "description": "Time-travel debugging for Python .retrace recordings",
   "version": "0.0.1",
-  "publisher": "retracesoftware",
+  "publisher": "RetraceSoftware",
   "license": "Apache-2.0",
   "repository": {
     "type": "git",

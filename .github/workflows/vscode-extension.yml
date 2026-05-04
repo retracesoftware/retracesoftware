@@ -64,7 +64,7 @@ jobs:
         run: |
           version="$(node -p "require('./package.json').version")"
           mkdir -p ../dist/vscode
-          npx --yes "@vscode/vsce@${VSCE_VERSION}" package --out "../dist/vscode/retrace-${version}.vsix"
+          npx --yes "@vscode/vsce@${VSCE_VERSION}" package --out "../dist/vscode/retrace-debug-extension-${version}.vsix"
 
       - name: Upload VSIX artifact
         uses: actions/upload-artifact@v4
@@ -93,6 +93,6 @@ jobs:
         if: ${{ inputs.release != 'package-only' }}
         run: |
           version="$(node -p "require('./package.json').version")"
-          npx --yes "@vscode/vsce@${VSCE_VERSION}" publish --packagePath "../dist/vscode/retrace-${version}.vsix"
+          npx --yes "@vscode/vsce@${VSCE_VERSION}" publish --packagePath "../dist/vscode/retrace-debug-extension-${version}.vsix"
         env:
           VSCE_PAT: ${{ secrets.VSCE_PAT }}
