@@ -1,7 +1,7 @@
 {
   "name": "retrace",
   "displayName": "Retrace",
-  "description": "Time-travel debugging for Python recordings",
+  "description": "Time-travel debugging for Python .retrace recordings",
   "version": "0.0.1",
   "publisher": "retracesoftware",
   "license": "Apache-2.0",
