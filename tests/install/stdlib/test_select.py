@@ -11,14 +11,27 @@ proxy replays the recorded control() results.
 import sys
 import socket
 import select
+import selectors
 import threading
 
 import pytest
 
+import retracesoftware.utils as retrace_utils
+from retracesoftware.install import install_retrace
+from retracesoftware.proxy.io import recorder
 from tests.runner import Runner
 
 needs_kqueue = pytest.mark.skipif(
     not hasattr(select, "kqueue"), reason="kqueue not available")
+
+needs_pollselector = pytest.mark.skipif(
+    (
+        not hasattr(select, "poll")
+        or not hasattr(selectors, "PollSelector")
+        or not hasattr(socket, "socketpair")
+    ),
+    reason="select.poll-backed PollSelector is not available",
+)
 
 
 def test_select_readable():
@@ -79,6 +92,27 @@ def test_select_timeout():
 
     result = runner.replay(recording, work)
     assert result == (0, 0, 0)
+
+
+@needs_pollselector
+def test_preloaded_pollselector_factory_is_retraced():
+    """selectors is preloaded, so its cached select.poll factory must be patched."""
+    system = recorder(writer=lambda *values: None)
+    uninstall = install_retrace(system=system, retrace_shutdown=False)
+    try:
+        assert selectors.PollSelector._selector_cls is select.poll
+
+        def work():
+            selector = selectors.PollSelector()
+            try:
+                return isinstance(selector._selector, retrace_utils.ExternalWrapped)
+            finally:
+                selector.close()
+
+        assert system.run(work)
+    finally:
+        uninstall()
+        system.unpatch_types()
 
 
 def test_select_writable():
