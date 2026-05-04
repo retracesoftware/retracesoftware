@@ -1,0 +1,6 @@
+.venv/
+__pycache__/
+*.pyc
+flask-testclient.code-workspace
+flask-testclient.d/
+flask-testclient.retrace

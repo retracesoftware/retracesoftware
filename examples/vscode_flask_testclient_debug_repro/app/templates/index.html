@@ -1,0 +1,9 @@
+<!doctype html>
+<title>Products</title>
+<ul>
+{% for product in products %}
+  <li data-sku="{{ product.sku }}">
+    {{ product.name }} - GBP {{ product.price }} - {{ "available" if product.available() else "sold out" }}
+  </li>
+{% endfor %}
+</ul>
