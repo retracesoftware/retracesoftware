@@ -54,7 +54,13 @@ def install_retrace(*, system, retrace_file_patterns=None, monitor_level=0, verb
 
     if monitor_level > 0:
         from retracesoftware.install.monitoring import install_monitoring
-        uninstallers.append(install_monitoring(system.checkpoint, monitor_level))
+        uninstallers.append(
+            install_monitoring(
+                system.checkpoint,
+                monitor_level,
+                disable_for=system.disable_for,
+            )
+        )
 
     uninstallers.append(system.install())
 

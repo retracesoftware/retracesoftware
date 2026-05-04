@@ -58,7 +58,7 @@ def suppress_monitoring():
         end_suppress_monitoring(count)
 
 if sys.version_info < (3, 12):
-    def install_monitoring(checkpoint_fn, level):
+    def install_monitoring(checkpoint_fn, level, *, disable_for=None):
         raise RuntimeError(
             f"--monitor requires Python 3.12+ (have {sys.version})")
 else:
@@ -74,12 +74,12 @@ else:
             sys.monitoring.events.C_RAISE | sys.monitoring.events.LINE),
     }
 
-    def _build_retrace_dirs():
+    def _build_retrace_dirs(*, realpath=os.path.realpath, isdir=os.path.isdir):
         """Collect filesystem prefixes for all retracesoftware sub-packages."""
         dirs = set()
         import retracesoftware
         for p in getattr(retracesoftware, '__path__', []):
-            dirs.add(os.path.realpath(p))
+            dirs.add(realpath(p))
         # Also cover editable-install src layouts where sub-packages
         # live in separate repos (stream, utils, functional, proxy, install).
         for name in list(sys.modules):
@@ -91,19 +91,19 @@ else:
                         continue
                     paths = val if isinstance(val, list) else [val]
                     for p in paths:
-                        real = os.path.realpath(p)
+                        real = realpath(p)
                         # Use the directory containing the file/package.
-                        d = real if os.path.isdir(real) else os.path.dirname(real)
+                        d = real if isdir(real) else os.path.dirname(real)
                         dirs.add(d)
         return tuple(sorted(dirs))
 
-    def _is_retrace_filename(filename, retrace_dirs):
+    def _is_retrace_filename(filename, retrace_dirs, *, realpath=os.path.realpath):
         return (
             filename.startswith(retrace_dirs)
-            or os.path.realpath(filename).startswith(retrace_dirs)
+            or realpath(filename).startswith(retrace_dirs)
         )
 
-    def install_monitoring(checkpoint_fn, level):
+    def install_monitoring(checkpoint_fn, level, *, disable_for=None):
         """Register ``sys.monitoring`` callbacks for divergence detection.
 
         Parameters
@@ -125,10 +125,17 @@ else:
             raise ValueError(f"monitor level must be 1–3, got {level}")
 
         events = MONITOR_LEVELS[level]
-        retrace_dirs = _build_retrace_dirs()
+        realpath = os.path.realpath
+        isdir = os.path.isdir
+        if disable_for is not None:
+            realpath = disable_for(realpath, unwrap_args=False)
+            isdir = disable_for(isdir, unwrap_args=False)
+
+        retrace_dirs = _build_retrace_dirs(realpath=realpath, isdir=isdir)
 
         def _is_retrace(filename):
-            return _is_retrace_filename(filename, retrace_dirs)
+            with suppress_monitoring():
+                return _is_retrace_filename(filename, retrace_dirs, realpath=realpath)
 
         def _is_suppressed():
             return getattr(_monitor_state, "suppressed", 0) > 0

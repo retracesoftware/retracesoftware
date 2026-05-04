@@ -1,5 +1,6 @@
 import sys
 import types
+import posix
 
 import retracesoftware.functional as functional
 import retracesoftware.utils as utils
@@ -307,3 +308,26 @@ def test_pathparam_skips_callables_without_inspectable_signature():
         assert namespace["target"] is target
     finally:
         undo()
+
+
+def test_posix_pathparam_uses_first_arg_for_uninspectable_builtin(tmp_path):
+    system = _system()
+    seen = []
+    path = tmp_path / "stamp.txt"
+    path.write_text("ok", encoding="utf-8")
+    namespace = {"__name__": "posix", "utime": posix.utime}
+
+    undo = patch(
+        namespace,
+        {"pathparam": {"utime": "path"}},
+        Installation(system),
+        pathpredicate=lambda path: seen.append(path) or False,
+    )
+
+    try:
+        namespace["utime"](str(path), None)
+        assert seen == [str(path)]
+    finally:
+        undo()
+
+    assert namespace["utime"] is posix.utime

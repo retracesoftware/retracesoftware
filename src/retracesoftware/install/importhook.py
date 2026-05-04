@@ -64,6 +64,7 @@ def install_import_hooks(disable_for, module_patcher):
 
     # We also need the original _run_code.
     orig_run_code = runpy._run_code
+    orig_run_module = runpy.run_module
 
     # ── __import__ / importlib.import_module ──────────────────
     builtins.__import__ = disable_for(builtins.__import__, unwrap_args=False)
@@ -95,6 +96,21 @@ def install_import_hooks(disable_for, module_patcher):
                  utils.wrap_func_with_overrides,
                  exec=_exec_and_patch_entry)
 
+    # ── runpy.run_module ────────────────────────────────────────
+    # `python -m package.module` performs importlib discovery before it reaches
+    # `_run_code`. Keep that discovery disabled like normal imports, then let
+    # `_run_code` execute the target module with the active retrace gates.
+    def run_module(mod_name, init_globals=None, run_name=None, alter_sys=False):
+        get_details = disable_for(runpy._get_module_details, unwrap_args=False)
+        mod_name, mod_spec, code = get_details(mod_name)
+        if run_name is None:
+            run_name = mod_name
+        if alter_sys:
+            return runpy._run_module_code(code, init_globals, run_name, mod_spec)
+        return runpy._run_code(code, {}, init_globals, run_name, mod_spec)
+
+    runpy.run_module = run_module
+
     # ── _imp.exec_dynamic / _imp.exec_builtin ─────────────────
     def _wrap_exec(orig):
         def wrapper(module):
@@ -116,6 +132,7 @@ def install_import_hooks(disable_for, module_patcher):
         _imp.exec_builtin = orig_exec_builtin
         _bootstrap_external._LoaderBasics.exec_module = orig_exec_module
         runpy._run_code = orig_run_code
+        runpy.run_module = orig_run_module
 
     return uninstall
 

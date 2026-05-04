@@ -168,6 +168,7 @@ class Runner:
             install_monitoring(
                 checkpoint_monitor,
                 settings["monitor"],
+                disable_for=system.disable_for,
             )
             if settings["monitor"] > 0
             else None
@@ -237,6 +238,7 @@ class Runner:
             install_monitoring(
                 checkpoint_monitor,
                 settings["monitor"],
+                disable_for=system.disable_for,
             )
             if settings["monitor"] > 0
             else None

@@ -205,8 +205,9 @@ proxy = [
     "writev", # Function. Writes from multiple buffers to a file descriptor.
     ]
 
-# Read-only functions whose path parameter refers to stable filesystem
-# locations (Python installation, site-packages) can bypass the proxy.
+# Functions whose path parameter can be filtered by the path predicate. This
+# lets runtime/import cache paths such as __pycache__ bypass the proxy while
+# keeping configured application/temp paths retraced.
 # Value is the argument name containing the filesystem path.
 [posix.pathparam]
 stat = "path"
@@ -218,6 +219,23 @@ scandir = "path"
 pathconf = "path"
 statvfs = "path"
 chdir = "path"
+chmod = "path"
+chown = "path"
+chflags = "path"
+lchmod = "path"
+lchown = "path"
+lchflags = "path"
+mkdir = "path"
+mkfifo = "path"
+mknod = "path"
+open = "path"
+remove = "path"
+rmdir = "path"
+truncate = "path"
+unlink = "path"
+utime = "path"
+rename = "src"
+replace = "src"
 
 # [posix.wrap]
 # posix_spawn = "retracesoftware.install.edgecases.posix_spawn"

@@ -48,6 +48,13 @@ class TestVerboseQuietParity:
     def test_pathlib_no_match(self, predicate):
         assert predicate(Path("/var/log/syslog")) is False
 
+    def test_pycache_path_is_ignored_even_under_matching_prefix(self, predicate):
+        assert predicate("/tmp/app/__pycache__/main.cpython-312.pyc") is False
+
+    def test_pycache_temp_path_is_ignored_even_under_matching_prefix(self, predicate):
+        path = "/tmp/app/__pycache__/main.cpython-312.pyc.123456"
+        assert predicate(path) is False
+
 
 class TestEmptyPatterns:
     """With no patterns, only ints (fds) should retrace."""

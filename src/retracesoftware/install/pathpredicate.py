@@ -13,8 +13,15 @@ Rules:
 import re
 import sys
 import pkgutil
+import fnmatch
+import os
 
-from retracesoftware.functional import or_predicate, sequence, isinstanceof
+DEFAULT_IGNORE_GLOBS = (
+    "__pycache__",
+    "__pycache__/*",
+    "*/__pycache__",
+    "*/__pycache__/*",
+)
 
 def load_patterns(extra_file=None):
     """Load regex patterns from the shipped defaults and an optional extra file.
@@ -41,7 +48,18 @@ def load_patterns(extra_file=None):
     return patterns
 
 
-def make_pathpredicate(patterns, verbose=False):
+def _path_string(arg):
+    try:
+        return os.fsdecode(arg).replace("\\", "/")
+    except TypeError:
+        return str(arg).replace("\\", "/")
+
+
+def _matches_ignore_glob(path, ignore_globs):
+    return any(fnmatch.fnmatch(path, pattern) for pattern in ignore_globs)
+
+
+def make_pathpredicate(patterns, verbose=False, ignore_globs=DEFAULT_IGNORE_GLOBS):
     """Build a predicate callable from compiled regex patterns.
 
     The returned callable accepts a single argument (the value extracted
@@ -56,26 +74,26 @@ def make_pathpredicate(patterns, verbose=False):
         If True, log each predicate evaluation (path and result) to stderr.
     """
 
-    if verbose:
-        def int_predicate(arg):
-            if isinstance(arg, int):
-                print(f"retrace pathpredicate: fd={arg} → retrace (fd always retraced)", file=sys.stderr)
+    def predicate(arg):
+        if isinstance(arg, int):
+            if verbose:
+                print(f"retrace pathpredicate: fd={arg} -> retrace (fd always retraced)", file=sys.stderr)
+            return True
+
+        path = _path_string(arg)
+        if _matches_ignore_glob(path, ignore_globs):
+            if verbose:
+                print(f"retrace pathpredicate: {path!r} ignored by glob -> passthrough", file=sys.stderr)
+            return False
+
+        for pat in patterns:
+            if pat.search(path):
+                if verbose:
+                    print(f"retrace pathpredicate: {path!r} matched {pat.pattern!r} -> retrace", file=sys.stderr)
                 return True
-            return False
 
-        def pattern_predicate(s):
-            for pat in patterns:
-                if pat.search(s):
-                    print(f"retrace pathpredicate: {s!r} matched {pat.pattern!r} → retrace", file=sys.stderr)
-                    return True
-            print(f"retrace pathpredicate: {s!r} no match → passthrough", file=sys.stderr)
-            return False
+        if verbose:
+            print(f"retrace pathpredicate: {path!r} no match -> passthrough", file=sys.stderr)
+        return False
 
-    else:
-        int_predicate = isinstanceof(int)
-
-        matchers = [pat.search for pat in patterns]
-
-        pattern_predicate = or_predicate(*matchers)
-
-    return or_predicate(int_predicate, sequence(str, pattern_predicate))
+    return predicate

@@ -241,8 +241,13 @@ def _sync_for_unless(system, function, predicate):
 
     return utils.observer(function=function, on_call=on_call)
 
-def param_predicate(signature, param_name, predicate):
-    idx = list(signature.parameters.keys()).index(str(param_name))
+def param_predicate(signature, param_name, predicate, *, fallback_index=None):
+    if signature is None:
+        if fallback_index is None:
+            raise ValueError(f"Missing parameter '{param_name}'")
+        idx = fallback_index
+    else:
+        idx = list(signature.parameters.keys()).index(str(param_name))
     extractor = functional.param(str(param_name), idx)
     return functional.sequence(extractor, predicate) 
 
@@ -569,12 +574,23 @@ def patch(
                         try:
                             signature = inspect.signature(patched)
                         except (TypeError, ValueError):
+                            signature = None
+
+                        fallback_index = None
+                        if (
+                            signature is None
+                            and namespace.get("__name__") == "posix"
+                            and param_name in {"path", "src"}
+                        ):
+                            fallback_index = 0
+                        elif signature is None:
                             continue
 
                         should_retrace = param_predicate(
                             signature = signature,
                             param_name = param_name,
-                            predicate=pathpredicate)
+                            predicate=pathpredicate,
+                            fallback_index=fallback_index)
 
                         wrapped = functional.if_then_else(should_retrace, patched, system.disable_for(patched))
                         namespace[name] = wrapped
