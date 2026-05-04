@@ -639,6 +639,8 @@ def get_path_info():
     
     real_sys_path = []
     for p in sys.path:
+        if p == "":
+            p = cwd
         if p:
             try:
                 real_p = os.path.realpath(p)

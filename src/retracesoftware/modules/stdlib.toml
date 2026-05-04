@@ -52,6 +52,18 @@ sync_disable = ["set"]
 bind = ["_lock"]
 disable = ["_acquireLock", "_releaseLock"]
 
+["importlib.metadata"]
+disable = [
+    "distribution",
+    "distributions",
+    "entry_points",
+    "files",
+    "metadata",
+    "packages_distributions",
+    "requires",
+    "version",
+]
+
 ["asyncio.base_events".type_attributes.BaseEventLoop]
 sync = ["call_soon_threadsafe"]
 wrap = { shutdown_asyncgens = "retracesoftware.install.edgecases.collect_before" }
@@ -301,6 +313,9 @@ recvmsg_into = "retracesoftware.install.edgecases.recvmsg_into"
 
 [select]
 proxy = ["kevent", "kqueue", "poll", "epoll", "select"]
+
+[socketserver.type_attributes.BaseServer]
+sync_disable = ["shutdown"]
 
 [_ssl]
 proxy = ["_SSLSocket", "MemoryBIO", "_SSLContext"]

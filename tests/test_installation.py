@@ -188,6 +188,34 @@ def test_module_ref_index_refreshes_modules_imported_after_construction():
         sys.modules.pop(module.__name__, None)
 
 
+def test_module_ref_index_global_scope_updates_class_attribute_caches():
+    def original():
+        return "original"
+
+    def replacement():
+        return "replacement"
+
+    class CachedFactory:
+        cached = original
+
+    module = types.ModuleType("test_module_ref_index_class_attr_source")
+    module.target = original
+
+    index = ModuleRefIndex([module], global_scope=True)
+
+    module.target = replacement
+    changes = index.replace(original, replacement)
+
+    try:
+        assert module.target is replacement
+        assert CachedFactory.cached is replacement
+    finally:
+        restore_module_refs(changes)
+
+    assert module.target is replacement
+    assert CachedFactory.cached is original
+
+
 def test_installation_context_manager_uninstalls_on_exit():
     system = _system()
 

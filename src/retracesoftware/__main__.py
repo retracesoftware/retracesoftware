@@ -115,6 +115,13 @@ def _consume_replay_startup_bindings(system):
     return sentinels
 
 
+def _restore_replay_sys_path(header):
+    recorded_sys_path = header.get("sys_path")
+    if not isinstance(recorded_sys_path, list):
+        raise ValueError("recording header is missing sys_path")
+    sys.path[:] = recorded_sys_path
+
+
 @contextmanager
 def _cli_module_overrides():
     yield
@@ -222,6 +229,7 @@ def replay(args):
             raise VersionMismatchError("Python version does not match, cannot run replay with different version of Python to record")
 
         os.environ.update(header['env'])
+        _restore_replay_sys_path(header)
 
         controller = None
         controller_ref = [None]

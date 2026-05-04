@@ -150,7 +150,7 @@ def patch_already_loaded(module_patcher, module_config):
     """
     from retracesoftware.install.replace import ModuleRefIndex
 
-    module_ref_index = ModuleRefIndex()
+    module_ref_index = ModuleRefIndex(global_scope=True)
     for modname in list(module_config.keys()):
         if modname in sys.modules:
             module_patcher(
