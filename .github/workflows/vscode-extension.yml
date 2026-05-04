@@ -55,7 +55,7 @@ jobs:
       - name: Bump extension version
         if: ${{ inputs.release == 'patch' || inputs.release == 'minor' || inputs.release == 'major' }}
         run: |
-          npm version "${{ inputs.release }}" --tag-version-prefix "vscode-v" -m "chore(vscode): release %s [skip ci]"
+          npm version "${{ inputs.release }}" --no-git-tag-version
 
       - name: Build extension
         run: npm run build
@@ -86,8 +86,12 @@ jobs:
         if: ${{ inputs.release == 'patch' || inputs.release == 'minor' || inputs.release == 'major' }}
         run: |
           version="$(node -p "require('./package.json').version")"
+          tag="vscode-v${version}"
+          git add package.json package-lock.json
+          git commit -m "chore(vscode): release ${tag} [skip ci]"
+          git tag "${tag}"
           git push origin "HEAD:${GITHUB_REF_NAME}"
-          git push origin "vscode-v${version}"
+          git push origin "${tag}"
 
       - name: Publish to VS Code Marketplace
         if: ${{ inputs.release != 'package-only' }}
