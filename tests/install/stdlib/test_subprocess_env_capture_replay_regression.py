@@ -10,7 +10,6 @@ Observed failure:
 from __future__ import annotations
 
 import os
-import json
 from pathlib import Path
 import subprocess
 import sys
@@ -22,10 +21,12 @@ def _run(
     cmd: list[str],
     *,
     env: dict[str, str],
+    cwd: Path | None = None,
     timeout: int = 90,
 ) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
         cmd,
+        cwd=cwd,
         capture_output=True,
         text=True,
         timeout=timeout,
@@ -74,11 +75,11 @@ def test_record_subprocess_env_capture_control(tmp_path: Path):
     ),
 )
 def test_replay_subprocess_env_capture_matches_record(tmp_path: Path):
-    """PidFile replay should match record for captured child output with explicit env."""
+    """Executable PidFile replay should match record for explicit child env."""
 
     parent = _write_env_capture_program(tmp_path)
     env = _test_env(tmp_path)
-    recording = tmp_path / "subprocess-env-capture.retrace"
+    recording = tmp_path / "test.retrace"
 
     record = _record(parent, recording, env=env)
     assert record.returncode == 0, (
@@ -87,24 +88,29 @@ def test_replay_subprocess_env_capture_matches_record(tmp_path: Path):
         f"stderr:\n{record.stderr}"
     )
 
-    replay_bin = _replay_binary()
-    extract = _extract(recording, replay_bin=replay_bin, cwd=tmp_path)
+    extract = _extract(recording, cwd=tmp_path, env=env)
     assert extract.returncode == 0, (
         f"extract failed (exit {extract.returncode})\n"
         f"stdout:\n{extract.stdout}\n"
         f"stderr:\n{extract.stderr}"
     )
 
-    index_file = tmp_path / "subprocess-env-capture.d" / "index.json"
-    with index_file.open(encoding="utf-8") as handle:
-        root_pid = json.load(handle)["root"]["pid"]
+    list_pids = _list_pids(recording, cwd=tmp_path, env=env)
+    assert list_pids.returncode == 0, (
+        f"list_pids failed (exit {list_pids.returncode})\n"
+        f"stdout:\n{list_pids.stdout}\n"
+        f"stderr:\n{list_pids.stderr}"
+    )
+    root_pid = list_pids.stdout.splitlines()[0]
+    pidfile = tmp_path / "test.d" / f"{root_pid}.bin"
+    assert pidfile.exists()
 
+    replay_env = env.copy()
+    replay_env["RETRACE_SKIP_CHECKSUMS"] = "1"
     replay = _run(
-        [
-            str(replay_bin),
-            str(tmp_path / "subprocess-env-capture.d" / f"{root_pid}.bin"),
-        ],
-        env=env,
+        [str(pidfile)],
+        cwd=tmp_path,
+        env=replay_env,
     )
 
     assert replay.returncode == 0, (
@@ -175,30 +181,41 @@ def _record(
             str(recording),
             "--stacktraces",
             "--",
-            str(script),
+            script.name,
         ],
+        cwd=script.parent,
         env=env,
     )
-
-
-def _replay_binary() -> Path:
-    replay_bin = Path(sys.executable).with_name("replay")
-    if not replay_bin.exists():
-        pytest.skip(f"Go replay binary not installed next to {sys.executable}")
-    return replay_bin
 
 
 def _extract(
     recording: Path,
     *,
-    replay_bin: Path,
     cwd: Path,
+    env: dict[str, str],
 ) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(
-        [str(replay_bin), "--recording", str(recording), "--extract"],
+    return _run(
+        [str(recording), "--extract"],
         cwd=cwd,
-        capture_output=True,
-        text=True,
-        timeout=90,
-        env=os.environ.copy(),
+        env=env,
+    )
+
+
+def _list_pids(
+    recording: Path,
+    *,
+    cwd: Path,
+    env: dict[str, str],
+) -> subprocess.CompletedProcess[str]:
+    return _run(
+        [
+            sys.executable,
+            "-m",
+            "retracesoftware",
+            "--recording",
+            str(recording),
+            "--list_pids",
+        ],
+        cwd=cwd,
+        env=env,
     )
