@@ -76,7 +76,7 @@ datetime.proxy = ["now", "utcnow", "today"]
 
 [time]
 immutable = ["struct_time"]
-proxy = ["perf_counter", "time", "gmtime", "localtime", "monotonic", "monotonic_ns", "time_ns"]
+proxy = ["perf_counter", "time", "gmtime", "localtime", "strftime", "monotonic", "monotonic_ns", "time_ns"]
 
 [pathlib]
 immutable = ["PosixPath"]
