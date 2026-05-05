@@ -48,6 +48,7 @@ type Proxy struct {
 	launchErr    error
 
 	breakpointIDs       map[string]int // "file:line[:cond]" -> debugger breakpoint ID
+	breakpointSpecs     map[string]BreakpointSpec
 	currentMessageIndex uint64
 	currentCursor       *Cursor // current position, nil until first navigation
 	navHistory          []*Cursor
@@ -67,13 +68,14 @@ func NewProxy(pidFile string, clientIn io.Reader, clientW *Writer) *Proxy {
 		}
 	}
 	return &Proxy{
-		pidFile:       pidFile,
-		recordingDir:  recDir,
-		processCWD:    processCWD,
-		clientR:       bufio.NewReader(clientIn),
-		clientW:       clientW,
-		breakpointIDs: make(map[string]int),
-		navTimeout:    defaultNavigationTimeout,
+		pidFile:         pidFile,
+		recordingDir:    recDir,
+		processCWD:      processCWD,
+		clientR:         bufio.NewReader(clientIn),
+		clientW:         clientW,
+		breakpointIDs:   make(map[string]int),
+		breakpointSpecs: make(map[string]BreakpointSpec),
+		navTimeout:      defaultNavigationTimeout,
 	}
 }
 
@@ -293,6 +295,9 @@ func (p *Proxy) handleSetBreakpoints(argsRaw json.RawMessage) (json.RawMessage, 
 	if p.debugger == nil {
 		return nil, fmt.Errorf("no active debugger")
 	}
+	if p.breakpointSpecs == nil {
+		p.breakpointSpecs = make(map[string]BreakpointSpec)
+	}
 
 	var args setBreakpointsArgs
 	if len(argsRaw) > 0 {
@@ -312,9 +317,14 @@ func (p *Proxy) handleSetBreakpoints(argsRaw json.RawMessage) (json.RawMessage, 
 	}
 
 	for key, id := range p.breakpointIDs {
+		spec, ok := p.breakpointSpecs[key]
+		if ok && spec.File != args.Source.Path {
+			continue
+		}
 		if _, ok := newSpecs[key]; !ok {
 			p.debugger.RemoveBreakpoint(id)
 			delete(p.breakpointIDs, key)
+			delete(p.breakpointSpecs, key)
 		}
 	}
 
@@ -338,6 +348,7 @@ func (p *Proxy) handleSetBreakpoints(argsRaw json.RawMessage) (json.RawMessage, 
 			log.Printf("setBreakpoints: registered id=%d, total breakpoints=%d", id, len(p.breakpointIDs)+1)
 			p.breakpointIDs[key] = id
 		}
+		p.breakpointSpecs[key] = spec
 		out = append(out, map[string]any{"verified": true, "line": bp.Line})
 	}
 

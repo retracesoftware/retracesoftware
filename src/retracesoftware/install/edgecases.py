@@ -2,6 +2,7 @@
 
 import functools
 import gc
+import os
 import sys
 
 from retracesoftware.install import globals
@@ -112,6 +113,34 @@ def collect_before(target):
     def wrapper(*args, **kwargs):
         gc.collect()
         return target(*args, **kwargs)
+
+    return wrapper
+
+
+_DEFAULT = object()
+
+
+def subprocess_internal_poll(target):
+    """Route Popen's cached waitpid default through Retrace's patched os module."""
+
+    @functools.wraps(target)
+    @utils.exclude_from_stacktrace
+    def wrapper(
+        self,
+        _deadstate=None,
+        _waitpid=_DEFAULT,
+        _WNOHANG=_DEFAULT,
+        _ECHILD=_DEFAULT,
+    ):
+        import errno
+
+        if _waitpid is _DEFAULT:
+            _waitpid = os.waitpid
+        if _WNOHANG is _DEFAULT:
+            _WNOHANG = os.WNOHANG
+        if _ECHILD is _DEFAULT:
+            _ECHILD = errno.ECHILD
+        return target(self, _deadstate, _waitpid, _WNOHANG, _ECHILD)
 
     return wrapper
 

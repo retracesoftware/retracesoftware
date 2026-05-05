@@ -19,13 +19,6 @@ import time
 import pytest
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "Known Go DAP proxy regression: VS Code-style per-file setBreakpoints "
-        "can cancel an earlier source's breakpoint scan."
-    ),
-)
 def test_medium_vscode_dap_keeps_breakpoints_across_source_files(tmp_path: Path):
     """A dummy VS Code DAP controller should stop first at main.py:9."""
 

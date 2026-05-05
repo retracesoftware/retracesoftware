@@ -16,9 +16,6 @@ from pathlib import Path
 import subprocess
 import sys
 
-import pytest
-
-
 def _run(
     cmd: list[str],
     *,
@@ -70,14 +67,6 @@ def test_record_popen_terminate_wait_timeout_control(tmp_path: Path):
     assert "wait -15" in record.stdout
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "Known replay divergence: Popen.terminate() skips the recorded "
-        "posix.kill call, so Popen.wait(timeout=5) consumes None as "
-        "time.monotonic()."
-    ),
-)
 def test_replay_popen_terminate_wait_timeout_matches_record(tmp_path: Path):
     """Executable PidFile replay should match record for terminate+wait."""
 

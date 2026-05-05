@@ -22,13 +22,34 @@ func (h *HitList) Insert(hit BreakpointHit) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 
-	mi := hit.Location.MessageIndex
 	i := sort.Search(len(h.hits), func(j int) bool {
-		return h.hits[j].Location.MessageIndex > mi
+		return breakpointHitLess(hit, h.hits[j])
 	})
 	h.hits = append(h.hits, BreakpointHit{})
 	copy(h.hits[i+1:], h.hits[i:])
 	h.hits[i] = hit
+}
+
+func breakpointHitLess(a, b BreakpointHit) bool {
+	if a.Location.MessageIndex != b.Location.MessageIndex {
+		return a.Location.MessageIndex < b.Location.MessageIndex
+	}
+	if cmp := a.Location.FunctionCounts.Compare(b.Location.FunctionCounts); cmp != 0 {
+		return cmp < 0
+	}
+	if a.Location.FLasti != nil && b.Location.FLasti != nil && *a.Location.FLasti != *b.Location.FLasti {
+		return *a.Location.FLasti < *b.Location.FLasti
+	}
+	if a.Location.FLasti == nil && b.Location.FLasti != nil {
+		return true
+	}
+	if a.Location.FLasti != nil && b.Location.FLasti == nil {
+		return false
+	}
+	if a.Location.ThreadID != b.Location.ThreadID {
+		return a.Location.ThreadID < b.Location.ThreadID
+	}
+	return a.BreakpointID < b.BreakpointID
 }
 
 // RemoveByBreakpoint removes all hits belonging to the given breakpoint ID.

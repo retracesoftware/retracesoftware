@@ -81,6 +81,9 @@ proxy = ["perf_counter", "time", "gmtime", "localtime", "monotonic", "monotonic_
 [pathlib]
 immutable = ["PosixPath"]
 
+[subprocess.type_attributes.Popen]
+wrap = { _internal_poll = "retracesoftware.install.edgecases.subprocess_internal_poll" }
+
 [posix]
 immutable = ["times_result", "statvfs_result", "uname_result", "stat_result", "terminal_size"]
 
