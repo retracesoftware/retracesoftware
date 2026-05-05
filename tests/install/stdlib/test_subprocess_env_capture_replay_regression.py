@@ -14,8 +14,6 @@ from pathlib import Path
 import subprocess
 import sys
 
-import pytest
-
 
 def _run(
     cmd: list[str],
@@ -67,13 +65,6 @@ def test_record_subprocess_env_capture_control(tmp_path: Path):
     assert record.stdout.strip() == "CAPTURED CHILD alpha 7 ERR ok 0"
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "Known replay divergence at _posixsubprocess.fork_exec when "
-        "subprocess.run uses capture_output=True, text=True, and env=modified_env."
-    ),
-)
 def test_replay_subprocess_env_capture_matches_record(tmp_path: Path):
     """Executable PidFile replay should match record for explicit child env."""
 

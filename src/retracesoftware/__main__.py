@@ -228,6 +228,8 @@ def replay(args):
         if header['python_version'] != sys.version:
             raise VersionMismatchError("Python version does not match, cannot run replay with different version of Python to record")
 
+        # User code must see exactly the recorded environment, including key order.
+        os.environ.clear()
         os.environ.update(header['env'])
         _restore_replay_sys_path(header)
 
