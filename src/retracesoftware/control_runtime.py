@@ -703,8 +703,7 @@ def _find_user_frame():
     """Walk the call stack to find the first frame outside retracesoftware internals."""
     frame = sys._getframe(1)
     while frame is not None:
-        fn = frame.f_code.co_filename
-        if "retracesoftware" not in fn:
+        if not _is_retrace_internal_code(frame.f_code):
             return frame
         frame = frame.f_back
     return None

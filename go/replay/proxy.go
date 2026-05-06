@@ -51,6 +51,8 @@ type Proxy struct {
 	breakpointSpecs     map[string]BreakpointSpec
 	currentMessageIndex uint64
 	currentCursor       *Cursor // current position, nil until first navigation
+	currentHit          BreakpointHit
+	hasCurrentHit       bool
 	navHistory          []*Cursor
 	navigatedFromHit    bool // true after step/nav, false after continue lands on a hit
 	navTimeout          time.Duration
@@ -264,6 +266,7 @@ func (p *Proxy) handlePostLaunch() error {
 				_ = p.debugger.Close()
 			}
 			p.currentCursor = nil
+			p.hasCurrentHit = false
 			if err := p.clientW.Write(successResponse(env.Seq, env.Command, nil)); err != nil {
 				return err
 			}
@@ -408,13 +411,15 @@ func (p *Proxy) handleContinue(ctx context.Context, reverse bool) error {
 	if p.currentCursor == nil {
 		hit, ok = p.debugger.Hits().FirstFrom(0)
 	} else if reverse {
-		if p.navigatedFromHit {
-			hit, ok = p.debugger.Hits().LastAtOrBefore(p.currentMessageIndex)
+		if p.hasCurrentHit && !p.navigatedFromHit {
+			hit, ok = p.debugger.Hits().PrevBeforeHit(p.currentHit)
 		} else {
-			hit, ok = p.debugger.Hits().PrevBefore(p.currentMessageIndex)
+			hit, ok = p.debugger.Hits().LastAtOrBeforeLocation(p.currentCursor.Location())
 		}
+	} else if p.hasCurrentHit && !p.navigatedFromHit {
+		hit, ok = p.debugger.Hits().NextAfterHit(p.currentHit)
 	} else {
-		hit, ok = p.debugger.Hits().NextAfter(p.currentMessageIndex)
+		hit, ok = p.debugger.Hits().NextAfterLocation(p.currentCursor.Location())
 	}
 	log.Printf("handleContinue: ok=%v hitMsgIdx=%d", ok, hit.Location.MessageIndex)
 	if !ok {
@@ -422,8 +427,11 @@ func (p *Proxy) handleContinue(ctx context.Context, reverse bool) error {
 	}
 
 	p.currentMessageIndex = hit.Location.MessageIndex
+	p.currentHit = hit
+	p.hasCurrentHit = true
 	p.navigatedFromHit = false
 	p.navHistory = nil
+	p.currentCursor = NewCursor(hit.Location, p.provider, nil)
 	snap, err := p.provider.ClosestBeforeCall(ctx, hit.Location.ThreadID, hit.Location.FunctionCounts)
 	if err != nil {
 		log.Printf("warning: failed to get snapshot: %v", err)
@@ -487,6 +495,8 @@ func (p *Proxy) handleCursorNav(ctx context.Context, reason string, nav func() (
 			p.navHistory = append(p.navHistory, previous)
 		}
 		p.currentCursor = next
+		p.currentMessageIndex = nl.MessageIndex
+		p.hasCurrentHit = false
 		p.navigatedFromHit = true
 	}
 
