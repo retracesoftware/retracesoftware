@@ -1,8 +1,11 @@
 package replay
 
 import (
+	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
@@ -35,6 +38,16 @@ func (d *fakeDAPDebugger) Hits() *HitList {
 func (d *fakeDAPDebugger) WaitForScans(ctx context.Context) error { return nil }
 
 func (d *fakeDAPDebugger) Close() error { return nil }
+
+type failingSnapshotProvider struct{}
+
+func (f failingSnapshotProvider) ClosestBeforeCall(context.Context, uint64, FunctionCounts) (*Snapshot, error) {
+	return nil, errors.New("snapshot unavailable in unit test")
+}
+
+func (f failingSnapshotProvider) ClosestBeforeReturn(context.Context, uint64, FunctionCounts) (*Snapshot, error) {
+	return nil, errors.New("snapshot unavailable in unit test")
+}
 
 func TestResolveSourcePathPrefersRecordedProcessCWD(t *testing.T) {
 	tmpDir := t.TempDir()
@@ -76,6 +89,54 @@ func TestResolveSourcePathFallsBackToRecordedProcessCWD(t *testing.T) {
 	want := filepath.Join(processCWD, relPath)
 	if got := proxy.resolveSourcePath(relPath); got != want {
 		t.Fatalf("resolveSourcePath(%q) = %q, want %q", relPath, got, want)
+	}
+}
+
+func TestContinueAdvancesWithinSameTraceMessage(t *testing.T) {
+	debugger := &fakeDAPDebugger{}
+	first := BreakpointHit{
+		BreakpointID: 1,
+		Spec:         BreakpointSpec{File: "target.py", Line: 1},
+		Location: Location{
+			MessageIndex:   1483,
+			ThreadID:       1,
+			FunctionCounts: FunctionCounts{1, 1},
+		},
+	}
+	second := BreakpointHit{
+		BreakpointID: 2,
+		Spec:         BreakpointSpec{File: "target.py", Line: 2},
+		Location: Location{
+			MessageIndex:   1483,
+			ThreadID:       1,
+			FunctionCounts: FunctionCounts{1, 2},
+		},
+	}
+	debugger.Hits().Insert(first)
+	debugger.Hits().Insert(second)
+
+	var out bytes.Buffer
+	proxy := &Proxy{
+		debugger:            debugger,
+		provider:            failingSnapshotProvider{},
+		clientW:             NewWriter(&out),
+		currentMessageIndex: first.Location.MessageIndex,
+		currentCursor:       NewCursor(first.Location, nil, nil),
+	}
+
+	if err := proxy.handleContinue(context.Background(), false); err != nil {
+		t.Fatalf("continue: %v", err)
+	}
+	raw, err := ReadMessage(bufio.NewReader(&out))
+	if err != nil {
+		t.Fatalf("read DAP message: %v", err)
+	}
+	var msg map[string]any
+	if err := json.Unmarshal(raw, &msg); err != nil {
+		t.Fatalf("unmarshal DAP message: %v", err)
+	}
+	if msg["event"] != "stopped" {
+		t.Fatalf("continue event = %v, want stopped; message: %s", msg["event"], raw)
 	}
 }
 

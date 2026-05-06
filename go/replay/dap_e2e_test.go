@@ -187,9 +187,11 @@ type dapSession struct {
 
 func newDAPSession(t *testing.T, python, scriptName, source string) *dapSession {
 	t.Helper()
-	tmpDir := t.TempDir()
+	return newDAPSessionInScriptDir(t, python, filepath.Join(t.TempDir(), "src"), scriptName, source)
+}
 
-	scriptDir := filepath.Join(tmpDir, "src")
+func newDAPSessionInScriptDir(t *testing.T, python, scriptDir, scriptName, source string) *dapSession {
+	t.Helper()
 	if err := os.MkdirAll(scriptDir, 0755); err != nil {
 		t.Fatal(err)
 	}
@@ -198,6 +200,7 @@ func newDAPSession(t *testing.T, python, scriptName, source string) *dapSession 
 		t.Fatal(err)
 	}
 
+	tmpDir := t.TempDir()
 	tracePath := filepath.Join(tmpDir, "trace.retrace")
 	pidFile, cleanup := extractPidFile(t, python, script, tracePath)
 
@@ -290,21 +293,30 @@ func (s *dapSession) launch(pidFile string) {
 
 func (s *dapSession) setBreakpoint(line int) {
 	s.t.Helper()
+	s.setBreakpoints([]int{line})
+}
+
+func (s *dapSession) setBreakpoints(lines []int) {
+	s.t.Helper()
+	requestBreakpoints := make([]map[string]any, 0, len(lines))
+	for _, line := range lines {
+		requestBreakpoints = append(requestBreakpoints, map[string]any{"line": line})
+	}
 	s.client.send("setBreakpoints", map[string]any{
 		"source": map[string]any{
 			"name": filepath.Base(s.script),
 			"path": s.script,
 		},
-		"lines":       []int{line},
-		"breakpoints": []map[string]any{{"line": line}},
+		"lines":       lines,
+		"breakpoints": requestBreakpoints,
 	})
 	resp := s.expectResponse("setBreakpoints", 15*time.Second)
 	body, _ := resp["body"].(map[string]any)
-	breakpoints, _ := body["breakpoints"].([]any)
-	if len(breakpoints) == 0 {
+	responseBreakpoints, _ := body["breakpoints"].([]any)
+	if len(responseBreakpoints) == 0 {
 		s.t.Fatalf("setBreakpoints returned no breakpoints: %v", resp)
 	}
-	first, _ := breakpoints[0].(map[string]any)
+	first, _ := responseBreakpoints[0].(map[string]any)
 	if first["verified"] != true {
 		s.t.Fatalf("breakpoint was not verified: %v", resp)
 	}
@@ -756,6 +768,66 @@ print(after)
 	session.step("stepOut")
 	assertTopFrame(t, session.topFrame(), session.script, 7, "<module>")
 	t.Log("OK: stepOut -> caller line 7")
+}
+
+// TestDAPContinueAdvancesWithinSameTraceMessageE2E records a tiny script with
+// adjacent source breakpoints. These stops can share the same trace
+// message_index, so continue must advance by full replay location, not by
+// message_index alone.
+func TestDAPContinueAdvancesWithinSameTraceMessageE2E(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping e2e test in short mode")
+	}
+	python := requirePython312(t)
+
+	const source = `first = 1
+second = 2
+third = first + second
+print(third)
+`
+
+	session := newDAPSession(t, python, "continue_same_message_target.py", source)
+	session.setBreakpoints([]int{1, 2})
+	session.configurationDone()
+	session.continueToBreakpoint()
+	assertTopFrame(t, session.topFrame(), session.script, 1, "<module>")
+
+	session.continueToBreakpoint()
+	assertTopFrame(t, session.topFrame(), session.script, 2, "<module>")
+}
+
+// TestDAPDockertestStyleFunctionBreakpointShowsUserFrameE2E records a
+// dockertest-shaped script and stops at a source breakpoint inside its test()
+// function. The top stack frame must be the user function, not the
+// runpy/control callback stack.
+func TestDAPDockertestStyleFunctionBreakpointShowsUserFrameE2E(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping e2e test in short mode")
+	}
+	python := requirePython312(t)
+
+	const source = `"""
+Simple test demonstrating automatic docker-compose.yml generation.
+"""
+
+def test():
+    """Simple test that does not need any infrastructure."""
+    print("=" * 60)
+    print("Simple Test - No Infrastructure Needed")
+    print("=" * 60)
+    assert 1 + 1 == 2, "Math works!"
+    print("Basic math: 1 + 1 = 2")
+
+if __name__ == "__main__":
+    test()
+`
+
+	scriptDir := filepath.Join(t.TempDir(), "retracesoftware_app", "src")
+	session := newDAPSessionInScriptDir(t, python, scriptDir, "dockertest_style_target.py", source)
+	session.setBreakpoint(11)
+	session.configurationDone()
+	session.continueToBreakpoint()
+	assertTopFrame(t, session.topFrame(), session.script, 11, "test")
 }
 
 // TestDAPStepForwardThenBackToBeginningE2E records target_hello.py, walks
