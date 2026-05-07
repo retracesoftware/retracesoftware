@@ -85,8 +85,8 @@ For module-based apps and tools, put `RETRACE_RECORDING=...` before the same
 Python command you would normally run:
 
 ```
-RETRACE_RECORDING=recordings/invoice.retrace python -m invoice_parser.main process invoices/
-RETRACE_RECORDING=recordings/tests.retrace python -m pytest tests/test_invoice.py
+RETRACE_RECORDING=recordings/cli.retrace python -m your_package.cli --input examples/input.json
+RETRACE_RECORDING=recordings/tests.retrace python -m pytest tests/
 RETRACE_RECORDING=recordings/debug.retrace python -c "import random; print(random.random())"
 ```
 
