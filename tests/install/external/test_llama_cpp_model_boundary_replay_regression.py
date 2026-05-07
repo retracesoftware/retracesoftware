@@ -16,21 +16,12 @@ from pathlib import Path
 import sys
 import textwrap
 
-import pytest
-
 from tests.helpers import run_record, run_replay
 
 
 _ROOT = Path(__file__).resolve().parents[3]
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "missing built-in module interception for huggingface_hub and "
-        "llama_cpp lets replay live-run model download/load/generation"
-    ),
-)
 def test_replay_does_not_live_run_huggingface_model_download_boundary(
     tmp_path: Path,
 ) -> None:
@@ -51,13 +42,6 @@ def test_replay_does_not_live_run_huggingface_model_download_boundary(
     )
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "missing built-in module interception for huggingface_hub and "
-        "llama_cpp lets replay live-run model download/load/generation"
-    ),
-)
 def test_replay_does_not_live_run_llama_cpp_model_execution_boundary(
     tmp_path: Path,
 ) -> None:

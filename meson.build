@@ -118,6 +118,8 @@ install_data(
   _py_root / 'modules/debuggers.toml',
   _py_root / 'modules/fsspec.spec.toml',
   _py_root / 'modules/grpc._cython.cygrpc.toml',
+  _py_root / 'modules/huggingface_hub.file_download.toml',
+  _py_root / 'modules/llama_cpp.llama.toml',
   _py_root / 'modules/mmap.toml',
   _py_root / 'modules/numpy.random.toml',
   _py_root / 'modules/psycopg2._psycopg.toml',
