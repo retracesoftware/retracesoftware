@@ -19,6 +19,13 @@ import time
 import pytest
 
 
+requires_312 = pytest.mark.skipif(
+    sys.version_info < (3, 12),
+    reason="Breakpoints require sys.monitoring (Python 3.12+)",
+)
+
+
+@requires_312
 def test_medium_vscode_dap_keeps_breakpoints_across_source_files(tmp_path: Path):
     """A dummy VS Code DAP controller should stop first at main.py:9."""
 
