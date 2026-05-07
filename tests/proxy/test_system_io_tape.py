@@ -227,6 +227,72 @@ def test_replay_binding_state_hydrates_proxy_ref_bindings():
     assert isinstance(resolved["value"][0], DemoExternalWrapped)
 
 
+@pytest.mark.xfail(
+    strict=True,
+    reason=(
+        "proxy.io PidFile replay treats a nested sync CALL as unexpected while "
+        "waiting for the outer external-call result"
+    ),
+)
+def test_replayer_skips_nested_sync_call_marker_while_reading_external_result():
+    """Regression for the flight-search HuggingFace replay failure.
+
+    The real PidFile replay failed with:
+
+        Unexpected message: CallMarkerMessage, was expecting a result, error, or call
+
+    This builds the same protocol shape without depending on HuggingFace or a
+    local model: an outer external call is replayed, but the trace contains a
+    nested sync ``CALL`` frame before the outer ``RESULT``.  The higher-level
+    protocol replay reader already knows how to skip nested sync-call frames;
+    this test pins the same expectation for the proxy.io replay path used by
+    extracted PidFiles.
+    """
+
+    tape = IOMemoryTape()
+    writer = tape.writer()
+
+    def external_download():
+        return "cached-model-path"
+
+    def flow(download):
+        return download()
+
+    with _entered(writer) as writer:
+        with _recorder_context(IOMode("plain"), writer) as record_system:
+            download = record_system.patch_function(external_download)
+            recorded = record_system.run(flow, download)
+
+    assert recorded == "cached-model-path"
+
+    raw = _raw_tape(tape)
+    assert raw is not None
+    outer_call_index = raw.index("CALL")
+    outer_result_index = raw.index("RESULT", outer_call_index)
+    raw.insert(outer_result_index, "CALL")
+
+    def raise_unexpected(message):
+        raise AssertionError(
+            f"Unexpected message: {message}, was expecting a result, error, or call"
+        )
+
+    reader = tape.reader()
+    with _entered(reader) as reader:
+        replay_system = replayer(
+            next_object=reader.read,
+            close=getattr(reader, "close", None),
+            on_unexpected=raise_unexpected,
+        )
+        try:
+            _configure_system(replay_system)
+            download = replay_system.patch_function(external_download)
+            replayed = replay_system.run(flow, download)
+        finally:
+            replay_system.unpatch_types()
+
+    assert replayed == recorded
+
+
 def test_checkpoint_equal_matches_descriptor_marker_to_proxy_shell():
     import ssl
 
