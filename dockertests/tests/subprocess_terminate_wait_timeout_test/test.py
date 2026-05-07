@@ -3,7 +3,7 @@ import time
 
 
 def test_popen_terminate_wait_timeout():
-    """Exercise the same shutdown path used by invoice-parser's llama-server."""
+    """Exercise subprocess shutdown through terminate() and wait(timeout=...)."""
 
     print("=== subprocess_terminate_wait_timeout_test ===", flush=True)
     proc = subprocess.Popen(["/bin/sleep", "30"])

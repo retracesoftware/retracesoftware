@@ -1,7 +1,7 @@
 """Regression coverage for local LLM model boundaries.
 
-The invoice-parser/flight-search demos showed that PidFile replay was still
-executing HuggingFace cache lookup and llama_cpp model initialization live.
+Application-level LLM demos showed that PidFile replay was still executing
+HuggingFace cache lookup and llama_cpp model initialization live.
 This test uses tiny fake ``huggingface_hub`` and ``llama_cpp`` packages with the
 same public import shape. The fake model-boundary functions compare patched
 ``os.getpid()`` with a direct libc ``getpid()`` call; those match during record,
