@@ -102,15 +102,6 @@ Check the installed package version:
 python -m pip show retracesoftware
 ```
 
-Optional: check that the Retrace CLI is available:
-
-```
-python -m retracesoftware --help
-```
-
-This command does not record anything. It just prints the Retrace command-line
-options, which confirms that Python can find the installed package.
-
 ## 4. Enable Auto-Recording In This Virtual Environment
 
 Install Retrace's auto-enable hook:
