@@ -227,13 +227,6 @@ def test_replay_binding_state_hydrates_proxy_ref_bindings():
     assert isinstance(resolved["value"][0], DemoExternalWrapped)
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "proxy.io PidFile replay treats a nested sync CALL as unexpected while "
-        "waiting for the outer external-call result"
-    ),
-)
 def test_replayer_skips_nested_sync_call_marker_while_reading_external_result():
     """Regression for the flight-search HuggingFace replay failure.
 

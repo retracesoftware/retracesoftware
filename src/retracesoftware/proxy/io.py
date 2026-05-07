@@ -1411,6 +1411,9 @@ def replayer(*, next_object,
             if isinstance(message, (CallbackResultMessage, CallbackErrorMessage)):
                 continue
 
+            if isinstance(message, CallMarkerMessage):
+                continue
+
             if isinstance(message, ResultMessage):
                 return message.result
 
