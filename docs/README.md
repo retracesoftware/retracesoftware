@@ -7,16 +7,18 @@ recording workflow.
 
 1. [Installation](getting-started/installation.md)
 2. [Quickstart](../quickstart/README.md)
-3. [VS Code Extension](getting-started/vscode-extension.md)
+3. [Recording Python Commands](getting-started/recording-python-commands.md)
+4. [VS Code Extension](getting-started/vscode-extension.md)
 
 That path gets a user from a clean Python environment to a recorded Flask demo,
-terminal replay, and VS Code replay debugging.
+real application command examples, and VS Code replay debugging.
 
 ## User Guides
 
 - [Getting Started](getting-started/README.md)
 - [Installation](getting-started/installation.md)
 - [Quickstart](../quickstart/README.md)
+- [Recording Python Commands](getting-started/recording-python-commands.md)
 - [VS Code Extension](getting-started/vscode-extension.md)
 - [Troubleshooting](troubleshooting.md)
 
@@ -33,6 +35,7 @@ Start at [Internals](internals/README.md) if you are changing Retrace itself.
 
 Current internal references:
 
+- [Architecture](internals/architecture.md)
 - [Module Layers](LAYERS.md)
 - [Stream Architecture](STREAM.md)
 - [Thread Replay](THREAD_REPLAY.md)

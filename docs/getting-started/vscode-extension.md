@@ -1,9 +1,11 @@
 # VS Code Extension
 
-The Retrace VS Code extension opens `.retrace` recordings and starts replay
-debugging through the replay binary embedded in the recording.
+The Retrace VS Code extension opens `.retrace` recordings and lets you debug the
+recorded execution.
 
-## Install
+Use this after you have created a recording.
+
+## Install The Extension
 
 Open VS Code, go to the Extensions sidebar, and search for:
 
@@ -19,26 +21,42 @@ RetraceSoftware
 
 Restart VS Code if prompted.
 
-## Create A Recording
+## Create The Quickstart Recording
 
-From the quickstart folder:
+From the `quickstart` folder:
 
 ```
 RETRACE_RECORDING=recordings/flask.retrace python examples/flask_demo.py
 ```
 
-## Open A Recording
+This creates:
 
-Open the folder that contains the source file and the recording:
+```
+recordings/flask.retrace
+```
+
+## Open The Folder
+
+Open the folder that contains the source and the recording:
 
 ```
 code .
 ```
 
-Then use one of these paths:
+If the `code` command is not installed, open VS Code manually and choose:
+
+```
+File -> Open Folder...
+```
+
+Then select the `quickstart` folder.
+
+## Open The Recording
+
+Use one of these paths:
 
 - Open the Retrace sidebar and choose `Open Recording...`
-- Right-click a `.retrace` file and choose `Open as Retrace Recording`
+- Right-click `recordings/flask.retrace` and choose `Open as Retrace Recording`
 
 Select:
 
@@ -46,27 +64,59 @@ Select:
 recordings/flask.retrace
 ```
 
-## Debug
+The Retrace sidebar should show the recorded process tree. For the quickstart
+demo there is normally one Python process.
 
-Open the source file:
+## Set A Breakpoint
+
+Open:
 
 ```
 examples/flask_demo.py
 ```
 
-Set a breakpoint inside a route handler or inside `main()`, then start replay
-from the Retrace view. During replay, you can inspect variables and navigate
-through the recorded execution.
+Good first breakpoints:
 
-## Notes
+- inside `health()`
+- inside `create_user()`
+- inside `main()`
 
-- The extension works with `.retrace` recordings, not live processes.
-- The recording contains a shebang that points at the replay binary used to
-  extract and debug the recording.
-- If replay fails in VS Code, first confirm terminal replay works:
+## Start Replay
+
+In the Retrace sidebar, start replay for the recorded Python process.
+
+VS Code should enter a debug session and stop when replay reaches your
+breakpoint. At that point you are looking at the recorded execution, not a live
+rerun of the Flask demo.
+
+During replay you can:
+
+- inspect local variables
+- continue to the next breakpoint
+- step forward
+- step backward
+- restart the debug session and try another breakpoint
+
+## What Success Looks Like
+
+The debugger should stop in `examples/flask_demo.py` with normal VS Code debug
+controls visible. The call stack and variables panels should update for the
+recorded frame.
+
+For this demo, values such as timestamps, UUIDs, and random numbers come from
+the recording. They should not change just because you replay again.
+
+## Terminal Sanity Check
+
+If VS Code does not stop where expected, first confirm the recording replays in
+the terminal:
 
 ```
 ./recordings/flask.retrace --extract
 ROOT_PID=$(python -m retracesoftware --recording recordings/flask.retrace --list_pids | head -1)
 ./recordings/flask.d/${ROOT_PID}.bin
 ```
+
+If terminal replay fails, debug the recording first. If terminal replay works
+but VS Code does not stop, check that the breakpoint is in code that executed
+during the recorded run.

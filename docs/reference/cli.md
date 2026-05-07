@@ -31,6 +31,12 @@ After `python -m retracesoftware install`, run ordinary Python with
 RETRACE_RECORDING=recordings/example.retrace python your_script.py
 ```
 
+Module commands work the same way:
+
+```
+RETRACE_RECORDING=recordings/example.retrace python -m your_package.cli arg1 arg2
+```
+
 ## Record Explicitly
 
 Record without relying on the `.pth` hook:
@@ -40,6 +46,12 @@ python -m retracesoftware --recording recordings/example.retrace -- your_script.
 ```
 
 Everything after `--` is the target command.
+
+For module commands, include `-m` after `--`:
+
+```
+python -m retracesoftware --recording recordings/example.retrace -- -m your_package.cli arg1 arg2
+```
 
 Useful record flags:
 

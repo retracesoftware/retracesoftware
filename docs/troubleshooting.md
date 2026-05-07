@@ -38,8 +38,8 @@ If terminal replay fails, debug that before trying VS Code.
 
 ## Python Version Mismatch
 
-Record and replay with the same Python version. Retrace validates the recorded
-Python version during replay.
+Use the same virtual environment for recording and replay. Retrace validates
+the recorded interpreter during replay.
 
 Check your current interpreter:
 

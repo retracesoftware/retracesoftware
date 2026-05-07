@@ -28,13 +28,22 @@ python -m retracesoftware install
 python -m pip install -r requirements.txt
 
 RETRACE_RECORDING=recordings/flask.retrace python examples/flask_demo.py
-./recordings/flask.retrace --extract
-
-ROOT_PID=$(python -m retracesoftware --recording recordings/flask.retrace --list_pids | head -1)
-./recordings/flask.d/${ROOT_PID}.bin
+code .
 ```
 
-The replay should print the same recorded timestamps, UUIDs, and random values.
+In VS Code:
+
+1. Install the `Retrace Debug Extension` from the Marketplace.
+2. Open the Retrace sidebar.
+3. Choose `Open Recording...`.
+4. Select `recordings/flask.retrace`.
+5. Open `examples/flask_demo.py`.
+6. Set a breakpoint inside a route handler or inside `main()`.
+7. Start replay from the Retrace view.
+
+The replay should stop at your breakpoint inside the recorded execution. You can
+inspect variables, continue, step forward, and step backward without running the
+Flask demo live again.
 
 For the full walkthrough, see [quickstart/README.md](quickstart/README.md).
 
@@ -56,7 +65,7 @@ That installs a `.pth` file into the environment. Fresh Python processes in
 that environment import Retrace at startup, but they only record when you set a
 Retrace environment variable.
 
-Record an ordinary Python command:
+Record an ordinary Python file:
 
 ```
 RETRACE_RECORDING=recordings/run.retrace python my_script.py
@@ -72,7 +81,39 @@ You can also record without the `.pth` hook:
 python -m retracesoftware --recording recordings/run.retrace -- my_script.py
 ```
 
-## How Replay Works
+For module-based apps and tools, put `RETRACE_RECORDING=...` before the same
+Python command you would normally run:
+
+```
+RETRACE_RECORDING=recordings/invoice.retrace python -m invoice_parser.main process invoices/
+RETRACE_RECORDING=recordings/tests.retrace python -m pytest tests/test_invoice.py
+RETRACE_RECORDING=recordings/debug.retrace python -c "import random; print(random.random())"
+```
+
+For more examples, see
+[docs/getting-started/recording-python-commands.md](docs/getting-started/recording-python-commands.md).
+
+## Replay And Debug In VS Code
+
+Open the same folder that contains your source and `.retrace` file:
+
+```
+code .
+```
+
+Then open the recording from the Retrace sidebar or right-click the `.retrace`
+file and choose `Open as Retrace Recording`.
+
+The extension reads the replay binary path embedded in the `.retrace` shebang,
+indexes the recorded process tree, and launches replay debugging through the Go
+replay tool.
+
+Set breakpoints in the recorded Python code and start replay. The debugger runs
+the recorded execution, not a live process.
+
+See [docs/getting-started/vscode-extension.md](docs/getting-started/vscode-extension.md).
+
+## Terminal Replay
 
 Extract the recording:
 
@@ -99,33 +140,13 @@ Replay it:
 ./recordings/run.d/${ROOT_PID}.bin
 ```
 
-Replay must use the same Python version and compatible Retrace package build as
-recording. Retrace validates both before replay starts.
-
-## VS Code Debugging
-
-Install the VS Code extension from the Marketplace:
-
-```
-Retrace Debug Extension
-```
-
-Open the folder that contains your source and `.retrace` file, then open the
-recording from the Retrace sidebar or right-click the `.retrace` file and choose
-`Open as Retrace Recording`.
-
-Set breakpoints in the recorded code and start replay. The extension launches
-the Go replay tooling and talks to the Python replay runtime through the Retrace
-debug protocol.
-
-See [docs/getting-started/vscode-extension.md](docs/getting-started/vscode-extension.md).
-
 ## Documentation
 
 - [Documentation index](docs/README.md)
 - [Getting started](docs/getting-started/README.md)
 - [Installation](docs/getting-started/installation.md)
 - [Quickstart](quickstart/README.md)
+- [Recording Python commands](docs/getting-started/recording-python-commands.md)
 - [VS Code extension](docs/getting-started/vscode-extension.md)
 - [Reference](docs/reference/README.md)
 - [CLI reference](docs/reference/cli.md)
@@ -133,15 +154,7 @@ See [docs/getting-started/vscode-extension.md](docs/getting-started/vscode-exten
 - [Recording files](docs/reference/recording-files.md)
 - [Troubleshooting](docs/troubleshooting.md)
 - [Internals](docs/internals/README.md)
-
-## Requirements
-
-- CPython 3.11 or 3.12
-- macOS or Linux
-- VS Code for graphical replay debugging
-
-Retrace is built for CPython. Python 3.12 has the strongest debugger support
-because it can use `sys.monitoring` for breakpoint and cursor workflows.
+- [Architecture](docs/internals/architecture.md)
 
 ## Development From Source
 

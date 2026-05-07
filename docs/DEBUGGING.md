@@ -11,7 +11,7 @@ When something breaks, enable all diagnostics first:
 
 ```bash
 RETRACE_DEBUG=1 python -m retracesoftware \
-    --recording /tmp/trace.bin \
+    --recording /tmp/debug.retrace \
     --verbose \
     --stacktraces \
     -- my_script.py
@@ -21,7 +21,7 @@ For replay:
 
 ```bash
 RETRACE_DEBUG=1 python -m retracesoftware \
-    --recording /tmp/trace.bin \
+    --recording /tmp/debug.retrace \
     --verbose
 ```
 
@@ -43,10 +43,13 @@ RETRACE_DEBUG=1 python -m retracesoftware \
 |---|---|
 | `--verbose` | Prints every message the writer emits to stdout, tagged with PID, message index, and byte offset. |
 | `--stacktraces` | Captures a stack delta for every proxied call and writes it to the trace as a `STACKTRACE` message.  Invaluable for identifying *where* a particular message originates. |
+| `--trace_inputs` | Records normalized call arguments for debugging boundary mismatches. |
+| `--trace_shutdown` | Keeps tracing active through interpreter shutdown and cleanup hooks. |
+| `--quit_on_error` | Terminates on serialization errors instead of dropping them. |
 | `--gc_collect_multiplier N` | Triggers `gc.collect(gen)` at intercepted safe points when GC pressure is due. `0` disables it. Larger values make collection more eager because retrace checks `count * multiplier > threshold`. Useful for reducing weakref/finalizer timing drift. |
-| `--write_timeout N` | Backpressure timeout in seconds.  `0` = drop immediately, omit = wait forever. |
-| `--workspace PATH` | Generate a VS Code workspace directory with sidecar files (`settings.json`, `.env`, checksums, launch config). |
 | `--monitor N` | Enable `sys.monitoring` divergence detection (Python 3.12+).  `0` = off (default), `1` = Python calls/returns, `2` = + C calls, `3` = + line events.  See [Monitor mode](#7-using-monitor-mode) below. |
+| `--format FORMAT` | Recording backend format. Current normal recordings use `binary`. |
+| `--replay_bin PATH` | Override the replay binary path written into the recording shebang. |
 
 ### CLI flags (replay)
 
@@ -54,9 +57,11 @@ RETRACE_DEBUG=1 python -m retracesoftware \
 |---|---|
 | `--verbose` | Enables verbose output on the reader.  Prints every consumed message with byte offsets and message indices. |
 | `--read_timeout N` | Milliseconds to wait for an incomplete read before raising a timeout error (default 1000). |
-| `--fork_path PATH` | Binary string (`010`, `111`, etc.) or keyword (`child`, `parent`) controlling which fork branch to follow.  `0` = parent, `1` = child. |
 | `--list_pids` | Scans a PID-framed trace and prints all unique PIDs, then exits. For an `unframed_binary` stream, prints the process preamble JSON and exits. |
 | `--skip_weakref_callbacks` | Disables retrace in weakref callbacks on replay. |
+| `--control_socket PATH` | Connect the replay process to the debugger control socket. |
+| `--stdio` | Use stdin/stdout for debugger control messages. |
+| `--chunk_ms N` | Search for replay chunk boundaries every N milliseconds of execution time. |
 
 ---
 
@@ -258,17 +263,11 @@ following the wrong process.
 
 **Key concepts:**
 
-During replay, `os.fork()` is replaced by `make_replay_fork()`.  The
-`--fork_path` argument controls which branch to follow at each fork:
-
-```
---fork_path 010    # parent at fork 0, child at fork 1, parent at fork 2
-```
-
-The wrapper calls the real `os.fork()`, then:
-- If following child: calls `reader.set_pid(child_pid)` to switch
-  the reader's PID filter, returns `0`.
-- If following parent: returns `child_pid` unchanged.
+During replay, forked executions are represented as separate recorded process
+streams. The Go replay binary extracts those streams into PidFiles under the
+recording's `.d/` directory. Debugging normally selects the process to replay by
+PID, either through the VS Code process tree or by replaying the extracted
+PidFile directly.
 
 **Common issues:**
 
@@ -288,8 +287,9 @@ The wrapper calls the real `os.fork()`, then:
 1. Record with `--verbose` to see which PIDs emit which messages
    (each line is tagged `Retrace(PID)`).
 2. Use `--list_pids` to enumerate all PIDs in the trace.
-3. Replay with `--verbose --fork_path <path>` to watch the PID
-   switch happen and see what messages the reader encounters.
+3. Extract the recording with `./recording.retrace --extract`.
+4. Replay the relevant `recording.d/<PID>.bin` with `--verbose` to watch what
+   messages the reader consumes.
 
 ### 6. Thread replay deadlock / timeout
 
@@ -347,7 +347,7 @@ is claimed, no callbacks registered, no MONITOR messages written.
 
 ```bash
 python -m retracesoftware \
-    --recording /tmp/trace.bin \
+    --recording /tmp/debug.retrace \
     --monitor 1 \
     -- my_script.py
 ```
@@ -357,7 +357,7 @@ automatically — no extra flag needed:
 
 ```bash
 python -m retracesoftware \
-    --recording /tmp/trace.bin
+    --recording /tmp/debug.retrace
 ```
 
 **How it helps:**
@@ -443,14 +443,14 @@ runner.replay(recording, do_work, monitor=1)
 ```bash
 # Record (add --monitor 1 on Python 3.12+ for function-level divergence)
 RETRACE_DEBUG=1 python -m retracesoftware \
-    --recording /tmp/trace.bin \
+    --recording /tmp/debug.retrace \
     --verbose --stacktraces --monitor 1 \
     -- my_script.py \
     > /tmp/record.log 2>&1
 
 # Replay
 RETRACE_DEBUG=1 python -m retracesoftware \
-    --recording /tmp/trace.bin \
+    --recording /tmp/debug.retrace \
     --verbose \
     > /tmp/replay.log 2>&1
 ```
