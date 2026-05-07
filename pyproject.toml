@@ -37,6 +37,8 @@ requires = [
 build-backend = "mesonpy"
 
 [tool.setuptools_scm]
+tag_regex = "^v(?P<version>\\d+\\.\\d+\\.\\d+)$"
+git_describe_command = "git describe --dirty --tags --long --match 'v[0-9]*.[0-9]*.[0-9]*'"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
