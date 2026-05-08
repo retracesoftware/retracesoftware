@@ -686,14 +686,26 @@ def test_with_thread_reader_attaches_current_thread_to_objects():
         stream.ThreadSwitch(thread_a),
         "a1",
         1,
+        "THREAD_YIELD",
+        (0, 11),
+        "THREAD_RESUME",
+        None,
+        "a2",
         "THREAD_SWITCH",
         thread_b,
         "b1",
+        "THREAD_YIELD",
+        (0, 22),
+        "THREAD_RESUME",
+        thread_a,
+        "a3",
     ]).__next__)
 
     assert reader() == (thread_a, "a1")
     assert reader() == (thread_a, 1)
+    assert reader() == (thread_a, "a2")
     assert reader() == (thread_b, "b1")
+    assert reader() == (thread_a, "a3")
 
 
 def test_heartbeat_reader_strips_heartbeats_and_remembers_last():

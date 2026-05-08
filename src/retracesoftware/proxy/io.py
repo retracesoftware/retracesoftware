@@ -2,6 +2,7 @@
 from collections import deque
 from contextlib import contextmanager
 import enum
+import threading
 import retracesoftware.functional as functional
 import retracesoftware.stream as stream
 import retracesoftware.utils as utils
@@ -65,6 +66,67 @@ class CallbackMessage(CallMessage):
     __slots__ = ()
 
 
+_THREAD_YIELD_TAG = "THREAD_YIELD"
+_THREAD_RESUME_TAG = "THREAD_RESUME"
+
+
+def _load_retrace_probe():
+    try:
+        import _retrace
+    except ImportError:
+        return None
+
+    required = (
+        "coordinates_delta",
+        "get_thread_resume_callback",
+        "get_thread_yield_callback",
+        "set_thread_resume_callback",
+        "set_thread_yield_callback",
+    )
+    if all(hasattr(_retrace, name) for name in required):
+        return _retrace
+    return None
+
+
+def _retrace_thread_switch_callback_hooks(system, writer):
+    probe = _load_retrace_probe()
+    if probe is None:
+        return None, None
+
+    lock = threading.Lock()
+    active_count = 0
+    old_yield_callback = None
+    old_resume_callback = None
+
+    def write_thread_yield():
+        writer(_THREAD_YIELD_TAG, tuple(probe.coordinates_delta()))
+
+    def write_thread_resume():
+        writer(_THREAD_RESUME_TAG, system.thread_id())
+
+    def install_callbacks():
+        nonlocal active_count, old_resume_callback, old_yield_callback
+        with lock:
+            if active_count == 0:
+                old_yield_callback = probe.get_thread_yield_callback()
+                old_resume_callback = probe.get_thread_resume_callback()
+                probe.set_thread_yield_callback(write_thread_yield)
+                probe.set_thread_resume_callback(write_thread_resume)
+            active_count += 1
+
+    def uninstall_callbacks():
+        nonlocal active_count
+        with lock:
+            if active_count == 0:
+                return
+            active_count -= 1
+            if active_count == 0:
+                probe.set_thread_yield_callback(old_yield_callback)
+                probe.set_thread_resume_callback(old_resume_callback)
+
+    return install_callbacks, uninstall_callbacks
+
+
 class _StampedProtocolSource:
     __slots__ = ("_close", "_read", "thread_id")
 
@@ -81,6 +143,16 @@ class _StampedProtocolSource:
             item = self._read()
 
             if item == "THREAD_SWITCH":
+                next_thread_id = self._read()
+                if next_thread_id is not None:
+                    self.thread_id = next_thread_id
+                continue
+
+            if item == _THREAD_YIELD_TAG:
+                self._read()
+                continue
+
+            if item == _THREAD_RESUME_TAG:
                 next_thread_id = self._read()
                 if next_thread_id is not None:
                     self.thread_id = next_thread_id
@@ -1007,6 +1079,17 @@ def recorder(*,
     in_sandbox = system.enabled
 
     on_start = functional.repeatedly(write, "ON_START")
+    on_end = None
+
+    install_thread_switch_callbacks, uninstall_thread_switch_callbacks = (
+        _retrace_thread_switch_callback_hooks(system, writer)
+    )
+    if install_thread_switch_callbacks is not None:
+        on_start = functional.sequence(
+            install_thread_switch_callbacks,
+            on_start,
+        )
+        on_end = uninstall_thread_switch_callbacks
 
     checkpoint = functional.sequence(
         functional.walker(_checkpoint_stable_marker),
@@ -1051,7 +1134,7 @@ def recorder(*,
 
     system.lifecycle_hooks = LifecycleHooks(
             on_start = on_start,
-            on_end = None,
+            on_end = on_end,
             #functional.repeatedly(write, "ON_END")
             )
             

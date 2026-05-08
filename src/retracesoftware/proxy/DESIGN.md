@@ -305,6 +305,11 @@ Concrete expectations:
   The native monitor compares CPython thread-state ids rather than raw
   `PyThreadState *` addresses, because short-lived threads may reuse the same
   memory address while still representing distinct logical execution routes.
+- on retrace-python, record also installs `_retrace` eval-loop scheduling
+  callbacks while retraced code is active: yield callbacks write
+  `THREAD_YIELD, <coordinate-delta>` and resume callbacks write
+  `THREAD_RESUME, <logical-thread-id>`. These tags are scheduling telemetry;
+  normal protocol writes still use the writer-bound switch monitor for routing.
 - protocol writers are called directly; do not add a Python lock/batching
   adapter around the native stream writer, and do not wrap the hot writer in
   `disable_for()` unless the writer itself is control-plane Python that must be
@@ -899,6 +904,8 @@ Record writes one unified stream. To make that stream replayable:
 
 - recorder mode writes `THREAD_SWITCH` before messages from a different logical
   thread
+- on retrace-python, recorder mode may also write `THREAD_YIELD` coordinate
+  deltas and `THREAD_RESUME` logical thread ids around eval-loop handoffs
 - replay mode uses `_ThreadDemuxSource` to route the unified stream back to the
   logical thread that is currently asking for data
 - `_ReplayBindingState` must buffer lookahead per logical thread, not globally

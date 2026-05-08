@@ -4,10 +4,12 @@ from pathlib import Path
 
 import pytest
 import retracesoftware.stream as stream
+from retracesoftware.proxy import io as proxy_io
 
 from retracesoftware.install.installation import Installation
 from retracesoftware.install.patcher import patch
 from retracesoftware.proxy.io import (
+    _StampedProtocolSource,
     _ThreadDemuxSource,
     _IoMessageSource,
     _RawTapeSource,
@@ -190,6 +192,103 @@ def test_replayer_consumes_protocol_result_after_thread_switch():
 
     assert message.result == 42
     assert message.thread_id == 0
+
+
+def test_replayer_routes_thread_resume_and_ignores_thread_yield_delta():
+    class FlatTapeReader:
+        def __init__(self, items):
+            self._iter = iter(items)
+
+        def read(self):
+            return next(self._iter)
+
+    message = _IoMessageSource(
+        _ReplayBindingState(
+            _ThreadDemuxSource(
+                FlatTapeReader([
+                    "THREAD_YIELD",
+                    (0, 1, 2),
+                    "THREAD_RESUME",
+                    1,
+                    "RESULT",
+                    42,
+                ]).read,
+                thread_id=lambda: 1,
+                initial_thread_id=0,
+            )
+        ).read,
+        thread_id=lambda: 1,
+    ).read()
+
+    assert message.result == 42
+    assert message.thread_id == 1
+
+
+def test_stamped_protocol_source_consumes_thread_resume_none_without_rerouting():
+    source = _StampedProtocolSource(
+        iter([
+            "THREAD_RESUME",
+            None,
+            "RESULT",
+        ]).__next__,
+        initial_thread_id=0,
+    )
+
+    assert source.next() == (0, "RESULT")
+
+
+def test_recorder_retrace_python_callbacks_write_delta_and_resume_thread(monkeypatch):
+    class FakeRetrace:
+        def __init__(self):
+            self.yield_callback = lambda: None
+            self.resume_callback = lambda: None
+
+        def coordinates_delta(self):
+            return (3, 5, 8)
+
+        def get_thread_yield_callback(self):
+            return self.yield_callback
+
+        def get_thread_resume_callback(self):
+            return self.resume_callback
+
+        def set_thread_yield_callback(self, callback):
+            self.yield_callback = callback
+
+        def set_thread_resume_callback(self, callback):
+            self.resume_callback = callback
+
+    fake = FakeRetrace()
+    old_yield_callback = fake.yield_callback
+    old_resume_callback = fake.resume_callback
+    tape = []
+
+    def writer(*values):
+        tape.extend(values)
+
+    monkeypatch.setattr(proxy_io, "_load_retrace_probe", lambda: fake)
+    system = proxy_io.recorder(writer=writer)
+    tape.clear()
+
+    system.lifecycle_hooks.on_start()
+    try:
+        assert fake.yield_callback is not old_yield_callback
+        assert fake.resume_callback is not old_resume_callback
+
+        fake.yield_callback()
+        fake.resume_callback()
+    finally:
+        system.lifecycle_hooks.on_end()
+
+    assert tape == [
+        "ON_START",
+        "THREAD_YIELD",
+        (3, 5, 8),
+        "THREAD_RESUME",
+        0,
+    ]
+    assert fake.yield_callback is old_yield_callback
+    assert fake.resume_callback is old_resume_callback
 
 
 def test_replay_binding_state_consumes_trailing_binding_deletes():

@@ -5,8 +5,9 @@ This module keeps the reader pipeline split into small layers:
 - ``HeartbeatReader`` strips heartbeat control messages while remembering the
   most recent one.
 - ``WithThreadReader`` converts a flat tape stream into ``(thread_id, obj)``
-  tuples. It understands both legacy ``ThreadSwitch`` control records and the
-  newer protocol-level ``"THREAD_SWITCH", <thread_id>`` message pair.
+  tuples. It understands both legacy ``ThreadSwitch`` control records, the
+  protocol-level ``"THREAD_SWITCH", <thread_id>`` message pair, and
+  retrace-python's ``THREAD_YIELD`` / ``THREAD_RESUME`` scheduling telemetry.
 - ``PeekableReader`` buffers future ``(thread_id, obj)`` tuples.
 - ``DemuxReader`` routes those tuples by thread.
 - ``ResolvingReader`` resolves ``stream.Binding`` records against a live
@@ -30,6 +31,8 @@ from . import (
 )
 
 _MISSING = object()
+_THREAD_YIELD_TAG = "THREAD_YIELD"
+_THREAD_RESUME_TAG = "THREAD_RESUME"
 
 
 class ExpectedBindMarker(RuntimeError):
@@ -92,6 +95,14 @@ class WithThreadReader:
                     self.thread_id = item.value
                 continue
             if item == "THREAD_SWITCH":
+                next_thread_id = self.source()
+                if next_thread_id is not None:
+                    self.thread_id = next_thread_id
+                continue
+            if item == _THREAD_YIELD_TAG:
+                self.source()
+                continue
+            if item == _THREAD_RESUME_TAG:
                 next_thread_id = self.source()
                 if next_thread_id is not None:
                     self.thread_id = next_thread_id
