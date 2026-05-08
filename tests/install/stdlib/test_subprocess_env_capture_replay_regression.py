@@ -148,7 +148,11 @@ def _write_env_capture_program(tmp_path: Path) -> Path:
 def _test_env(tmp_path: Path) -> dict[str, str]:
     env = os.environ.copy()
     env["PYTHONFAULTHANDLER"] = "1"
-    env["RETRACE_CONFIG"] = "debug"
+    # Keep control and explicitly recorded runs independent from any installed
+    # auto-enable .pth in the developer/test environment.
+    env.pop("RETRACE_CONFIG", None)
+    env.pop("RETRACE_RECORDING", None)
+    env.pop("RETRACE_INODE", None)
     env["PYTHONPATH"] = (
         f"{tmp_path}{os.pathsep}{env['PYTHONPATH']}"
         if env.get("PYTHONPATH")

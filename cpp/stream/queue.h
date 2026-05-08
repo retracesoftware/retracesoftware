@@ -51,6 +51,7 @@ namespace retracesoftware_stream {
         size_t notify_threshold_entries;
         std::thread writer_thread;
         std::thread return_thread;
+        std::mutex persister_mutex;
         std::mutex wake_mutex;
         std::condition_variable wake_cv;
         std::mutex return_wake_mutex;
@@ -90,6 +91,7 @@ namespace retracesoftware_stream {
         void release_consumed_obj(PyObject* obj);
         void finish_consumed_obj(PyObject* obj);
         bool has_entry_slots(size_t needed) const;
+        bool ensure_free_slots(size_t needed);
         bool wait_for_slots(size_t needed);
         bool wait_for_space(size_t needed_free_slots = 2);
         bool try_pop_returned(PyObject*& obj);
@@ -98,6 +100,10 @@ namespace retracesoftware_stream {
         void drain_returned_all_with_gil();
         bool drain_returned_with_gil(int64_t needed_size);
         bool wait_with_push_backoff();
+        bool entry_needs_gil_for_dispatch(QEntry entry) const;
+        bool producer_can_dispatch_entry(QEntry entry) const;
+        bool try_consume_with_persister_lock(std::unique_lock<std::mutex>& lock);
+        bool try_consume_for_producer_with_gil();
         bool dispatch_command(QEntry entry);
         bool dispatch_entry(QEntry entry);
         void dispatch_release(QEntry entry);

@@ -797,6 +797,7 @@ PyMODINIT_FUNC CONCAT(PyInit_, MODULE_NAME)(void) {
         &retracesoftware::Gate_Type,
         &retracesoftware::MemoryAddresses_Type,
         &retracesoftware::ThreadLocal_Type,
+        &retracesoftware::LoopCounters_Type,
             NULL
     };
 

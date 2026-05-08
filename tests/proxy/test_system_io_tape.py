@@ -326,6 +326,167 @@ def test_replay_binding_state_hydrates_proxy_ref_bindings():
     assert isinstance(resolved["value"][0], DemoExternalWrapped)
 
 
+def test_replayer_skips_nested_sync_call_marker_while_reading_external_result():
+    """Regression for the flight-search HuggingFace replay failure."""
+
+    tape = IOMemoryTape()
+    writer = tape.writer()
+
+    def external_download():
+        return "cached-model-path"
+
+    def flow(download):
+        return download()
+
+    with _entered(writer) as writer:
+        with _recorder_context(IOMode("plain"), writer) as record_system:
+            download = record_system.patch_function(external_download)
+            recorded = record_system.run(flow, download)
+
+    assert recorded == "cached-model-path"
+
+    raw = _raw_tape(tape)
+    assert raw is not None
+    outer_call_index = raw.index("CALL")
+    outer_result_index = raw.index("RESULT", outer_call_index)
+    raw.insert(outer_result_index, "CALL")
+
+    def raise_unexpected(message):
+        raise AssertionError(
+            f"Unexpected message: {message}, was expecting a result, error, or call"
+        )
+
+    reader = tape.reader()
+    with _entered(reader) as reader:
+        replay_system = replayer(
+            next_object=reader.read,
+            close=getattr(reader, "close", None),
+            on_unexpected=raise_unexpected,
+        )
+        try:
+            _configure_system(replay_system)
+            download = replay_system.patch_function(external_download)
+            replayed = replay_system.run(flow, download)
+        finally:
+            replay_system.unpatch_types()
+
+    assert replayed == recorded
+
+
+def test_replayer_raises_keyboard_interrupt_on_sync_while_reading_external_result():
+    """Regression for Flask SIGINT PidFile replay shutdown."""
+
+    tape = IOMemoryTape()
+    writer = tape.writer()
+
+    def external_wait():
+        return "waited"
+
+    def external_close():
+        return "closed"
+
+    def record_flow(wait, close):
+        wait()
+        return close()
+
+    replay_system = None
+
+    def replay_flow(wait, close):
+        try:
+            wait()
+        except KeyboardInterrupt:
+            replay_system.sync()
+            return close()
+        raise AssertionError("expected shutdown sync to interrupt the wait")
+
+    with _entered(writer) as writer:
+        with _recorder_context(IOMode("plain"), writer) as record_system:
+            wait = record_system.patch_function(external_wait)
+            close = record_system.patch_function(external_close)
+            recorded = record_system.run(record_flow, wait, close)
+
+    assert recorded == "closed"
+
+    raw = _raw_tape(tape)
+    assert raw is not None
+    wait_call_index = raw.index("CALL")
+    wait_result_index = raw.index("RESULT", wait_call_index)
+    del raw[wait_result_index:wait_result_index + 2]
+    raw.insert(wait_result_index, "SYNC")
+
+    def raise_unexpected(message):
+        raise AssertionError(
+            f"Unexpected message: {message}, was expecting a result, error, or call"
+        )
+
+    reader = tape.reader()
+    with _entered(reader) as reader:
+        replay_system = replayer(
+            next_object=reader.read,
+            close=getattr(reader, "close", None),
+            on_unexpected=raise_unexpected,
+        )
+        try:
+            _configure_system(replay_system)
+            wait = replay_system.patch_function(external_wait)
+            close = replay_system.patch_function(external_close)
+            replayed = replay_system.run(replay_flow, wait, close)
+        finally:
+            replay_system.unpatch_types()
+
+    assert replayed == recorded
+
+
+def test_replayer_raises_keyboard_interrupt_on_terminal_sync_at_eof():
+    tape = IOMemoryTape()
+    writer = tape.writer()
+
+    def external_wait():
+        return "last-result"
+
+    def record_flow(wait):
+        return wait()
+
+    def replay_flow(wait):
+        try:
+            wait()
+        except KeyboardInterrupt:
+            return "interrupted"
+        raise AssertionError("expected shutdown sync to interrupt the wait")
+
+    with _entered(writer) as writer:
+        with _recorder_context(IOMode("plain"), writer) as record_system:
+            wait = record_system.patch_function(external_wait)
+            recorded = record_system.run(record_flow, wait)
+
+    assert recorded == "last-result"
+
+    raw = _raw_tape(tape)
+    assert raw is not None
+    outer_call_index = raw.index("CALL")
+    outer_result_index = raw.index("RESULT", outer_call_index)
+    del raw[outer_result_index:outer_result_index + 2]
+    raw.insert(outer_result_index, "SYNC")
+
+    reader = tape.reader()
+    with _entered(reader) as reader:
+        replay_system = replayer(
+            next_object=reader.read,
+            close=getattr(reader, "close", None),
+            on_unexpected=lambda message: (_ for _ in ()).throw(
+                AssertionError(f"unexpected: {message!r}")
+            ),
+        )
+        try:
+            _configure_system(replay_system)
+            wait = replay_system.patch_function(external_wait)
+            replayed = replay_system.run(replay_flow, wait)
+        finally:
+            replay_system.unpatch_types()
+
+    assert replayed == "interrupted"
+
+
 def test_checkpoint_equal_matches_descriptor_marker_to_proxy_shell():
     import ssl
 

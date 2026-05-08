@@ -73,6 +73,19 @@ static PyObject * first_arg_impl(PyObject *self, PyObject *const *args, Py_ssize
     return Py_NewRef(args[0]);
 }
 
+static PyObject * tuple_impl(PyObject *self, PyObject *const *args, Py_ssize_t nargs) {
+    PyObject *result = PyTuple_New(nargs);
+    if (!result) {
+        return nullptr;
+    }
+
+    for (Py_ssize_t i = 0; i < nargs; i++) {
+        PyTuple_SET_ITEM(result, i, Py_NewRef(args[i]));
+    }
+
+    return result;
+}
+
 // static PyObject * partial_impl(PyObject *self, PyObject *const *args, Py_ssize_t nargs) {
 
 //     if (nargs < 2) {
@@ -197,6 +210,9 @@ static PyMethodDef module_methods[] = {
      "    *args: At least one positional argument required.\n\n"
      "Returns:\n"
      "    The first positional argument."},
+    {"tuple", (PyCFunction)tuple_impl, METH_FASTCALL,
+     "tuple(*args)\n--\n\n"
+     "Return positional arguments as a tuple."},
     // {"partial", (PyCFunction)partial_impl, METH_FASTCALL, "TODO"},
     {"dispatch", (PyCFunction)dispatch_impl, METH_FASTCALL, 
      "dispatch(test1, then1, test2, then2, ..., [otherwise])\n--\n\n"

@@ -164,7 +164,7 @@ func findPython312() (string, error) {
 }
 
 // requirePython312 returns a Python >=3.12 path with retracesoftware, or skips.
-// sys.monitoring (used by the breakpoint system) requires Python 3.12+.
+// sys.monitoring (used by the full precise stepping assertions) requires Python 3.12+.
 func requirePython312(t *testing.T) string {
 	t.Helper()
 	p, err := findPython312()
@@ -460,7 +460,7 @@ func readExampleTargetHello(t *testing.T) string {
 // continue), and verifies that the breakpoint is hit (stopped event with
 // reason "breakpoint") rather than the session terminating.
 //
-// Requires Python >=3.12 (sys.monitoring).
+// Requires Python >=3.12 for the full precise stepping assertion.
 func TestDAPBreakpointE2E(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping e2e test in short mode")

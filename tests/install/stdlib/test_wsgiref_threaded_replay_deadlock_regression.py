@@ -13,8 +13,6 @@ import sys
 import textwrap
 from pathlib import Path
 
-import pytest
-
 
 _ROOT = Path(__file__).resolve().parents[3]
 
@@ -50,12 +48,6 @@ def _editable_skip() -> str:
     return os.pathsep.join(entries)
 
 
-@pytest.mark.xfail(
-    reason=(
-        "threaded wsgiref replay can deadlock with both replay threads waiting "
-        "for proxy.io demux results"
-    ),
-)
 def test_wsgiref_many_threaded_requests_replay_does_not_deadlock(tmp_path: Path):
     script = tmp_path / "wsgiref_threaded_replay_deadlock.py"
     script.write_text(

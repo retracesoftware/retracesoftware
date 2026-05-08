@@ -12,9 +12,9 @@ PYTHON = sys.executable
 TIMEOUT = 30
 SCRIPTS_DIR = os.path.join(os.path.dirname(__file__), "scripts")
 
-needs_monitoring = pytest.mark.skipif(
-    sys.version_info < (3, 12),
-    reason="sys.monitoring requires Python 3.12+",
+needs_control_breakpoints = pytest.mark.skipif(
+    sys.version_info < (3, 11),
+    reason="control breakpoints require Python 3.11+",
 )
 
 
@@ -89,7 +89,7 @@ def test_hello_close(tmpdir):
     assert close_resp["result"]["closed"] is True
 
 
-@needs_monitoring
+@needs_control_breakpoints
 def test_breakpoint_hit(tmpdir):
     """Record, replay, set a breakpoint, and validate it fires."""
     script = os.path.join(SCRIPTS_DIR, "breakpoint_target.py")
@@ -144,7 +144,7 @@ def test_breakpoint_hit(tmpdir):
     assert close_resp["result"]["closed"] is True
 
 
-@needs_monitoring
+@needs_control_breakpoints
 def test_breakpoint_multiple_hits(tmpdir):
     """Breakpoint on add() line fires twice (called twice in target script)."""
     script = os.path.join(SCRIPTS_DIR, "breakpoint_target.py")
@@ -189,7 +189,7 @@ def test_breakpoint_multiple_hits(tmpdir):
     assert responses[4]["ok"] is True
 
 
-@needs_monitoring
+@needs_control_breakpoints
 def test_set_backstop(tmpdir):
     """Set a backstop before hitting breakpoints -- should stop at backstop."""
     script = os.path.join(SCRIPTS_DIR, "breakpoint_target.py")

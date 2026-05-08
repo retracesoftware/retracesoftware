@@ -12,12 +12,13 @@ const pythonImportProbe = "import retracesoftware.stream as s; assert getattr(s,
 
 func pythonCommand(name string, args ...string) *exec.Cmd {
 	cmd := exec.Command(name, args...)
-	cmd.Env = pythonEnv(cmd.Environ())
+	cmd.Env = pythonEnv(name, cmd.Environ())
 	return cmd
 }
 
-func pythonEnv(env []string) []string {
-	pythonPaths, mesonSkips := checkoutPythonPaths()
+func pythonEnv(python string, env []string) []string {
+	env = removeEnv(env, "RETRACE_CONFIG", "RETRACE_RECORDING")
+	pythonPaths, mesonSkips := checkoutPythonPaths(python, env)
 	if len(pythonPaths) == 0 {
 		return env
 	}
@@ -25,6 +26,26 @@ func pythonEnv(env []string) []string {
 	out := prependEnvPath(env, "PYTHONPATH", pythonPaths)
 	if len(mesonSkips) > 0 {
 		out = prependEnvPath(out, "MESONPY_EDITABLE_SKIP", mesonSkips)
+	}
+	return out
+}
+
+func removeEnv(env []string, keys ...string) []string {
+	blocked := make(map[string]struct{}, len(keys))
+	for _, key := range keys {
+		blocked[key] = struct{}{}
+	}
+
+	out := env[:0]
+	for _, kv := range env {
+		key, _, found := strings.Cut(kv, "=")
+		if !found {
+			key = kv
+		}
+		if _, ok := blocked[key]; ok {
+			continue
+		}
+		out = append(out, kv)
 	}
 	return out
 }
@@ -53,7 +74,7 @@ func prependEnvPath(env []string, key string, paths []string) []string {
 	return out
 }
 
-func checkoutPythonPaths() ([]string, []string) {
+func checkoutPythonPaths(python string, env []string) ([]string, []string) {
 	src := checkoutSrcDir()
 	if src == "" {
 		return nil, nil
@@ -62,6 +83,7 @@ func checkoutPythonPaths() ([]string, []string) {
 	root := filepath.Dir(src)
 	pythonPaths := []string{src}
 	var mesonSkips []string
+	buildTag := pythonBuildTag(python, env)
 
 	buildDirs, _ := filepath.Glob(filepath.Join(root, "build", "cp*"))
 	for _, buildDir := range buildDirs {
@@ -70,6 +92,9 @@ func checkoutPythonPaths() ([]string, []string) {
 			continue
 		}
 		mesonSkips = append(mesonSkips, buildDir)
+		if buildTag != "" && filepath.Base(buildDir) != buildTag {
+			continue
+		}
 		for _, rel := range []string{
 			filepath.Join("cpp", "cursor"),
 			filepath.Join("cpp", "functional"),
@@ -84,6 +109,20 @@ func checkoutPythonPaths() ([]string, []string) {
 	}
 
 	return pythonPaths, mesonSkips
+}
+
+func pythonBuildTag(python string, env []string) string {
+	cmd := exec.Command(
+		python,
+		"-c",
+		"import sys; print(f'cp{sys.version_info.major}{sys.version_info.minor}{getattr(sys, \"abiflags\", \"\")}')",
+	)
+	cmd.Env = env
+	out, err := cmd.Output()
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(out))
 }
 
 func checkoutSrcDir() string {

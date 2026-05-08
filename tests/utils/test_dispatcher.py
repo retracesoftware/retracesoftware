@@ -4,8 +4,11 @@ Tests verify:
 - next(predicate) dispatches items to the correct thread
 - No-match error detection (raises RuntimeError when no predicate matches)
 """
+import subprocess
+import sys
 import time
 import threading
+import textwrap
 
 import pytest
 
@@ -243,6 +246,109 @@ class TestNextPredicate:
             "worker": (1, "worker"),
         }
         assert d.waiting_thread_count == 0
+
+    def test_waiter_wakes_when_buffered_pointer_address_is_reused(self, tmp_path):
+        script = tmp_path / "dispatcher_aba_repro.py"
+        script.write_text(
+            textwrap.dedent(
+                """
+                import faulthandler
+                import threading
+                import time
+
+                import retracesoftware.utils as utils
+
+
+                ROUNDS = 200
+                BURST = 8
+
+
+                def event_source():
+                    sequence = 0
+                    for _ in range(ROUNDS):
+                        for _ in range(BURST):
+                            sequence += 1
+                            yield (1, sequence)
+                        sequence += 1
+                        yield (0, sequence)
+
+
+                events = event_source()
+                dispatcher = utils.Dispatcher(
+                    lambda: next(events),
+                    deadlock_timeout_seconds=1.0,
+                )
+                done = threading.Event()
+                errors = []
+
+
+                def waiter():
+                    try:
+                        for _ in range(ROUNDS):
+                            dispatcher.next(lambda item: item[0] == 0)
+                    except BaseException as exc:
+                        errors.append(repr(exc))
+                    finally:
+                        done.set()
+
+
+                threading.Thread(target=waiter, daemon=True).start()
+                deadline = time.monotonic() + 1
+                while (
+                    dispatcher.waiting_thread_count < 1
+                    and time.monotonic() < deadline
+                ):
+                    time.sleep(0.001)
+
+                faulthandler.dump_traceback_later(2.5, exit=False)
+                drained = 0
+                while not done.is_set():
+                    try:
+                        dispatcher.next(lambda item: item[0] == 1)
+                    except StopIteration:
+                        break
+                    drained += 1
+
+                done.wait(timeout=1)
+
+                if errors:
+                    raise AssertionError(errors)
+                if not done.is_set():
+                    raise AssertionError("waiter did not finish before source EOF")
+
+                print(f"completed: drained={drained}")
+                """
+            ),
+            encoding="utf-8",
+        )
+
+        try:
+            proc = subprocess.run(
+                [sys.executable, str(script)],
+                capture_output=True,
+                text=True,
+                timeout=3,
+            )
+        except subprocess.TimeoutExpired as exc:
+            stdout = exc.stdout or ""
+            stderr = exc.stderr or ""
+            if isinstance(stdout, bytes):
+                stdout = stdout.decode(errors="replace")
+            if isinstance(stderr, bytes):
+                stderr = stderr.decode(errors="replace")
+            pytest.fail(
+                "Dispatcher ABA reproducer timed out with a matching item "
+                "stranded behind sleeping waiters\n"
+                f"stdout:\n{stdout}\n"
+                f"stderr:\n{stderr}"
+            )
+
+        assert proc.returncode == 0, (
+            "Dispatcher ABA reproducer failed\n"
+            f"exit: {proc.returncode}\n"
+            f"stdout:\n{proc.stdout}\n"
+            f"stderr:\n{proc.stderr}"
+        )
 
 
 class TestNoMatch:

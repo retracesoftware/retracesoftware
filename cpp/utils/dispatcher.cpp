@@ -128,24 +128,26 @@ struct Dispatcher : public PyObject {
         buffered.store(value, std::memory_order_release);
         buffered_generation.fetch_add(1, std::memory_order_release);
         atomic_notify_all_compat(buffered);
+        atomic_notify_all_compat(buffered_generation);
     }
 
     PyObject *exchange_buffered(PyObject *value) {
         PyObject *previous = buffered.exchange(value, std::memory_order_acq_rel);
         buffered_generation.fetch_add(1, std::memory_order_release);
         atomic_notify_all_compat(buffered);
+        atomic_notify_all_compat(buffered_generation);
         return previous;
     }
 
-    bool wait_for_buffer_change(PyObject *expected) {
+    bool wait_for_generation_change(unsigned long long expected) {
         if (deadlock_timeout_ns <= 0) {
-            return buffered.load(std::memory_order_acquire) != expected;
+            return buffered_generation.load(std::memory_order_acquire) != expected;
         }
 
         auto deadline = std::chrono::steady_clock::now()
             + std::chrono::nanoseconds(deadlock_timeout_ns);
 
-        while (buffered.load(std::memory_order_acquire) == expected) {
+        while (buffered_generation.load(std::memory_order_acquire) == expected) {
             auto now = std::chrono::steady_clock::now();
             if (now >= deadline) {
                 return false;
@@ -206,6 +208,7 @@ struct Dispatcher : public PyObject {
                     continue;
                 }
                 buffered_generation.fetch_add(1, std::memory_order_release);
+                atomic_notify_all_compat(buffered_generation);
                 next = PyObject_CallNoArgs(source);
                 if (!next) {
                     PyObject *exc = get_raised_exception();
@@ -278,10 +281,10 @@ struct Dispatcher : public PyObject {
                 bool changed = false;
                 Py_BEGIN_ALLOW_THREADS
                 if (possible_deadlock) {
-                    changed = self->wait_for_buffer_change(next);
+                    changed = self->wait_for_generation_change(generation);
                 } else {
-                    atomic_wait_compat(self->buffered, next);
-                    changed = true;
+                    atomic_wait_compat(self->buffered_generation, generation);
+                    changed = self->buffered_generation.load(std::memory_order_acquire) != generation;
                 }
                 self->num_waiting_threads.fetch_sub(1, std::memory_order_release);
                 atomic_notify_all_compat(self->num_waiting_threads);
@@ -291,7 +294,6 @@ struct Dispatcher : public PyObject {
                 }
                 if (
                     !changed
-                    && self->buffered.load(std::memory_order_acquire) == next
                     && self->buffered_generation.load(std::memory_order_acquire) == generation
                 ) {
                     PyErr_SetString(PyExc_RuntimeError, "Dispatcher: too many threads waiting for item");

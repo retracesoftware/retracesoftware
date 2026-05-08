@@ -120,6 +120,12 @@ namespace retracesoftware_stream {
             : binder(binder), binding(binding) {}
     };
 
+    struct PendingDelete {
+        Binder * binder;
+        PyObject * binding;
+        uint64_t handle;
+    };
+
     struct PyObjectIdentityHash {
         using is_avalanching = void;
 
@@ -540,16 +546,20 @@ namespace retracesoftware_stream {
         // is the active slot owner for this type.
         bool entry = patched_type->tp_dealloc == binder_dealloc;
 
+        std::vector<PendingDelete> pending_deletes;
         auto entries_it = bound_entries.find(obj);
         if (entries_it != bound_entries.end()) {
             auto entries = std::move(entries_it->second);
             bound_entries.erase(entries_it);
+            pending_deletes.reserve(entries.size());
 
-            for (auto & entry : entries) {
-                entry.binder->forget(obj);
-                entry.binder->emit_delete(Binding_Handle(entry.binding));
-                Py_DECREF(entry.binding);
-                Py_DECREF(reinterpret_cast<PyObject *>(entry.binder));
+            for (auto &bound : entries) {
+                pending_deletes.push_back({
+                    .binder = bound.binder,
+                    .binding = bound.binding,
+                    .handle = Binding_Handle(bound.binding),
+                });
+                bound.binder->forget(obj);
             }
         }
 
@@ -557,13 +567,16 @@ namespace retracesoftware_stream {
             patched_type->tp_dealloc = original;
             original(obj);
             patched_type->tp_dealloc = binder_dealloc;
-            return;
-        }
-
-        if (original == get_subtype_dealloc()) {
+        } else if (original == get_subtype_dealloc()) {
             call_subtype_dealloc_without_reentering_wrapper(obj);
         } else {
             original(obj);
+        }
+
+        for (auto &pending : pending_deletes) {
+            pending.binder->emit_delete(pending.handle);
+            Py_DECREF(pending.binding);
+            Py_DECREF(reinterpret_cast<PyObject *>(pending.binder));
         }
     }
 

@@ -7,6 +7,7 @@ public API exercised by the test suite), not performance.
 
 from __future__ import annotations
 
+import builtins as _builtins
 import functools
 import operator
 import sys
@@ -17,6 +18,12 @@ def identity(obj: Any) -> Any:
     """identity(obj) -> obj. Return `obj` unchanged."""
 
     return obj
+
+
+def tuple(*args: Any) -> _builtins.tuple[Any, ...]:
+    """tuple(*args) -> args. Return positional arguments as a tuple."""
+
+    return args
 
 
 def typeof(obj: Any) -> type:
@@ -88,8 +95,8 @@ def composeN(*funcs: Any) -> Callable[..., Any]:
     Alias: `sequence`
     """
 
-    if len(funcs) == 1 and isinstance(funcs[0], (list, tuple)):
-        funcs = tuple(funcs[0])
+    if len(funcs) == 1 and isinstance(funcs[0], (list, _builtins.tuple)):
+        funcs = _builtins.tuple(funcs[0])
 
     if not funcs:
         raise TypeError("composeN() requires at least one function")
@@ -114,7 +121,7 @@ sequence = composeN
 def callall(funcs: Iterable[Callable[..., Any]]) -> Callable[..., Any]:
     """callall(funcs)(*args, **kwargs) calls each function in order; returns last result (or None)."""
 
-    funcs = tuple(funcs)
+    funcs = _builtins.tuple(funcs)
     for f in funcs:
         if not callable(f):
             raise TypeError("callall() expects callables")
@@ -136,7 +143,7 @@ def juxt(*funcs: Callable[..., Any]) -> Callable[..., Tuple[Any, ...]]:
             raise TypeError("juxt() expects callables")
 
     def _juxt(*args: Any, **kwargs: Any) -> Tuple[Any, ...]:
-        return tuple(f(*args, **kwargs) for f in funcs)
+        return _builtins.tuple(f(*args, **kwargs) for f in funcs)
 
     return _juxt
 
@@ -606,11 +613,11 @@ class _ApplyList:
         if not callable(function):
             raise TypeError("apply_list() expects a callable")
         self._function = function
-        self._initial = tuple(initial)
+        self._initial = _builtins.tuple(initial)
         functools.update_wrapper(self, function)  # type: ignore[arg-type]
 
     def __call__(self, items: Iterable[Any], *suffix: Any, **kwargs: Any) -> Any:
-        return self._function(*self._initial, *tuple(items), *suffix, **kwargs)
+        return self._function(*self._initial, *_builtins.tuple(items), *suffix, **kwargs)
 
     def __getattr__(self, name: str) -> Any:
         return getattr(self._function, name)
@@ -886,14 +893,14 @@ def walker(transform: Callable[[Any], Any]) -> Callable[[Any], Any]:
         raise TypeError("walker() expects a callable")
 
     def _walk(obj: Any) -> Any:
-        if isinstance(obj, tuple):
+        if isinstance(obj, _builtins.tuple):
             changed = False
             out = []
             for x in obj:
                 y = _walk(x)
                 changed = changed or (y is not x)
                 out.append(y)
-            return tuple(out) if changed else obj
+            return _builtins.tuple(out) if changed else obj
         if isinstance(obj, list):
             changed = False
             out = []
@@ -976,6 +983,7 @@ __all__ = [
     "side_effect",
     "spread",
     "ternary_predicate",
+    "tuple",
     "typeof",
     "walker",
     "when_not_none",

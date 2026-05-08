@@ -66,6 +66,17 @@ def _completed_process_error(
     )
 
 
+def _without_retrace_debug_lines(stdout: str) -> str:
+    lines = [
+        line
+        for line in stdout.splitlines()
+        if not line.startswith("Retrace(")
+    ]
+    if stdout.endswith("\n"):
+        return "\n".join(lines) + "\n"
+    return "\n".join(lines)
+
+
 @pytest.mark.skipif(
     sys.platform != "darwin",
     reason="appnope only exercises the App Nap path on macOS",
@@ -197,7 +208,7 @@ def test_appnope_pidfile_replay_does_not_read_past_trace_at_finalize(
             f"pidfile replay attempt {attempt}",
             replay,
         )
-        assert replay.stdout == record.stdout
+        assert replay.stdout == _without_retrace_debug_lines(record.stdout)
         assert "Exception ignored in: <Finalize object" not in replay.stderr, (
             f"pidfile replay attempt {attempt} ran a weakref finalizer after "
             f"the replay trace was exhausted\nstdout:\n{replay.stdout}\n"

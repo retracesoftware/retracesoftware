@@ -385,6 +385,8 @@ class _ThreadDemuxSource:
 
         try:
             buffered = self._dispatcher.buffered
+        except StopIteration:
+            buffered = None
         except BaseException as exc:
             if isinstance(exc, (KeyboardInterrupt, SystemExit)):
                 raise
@@ -1272,7 +1274,7 @@ def replayer(*, next_object,
         replay = trim_replay_stack(list(stack())[2:], this_stack)
         if replay[1:] != this_stack[1:]:
             on_desync(replay, this_stack)
-        
+
     @utils.exclude_from_stacktrace
     def expect_message(expected_type):
         message = read_message()
@@ -1473,8 +1475,12 @@ def replayer(*, next_object,
                 ignore_end_of_stream=True,
                 buffered_only=True,
             )
-        except StopIteration:
-            return
+        except BaseException as exc:
+            if isinstance(exc, (KeyboardInterrupt, SystemExit)):
+                raise
+            if isinstance(exc, (StopIteration, RuntimeError)):
+                return
+            raise
 
     system.lifecycle_hooks=LifecycleHooks(
         on_start=on_start,
@@ -1485,6 +1491,10 @@ def replayer(*, next_object,
     @utils.exclude_from_stacktrace
     def next_result_message():
         while True:
+            tape_reader.consume_pending_closes()
+            if tape_reader._peek_item() == "SYNC":
+                raise KeyboardInterrupt() from None
+
             message = read_message()
 
             if isinstance(message, CallbackMessage):
@@ -1492,6 +1502,9 @@ def replayer(*, next_object,
                 continue
 
             if isinstance(message, (CallbackResultMessage, CallbackErrorMessage)):
+                continue
+
+            if isinstance(message, CallMarkerMessage):
                 continue
 
             if isinstance(message, ResultMessage):

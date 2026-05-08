@@ -571,9 +571,13 @@ func (c *Cursor) PreviousStatement(ctx context.Context) (*Cursor, error) {
 		if infoErr == nil {
 			curIdx := *loc.FLasti / 2
 			if curIdx >= 0 && curIdx < len(info.Linenos) {
+				minIdx := 0
+				if curIdx < len(info.SequentialBefore) {
+					minIdx = curIdx - info.SequentialBefore[curIdx]
+				}
 				targetIdx := -1
 				targetLine := 0
-				for i := curIdx - 1; i >= 0; i-- {
+				for i := curIdx - 1; i >= minIdx; i-- {
 					line := info.Linenos[i]
 					if line == 0 || line == currentLine {
 						continue
@@ -582,7 +586,7 @@ func (c *Cursor) PreviousStatement(ctx context.Context) (*Cursor, error) {
 					targetLine = line
 					break
 				}
-				for targetIdx > 0 && info.Linenos[targetIdx-1] == targetLine {
+				for targetIdx > minIdx && info.Linenos[targetIdx-1] == targetLine {
 					targetIdx--
 				}
 				if targetIdx >= 0 {

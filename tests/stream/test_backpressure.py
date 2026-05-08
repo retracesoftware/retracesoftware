@@ -1,4 +1,7 @@
 """Tests for oversized messages and message boundary framing."""
+import sys
+import threading
+
 import pytest
 
 pytest.importorskip("retracesoftware.stream")
@@ -221,3 +224,39 @@ def test_push_fail_callback_disables_objectwriter():
         assert callbacks == ["fail"]
     finally:
         queue.close()
+
+
+def test_push_backoff_keeps_writer_gil():
+    """Native queue backoff must not let another Python thread run."""
+    previous_interval = sys.getswitchinterval()
+    entered_backoff = threading.Event()
+    competitor_ran = threading.Event()
+
+    def competitor():
+        entered_backoff.wait(timeout=1)
+        competitor_ran.set()
+
+    callbacks = []
+
+    def backoff():
+        callbacks.append("backoff")
+        entered_backoff.set()
+        return 0.05
+
+    sys.setswitchinterval(1000.0)
+    thread = threading.Thread(target=competitor)
+    queue = stream._backend_mod.Queue(
+        queue_capacity=1,
+        push_fail_callback=backoff,
+    )
+    writer = stream._backend_mod.ObjectWriter(queue)
+
+    try:
+        thread.start()
+        writer._intern("first")
+        assert callbacks == ["backoff"]
+        assert not competitor_ran.is_set()
+    finally:
+        sys.setswitchinterval(previous_interval)
+        queue.close()
+        thread.join(timeout=1)

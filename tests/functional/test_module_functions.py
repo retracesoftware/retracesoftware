@@ -113,6 +113,27 @@ class TestFirstArg:
             pass
 
 
+class TestTuple:
+    def test_returns_empty_tuple_with_no_arguments(self):
+        result = fn.tuple()
+
+        assert result == ()
+        assert type(result) is tuple
+
+    def test_returns_positional_arguments_as_tuple(self):
+        obj = object()
+
+        result = fn.tuple(1, "two", obj)
+
+        assert result == (1, "two", obj)
+        assert result[2] is obj
+        assert type(result) is tuple
+
+    def test_rejects_keyword_arguments(self):
+        with pytest.raises(TypeError):
+            fn.tuple(x=1)
+
+
 class TestModuleDocstrings:
     """Test that all types have proper docstrings."""
     
@@ -195,6 +216,7 @@ class TestModuleImports:
         assert hasattr(fn, 'apply')
         assert hasattr(fn, 'catch_exception')
         assert hasattr(fn, 'first_arg')
+        assert hasattr(fn, 'tuple')
         assert hasattr(fn, 'isinstanceof')
         assert hasattr(fn, 'instance_test')
         assert hasattr(fn, 'notinstance_test')

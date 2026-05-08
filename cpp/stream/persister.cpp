@@ -812,7 +812,6 @@ namespace retracesoftware_stream {
     };
 
     bool Persister_write_heartbeat(Persister * persister) {
-        retracesoftware::GILGuard gstate;
         persister->write_heartbeat();
         return true;
     }
@@ -832,6 +831,21 @@ namespace retracesoftware_stream {
 
     bool Persister_intern_handle(Persister * persister, PyObject * obj, BindingHandle handle) {
         return persister->intern(obj, handle);
+    }
+
+    bool Persister_flush(Persister * persister) {
+        persister->flush();
+        return true;
+    }
+
+    bool Persister_flush_background(Persister * persister) {
+        persister->flush_background();
+        return true;
+    }
+
+    bool Persister_shutdown(Persister * persister) {
+        persister->shutdown();
+        return true;
     }
 
 }

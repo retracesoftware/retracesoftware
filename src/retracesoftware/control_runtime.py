@@ -25,6 +25,8 @@ from retracesoftware.utils.breakpoint import BreakpointSpec, install_breakpoint,
 
 _real_fork = os.fork
 _RETRACE_PACKAGE_DIR = os.path.dirname(os.path.realpath(__file__))
+_HAS_MONITORING = hasattr(sys, "monitoring")
+_TRACE_UNSET = object()
 
 @dataclass
 class StopAtBreakpoint:
@@ -653,12 +655,78 @@ def register_breakpoint_callback(breakpoint_dict, callback, log=None, disable_fo
     )
     return install_breakpoint(spec, callback, disable_for=disable_for, log=log)
 
+
+class TraceInstructionMonitor:
+    """Opcode tracing fallback for Python 3.11.
+
+    ``sys.monitoring`` gives 3.12+ a process-wide INSTRUCTION event.  On 3.11
+    the closest equivalent is ``sys.settrace`` with per-frame opcode tracing.
+    """
+
+    def __init__(
+        self,
+        callback: Callable[[CodeType, int, Any], None],
+        disable_for: Callable,
+        *,
+        include_lines: bool = False,
+        target_frame=None,
+        original_trace=_TRACE_UNSET,
+    ) -> None:
+        self._callback = callback
+        self._include_lines = include_lines
+        self._orig_trace = sys.gettrace() if original_trace is _TRACE_UNSET else original_trace
+        self._closed = False
+        self._trace = disable_for(self._trace_impl)
+        sys.settrace(self._trace)
+        if target_frame is not None:
+            self._arm_frame(target_frame)
+
+    @property
+    def trace_function(self):
+        return self._trace
+
+    def _arm_frame(self, frame) -> None:
+        if _is_retrace_internal_code(frame.f_code):
+            return
+        frame.f_trace = self._trace
+        frame.f_trace_lines = True
+        frame.f_trace_opcodes = True
+
+    def _trace_impl(self, frame, event: str, arg: object):
+        if self._closed:
+            return self._orig_trace
+        orig_next = None
+        if self._orig_trace is not None and self._orig_trace is not self._trace:
+            orig_next = self._orig_trace(frame, event, arg)
+        if _is_retrace_internal_code(frame.f_code):
+            return orig_next if event == "call" else self._trace
+        if event in {"call", "line"}:
+            self._arm_frame(frame)
+            if event == "line" and self._include_lines:
+                self._callback(frame.f_code, frame.f_lasti, frame)
+        elif event == "opcode":
+            self._callback(frame.f_code, frame.f_lasti, frame)
+        if self._closed:
+            return self._orig_trace
+        return self._trace
+
+    def close(self) -> None:
+        if self._closed:
+            return
+        self._closed = True
+        sys.settrace(self._orig_trace)
+
+
 def register_cursor_callback(cursor_dict, callback, on_missed=None):
     cursor.install_call_counter()
     target_f_lasti = cursor_dict.get("f_lasti")
     counts = tuple(cursor_dict["function_counts"])
 
     if target_f_lasti is None:
+        cursor.watch(counts, on_start=callback, on_missed=on_missed)
+        return
+
+    if not _HAS_MONITORING:
         cursor.watch(counts, on_start=callback, on_missed=on_missed)
         return
 
@@ -910,6 +978,61 @@ class Controller:
         target_code = self._stopped_frame.f_code if self._stopped_frame is not None else None
         start_offset = self._stopped_frame.f_lasti if self._stopped_frame is not None else None
         skipped_start_offset = False
+
+        if not _HAS_MONITORING:
+            monitor_ref: list[TraceInstructionMonitor | None] = [None]
+
+            def on_hit(code, offset, frame):
+                nonlocal skipped_start_offset
+                if _thread.get_ident() != os_tid:
+                    return
+                if _is_retrace_internal_code(code):
+                    return
+                if (
+                    target_code is not None
+                    and code is target_code
+                    and start_offset is not None
+                    and offset == start_offset
+                    and not skipped_start_offset
+                ):
+                    skipped_start_offset = True
+                    return
+                monitor = monitor_ref[0]
+                if monitor is not None:
+                    monitor.close()
+                self._trace_monitor = None
+                self._last_code = code
+                self._stopped_frame = frame or _find_user_frame()
+                cursor_dict = {
+                    "thread_id": self._get_thread_id(),
+                    "function_counts": list(cursor.current_call_counts()),
+                    "f_lasti": offset,
+                    "lineno": self._lineno_from_code(code, offset),
+                }
+                self._send_and_handle_locked(cursor_dict)
+
+            monitor_ref[0] = TraceInstructionMonitor(
+                on_hit,
+                self._disable_for,
+                include_lines=True,
+                target_frame=self._stopped_frame,
+                original_trace=(
+                    self._monitor.original_trace_function
+                    if hasattr(self._monitor, "original_trace_function")
+                    else _TRACE_UNSET
+                ),
+            )
+            self._trace_monitor = monitor_ref[0]
+            if self._monitor is not None:
+                try:
+                    self._monitor.close(
+                        replacement_trace=monitor_ref[0].trace_function,
+                    )
+                except TypeError:
+                    self._monitor.close()
+                self._monitor = None
+            return
+
         tool_id = _acquire_tool_id("retrace_next_instr")
         E = sys.monitoring.events
         monitor = utils.InstructionMonitor(tool_id)

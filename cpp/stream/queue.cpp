@@ -19,6 +19,9 @@ namespace retracesoftware_stream {
     extern bool Persister_write_binding_lookup(Persister* persister, BindingHandle handle);
     extern bool Persister_write_object(Persister* persister, PyObject* obj);
     extern bool Persister_intern_handle(Persister* persister, PyObject* obj, BindingHandle handle);
+    extern bool Persister_flush(Persister* persister);
+    extern bool Persister_flush_background(Persister* persister);
+    extern bool Persister_shutdown(Persister* persister);
 
     namespace {
         // Keep the minimum capacity large enough that multi-entry logical
@@ -464,6 +467,9 @@ namespace retracesoftware_stream {
 
     bool Queue::flush_target_background() {
         if (!target_obj) return true;
+        if (is_persister()) {
+            return Persister_flush_background(native_persister(target_obj));
+        }
         retracesoftware::GILGuard gstate;
         PyObject* method = lookup_target_method(target_obj, "flush_background");
         if (!method) return true;
@@ -479,6 +485,9 @@ namespace retracesoftware_stream {
 
     bool Queue::target_shutdown() {
         if (!target_obj) return true;
+        if (is_persister()) {
+            return Persister_shutdown(native_persister(target_obj));
+        }
         retracesoftware::GILGuard gstate;
         PyObject* method = lookup_target_method(target_obj, "shutdown");
         if (!method) return true;
@@ -496,8 +505,68 @@ namespace retracesoftware_stream {
         return entries.capacity() - entries.size() >= needed;
     }
 
+    bool Queue::ensure_free_slots(size_t needed) {
+        if (reject_push()) return false;
+        if (needed > entries.capacity()) {
+            (void)wait_with_push_backoff();
+            return false;
+        }
+
+        while (!has_entry_slots(needed)) {
+            if (reject_push()) return false;
+
+            drain_returned_all_with_gil();
+            if (has_entry_slots(needed)) return true;
+
+            maybe_notify_worker();
+            maybe_notify_return_thread(true);
+
+            {
+                std::unique_lock<std::mutex> lock(persister_mutex, std::defer_lock);
+                if (lock.try_lock()) {
+                    ActiveConsumerScope active_consumer(this);
+                    while (!has_entry_slots(needed)) {
+                        drain_returned_all_with_gil();
+                        try {
+                            if (!try_consume_for_producer_with_gil()) {
+                                if (has_target_error()) {
+                                    handle_target_failure(take_target_error_message());
+                                    maybe_notify_return_thread(true);
+                                    return false;
+                                }
+                                break;
+                            }
+                        } catch (...) {
+                            if (!PyErr_Occurred()) {
+                                set_python_error_from_current_exception();
+                            }
+                            handle_target_failure(take_pending_error_message());
+                            maybe_notify_return_thread(true);
+                            return false;
+                        }
+                        if (saw_shutdown) {
+                            state = QueueState::STOPPED;
+                            maybe_notify_return_thread(true);
+                            return false;
+                        }
+                    }
+                    drain_returned_all_with_gil();
+                    if (has_entry_slots(needed)) return true;
+                } else {
+                    drain_returned_all_with_gil();
+                }
+            }
+
+            if (!wait_with_push_backoff()) return false;
+        }
+        return true;
+    }
+
     bool Queue::wait_for_slots(size_t needed) {
         if (reject_push()) return false;
+        if (PyGILState_Check()) {
+            return ensure_free_slots(needed);
+        }
         while (!has_entry_slots(needed)) {
             if (!wait_with_push_backoff()) return false;
         }
@@ -510,6 +579,37 @@ namespace retracesoftware_stream {
             drain_returned_with_gil(0);
             if (inflight() < inflight_limit_bytes) return true;
             maybe_notify_return_thread(false);
+            if (PyGILState_Check()) {
+                maybe_notify_worker();
+                std::unique_lock<std::mutex> lock(persister_mutex, std::defer_lock);
+                if (lock.try_lock()) {
+                    ActiveConsumerScope active_consumer(this);
+                    while (inflight() >= inflight_limit_bytes) {
+                        try {
+                            if (!try_consume_for_producer_with_gil()) {
+                                if (has_target_error()) {
+                                    handle_target_failure(take_target_error_message());
+                                    maybe_notify_return_thread(true);
+                                    return false;
+                                }
+                                break;
+                            }
+                        } catch (...) {
+                            if (!PyErr_Occurred()) {
+                                set_python_error_from_current_exception();
+                            }
+                            handle_target_failure(take_pending_error_message());
+                            maybe_notify_return_thread(true);
+                            return false;
+                        }
+                        drain_returned_with_gil(0);
+                    }
+                    drain_returned_with_gil(0);
+                    if (inflight() < inflight_limit_bytes) return true;
+                } else {
+                    drain_returned_with_gil(0);
+                }
+            }
             if (!wait_with_push_backoff()) return false;
         }
         return true;
@@ -561,12 +661,7 @@ namespace retracesoftware_stream {
         if (!push_fail_callback) {
             maybe_notify_worker();
             maybe_notify_return_thread(true);
-            if (PyGILState_Check()) {
-                retracesoftware::GILReleaseGuard release_gil;
-                std::this_thread::sleep_for(std::chrono::milliseconds(1));
-            } else {
-                std::this_thread::sleep_for(std::chrono::milliseconds(1));
-            }
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
             return true;
         }
 
@@ -590,9 +685,7 @@ namespace retracesoftware_stream {
         }
 
         if (delay < 0.0) delay = 0.0;
-        Py_BEGIN_ALLOW_THREADS
         std::this_thread::sleep_for(std::chrono::duration<double>(delay));
-        Py_END_ALLOW_THREADS
         return true;
     }
 
@@ -630,6 +723,71 @@ namespace retracesoftware_stream {
 
     bool Queue::has_entries() {
         return entries.front() != nullptr;
+    }
+
+    bool Queue::entry_needs_gil_for_dispatch(QEntry entry) const {
+        if (!target_obj) return false;
+        if (!is_persister()) return true;
+        if (is_pointer_entry(entry)) return true;
+        if (is_ref_entry(entry)) return false;
+
+        switch (cmd_of(entry)) {
+            case CMD_INTERN:
+            case CMD_LIST:
+            case CMD_TUPLE:
+            case CMD_DICT:
+                return true;
+            case CMD_FLUSH:
+            case CMD_SHUTDOWN:
+            case CMD_HEARTBEAT:
+                return false;
+            default:
+                return true;
+        }
+    }
+
+    bool Queue::producer_can_dispatch_entry(QEntry entry) const {
+        if (is_pointer_entry(entry) || is_ref_entry(entry)) return true;
+
+        switch (cmd_of(entry)) {
+            case CMD_INTERN:
+            case CMD_FLUSH:
+            case CMD_SHUTDOWN:
+            case CMD_HEARTBEAT:
+                return true;
+            case CMD_LIST:
+            case CMD_TUPLE:
+            case CMD_DICT:
+                return is_persister();
+            default:
+                return false;
+        }
+    }
+
+    bool Queue::try_consume_with_persister_lock(std::unique_lock<std::mutex>& lock) {
+        QEntry* front = entries.front();
+        if (!front) return false;
+
+        std::optional<retracesoftware::GILGuard> gstate;
+        if (entry_needs_gil_for_dispatch(*front) && !PyGILState_Check()) {
+            lock.unlock();
+            gstate.emplace();
+            lock.lock();
+            front = entries.front();
+            if (!front) return false;
+        }
+
+        return try_consume();
+    }
+
+    bool Queue::try_consume_for_producer_with_gil() {
+        if (!PyGILState_Check()) return false;
+
+        QEntry* front = entries.front();
+        if (!front) return false;
+        if (!producer_can_dispatch_entry(*front)) return false;
+
+        return try_consume();
     }
 
     bool Queue::try_consume() {
@@ -976,6 +1134,9 @@ namespace retracesoftware_stream {
             }
             case CMD_FLUSH:
             {
+                if (is_persister()) {
+                    return Persister_flush(native_persister(target_obj));
+                }
                 retracesoftware::GILGuard gstate;
                 PyObject* method = lookup_target_method(target_obj, "flush");
                 if (!method) return true;
@@ -1142,25 +1303,32 @@ namespace retracesoftware_stream {
         ActiveConsumerScope active_consumer(this);
 
         while (true) {
+            std::unique_lock<std::mutex> lock(persister_mutex);
             if (!has_entries()) {
+                lock.unlock();
                 if (shutdown_flag.load(std::memory_order_acquire)) return;
                 std::unique_lock<std::mutex> lock(wake_mutex);
                 worker_waiting.store(true, std::memory_order_release);
                 wake_cv.wait_for(lock,
                                  std::chrono::milliseconds(worker_wait_timeout_ms_value),
                                  [this] {
-                                     return shutdown_flag.load(std::memory_order_acquire) || has_entries();
+                                     return shutdown_flag.load(std::memory_order_acquire);
                                  });
                 worker_waiting.store(false, std::memory_order_release);
-                if (shutdown_flag.load(std::memory_order_acquire) && !has_entries()) return;
+                {
+                    std::lock_guard<std::mutex> persister_lock(persister_mutex);
+                    if (shutdown_flag.load(std::memory_order_acquire) && !has_entries()) return;
+                }
                 continue;
             }
 
             while (true) {
                 try {
-                    if (!try_consume()) {
+                    if (!try_consume_with_persister_lock(lock)) {
                         if (has_target_error()) {
+                            lock.unlock();
                             retracesoftware::GILGuard gstate;
+                            lock.lock();
                             handle_target_failure(take_target_error_message());
                             maybe_notify_return_thread(true);
                             return;
@@ -1168,13 +1336,17 @@ namespace retracesoftware_stream {
                         break;
                     }
                     if (saw_shutdown) {
+                        lock.unlock();
                         retracesoftware::GILGuard gstate;
+                        lock.lock();
                         state = QueueState::STOPPED;
                         maybe_notify_return_thread(true);
                         return;
                     }
                 } catch (...) {
+                    lock.unlock();
                     retracesoftware::GILGuard gstate;
+                    lock.lock();
                     if (!PyErr_Occurred()) {
                         set_python_error_from_current_exception();
                     }
@@ -1182,6 +1354,12 @@ namespace retracesoftware_stream {
                     maybe_notify_return_thread(true);
                     return;
                 }
+            }
+            std::optional<retracesoftware::GILGuard> flush_gil;
+            if (!is_persister() && !PyGILState_Check()) {
+                lock.unlock();
+                flush_gil.emplace();
+                lock.lock();
             }
             if (!flush_target_background()) {
                 retracesoftware::GILGuard gstate;

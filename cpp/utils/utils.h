@@ -2,6 +2,7 @@
 #include "defines.h"
 
 #include <Python.h>
+#include <cstdint>
 #include <functional>
 #include <signal.h>
 #include <string>
@@ -104,11 +105,16 @@ namespace retracesoftware {
     extern PyTypeObject ThreadLocalApplyWith_Type;
 
     extern PyTypeObject ThreadContextWrapper_Type;
+    extern PyTypeObject LoopCounters_Type;
 
     PyObject *start_new_thread_wrapper(PyObject *module, PyObject *const *args, Py_ssize_t nargs);
     bool threadcontext_init(PyObject *module);
 
     void force_full_gc(void);
+
+    bool LoopCounters_Check(PyObject *obj);
+    uint32_t LoopCounters_Count(PyObject *obj, PyThreadState *tstate);
+    uint32_t LoopCounters_Fill(PyObject *obj, PyThreadState *tstate, uint64_t *out, uint32_t capacity);
 
     struct ModuleState {
         map<PyObject *, PyObject *> obj_to_id;
