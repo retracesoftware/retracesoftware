@@ -1,0 +1,36 @@
+# Datasette server scenario - extends docker-compose.server-base.yml
+# Run from dockertests/: ./runtest.sh datasette_server_test
+
+services:
+  server-dryrun:
+    environment:
+      DATASETTE_DB: /tmp/datasette-demo.db
+      SERVER_PORT: "5000"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import socket; s=socket.create_connection(('localhost', 5000), 2); s.close()"]
+      interval: 2s
+      retries: 15
+      start_period: 5s
+
+  server-record:
+    environment:
+      DATASETTE_DB: /tmp/datasette-demo.db
+      SERVER_PORT: "5000"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import socket; s=socket.create_connection(('localhost', 5000), 2); s.close()"]
+      interval: 2s
+      retries: 15
+      start_period: 5s
+
+  replay:
+    environment:
+      DATASETTE_DB: /tmp/datasette-demo.db
+      SERVER_PORT: "5000"
+
+  dryrun:
+    environment:
+      SERVER_URL: http://server-dryrun:5000
+
+  record:
+    environment:
+      SERVER_URL: http://server-record:5000

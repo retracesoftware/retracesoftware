@@ -1,0 +1,5 @@
+datasette
+uvicorn
+asgi
+sqlite
+server
