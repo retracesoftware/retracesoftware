@@ -1,6 +1,11 @@
 # Retrace
 
-Retrace is deterministic record and replay for Python programs.
+**Record Python. Debug it backwards.**
+
+Retrace is deterministic record and replay for Python programs, built for
+debugging failures that are hard to reproduce from logs alone. Record an
+execution once, replay it locally in VS Code, and move forward or backward
+through the recorded run.
 
 It records the boundary between your Python code and nondeterministic outside
 behavior, then lets you replay that execution later. During replay, your Python
@@ -8,19 +13,50 @@ code runs again, but recorded external calls return the values from the trace
 instead of touching the live world.
 
 Retrace is useful when a bug depends on timing, network responses, filesystem
-state, model output, subprocess behavior, random values, clocks, or another
-thing that is painful to reproduce from logs alone.
+state, subprocess behavior, random values, clocks, or another thing that is
+painful to reproduce from logs alone.
+
+Retrace is an open-source preview.
+
+## What Retrace Is Not
+
+Retrace is not an APM tool. It does not sample traces or aggregate metrics
+across requests.
+
+It is not a logging library. You do not decide in advance which variables might
+matter.
+
+It is not `rr` for Python. Retrace does not record an entire machine process at
+the syscall level. It records the boundary between your Python code and the
+outside world at Python semantics.
+
+## Performance
+
+Retrace records at the Python/external boundary, not at the instruction level.
+Benchmark methodology and reproducible performance results are being prepared
+for publication.
 
 ## Quick Start
 
-The fastest way to try Retrace is the included Flask demo.
+The fastest way to try Retrace is the included Flask demo. The flow is:
+install Retrace, record the demo, then replay and debug the recording in VS
+Code.
 
 ```
 git clone https://github.com/retracesoftware/retracesoftware.git
 cd retracesoftware/quickstart
+```
 
+Retrace installs with `pip`, but replay extraction and VS Code
+replay/debugging use Retrace's Go replay tool. Check that Go is available:
+
+```
 go version
+```
 
+Create a Python 3.12 virtual environment and install Retrace:
+
+```
 python3.12 -m venv .venv
 source .venv/bin/activate
 
@@ -33,7 +69,7 @@ RETRACE_RECORDING=recordings/flask.retrace python examples/flask_demo.py
 code .
 ```
 
-In VS Code:
+Then debug the recording in VS Code:
 
 1. Install the `Retrace Debug Extension` from the Marketplace.
 2. Open the Retrace sidebar.
