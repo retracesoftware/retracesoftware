@@ -6,20 +6,22 @@ The goal is simple:
 
 1. Clone the Retrace repo.
 2. Open the `quickstart` folder.
-3. Create a Python 3.12 virtual environment.
-4. Install Retrace with one `pip` command.
-5. Enable Retrace auto-recording for that virtual environment.
-6. Install the Flask demo dependency.
-7. Run the Flask demo normally.
-8. Record the Flask demo by running ordinary Python with `RETRACE_RECORDING`.
-9. Install the Retrace VS Code extension from the Marketplace.
-10. Open the recording in VS Code.
-11. Add breakpoints, step forward, and step backward through the recorded execution.
-12. Optionally replay the recording in the terminal as a sanity check.
+3. Check that Go is installed for replay/debugging.
+4. Create a Python 3.12 virtual environment.
+5. Install Retrace with one `pip` command.
+6. Enable Retrace auto-recording for that virtual environment.
+7. Install the Flask demo dependency.
+8. Run the Flask demo normally.
+9. Record the Flask demo by running ordinary Python with `RETRACE_RECORDING`.
+10. Install the Retrace VS Code extension from the Marketplace.
+11. Open the recording in VS Code.
+12. Add breakpoints, step forward, and step backward through the recorded execution.
+13. Optionally replay the recording in the terminal as a sanity check.
 
 ## Requirements
 
 - Python 3.12
+- Go 1.25 or newer
 - Git
 - VS Code
 
@@ -29,6 +31,26 @@ The goal is simple:
 git clone https://github.com/retracesoftware/retracesoftware.git
 cd retracesoftware/quickstart
 ```
+
+## 2. Check Go
+
+Retrace installs with `pip`, but replay extraction and VS Code
+replay/debugging use Retrace's Go replay tool. Check that Go is available:
+
+```
+go version
+```
+
+If that command fails, install Go before continuing.
+
+On macOS with Homebrew:
+
+```
+brew install go
+```
+
+On Linux, install Go 1.25 or newer from your distro packages or from
+[go.dev/dl](https://go.dev/dl/).
 
 ## What Is In This Folder
 
@@ -60,7 +82,7 @@ The demo intentionally uses values that normally change between runs:
 
 That makes it easy to see what Retrace records and replays.
 
-## 2. Create A Python 3.12 Virtual Environment
+## 3. Create A Python 3.12 Virtual Environment
 
 Check that Python 3.12 is available:
 
@@ -86,7 +108,7 @@ After activation, your terminal prompt should start with:
 (.venv)
 ```
 
-## 3. Install Retrace
+## 4. Install Retrace
 
 Install Retrace from PyPI:
 
@@ -103,7 +125,7 @@ Check the installed package version:
 python -m pip show retracesoftware
 ```
 
-## 4. Enable Auto-Recording In This Virtual Environment
+## 5. Enable Auto-Recording In This Virtual Environment
 
 Install Retrace's auto-enable hook:
 
@@ -117,7 +139,7 @@ the `RETRACE_RECORDING` environment variable.
 
 This command does not record anything by itself.
 
-## 5. Install The Flask Demo Dependency
+## 6. Install The Flask Demo Dependency
 
 Install the demo dependency from `requirements.txt`:
 
@@ -132,7 +154,7 @@ Retrace install stays obvious:
 flask>=3.0
 ```
 
-## 6. Run The Flask Demo Normally
+## 7. Run The Flask Demo Normally
 
 ```
 python examples/flask_demo.py
@@ -152,7 +174,7 @@ Flask demo complete.
 
 This is a normal Python run. Nothing has been recorded yet.
 
-## 7. Record The Flask Demo With Retrace
+## 8. Record The Flask Demo With Retrace
 
 Run the same Python file, but put `RETRACE_RECORDING=...` before the command:
 
@@ -175,7 +197,7 @@ exist. `flask.retrace` is just the filename we chose for the Flask demo.
 Use uppercase `RETRACE_RECORDING`. Lowercase `retrace_recording` will not enable
 recording on macOS or Linux.
 
-## 8. Install The VS Code Extension
+## 9. Install The VS Code Extension
 
 Open VS Code.
 
@@ -193,7 +215,7 @@ RetraceSoftware
 
 Restart VS Code if it asks you to.
 
-## 9. Open This Folder In VS Code
+## 10. Open This Folder In VS Code
 
 From this folder:
 
@@ -209,7 +231,7 @@ File -> Open Folder...
 
 Then select the `quickstart` folder.
 
-## 10. Open The Recording In VS Code
+## 11. Open The Recording In VS Code
 
 Make sure this file exists first:
 
@@ -217,7 +239,7 @@ Make sure this file exists first:
 recordings/flask.retrace
 ```
 
-If it does not exist, run the recording command from step 7 again.
+If it does not exist, run the recording command from step 8 again.
 
 Then in VS Code:
 
@@ -235,7 +257,7 @@ You can also right-click the `.retrace` file in the Explorer and choose:
 Open as Retrace Recording
 ```
 
-## 11. Replay And Debug
+## 12. Replay And Debug
 
 Open the source file:
 

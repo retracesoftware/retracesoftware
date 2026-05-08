@@ -2,6 +2,26 @@
 
 Start with the smallest check that matches your symptom.
 
+## `go: command not found`
+
+Retrace installs with `pip`, but replay extraction and VS Code
+replay/debugging use Retrace's Go replay tool. Check:
+
+```
+go version
+```
+
+If that fails, install Go 1.25 or newer.
+
+On macOS with Homebrew:
+
+```
+brew install go
+```
+
+On Linux, install Go 1.25 or newer from your distro packages or from
+[go.dev/dl](https://go.dev/dl/).
+
 ## Recording Did Not Start
 
 Confirm Retrace is installed in the active environment:

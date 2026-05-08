@@ -12,6 +12,7 @@ Read them in order:
 The current recommended flow is:
 
 ```
+go version
 python -m pip install retracesoftware
 python -m retracesoftware install
 RETRACE_RECORDING=recordings/run.retrace python your_script.py

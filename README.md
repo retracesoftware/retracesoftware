@@ -19,6 +19,8 @@ The fastest way to try Retrace is the included Flask demo.
 git clone https://github.com/retracesoftware/retracesoftware.git
 cd retracesoftware/quickstart
 
+go version
+
 python3.12 -m venv .venv
 source .venv/bin/activate
 
@@ -46,6 +48,26 @@ inspect variables, continue, step forward, and step backward without running the
 Flask demo live again.
 
 For the full walkthrough, see [quickstart/README.md](quickstart/README.md).
+
+## Requirements
+
+- CPython 3.11 or 3.12
+- macOS or Linux, 64-bit
+- `pip`
+- Go 1.25 or newer on `PATH`
+
+Retrace installs with `pip`, but replay extraction and VS Code replay/debugging
+use Retrace's Go replay tool. If `go version` does not work, install Go before
+recording/replaying.
+
+On macOS with Homebrew:
+
+```
+brew install go
+```
+
+On Linux, install Go 1.25 or newer from your distro packages or from
+[go.dev/dl](https://go.dev/dl/).
 
 ## How Recording Works
 
