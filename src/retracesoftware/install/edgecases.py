@@ -8,6 +8,8 @@ import sys
 from retracesoftware.install import globals
 import retracesoftware.utils as utils
 
+_REAL_GETPID = os.getpid
+
 def recvfrom_into(target):
     @functools.wraps(target)
     @utils.exclude_from_stacktrace
@@ -143,6 +145,45 @@ def subprocess_internal_poll(target):
         return target(self, _deadstate, _waitpid, _WNOHANG, _ECHILD)
 
     return wrapper
+
+
+def _live_getpid():
+    value = _REAL_GETPID
+    while True:
+        wrapped = getattr(value, "__wrapped__", value)
+        if wrapped is not value:
+            value = wrapped
+            continue
+
+        unwrapped = utils.try_unwrap(value)
+        if unwrapped is value:
+            return value()
+        value = unwrapped
+
+
+def multiprocessing_finalize_call(target):
+    """Use the live PID guard for multiprocessing weakref finalizers."""
+
+    defaults = target.__defaults__ or ()
+    wr_default = defaults[0] if len(defaults) > 0 else None
+    registry_default = defaults[1] if len(defaults) > 1 else _DEFAULT
+    debug_default = defaults[2] if len(defaults) > 2 else _DEFAULT
+
+    @functools.wraps(target)
+    @utils.exclude_from_stacktrace
+    def wrapper(
+        self,
+        wr=wr_default,
+        _finalizer_registry=registry_default,
+        sub_debug=debug_default,
+        getpid=_DEFAULT,
+    ):
+        if getpid is _DEFAULT:
+            getpid = _live_getpid
+        return target(self, wr, _finalizer_registry, sub_debug, getpid)
+
+    return wrapper
+
 
 def concurrent_futures_threadpool_shutdown_sentinel(*args, **kwargs):
     if len(args) < 2 or args[1] is not None:

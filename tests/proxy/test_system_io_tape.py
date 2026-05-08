@@ -286,6 +286,58 @@ def test_replayer_skips_nested_sync_call_marker_while_reading_external_result():
     assert replayed == recorded
 
 
+def test_replayer_skips_sync_marker_while_reading_external_result():
+    """Regression for terminal PidFile shutdown sync frames.
+
+    Extracted PidFile replay can see a ``SYNC`` marker while an external call
+    is waiting for its recorded result.  The sync marker is replay control
+    traffic, not the result of the external call.
+    """
+
+    tape = IOMemoryTape()
+    writer = tape.writer()
+
+    def external_call():
+        return "external-result"
+
+    def flow(call):
+        return call()
+
+    with _entered(writer) as writer:
+        with _recorder_context(IOMode("plain"), writer) as record_system:
+            call = record_system.patch_function(external_call)
+            recorded = record_system.run(flow, call)
+
+    assert recorded == "external-result"
+
+    raw = _raw_tape(tape)
+    assert raw is not None
+    outer_call_index = raw.index("CALL")
+    outer_result_index = raw.index("RESULT", outer_call_index)
+    raw.insert(outer_result_index, "SYNC")
+
+    def raise_unexpected(message):
+        raise AssertionError(
+            f"Unexpected message: {message}, was expecting a result, error, or call"
+        )
+
+    reader = tape.reader()
+    with _entered(reader) as reader:
+        replay_system = replayer(
+            next_object=reader.read,
+            close=getattr(reader, "close", None),
+            on_unexpected=raise_unexpected,
+        )
+        try:
+            _configure_system(replay_system)
+            call = replay_system.patch_function(external_call)
+            replayed = replay_system.run(flow, call)
+        finally:
+            replay_system.unpatch_types()
+
+    assert replayed == recorded
+
+
 def test_checkpoint_equal_matches_descriptor_marker_to_proxy_shell():
     import ssl
 
@@ -724,6 +776,36 @@ def test_system_io_round_trips_simple_patched_function_error_with_memory_tape():
                 replay_system.run(replayed_fail, "missing-path")
 
     assert live_calls == ["missing-path"]
+
+
+def test_system_io_round_trips_keyboard_interrupt_with_memory_tape():
+    tape = IOMemoryTape()
+    writer = tape.writer()
+
+    live_calls = []
+
+    def interrupt():
+        live_calls.append("record")
+        raise KeyboardInterrupt()
+
+    with _entered(writer) as writer:
+        with _recorder_context(IOMode("plain"), writer) as record_system:
+            recorded_interrupt = record_system.patch_function(interrupt)
+            with pytest.raises(KeyboardInterrupt):
+                record_system.run(recorded_interrupt)
+
+    raw = _raw_tape(tape)
+    assert raw is not None
+    assert "ERROR" in raw
+
+    reader = tape.reader()
+    with _entered(reader) as reader:
+        with _replayer_context(IOMode("plain"), reader) as replay_system:
+            replayed_interrupt = replay_system.patch_function(interrupt)
+            with pytest.raises(KeyboardInterrupt):
+                replay_system.run(replayed_interrupt)
+
+    assert live_calls == ["record"]
 
 
 @pytest.mark.parametrize("mode", ALL_IO_MODES)

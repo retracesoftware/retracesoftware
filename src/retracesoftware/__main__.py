@@ -176,7 +176,6 @@ def record(options, args):
                 options=options,
                 function=run_python_command,
                 args=(args,),
-                post_install=None if options.trace_shutdown else close_tape_writer,
             )
     finally:
         if not options.trace_shutdown:

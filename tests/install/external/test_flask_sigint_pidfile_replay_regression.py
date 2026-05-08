@@ -91,13 +91,6 @@ def _run(
     )
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "SIGINT-driven Flask app.run PidFile replay fails while draining "
-        "terminal shutdown messages"
-    ),
-)
 def test_flask_dev_server_sigint_pidfile_replay_consumes_terminal_shutdown(
     tmp_path: Path,
 ):

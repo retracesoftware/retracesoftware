@@ -332,5 +332,8 @@ bind = ["Options"]
 [_random]
 proxy = ["Random"]
 
+["multiprocessing.util".type_attributes.Finalize]
+wrap = { __call__ = "retracesoftware.install.edgecases.multiprocessing_finalize_call" }
+
 [_multiprocessing]
 proxy = ["SemLock", "sem_unlink"]

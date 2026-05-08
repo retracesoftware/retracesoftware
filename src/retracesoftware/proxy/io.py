@@ -1065,7 +1065,7 @@ def recorder(*,
     on_error = functional.sequence(
         functional.positional_param(1), 
         functional.if_then_else(
-            functional.isinstanceof(Exception),
+            functional.isinstanceof(BaseException),
             tagged("ERROR"),
             utils.noop))
 
@@ -1412,6 +1412,9 @@ def replayer(*, next_object,
                 continue
 
             if isinstance(message, CallMarkerMessage):
+                continue
+
+            if message == "SYNC":
                 continue
 
             if isinstance(message, ResultMessage):
