@@ -88,7 +88,7 @@ After grouping by fingerprint there are essentially **4 distinct bugs** (probabl
 ### 1. `opentelemetry_test`
 
 ```
-replay run: /Users/danielpatrascanu/cookbook/examples/invoice-parser/.venv-retrace-py3120-2026-04-30-1147/bin/python
+replay run: /path/to/.venv-retrace-py3120/bin/python
             [-m retracesoftware --recording .../opentelemetry_test/test.d/13520.bin]
             (cwd=.../opentelemetry_test)
 === opentelemetry_test ===

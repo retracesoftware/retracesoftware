@@ -141,18 +141,14 @@ func (p *Proxy) handlePreLaunch() error {
 func (p *Proxy) handleInitialize(env envelope) error {
 	caps := json.RawMessage(`{
 		"supportsConfigurationDoneRequest": true,
-		"supportsFunctionBreakpoints": true,
+		"supportsFunctionBreakpoints": false,
 		"supportsConditionalBreakpoints": true,
 		"supportsStepBack": true,
 		"supportsStepInTargetsRequest": false,
-		"supportsGotoTargetsRequest": true,
-		"supportsRestartRequest": true,
-		"supportsExceptionInfoRequest": true,
-		"supportsSteppingGranularity": true,
-		"exceptionBreakpointFilters": [
-			{"filter": "raised", "label": "Raised Exceptions"},
-			{"filter": "uncaught", "label": "Uncaught Exceptions", "default": true}
-		]
+		"supportsGotoTargetsRequest": false,
+		"supportsRestartRequest": false,
+		"supportsExceptionInfoRequest": false,
+		"supportsSteppingGranularity": true
 	}`)
 
 	resp := successResponse(env.Seq, "initialize", caps)
@@ -332,7 +328,12 @@ func (p *Proxy) handleSetBreakpoints(argsRaw json.RawMessage) (json.RawMessage, 
 	}
 
 	ctx := context.Background()
-	out := make([]map[string]any, 0, len(args.Breakpoints))
+	type breakpointResponse struct {
+		line    int
+		id      int
+		message string
+	}
+	responses := make([]breakpointResponse, 0, len(args.Breakpoints))
 	for _, bp := range args.Breakpoints {
 		spec := BreakpointSpec{
 			File:      args.Source.Path,
@@ -340,19 +341,42 @@ func (p *Proxy) handleSetBreakpoints(argsRaw json.RawMessage) (json.RawMessage, 
 			Condition: bp.Condition,
 		}
 		key := breakpointKey(spec)
-		if _, exists := p.breakpointIDs[key]; !exists {
+		id, exists := p.breakpointIDs[key]
+		if !exists {
 			log.Printf("setBreakpoints: adding %s:%d", args.Source.Path, bp.Line)
-			id, err := p.debugger.AddBreakpoint(ctx, spec)
+			var err error
+			id, err = p.debugger.AddBreakpoint(ctx, spec)
 			if err != nil {
 				log.Printf("setBreakpoints: AddBreakpoint error: %v", err)
-				out = append(out, map[string]any{"verified": false, "line": bp.Line, "message": err.Error()})
+				responses = append(responses, breakpointResponse{
+					line:    bp.Line,
+					message: err.Error(),
+				})
 				continue
 			}
 			log.Printf("setBreakpoints: registered id=%d, total breakpoints=%d", id, len(p.breakpointIDs)+1)
 			p.breakpointIDs[key] = id
 		}
 		p.breakpointSpecs[key] = spec
-		out = append(out, map[string]any{"verified": true, "line": bp.Line})
+		responses = append(responses, breakpointResponse{line: bp.Line, id: id})
+	}
+
+	waitCtx, cancel := context.WithTimeout(context.Background(), p.navTimeout)
+	if err := p.debugger.WaitForScans(waitCtx); err != nil {
+		log.Printf("setBreakpoints: waiting for scans: %v", err)
+	}
+	cancel()
+
+	out := make([]map[string]any, 0, len(responses))
+	for _, resp := range responses {
+		verified := resp.id != 0 && p.debugger.Hits().ContainsBreakpoint(resp.id)
+		item := map[string]any{"verified": verified, "line": resp.line}
+		if resp.message != "" {
+			item["message"] = resp.message
+		} else if !verified {
+			item["message"] = "breakpoint line was not hit during replay scan"
+		}
+		out = append(out, item)
 	}
 
 	body, err := json.Marshal(map[string]any{"breakpoints": out})

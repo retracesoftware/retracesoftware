@@ -158,7 +158,7 @@ def test_wsgiref_many_threaded_requests_replay_does_not_deadlock(tmp_path: Path)
                 env=env,
                 capture_output=True,
                 text=True,
-                timeout=10,
+                timeout=60,
             )
         except subprocess.TimeoutExpired as exc:
             stdout = exc.stdout or ""

@@ -1,99 +1,130 @@
-# Retrace — Module Layers
+# Retrace Module Layers
 
-The retrace system is split into six packages, each with a focused
-responsibility.  Dependencies flow strictly upward — lower layers never
-import higher ones.
+Retrace is split into small layers. Dependencies should keep flowing from
+low-level utility code toward orchestration code; lower layers should not import
+higher layers.
 
+```mermaid
+flowchart TD
+    FUNCTIONAL["functional/"]
+    UTILS["utils/ + cpp/utils"]
+    STREAM["stream/ + cpp/stream"]
+    PROXY["proxy/"]
+    PROTOCOL["protocol/"]
+    INSTALL["install/"]
+    TOP["top-level retracesoftware package"]
+    REPLAYPY["replay/"]
+    DAP["dap/ + control_runtime.py"]
+    GO["go/ replay tool"]
+    VSCODE["vscode/ extension"]
+
+    FUNCTIONAL --> UTILS
+    FUNCTIONAL --> STREAM
+    UTILS --> STREAM
+    FUNCTIONAL --> PROXY
+    UTILS --> PROXY
+    PROXY --> PROTOCOL
+    STREAM --> INSTALL
+    PROXY --> INSTALL
+    PROTOCOL --> INSTALL
+    INSTALL --> TOP
+    STREAM --> TOP
+    PROXY --> TOP
+    REPLAYPY --> TOP
+    DAP --> TOP
+    GO --> DAP
+    VSCODE --> GO
 ```
-functional          (no deps)
-    ↑
-  utils             (+ functional)
-    ↑
-  stream            (+ functional, utils)
-    ↑
-  proxy             (+ functional, utils — no stream)
-    ↑
-  install           (+ proxy, stream, functional, utils)
-    ↑
-retracesoftware     (+ everything)
-```
 
----
+The diagram is a mental model rather than a complete import graph. The rule of
+thumb is simple: do not make serialization code know about VS Code, do not make
+proxy policy depend on the CLI, and do not make runtime patching depend on
+debugger UI behavior.
 
 ## `functional`
 
-Zero-dependency foundation.  A high-performance functional toolkit
-(C++20 with pure-Python fallback): `compose`, `sequence`, `partial`,
-`dispatch`, `memoize`, predicates, and more.  Everything else can depend
-on it.  It is a general-purpose utility belt, not retrace-specific.
+Low-level functional helpers with native implementations and Python fallbacks.
+This layer should stay general-purpose and dependency-light.
 
 ## `utils`
 
-Low-level CPython introspection (C++ extension).  Type-flag manipulation
-(`WithFlags`, `WithoutFlags`), deterministic hash patching, `StackFactory`
-for call-frame capture, `InterceptDict`, and gate primitives.  Depends
-only on `functional`.  Not retrace-specific in principle — it provides
-the tools needed to poke at CPython internals safely.
+CPython helper code and native utilities. This layer contains low-level tools
+for type flags, gates, call counters, breakpoints, hashing, and other runtime
+mechanics used by higher layers.
 
 ## `stream`
 
-Fast binary serialisation (C++ core, Python wrapper).  Writes and reads
-Python objects to a compact wire format with object-identity tracking
-(the bind system), thread multiplexing, and custom type hooks.  Depends
-on `functional` and `utils`.  This is the I/O layer — it knows *how* to
-serialise data, but not *why* you are serialising it.
+Trace serialization and replay reading. The stream layer knows how to write and
+read values, bindings, handles, thread markers, heartbeats, and queue-backed
+recording data. It does not decide which application behavior is external.
+
+The native implementation lives under `cpp/stream/`.
 
 ## `proxy`
 
-The record/replay engine.  Pure logic, no I/O.  `System` defines the
-sandbox boundary (patched types, gates, adapters), intercepts every
-int→ext and ext→int crossing, and either records or replays via abstract
-`Writer`/`Reader` protocols.  Also provides:
+The record/replay boundary layer. `proxy/` defines how calls cross between
+retraced deterministic code and external nondeterministic code. It owns gates,
+system contexts, proxy types, binding/checkpoint behavior, and IO message
+routing.
 
-- `MemoryWriter` / `MemoryReader` — in-memory backend for testing.
-- `StubFactory` — proxy objects for types that are not patched but still
-  need to be wrapped (e.g. a list returned by a patched method).
-- `proxytype` — dynamic proxy-type construction.
+Read `src/retracesoftware/proxy/DESIGN.md` before changing this layer.
 
-Depends on `functional` and `utils`.  Deliberately has **no dependency
-on `stream`** — the proxy layer is backend-agnostic.
+## `protocol`
+
+Semantic replay protocol objects layered above the stream transport. This layer
+keeps higher-level replay message shapes separate from low-level byte encoding.
 
 ## `install`
 
-The wiring layer.  Bridges `proxy` and `stream` with the real Python
-runtime:
+Runtime wiring and patching. `install/` loads module TOML configs, patches
+already-loaded modules, installs import hooks, wraps thread-start paths, and
+connects concrete stream readers/writers to proxy systems.
 
-- Module patching driven by TOML configuration files.
-- Import hooks (`install_import_hooks`) and post-load patching
-  (`patch_already_loaded`).
-- `_thread.start_new_thread` patching for multi-threaded recording.
-- `stream_writer()` adapter — maps a `stream.writer` to the
-  `proxy.protocol.Writer` interface.
-- Preloading, deterministic-hash installation, weakref / GC hooks.
-- `TestRunner` and `install_for_pytest` for library-level pytest testing.
+This layer is where external library coverage becomes live Python behavior.
 
-Depends on everything below it (`functional`, `utils`, `stream`, `proxy`).
+## Top-Level `retracesoftware`
 
-## `retracesoftware`
+The package root owns orchestration:
 
-The user-facing entry point.  Provides:
+- `__main__.py` for CLI record/replay/install/uninstall
+- `autoenable.py` and `retracesoftware_autoenable.pth` for `.pth` startup
+  activation
+- `tape.py` for recording preambles, checksums, shebangs, and tape open helpers
+- `run.py` for running recorded Python scripts/modules
+- `threadid/` for stable top-level thread-id helpers
 
-- CLI: `python -m retracesoftware --recording <path> -- <command>`
-- Record/replay orchestration.
-- `.pth` auto-enable for transparent activation.
+This layer assembles record and replay but should avoid duplicating lower-layer
+proxy, stream, or install behavior.
 
-Delegates to `install` for setup and `proxy` + `stream` for the actual
-recording.  This is where the whole process — record a run, produce a
-trace file, replay it — is assembled.
+## Replay, Debugger, And Editor Layers
 
----
+`src/retracesoftware/replay/` locates or lazily builds the Go replay binary.
 
-## Design principles
+`go/` owns user-visible replay tooling:
+
+- `.retrace` indexing
+- extraction into PidFiles
+- direct PidFile replay launch
+- workspace generation
+- DAP proxy mode
+
+`src/retracesoftware/control_runtime.py` and `src/retracesoftware/dap/` support
+Python-side debugger control and DAP-related replay behavior.
+
+`vscode/` is the editor integration. It opens `.retrace` files, renders the
+recorded process tree, and launches the Go replay binary as the debug adapter.
+
+## Design Principles
 
 | Principle | Where it shows up |
 |---|---|
-| **Lower layers are general-purpose** | `functional` and `utils` have no retrace-specific logic. |
-| **Proxy is backend-agnostic** | `proxy` defines abstract `Writer`/`Reader` protocols; it never imports `stream`. |
-| **Install is the bridge** | Only `install` knows how to wire `proxy` to `stream`, patch modules, and hook imports. |
-| **retracesoftware is orchestration** | The top-level package assembles everything but contains minimal logic of its own. |
-| **Dependencies flow one way** | No circular imports; each layer can be tested in isolation. |
+| Lower layers stay reusable | `functional`, `utils`, and `stream` do not know about user workflows. |
+| Proxy owns boundary semantics | `proxy` decides record/replay behavior through abstract reader/writer protocols. |
+| Install wires policy to Python | `install` applies module configs and runtime patches. |
+| CLI is orchestration | `__main__.py`, `autoenable.py`, and `tape.py` assemble the workflow. |
+| Go owns recording tooling | extraction, indexing, workspace generation, and VS Code DAP launch live in `go/`. |
+| Editor UI stays outside replay data | VS Code and DAP control traffic must not be recorded as application I/O. |
+
+When a change crosses multiple layers, the commit or PR description should say
+which contract required the cross-layer change. Prefer narrow changes in the
+responsible layer.

@@ -87,29 +87,28 @@ During replay:
 
 ### Replay Phase:
 ```
-┌─────────────────┐         ┌──────────────────────────┐
-│   client.py     │  HTTP   │  flask-replay            │
-│  (load gen      │ ──────> │  ┌─────────────────────┐ │
-│   container)    │ <────── │  │  test.py (Flask)   │ │
-└─────────────────┘         │  │  under retrace      │ │
-                            │  └──────────┬──────────┘ │
- network_mode: none ────────┤             │            │
-                            │      Replay from rec     │
-                            │             ↓            │
-                            │       ┌──────────┐       │
-                            │       │ (no real │       │
-                            │       │ database)│       │
-                            │       └──────────┘       │
-                            └──────────────────────────┘
+┌──────────────────────────┐
+│  replay                  │
+│  ┌─────────────────────┐ │
+│  │  test.py (Flask)   │ │
+│  │  under retrace     │ │
+│  └──────────┬──────────┘ │
+│             │            │
+│      Replay from rec     │
+│             ↓            │
+│       ┌──────────┐       │
+│       │ no real  │       │
+│       │ database │       │
+│       │ or client│       │
+│       └──────────┘       │
+└──────────────────────────┘
 ```
 
-1. Flask server container (`test.py`) starts under retrace **replay mode**
-2. Health check works (HTTP is replayed from recording)
-3. Client container (`client.py`) starts
-4. Client makes same HTTP requests to `http://flask-replay:5000`
-5. Flask processes requests → **database operations replayed from recording**
-6. Same responses sent back
-7. **No real database!** (`network_mode: none` - completely isolated)
+1. The replay service runs the extracted recording for `test.py`.
+2. The Flask server code re-executes under retrace replay mode.
+3. Recorded socket, request, response, database, and file operations are served
+   from the trace.
+4. **No live client or database is required.**
 
 ---
 
@@ -126,7 +125,8 @@ During replay:
 
 ## Why Separate Containers?
 
-Using separate containers for Flask server and test client:
+During record, separate containers keep the Flask server and test client
+lifecycles clean:
 
 ✅ **More realistic** - mirrors production architecture  
 ✅ **Clean separation** - server and client are isolated  
@@ -137,13 +137,15 @@ Using separate containers for Flask server and test client:
 ```yaml
 # Record phase
 flask-record:      # Flask under retrace
-  command: python -m retracesoftware --recording /recording -- app.py
+  environment:
+    RETRACE_RECORDING: /recording/trace.bin
+  command: bash -c "python -m retracesoftware install && python /app/test/test.py"
   
 record:            # Test client (plain Python)
   depends_on:
     flask-record:
       condition: service_healthy
-  command: python test.py
+  command: python /app/client.py
 ```
 
 ## Running
@@ -267,8 +269,8 @@ Both tests use **separate containers** for client and server. The key difference
 | **Retrace runs on** | Test client container | Flask server container |
 | **Records** | HTTP requests/responses | Database operations, file I/O |
 | **Tests** | API contract, HTTP behavior | Server implementation, business logic |
-| **Replay needs Flask?** | ❌ No (HTTP from recording) | ✅ Yes (Flask under replay) |
-| **Replay needs DB?** | ✅ Yes (Flask needs real DB) | ❌ No (DB ops from recording) |
+| **Replay needs Flask?** | ❌ No (HTTP from recording) | ✅ Yes (server code re-executes under replay) |
+| **Replay needs DB?** | ❌ No (HTTP from recording) | ❌ No (DB ops from recording) |
 | **Use case** | End-to-end API testing | Server-side logic testing |
 
 ### Example:
@@ -276,7 +278,9 @@ Both tests use **separate containers** for client and server. The key difference
 **flask_test (client-side):**
 ```yaml
 record:  # Test client UNDER retrace
-  command: python -m retracesoftware --recording /rec -- test.py
+  environment:
+    RETRACE_RECORDING: /recording/trace.bin
+  command: bash -c "python -m retracesoftware install && python /app/test/test.py"
 
 flask:   # Normal Flask server
   command: python app.py
@@ -285,10 +289,12 @@ flask:   # Normal Flask server
 **flask_server_test (server-side):**
 ```yaml
 flask-record:  # test.py (Flask) UNDER retrace
-  command: python -m retracesoftware --recording /rec -- test.py
+  environment:
+    RETRACE_RECORDING: /recording/trace.bin
+  command: bash -c "python -m retracesoftware install && python /app/test/test.py"
 
 record:  # client.py (load generator)
-  command: python client.py
+  command: python /app/client.py
 ```
 
 ---

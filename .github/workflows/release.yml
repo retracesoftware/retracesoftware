@@ -136,6 +136,7 @@ jobs:
         run: python -m cibuildwheel --output-dir wheelhouse
         env:
           CIBW_BUILD: ${{ matrix.py-tag }}
+          CIBW_SKIP: "*-manylinux_i686 *-musllinux_i686"
           CIBW_ENVIRONMENT: >-
             MESONPY_EDITABLE_VERBOSE=1
             GOTOOLCHAIN=local

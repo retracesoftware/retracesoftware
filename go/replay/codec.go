@@ -68,8 +68,9 @@ func WriteMessage(w io.Writer, msg json.RawMessage) error {
 
 // Writer is a thread-safe DAP message writer.
 type Writer struct {
-	mu sync.Mutex
-	bw *bufio.Writer
+	mu  sync.Mutex
+	bw  *bufio.Writer
+	seq int
 }
 
 // NewWriter wraps w in a thread-safe buffered DAP writer.
@@ -81,7 +82,22 @@ func NewWriter(w io.Writer) *Writer {
 func (w *Writer) Write(msg json.RawMessage) error {
 	w.mu.Lock()
 	defer w.mu.Unlock()
+	msg = w.assignSeq(msg)
 	return WriteMessage(w.bw, msg)
+}
+
+func (w *Writer) assignSeq(msg json.RawMessage) json.RawMessage {
+	var envelope map[string]any
+	if err := json.Unmarshal(msg, &envelope); err != nil {
+		return msg
+	}
+	w.seq++
+	envelope["seq"] = w.seq
+	out, err := json.Marshal(envelope)
+	if err != nil {
+		return msg
+	}
+	return out
 }
 
 // DAPLogWriter implements io.Writer by emitting each Write as a DAP

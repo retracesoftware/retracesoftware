@@ -327,7 +327,19 @@ def test_replay_binding_state_hydrates_proxy_ref_bindings():
 
 
 def test_replayer_skips_nested_sync_call_marker_while_reading_external_result():
-    """Regression for the flight-search HuggingFace replay failure."""
+    """Regression for the flight-search HuggingFace replay failure.
+
+    The real PidFile replay failed with:
+
+        Unexpected message: CallMarkerMessage, was expecting a result, error, or call
+
+    This builds the same protocol shape without depending on HuggingFace or a
+    local model: an outer external call is replayed, but the trace contains a
+    nested sync ``CALL`` frame before the outer ``RESULT``.  The higher-level
+    protocol replay reader already knows how to skip nested sync-call frames;
+    this test pins the same expectation for the proxy.io replay path used by
+    extracted PidFiles.
+    """
 
     tape = IOMemoryTape()
     writer = tape.writer()

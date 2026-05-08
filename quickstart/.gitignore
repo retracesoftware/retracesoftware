@@ -1,0 +1,10 @@
+.venv/
+__pycache__/
+*.py[cod]
+
+# Generated recordings and extracted pidfiles.
+/recordings/*.retrace
+/recordings/*.d/
+/recordings/*.log
+
+.DS_Store

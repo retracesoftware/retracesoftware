@@ -83,6 +83,17 @@ func (h *HitList) Len() int {
 	return len(h.hits)
 }
 
+func (h *HitList) ContainsBreakpoint(id int) bool {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	for _, hit := range h.hits {
+		if hit.BreakpointID == id {
+			return true
+		}
+	}
+	return false
+}
+
 func (h *HitList) At(i int) BreakpointHit {
 	h.mu.Lock()
 	defer h.mu.Unlock()
