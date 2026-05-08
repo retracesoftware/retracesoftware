@@ -189,8 +189,10 @@ python -m pip install --no-build-isolation -e .
 ```
 
 The package includes Python code, native extensions built by Meson, module
-interception config, and the Go replay binary. In development, the Go replay
-binary is built lazily if it is missing.
+interception config, and the Go replay tooling used for extraction, terminal
+replay, and VS Code replay/debugging. Supported wheels include the replay
+binary; source/development installs can build it lazily if it is missing, which
+is why Go is required on `PATH`.
 
 Run Python tests:
 

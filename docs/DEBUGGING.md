@@ -303,7 +303,7 @@ or the replay hangs indefinitely.
 
 **What this means:**
 
-Multi-threaded replay uses `ThreadSwitchMessage` markers to enforce
+Multi-threaded replay uses thread-switch markers to enforce
 the recorded thread interleaving.  Each thread blocks until the tape
 cursor reaches its segment.  If a thread takes a different code path
 (fewer or more proxied calls), it never reaches the expected switch
@@ -517,17 +517,17 @@ The recording also stores `python_version` and `executable` path.
 
 | Error | Location | Meaning |
 |---|---|---|
-| `ReplayDivergence: replay divergence: expected X, got Y` | `messagestream.py` | Checkpoint mismatch — values differ between record and replay |
+| `ReplayDivergence: replay divergence: expected X, got Y` | `proxy/io.py` / `proxy/system.py` | Checkpoint mismatch — values differ between record and replay |
 | `RuntimeError: Can't reading next as unbound pending bind` | `objectstream.cpp` | A `Bind` tag was read but `reader.bind()` was never called before the next `reader()` call |
 | `RuntimeError: Could not read: N bytes from tracefile` | `objectstream.cpp` | Trace ended or timeout — recording truncated or misaligned |
 | `RuntimeError: Trying to bind when no pending bind` | `objectstream.cpp` | `reader.bind()` called but no `Bind` tag was pending |
 | `RuntimeError: object: X already bound` | `writer.h` | Writer tried to bind an object that was already bound |
 | `Persister: PID mismatch!` | `persister.cpp` | Frame stamped with wrong PID (fork lifecycle bug) |
 | `VersionMismatchError` | `__main__.py` | Module checksums differ between record and replay |
-| `ReplayDivergence: replay demux timed out` | `messagestream.py` | Thread couldn't acquire its turn on the tape |
-| `ReplayDivergence: monitor divergence: expected X, got Y` | `messagestream.py` | MONITOR checkpoint mismatch — function call/return differs between record and replay |
-| `ReplayDivergence: expected MONITOR(X), got ...` | `messagestream.py` | Replay produced a function call that the recording didn't have |
-| `ReplayDivergence: unexpected MONITOR(X) during sync` | `messagestream.py` | Recording had function calls that replay didn't replicate |
+| `ReplayDivergence: replay demux timed out` | `proxy/io.py` / `stream/reader.py` | Thread could not acquire its turn on the tape |
+| `ReplayDivergence: monitor divergence: expected X, got Y` | `proxy/io.py` / monitor hooks | MONITOR checkpoint mismatch — function call/return differs between record and replay |
+| `ReplayDivergence: expected MONITOR(X), got ...` | `proxy/io.py` / monitor hooks | Replay produced a function call that the recording did not have |
+| `ReplayDivergence: unexpected MONITOR(X) during sync` | `proxy/io.py` / monitor hooks | Recording had function calls that replay did not replicate |
 
 ---
 

@@ -8,6 +8,9 @@ python -m retracesoftware
 
 There is also a `replay` console script installed by the package.
 
+Run `python -m retracesoftware --help` to inspect the top-level command. Record
+flags are parsed when the invocation contains a target command after `--`.
+
 ## Install And Uninstall Auto-Enable
 
 Install the `.pth` auto-enable hook into the active Python environment:
@@ -62,6 +65,14 @@ Useful record flags:
 | `--stacktraces` | Capture stack traces for recorded events |
 | `--trace_inputs` | Write call parameters for debugging |
 | `--trace_shutdown` | Trace shutdown and cleanup hooks |
+| `--inflight_limit BYTES` | Maximum in-flight writer buffer size |
+| `--queue_capacity N` | Writer queue capacity |
+| `--consumer_wait_timeout_ms N` | Writer consumer wait timeout |
+| `--flush_interval SECONDS` | Periodic writer flush interval |
+| `--quit_on_error` | Stop after writer/proxy errors instead of continuing |
+| `--format FORMAT` | Recording stream format override for development/debugging |
+| `--replay_bin PATH` | Replay binary path recorded into the `.retrace` shebang |
+| `--retrace_file_patterns PATH` | Extra file-pattern config used by path-based interception |
 | `--monitor N` | Enable monitoring diagnostics on Python 3.12+ |
 | `--gc_collect_multiplier N` | Trigger replayable GC collection at intercepted safe points |
 
@@ -111,6 +122,8 @@ Useful replay flags:
 | `--recording PATH` | Recording or PidFile path to replay |
 | `--list_pids` | Print recorded process ids |
 | `--read_timeout N` | Milliseconds to wait for incomplete reads |
+| `--format FORMAT` | Override input stream format for debugging |
+| `--chunk_ms N` | Replay chunking interval used by cursor/debug flows |
 | `--skip_weakref_callbacks` | Disable retrace inside weakref callbacks during replay |
 | `--control_socket PATH` | Connect to the debugger control socket |
 | `--stdio` | Read control commands from stdin and write responses to stdout |
@@ -124,3 +137,32 @@ replay
 ```
 
 This uses the same replay binary discovery path as `python -m retracesoftware`.
+
+The `replay` script is the Go replay tool. It is also written into the shebang
+of `.retrace` files, which is why executable recordings can be run directly.
+
+Common recording commands:
+
+```
+replay --recording recordings/example.retrace --index
+replay --recording recordings/example.retrace --extract
+replay --recording recordings/example.retrace --workspace
+replay --recording recordings/example.retrace --dap
+```
+
+Common PidFile commands:
+
+```
+replay recordings/example.d/12345.bin
+replay --dap recordings/example.d/12345.bin
+```
+
+An executable recording uses the same tool:
+
+```
+./recordings/example.retrace --extract
+```
+
+For quick command-line validation, extracting and replaying the root PidFile is
+usually enough. For interactive debugging, open the `.retrace` file in VS Code
+with the Retrace extension installed.

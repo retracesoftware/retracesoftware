@@ -120,48 +120,27 @@ For tests needing postgres, redis, etc., create a custom `docker-compose.yml`:
 2. **Create `docker-compose.yml`:**
    ```yaml
    services:
-     # Infrastructure
      postgres:
        image: postgres:15
        environment:
          POSTGRES_PASSWORD: test
          POSTGRES_DB: testdb
 
-     # Record service
      record:
-       image: ${TEST_IMAGE:-retrace-test-base:latest}
        depends_on:
          - postgres
-       volumes:
-         - ../../src:/app/src:ro
-         - ../../dockertests/install.sh:/app/install.sh:ro
-         - ../../dockertests/base-requirements.txt:/app/dockertests/base-requirements.txt:ro
-         - .:/app/test:ro
-         - ./recording:/recording:rw
-         - pip-cache:/root/.cache/pip
-         - site-packages:/usr/local/lib/python3.11/site-packages
        environment:
-         PYTHONPATH: /app/src
          DATABASE_URL: postgres://postgres:test@postgres:5432/testdb
-       command: bash -c "bash /app/install.sh && python -m retracesoftware --recording /recording -- /app/test/test.py"
+         RETRACE_RECORDING: /recording/trace.bin
+       command: bash -c "python -m retracesoftware install && python /app/test/test.py"
 
-    # Replay service (no infrastructure)
-    replay:
-      image: ${TEST_IMAGE:-retrace-test-base:latest}
-      network_mode: none
-      volumes:
-        - ../../src:/app/src:ro
-        - .:/app/test:ro
-        - ./recording:/recording:ro
-        - site-packages:/usr/local/lib/python3.11/site-packages:ro
-      environment:
-        PYTHONPATH: /app/src
-      command: python -m retracesoftware --recording /recording
-
-   volumes:
-     pip-cache:
-     site-packages:
+     replay:
+       network_mode: none
+       command: python -m retracesoftware --recording /recording/trace.bin
    ```
+
+   This file is merged with `docker-compose.base.yml`, which supplies the image,
+   package mounts, `/app/test`, and `/recording` volumes.
 
 3. **Create test:**
    ```bash
@@ -198,7 +177,7 @@ GitHub Actions automatically builds and pushes base images to GHCR when `base-re
 **Workflow:** `.github/workflows/build-test-image.yml`
 - Triggers on: changes to `base-requirements.txt`, manual dispatch
 - Builds: `python:3.11-slim` + `base-requirements.txt` + retrace autoenable
-- Pushes to: `ghcr.io/user/repo/retrace-test-base:latest` (public)
+- Pushes to: `ghcr.io/<owner>/<repo>/retrace-test-base:latest` (public)
 
 **Running tests in CI:**
 ```yaml

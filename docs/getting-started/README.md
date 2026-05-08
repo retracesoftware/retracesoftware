@@ -13,11 +13,22 @@ The current recommended flow is:
 
 ```
 go version
+python3.12 -m venv .venv
+source .venv/bin/activate
 python -m pip install retracesoftware
 python -m retracesoftware install
 RETRACE_RECORDING=recordings/run.retrace python your_script.py
-./recordings/run.retrace --extract
+code .
 ```
 
-Then open the recording in the Retrace VS Code extension. Terminal replay is
-also available when you want a quick sanity check.
+Then install the Retrace VS Code extension from the Marketplace and open the
+`.retrace` recording from VS Code. Add breakpoints in your source files and
+start the Retrace debug configuration to replay the recorded execution.
+
+Terminal replay is also available when you want a quick sanity check:
+
+```
+./recordings/run.retrace --extract
+ROOT_PID=$(python -m retracesoftware --recording recordings/run.retrace --list_pids | head -1)
+./recordings/run.d/${ROOT_PID}.bin
+```
