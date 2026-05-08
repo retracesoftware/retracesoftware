@@ -20,6 +20,7 @@ real application command examples, and VS Code replay debugging.
 - [Quickstart](../quickstart/README.md)
 - [Recording Python Commands](getting-started/recording-python-commands.md)
 - [VS Code Extension](getting-started/vscode-extension.md)
+- [Compatibility](../COMPATIBILITY.md)
 - [Troubleshooting](troubleshooting.md)
 
 ## Reference

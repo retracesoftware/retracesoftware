@@ -48,35 +48,16 @@ Full benchmark methodology and reproducible results:
 
 ## Compatibility
 
-| Category | Library / Component | Status | Notes |
-| --- | --- | --- | --- |
-| Python runtime | CPython 3.11, 3.12 | Supported | |
-| Python runtime | CPython 3.13 | Planned | |
-| Python runtime | Free-threaded (3.13t, no-GIL) | Not supported | Detected and refused at install |
-| Operating system | macOS (64-bit) | Supported | |
-| Operating system | Linux (64-bit) | Supported | Tested on Ubuntu 22.04+ **[verify]** |
-| Operating system | Windows | Planned | |
-| Web framework | Flask | Supported | |
-| Web framework | Django | Supported | |
-| Web framework | FastAPI / Starlette | Planned | |
-| HTTP client | requests | Supported | |
-| HTTP client | urllib3 | Supported | **[verify]** |
-| HTTP client | httpx | Planned | |
-| Database | psycopg2 (PostgreSQL) | Supported | |
-| Database | asyncpg | Planned | |
-| Database | SQLAlchemy | Planned | Via underlying driver |
-| Cache / queue | Redis client | Planned | |
-| Cloud SDK | boto3 (AWS) | Planned | |
-| Concurrency | threading | Supported | Original interleaving preserved on replay |
-| Concurrency | multiprocessing (fork) | Supported | |
-| Concurrency | multiprocessing (spawn) | Partial | **[verify]** |
-| Concurrency | asyncio | Supported | **[verify]** |
-| Stdlib I/O | file I/O, `os.environ` | Supported | |
-| Stdlib non-determinism | `time`, `random`, `uuid` | Supported | **[verify uuid]** |
-| Debugger | VS Code replay debugging | Supported | Forward and backward stepping |
+Retrace works with the mainstream Python web and async stack: Flask, Django,
+FastAPI, Starlette, requests, httpx, aiohttp, asyncio, AnyIO, NumPy, Pandas,
+Pydantic, psycopg2, plus the standard-library determinism boundaries
+(threading, sockets, subprocess, ssl, sqlite3).
 
-If your stack is not in this table, [open an issue](https://github.com/retracesoftware/retracesoftware/issues).
-Library priorities are driven by user requests.
+See [COMPATIBILITY.md](./COMPATIBILITY.md) for the full matrix, what "tested"
+means, and known gaps (SQLAlchemy, Redis, boto3, Celery).
+
+**Python versions:** [TODO]
+**Operating systems:** [TODO]
 
 ## Quick Start
 
@@ -228,6 +209,7 @@ Replay it:
 ## Documentation
 
 - [Documentation index](https://github.com/retracesoftware/retracesoftware/blob/main/docs/README.md)
+- [Compatibility](https://github.com/retracesoftware/retracesoftware/blob/main/COMPATIBILITY.md)
 - [Getting started](https://github.com/retracesoftware/retracesoftware/blob/main/docs/getting-started/README.md)
 - [Installation](https://github.com/retracesoftware/retracesoftware/blob/main/docs/getting-started/installation.md)
 - [Quickstart](https://github.com/retracesoftware/retracesoftware/blob/main/quickstart/README.md)
