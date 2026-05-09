@@ -257,6 +257,7 @@ def replay(args):
             close=getattr(tape_reader, "close", None),
             debug=stacktraces,
             stacktraces=stacktraces,
+            allow_terminal_signal_eof=not header.get("trace_shutdown", False),
         )
         if hasattr(reader, "stub_factory"):
             reader.stub_factory = system.disable_for(reader.stub_factory)

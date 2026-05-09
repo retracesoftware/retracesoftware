@@ -288,10 +288,29 @@ def _read_thread_id(thread_id):
     return thread_id
 
 
-class _ThreadDemuxSource:
-    __slots__ = ("_close", "_dispatcher", "_peekable_reader", "_source", "_thread_id")
+def _is_tracefile_eof(exc):
+    return "Could not read" in str(exc) and "tracefile" in str(exc)
 
-    def __init__(self, next_object, *, thread_id, initial_thread_id, close=None):
+
+class _ThreadDemuxSource:
+    __slots__ = (
+        "_close",
+        "_dispatcher",
+        "_on_end_of_stream",
+        "_peekable_reader",
+        "_source",
+        "_thread_id",
+    )
+
+    def __init__(
+        self,
+        next_object,
+        *,
+        thread_id,
+        initial_thread_id,
+        close=None,
+        on_end_of_stream=None,
+    ):
         self._source = _StampedProtocolSource(
             next_object,
             initial_thread_id=initial_thread_id,
@@ -301,11 +320,22 @@ class _ThreadDemuxSource:
         self._dispatcher = utils.Dispatcher(self._peekable_reader)
         self._thread_id = thread_id
         self._close = close
+        self._on_end_of_stream = on_end_of_stream
+
+    def _handle_end_of_stream(self, exc):
+        if self._on_end_of_stream is None or not _is_tracefile_eof(exc):
+            return False
+        return bool(self._on_end_of_stream())
 
     def _next_item(self):
-        _, item = self._dispatcher.next(
-            lambda entry: entry[0] == self._thread_id()
-        )
+        try:
+            _, item = self._dispatcher.next(
+                lambda entry: entry[0] == self._thread_id()
+            )
+        except RuntimeError as exc:
+            if self._handle_end_of_stream(exc):
+                return None
+            raise
         return item
 
     def read(self):
@@ -319,6 +349,8 @@ class _ThreadDemuxSource:
         except BaseException as exc:
             if isinstance(exc, (KeyboardInterrupt, SystemExit)):
                 raise
+            if self._handle_end_of_stream(exc):
+                return None
             buffered = None
         else:
             if buffered[0] == current_thread_id:
@@ -1060,7 +1092,7 @@ def recorder(*,
         if debug else binding_writer(tagged("CALLBACK_RESULT"))
 
     on_callback_error = get_error(_on_error, checkpoint) \
-        if debug else tagged("CALLBACK_ERROR")
+        if debug else get_error(tagged("CALLBACK_ERROR"))
 
     create_stub_object = system.wrap_async(utils.create_stub_object)
     collect = system.wrap_async(gc.collect)
@@ -1150,13 +1182,20 @@ def replayer(*, next_object,
              on_unexpected = default_unexpected_handler,
              on_desync = default_desync_handler,
              debug: bool = False,
-             stacktraces: bool = False) -> System:
+             stacktraces: bool = False,
+             allow_terminal_signal_eof: bool = False) -> System:
     system = None
+    replayed_signal_callback = False
 
     def current_thread_id():
         if system is None:
             return 0
         return system.thread_id()
+
+    def on_end_of_stream():
+        if allow_terminal_signal_eof and replayed_signal_callback:
+            os._exit(0)
+        return False
 
     raw_source = _RawTapeSource(next_object, close=close)
     thread_source = _ThreadDemuxSource(
@@ -1164,6 +1203,7 @@ def replayer(*, next_object,
         thread_id=current_thread_id,
         initial_thread_id=current_thread_id(),
         close=raw_source.close,
+        on_end_of_stream=on_end_of_stream,
     )
     tape_reader = _ReplayBindingState(thread_source)
     raw_source._on_bind_close = tape_reader.delete_handle
@@ -1247,8 +1287,12 @@ def replayer(*, next_object,
         on_desync(message, expected_type)
 
     def run_callback(message):
+        nonlocal replayed_signal_callback
         call_callback = system.gate.apply_with("internal", functional.call)
-        callback_fn = getattr(system, "_signal_handler_targets", {}).get(
+        signal_handler_targets = getattr(system, "_signal_handler_targets", {})
+        if message.fn in signal_handler_targets:
+            replayed_signal_callback = True
+        callback_fn = signal_handler_targets.get(
             message.fn,
             message.fn,
         )
@@ -1264,10 +1308,14 @@ def replayer(*, next_object,
         return result
 
     def run_raw_callback(message):
+        nonlocal replayed_signal_callback
         call_callback = system.gate.apply_with("internal", functional.call)
         try:
             callback_fn = tape_reader.resolve(message.fn)
-            callback_fn = getattr(system, "_signal_handler_targets", {}).get(
+            signal_handler_targets = getattr(system, "_signal_handler_targets", {})
+            if callback_fn in signal_handler_targets:
+                replayed_signal_callback = True
+            callback_fn = signal_handler_targets.get(
                 callback_fn,
                 callback_fn,
             )

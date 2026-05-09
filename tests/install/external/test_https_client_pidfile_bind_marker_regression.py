@@ -1,7 +1,7 @@
 """Regressions for HTTPS client PidFile replay bind-marker divergence.
 
 The requests and coreapi dockertests both record successfully, extract a
-single PidFile, and then fail on replay with:
+single PidFile, and previously failed on replay with:
 
     RuntimeError: bind marker returned when bind was expected
 
@@ -55,10 +55,6 @@ def _base_env() -> dict[str, str]:
     return env
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="requests/urllib3 HTTPS PidFile replay reaches a bind marker during TLS cleanup",
-)
 def test_requests_https_pidfile_replay_does_not_consume_bind_marker(
     tmp_path: Path,
 ):
@@ -110,10 +106,6 @@ def test_requests_https_pidfile_replay_does_not_consume_bind_marker(
     assert "bind marker returned when bind was expected" not in combined
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="coreapi over requests/urllib3 HTTPS PidFile replay reaches a bind marker",
-)
 def test_coreapi_https_pidfile_replay_does_not_consume_bind_marker(
     tmp_path: Path,
 ):

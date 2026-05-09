@@ -228,14 +228,31 @@ def signal_signal(target, system):
     @functools.wraps(target)
     @utils.exclude_from_stacktrace
     def wrapper(signalnum, handler):
-        if callable(handler) and not utils.is_wrapped(handler):
+        if (
+            callable(handler)
+            and not utils.is_wrapped(handler)
+            and not getattr(handler, "__retrace_signal_trampoline__", False)
+        ):
             wrapped_handler = system.wrap_async(handler)
             signal_handler_targets = getattr(system, "_signal_handler_targets", None)
             if signal_handler_targets is None:
                 signal_handler_targets = {}
                 system._signal_handler_targets = signal_handler_targets
             signal_handler_targets[wrapped_handler] = handler
-            handler = wrapped_handler
+
+            @functools.wraps(handler)
+            @utils.exclude_from_stacktrace
+            def retrace_signal_trampoline(signum, frame):
+                if system.location is None:
+                    return handler(signum, frame)
+                return system.gate.apply_with("external", wrapped_handler)(
+                    signum,
+                    frame,
+                )
+
+            retrace_signal_trampoline.__retrace_signal_trampoline__ = True
+            system.bind(retrace_signal_trampoline)
+            handler = retrace_signal_trampoline
         return target(signalnum, handler)
 
     return wrapper

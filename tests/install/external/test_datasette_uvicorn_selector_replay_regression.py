@@ -111,13 +111,6 @@ def _wait_for_datasette(port: int) -> None:
     raise AssertionError(f"Datasette did not become ready: {last_error}")
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "Datasette/Uvicorn PidFile replay misroutes shutdown/event-loop "
-        "messages after SIGINT"
-    ),
-)
 def test_datasette_uvicorn_sigint_pidfile_replay_does_not_misroute_selector_fd(
     tmp_path: Path,
 ):

@@ -505,6 +505,22 @@ def test_replayer_skips_standalone_callback_result_before_next_call():
     assert callback_calls == ["callback"]
 
 
+def test_recorder_callback_error_writes_single_exception_payload():
+    tape = IOMemoryTape()
+    writer = tape.writer()
+    error = StopIteration()
+
+    with _entered(writer) as writer:
+        with _recorder_context(IOMode("plain"), writer) as record_system:
+            record_system.secondary_hooks.on_error(object(), error, None)
+
+    raw = _raw_tape(tape)
+    assert raw is not None
+    index = raw.index("CALLBACK_ERROR")
+    assert raw[index + 1] is error
+    assert raw[index + 2:] == []
+
+
 def test_replayer_skips_stub_callback_before_async_new_patched_bind():
     tape = IOMemoryTape()
 
