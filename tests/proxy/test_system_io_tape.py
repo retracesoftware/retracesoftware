@@ -338,6 +338,55 @@ def test_replayer_skips_sync_marker_while_reading_external_result():
     assert replayed == recorded
 
 
+def test_replayer_skips_checkpoint_marker_while_reading_external_result():
+    """Debug checkpoints are control traffic while draining external results."""
+
+    tape = IOMemoryTape()
+    writer = tape.writer()
+
+    def external_call():
+        return "external-result"
+
+    def flow(call):
+        return call()
+
+    mode = IOMode("debug", debug=True)
+    with _entered(writer) as writer:
+        with _recorder_context(mode, writer) as record_system:
+            call = record_system.patch_function(external_call)
+            recorded = record_system.run(flow, call)
+
+    assert recorded == "external-result"
+
+    raw = _raw_tape(tape)
+    assert raw is not None
+    outer_result_index = raw.index("RESULT")
+    raw.insert(outer_result_index, {"function": "terminal-control"})
+    raw.insert(outer_result_index, "CHECKPOINT")
+
+    def raise_unexpected(message):
+        raise AssertionError(
+            f"Unexpected message: {message}, was expecting a result, error, or call"
+        )
+
+    reader = tape.reader()
+    with _entered(reader) as reader:
+        replay_system = replayer(
+            next_object=reader.read,
+            close=getattr(reader, "close", None),
+            on_unexpected=raise_unexpected,
+            debug=True,
+        )
+        try:
+            _configure_system(replay_system)
+            call = replay_system.patch_function(external_call)
+            replayed = replay_system.run(flow, call)
+        finally:
+            replay_system.unpatch_types()
+
+    assert replayed == recorded
+
+
 def test_checkpoint_equal_matches_descriptor_marker_to_proxy_shell():
     import ssl
 
@@ -498,6 +547,58 @@ def test_replayer_skips_stub_callback_before_async_new_patched_bind():
             assert replay_system.run(flow, replay_system, replay_obj) == "ok"
         finally:
             replay_system.unpatch_types()
+
+
+def test_replayer_binds_stub_callback_result_while_reading_external_result():
+    tape = IOMemoryTape()
+
+    class External:
+        pass
+
+    def external_call():
+        External()
+        return "external-result"
+
+    def flow(call):
+        return call()
+
+    writer = tape.writer()
+    with _entered(writer) as writer:
+        with _recorder_context(IOMode("plain"), writer) as record_system:
+            patch_type(record_system, External)
+            call = record_system.patch_function(external_call)
+            recorded = record_system.run(flow, call)
+
+    assert recorded == "external-result"
+    raw = _raw_tape(tape)
+    assert raw is not None
+    callback_index = raw.index("CALLBACK")
+    binding_index = raw.index("NEW_BINDING", callback_index)
+    callback_result_index = raw.index("CALLBACK_RESULT", binding_index)
+    result_index = raw.index("RESULT", callback_result_index)
+    assert callback_index < binding_index < callback_result_index < result_index
+
+    reader = tape.reader()
+    with _entered(reader) as reader:
+        replay_system = replayer(
+            next_object=reader.read,
+            close=getattr(reader, "close", None),
+            on_desync=lambda record, replay: (_ for _ in ()).throw(
+                AssertionError(f"desync: {record!r} vs {replay!r}")
+            ),
+            on_unexpected=lambda message: (_ for _ in ()).throw(
+                AssertionError(f"unexpected: {message!r}")
+            ),
+        )
+        try:
+            _configure_system(replay_system)
+            patch_type(replay_system, External)
+            replayed_call = replay_system.patch_function(external_call)
+            replayed = replay_system.run(flow, replayed_call)
+        finally:
+            replay_system.unpatch_types()
+
+    assert replayed == recorded
 
 
 def test_replayer_runs_callback_before_internal_patched_alloc_bind():

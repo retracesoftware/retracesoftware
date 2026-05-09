@@ -200,6 +200,47 @@ def concurrent_futures_threadpool_shutdown_sentinel(*args, **kwargs):
     return False
 
 
+def multiprocessing_resource_tracker_pthread_sigmask(target):
+    """Run resource-tracker signal-mask bookkeeping outside the trace."""
+
+    patched = target
+    original = utils.try_unwrap(getattr(target, "_retrace_wrapped", target))
+
+    @functools.wraps(original)
+    @utils.exclude_from_stacktrace
+    def wrapper(*args, **kwargs):
+        frame = sys._getframe()
+        while frame is not None:
+            if (
+                frame.f_globals.get("__name__") == "multiprocessing.resource_tracker"
+                and frame.f_code.co_name == "ensure_running"
+            ):
+                return original(*args, **kwargs)
+            frame = frame.f_back
+        return patched(*args, **kwargs)
+
+    return wrapper
+
+
+def signal_signal(target, system):
+    """Register retrace-aware Python signal handlers."""
+
+    @functools.wraps(target)
+    @utils.exclude_from_stacktrace
+    def wrapper(signalnum, handler):
+        if callable(handler) and not utils.is_wrapped(handler):
+            wrapped_handler = system.wrap_async(handler)
+            signal_handler_targets = getattr(system, "_signal_handler_targets", None)
+            if signal_handler_targets is None:
+                signal_handler_targets = {}
+                system._signal_handler_targets = signal_handler_targets
+            signal_handler_targets[wrapped_handler] = handler
+            handler = wrapped_handler
+        return target(signalnum, handler)
+
+    return wrapper
+
+
 def openssl_connection_class(cls):
     class Connection(cls):
         __module__ = cls.__module__

@@ -3,6 +3,9 @@
 [sys]
 disable = ["excepthook"]
 
+[signal]
+system_wrap = { signal = "retracesoftware.install.edgecases.signal_signal" }
+
 [encodings]
 disable = ["search_function"]
 
@@ -286,6 +289,9 @@ proxy = [
     "getsignal", "pause", "pthread_kill", "pthread_sigmask", "raise_signal", "set_wakeup_fd",
     "setitimer", "siginterrupt", "signal", "sigpending", "sigwait"]
 
+[_signal.wrap]
+pthread_sigmask = "retracesoftware.install.edgecases.multiprocessing_resource_tracker_pthread_sigmask"
+
 [_socket]
 immutable = ["error", "herror", "gaierror", "timeout"]
 proxy = ["socket",
@@ -314,6 +320,9 @@ recvfrom_into = "retracesoftware.install.edgecases.recvfrom_into"
 recv_into = "retracesoftware.install.edgecases.recv_into"
 recvmsg_into = "retracesoftware.install.edgecases.recvmsg_into"
 
+[_socket.type_attributes.socket]
+disable = ["__repr__"]
+
 [select]
 proxy = ["kevent", "kqueue", "poll", "epoll", "select"]
 
@@ -328,6 +337,41 @@ read = "retracesoftware.install.edgecases.read"
 
 [ssl]
 bind = ["Options"]
+
+[ssl.type_attributes.SSLSocket]
+disable = ["__init__"]
+proxy = [
+    "accept",
+    "cipher",
+    "compression",
+    "connect",
+    "connect_ex",
+    "do_handshake",
+    "dup",
+    "get_channel_binding",
+    "getpeercert",
+    "pending",
+    "read",
+    "recv",
+    "recv_into",
+    "recvfrom",
+    "recvfrom_into",
+    "recvmsg",
+    "recvmsg_into",
+    "selected_alpn_protocol",
+    "selected_npn_protocol",
+    "send",
+    "sendall",
+    "sendfile",
+    "sendmsg",
+    "sendto",
+    "shared_ciphers",
+    "shutdown",
+    "unwrap",
+    "verify_client_post_handshake",
+    "version",
+    "write",
+]
 
 [_random]
 proxy = ["Random"]

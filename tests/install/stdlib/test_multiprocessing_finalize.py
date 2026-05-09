@@ -1,6 +1,11 @@
 import os
 
-from retracesoftware.install.edgecases import multiprocessing_finalize_call
+import retracesoftware.utils as utils
+
+from retracesoftware.install.edgecases import (
+    multiprocessing_finalize_call,
+    multiprocessing_resource_tracker_pthread_sigmask,
+)
 
 
 def test_multiprocessing_finalize_call_uses_live_pid_guard():
@@ -46,3 +51,38 @@ def test_multiprocessing_finalize_call_uses_live_pid_guard():
     assert wrapped(finalizer) is None
     assert finalizer._key not in registry
     assert callback_calls == []
+
+
+def test_resource_tracker_pthread_sigmask_wrapper_is_stack_scoped():
+    calls = []
+
+    def original(*args):
+        calls.append(("original", args))
+        return "original"
+
+    def handler(wrapped, *args, **kwargs):
+        calls.append(("patched", args))
+        return "patched"
+
+    patched = utils.wrapped_callable(
+        utils.wrapped_function(target=original, handler=handler)
+    )
+    wrapped = multiprocessing_resource_tracker_pthread_sigmask(patched)
+
+    assert wrapped("outside") == "patched"
+
+    namespace = {
+        "__name__": "multiprocessing.resource_tracker",
+        "wrapped": wrapped,
+    }
+    exec(
+        "def ensure_running():\n"
+        "    return wrapped('inside')\n",
+        namespace,
+    )
+
+    assert namespace["ensure_running"]() == "original"
+    assert calls == [
+        ("patched", ("outside",)),
+        ("original", ("inside",)),
+    ]

@@ -592,9 +592,10 @@ class System:
 
     # Methods that must never be patched.  __new__ and __getattribute__
     # are fundamental to the object model; __del__ runs at GC time in
-    # unpredictable contexts; __dict__ is a data descriptor needed by
-    # the interpreter itself.
-    _patch_type_blacklist = frozenset(['__new__', '__getattribute__', '__del__', '__dict__'])
+    # unpredictable contexts; __repr__ can be invoked from warning/error
+    # reporting while another boundary call is active; __dict__ is a data
+    # descriptor needed by the interpreter itself.
+    _patch_type_blacklist = frozenset(['__new__', '__getattribute__', '__del__', '__repr__', '__dict__'])
 
     def _should_proxy_type(self, cls):
         """Decide whether values of *cls* need a dynamic proxy wrapper.

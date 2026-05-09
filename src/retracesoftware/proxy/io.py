@@ -215,6 +215,9 @@ class _ReplayBindingState:
         else:
             self._read()
 
+    def unread(self, value):
+        self._buffers.setdefault(self._thread_id(), deque()).appendleft(value)
+
     def consume_pending_closes(self, *, ignore_end_of_stream=False, buffered_only=False):
         while True:
             try:
@@ -341,7 +344,28 @@ class _IoMessageSource:
         self._close = close
 
     def read(self):
-        return _message_from_tag(self._read(), self._read, self._thread_id)
+        tag = self._read()
+        if tag == "CALLBACK":
+            fn = self._read()
+            args = self._read()
+            kwargs = self._read()
+            if not isinstance(kwargs, dict):
+                self._unread(kwargs)
+                kwargs = {}
+            return CallbackMessage(
+                fn,
+                args,
+                kwargs,
+                thread_id=_read_thread_id(self._thread_id),
+            )
+        return _message_from_tag(tag, self._read, self._thread_id)
+
+    def _unread(self, value):
+        owner = getattr(self._read, "__self__", None)
+        unread = getattr(owner, "unread", None)
+        if unread is None:
+            raise RuntimeError("message source cannot unread callback lookahead")
+        unread(value)
 
     def close(self):
         if self._close is not None:
@@ -1224,12 +1248,17 @@ def replayer(*, next_object,
 
     def run_callback(message):
         call_callback = system.gate.apply_with("internal", functional.call)
+        callback_fn = getattr(system, "_signal_handler_targets", {}).get(
+            message.fn,
+            message.fn,
+        )
         try:
-            result = call_callback(message.fn, message.args, message.kwargs)
+            result = call_callback(callback_fn, message.args, message.kwargs)
         except Exception as exc:
             if debug:
                 checkpoint(_on_error(exc))
             return None
+        bind_pending_callback_result(result)
         if debug:
             checkpoint(_on_result(result))
         return result
@@ -1237,8 +1266,13 @@ def replayer(*, next_object,
     def run_raw_callback(message):
         call_callback = system.gate.apply_with("internal", functional.call)
         try:
+            callback_fn = tape_reader.resolve(message.fn)
+            callback_fn = getattr(system, "_signal_handler_targets", {}).get(
+                callback_fn,
+                callback_fn,
+            )
             result = call_callback(
-                tape_reader.resolve(message.fn),
+                callback_fn,
                 tape_reader.resolve(message.args),
                 tape_reader.resolve(message.kwargs),
             )
@@ -1246,9 +1280,23 @@ def replayer(*, next_object,
             if debug:
                 raw_checkpoint(_on_error(exc))
             return None
+        bind_pending_callback_result(result)
         if debug:
             raw_checkpoint(_on_result(result))
         return result
+
+    def bind_pending_callback_result(result):
+        try:
+            next_value = tape_reader._peek_item(resolve=False)
+        except StopIteration:
+            return False
+
+        if not isinstance(next_value, _BindOpenEvent):
+            return False
+
+        tape_reader.bind(result)
+        system.is_bound.add(result)
+        return True
 
     def consume_callback_completion():
         try:
@@ -1412,6 +1460,9 @@ def replayer(*, next_object,
                 continue
 
             if isinstance(message, CallMarkerMessage):
+                continue
+
+            if isinstance(message, CheckpointMessage):
                 continue
 
             if message == "SYNC":

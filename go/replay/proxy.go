@@ -2,6 +2,7 @@ package replay
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -9,6 +10,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"sync/atomic"
 	"time"
 )
 
@@ -56,6 +58,7 @@ type Proxy struct {
 	navHistory          []*Cursor
 	navigatedFromHit    bool // true after step/nav, false after continue lands on a hit
 	navTimeout          time.Duration
+	seq                 atomic.Int64
 }
 
 func NewProxy(pidFile string, clientIn io.Reader, clientW *Writer) *Proxy {
@@ -129,7 +132,7 @@ func (p *Proxy) handlePreLaunch() error {
 			}
 			return nil
 		default:
-			resp := errorResponse(env.Seq, env.Command,
+			resp := p.errorResponse(env.Seq, env.Command,
 				fmt.Sprintf("request %q not supported before launch", env.Command))
 			if err := p.clientW.Write(resp); err != nil {
 				return err
@@ -141,33 +144,25 @@ func (p *Proxy) handlePreLaunch() error {
 func (p *Proxy) handleInitialize(env envelope) error {
 	caps := json.RawMessage(`{
 		"supportsConfigurationDoneRequest": true,
-		"supportsFunctionBreakpoints": true,
 		"supportsConditionalBreakpoints": true,
 		"supportsStepBack": true,
 		"supportsStepInTargetsRequest": false,
-		"supportsGotoTargetsRequest": true,
-		"supportsRestartRequest": true,
-		"supportsExceptionInfoRequest": true,
-		"supportsSteppingGranularity": true,
-		"exceptionBreakpointFilters": [
-			{"filter": "raised", "label": "Raised Exceptions"},
-			{"filter": "uncaught", "label": "Uncaught Exceptions", "default": true}
-		]
+		"supportsSteppingGranularity": true
 	}`)
 
-	resp := successResponse(env.Seq, "initialize", caps)
+	resp := p.successResponse(env.Seq, "initialize", caps)
 	if err := p.clientW.Write(resp); err != nil {
 		return err
 	}
-	return p.clientW.Write(makeEvent("initialized", nil))
+	return p.clientW.Write(p.makeEvent("initialized", nil))
 }
 
 func (p *Proxy) handleLaunch(env envelope) error {
 	if p.launchErr != nil {
-		return p.clientW.Write(errorResponse(env.Seq, "launch", p.launchErr.Error()))
+		return p.clientW.Write(p.errorResponse(env.Seq, "launch", p.launchErr.Error()))
 	}
 	if p.pidFile == "" {
-		return p.clientW.Write(errorResponse(env.Seq, "launch", "no pidFile configured"))
+		return p.clientW.Write(p.errorResponse(env.Seq, "launch", "no pidFile configured"))
 	}
 	log.Printf("launch: pidFile=%s", p.pidFile)
 
@@ -176,14 +171,14 @@ func (p *Proxy) handleLaunch(env envelope) error {
 		dapLog := NewDAPLogWriter(p.clientW)
 		root, err := StartReplayFromPidFile(ctx, p.pidFile, dapLog, dapLog)
 		if err != nil {
-			return p.clientW.Write(errorResponse(env.Seq, "launch", err.Error()))
+			return p.clientW.Write(p.errorResponse(env.Seq, "launch", err.Error()))
 		}
 		engine := NewQueryEngine(root, p.pidFile, dapLog)
 		p.debugger = NewDebugger(engine)
 		p.provider = engine.Provider()
 	}
 
-	return p.clientW.Write(successResponse(env.Seq, "launch", nil))
+	return p.clientW.Write(p.successResponse(env.Seq, "launch", nil))
 }
 
 func (p *Proxy) handlePostLaunch() error {
@@ -206,10 +201,10 @@ func (p *Proxy) handlePostLaunch() error {
 
 		switch env.Command {
 		case "configurationDone":
-			if err := p.clientW.Write(successResponse(env.Seq, env.Command, nil)); err != nil {
+			if err := p.clientW.Write(p.successResponse(env.Seq, env.Command, nil)); err != nil {
 				return err
 			}
-			if err := p.clientW.Write(makeEvent("stopped", map[string]any{
+			if err := p.clientW.Write(p.makeEvent("stopped", map[string]any{
 				"reason":            "entry",
 				"threadId":          1,
 				"allThreadsStopped": true,
@@ -219,46 +214,46 @@ func (p *Proxy) handlePostLaunch() error {
 		case "setBreakpoints":
 			body, err := p.handleSetBreakpoints(env.Arguments)
 			if err != nil {
-				return p.clientW.Write(errorResponse(env.Seq, env.Command, err.Error()))
+				return p.clientW.Write(p.errorResponse(env.Seq, env.Command, err.Error()))
 			}
-			if err := p.clientW.Write(successResponse(env.Seq, env.Command, body)); err != nil {
+			if err := p.clientW.Write(p.successResponse(env.Seq, env.Command, body)); err != nil {
 				return err
 			}
 		case "threads":
 			body := json.RawMessage(`{"threads":[{"id":1,"name":"MainThread"}]}`)
-			if err := p.clientW.Write(successResponse(env.Seq, env.Command, body)); err != nil {
+			if err := p.clientW.Write(p.successResponse(env.Seq, env.Command, body)); err != nil {
 				return err
 			}
 		case "continue", "next", "stepIn", "stepOut", "stepBack", "reverseContinue":
-			if err := p.clientW.Write(successResponse(env.Seq, env.Command, json.RawMessage(`{"allThreadsContinued":true}`))); err != nil {
+			if err := p.clientW.Write(p.successResponse(env.Seq, env.Command, json.RawMessage(`{"allThreadsContinued":true}`))); err != nil {
 				return err
 			}
 			if err := p.runToNextStop(env.Command); err != nil {
-				return p.clientW.Write(errorResponse(env.Seq, env.Command, err.Error()))
+				return p.clientW.Write(p.errorResponse(env.Seq, env.Command, err.Error()))
 			}
 		case "stackTrace":
 			body := p.handleStackTrace()
-			if err := p.clientW.Write(successResponse(env.Seq, env.Command, body)); err != nil {
+			if err := p.clientW.Write(p.successResponse(env.Seq, env.Command, body)); err != nil {
 				return err
 			}
 		case "scopes":
 			body := p.handleScopes()
-			if err := p.clientW.Write(successResponse(env.Seq, env.Command, body)); err != nil {
+			if err := p.clientW.Write(p.successResponse(env.Seq, env.Command, body)); err != nil {
 				return err
 			}
 		case "variables":
 			body := p.handleVariables()
-			if err := p.clientW.Write(successResponse(env.Seq, env.Command, body)); err != nil {
+			if err := p.clientW.Write(p.successResponse(env.Seq, env.Command, body)); err != nil {
 				return err
 			}
 		case "evaluate":
 			body := json.RawMessage(`{"result":"<evaluation unavailable>","variablesReference":0}`)
-			if err := p.clientW.Write(successResponse(env.Seq, env.Command, body)); err != nil {
+			if err := p.clientW.Write(p.successResponse(env.Seq, env.Command, body)); err != nil {
 				return err
 			}
 		case "source":
 			body := p.handleSource(env.Arguments)
-			if err := p.clientW.Write(successResponse(env.Seq, env.Command, body)); err != nil {
+			if err := p.clientW.Write(p.successResponse(env.Seq, env.Command, body)); err != nil {
 				return err
 			}
 		case "disconnect":
@@ -267,12 +262,12 @@ func (p *Proxy) handlePostLaunch() error {
 			}
 			p.currentCursor = nil
 			p.hasCurrentHit = false
-			if err := p.clientW.Write(successResponse(env.Seq, env.Command, nil)); err != nil {
+			if err := p.clientW.Write(p.successResponse(env.Seq, env.Command, nil)); err != nil {
 				return err
 			}
 			return nil
 		default:
-			if err := p.clientW.Write(errorResponse(env.Seq, env.Command, "request not supported by Go-only DAP proxy yet")); err != nil {
+			if err := p.clientW.Write(p.errorResponse(env.Seq, env.Command, "request not supported by Go-only DAP proxy yet")); err != nil {
 				return err
 			}
 		}
@@ -309,10 +304,11 @@ func (p *Proxy) handleSetBreakpoints(argsRaw json.RawMessage) (json.RawMessage, 
 		}
 	}
 
+	sourcePath := p.resolveSourcePath(args.Source.Path)
 	newSpecs := make(map[string]BreakpointSpec, len(args.Breakpoints))
 	for _, bp := range args.Breakpoints {
 		spec := BreakpointSpec{
-			File:      args.Source.Path,
+			File:      sourcePath,
 			Line:      bp.Line,
 			Condition: bp.Condition,
 		}
@@ -321,7 +317,7 @@ func (p *Proxy) handleSetBreakpoints(argsRaw json.RawMessage) (json.RawMessage, 
 
 	for key, id := range p.breakpointIDs {
 		spec, ok := p.breakpointSpecs[key]
-		if ok && spec.File != args.Source.Path {
+		if ok && spec.File != sourcePath {
 			continue
 		}
 		if _, ok := newSpecs[key]; !ok {
@@ -334,8 +330,16 @@ func (p *Proxy) handleSetBreakpoints(argsRaw json.RawMessage) (json.RawMessage, 
 	ctx := context.Background()
 	out := make([]map[string]any, 0, len(args.Breakpoints))
 	for _, bp := range args.Breakpoints {
+		if !sourceLineCanBreak(sourcePath, bp.Line) {
+			out = append(out, map[string]any{
+				"verified": false,
+				"line":     bp.Line,
+				"message":  "source line is not executable",
+			})
+			continue
+		}
 		spec := BreakpointSpec{
-			File:      args.Source.Path,
+			File:      sourcePath,
 			Line:      bp.Line,
 			Condition: bp.Condition,
 		}
@@ -357,6 +361,22 @@ func (p *Proxy) handleSetBreakpoints(argsRaw json.RawMessage) (json.RawMessage, 
 
 	body, err := json.Marshal(map[string]any{"breakpoints": out})
 	return body, err
+}
+
+func sourceLineCanBreak(path string, line int) bool {
+	if path == "" || line <= 0 {
+		return false
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return false
+	}
+	lines := bytes.Split(data, []byte("\n"))
+	if line > len(lines) {
+		return false
+	}
+	trimmed := bytes.TrimSpace(lines[line-1])
+	return len(trimmed) > 0 && !bytes.HasPrefix(trimmed, []byte("#"))
 }
 
 func (p *Proxy) runToNextStop(command string) error {
@@ -423,7 +443,7 @@ func (p *Proxy) handleContinue(ctx context.Context, reverse bool) error {
 	}
 	log.Printf("handleContinue: ok=%v hitMsgIdx=%d", ok, hit.Location.MessageIndex)
 	if !ok {
-		return p.clientW.Write(makeEvent("terminated", map[string]any{}))
+		return p.clientW.Write(p.makeEvent("terminated", map[string]any{}))
 	}
 
 	p.currentMessageIndex = hit.Location.MessageIndex
@@ -453,7 +473,7 @@ func (p *Proxy) handleContinue(ctx context.Context, reverse bool) error {
 		}
 	}
 
-	return p.clientW.Write(makeEvent("stopped", map[string]any{
+	return p.clientW.Write(p.makeEvent("stopped", map[string]any{
 		"reason":            "breakpoint",
 		"threadId":          1,
 		"allThreadsStopped": true,
@@ -469,7 +489,7 @@ func (p *Proxy) handleCursorNav(ctx context.Context, reason string, nav func() (
 	}()
 
 	if p.currentCursor == nil {
-		return p.clientW.Write(makeEvent("stopped", map[string]any{
+		return p.clientW.Write(p.makeEvent("stopped", map[string]any{
 			"reason":            reason,
 			"threadId":          1,
 			"allThreadsStopped": true,
@@ -500,7 +520,7 @@ func (p *Proxy) handleCursorNav(ctx context.Context, reason string, nav func() (
 		p.navigatedFromHit = true
 	}
 
-	return p.clientW.Write(makeEvent("stopped", map[string]any{
+	return p.clientW.Write(p.makeEvent("stopped", map[string]any{
 		"reason":            reason,
 		"threadId":          1,
 		"allThreadsStopped": true,
@@ -642,9 +662,13 @@ func intOr(m map[string]any, key string, fallback int) int {
 
 // --- message construction helpers ---
 
-func successResponse(reqSeq int, command string, body json.RawMessage) json.RawMessage {
+func (p *Proxy) nextSeq() int {
+	return int(p.seq.Add(1))
+}
+
+func (p *Proxy) successResponse(reqSeq int, command string, body json.RawMessage) json.RawMessage {
 	m := map[string]any{
-		"seq":         1,
+		"seq":         p.nextSeq(),
 		"type":        "response",
 		"request_seq": reqSeq,
 		"command":     command,
@@ -659,9 +683,9 @@ func successResponse(reqSeq int, command string, body json.RawMessage) json.RawM
 	return out
 }
 
-func errorResponse(reqSeq int, command, message string) json.RawMessage {
+func (p *Proxy) errorResponse(reqSeq int, command, message string) json.RawMessage {
 	m := map[string]any{
-		"seq":         1,
+		"seq":         p.nextSeq(),
 		"type":        "response",
 		"request_seq": reqSeq,
 		"command":     command,
@@ -678,9 +702,9 @@ func errorResponse(reqSeq int, command, message string) json.RawMessage {
 	return out
 }
 
-func makeEvent(name string, body any) json.RawMessage {
+func (p *Proxy) makeEvent(name string, body any) json.RawMessage {
 	m := map[string]any{
-		"seq":   1,
+		"seq":   p.nextSeq(),
 		"type":  "event",
 		"event": name,
 	}

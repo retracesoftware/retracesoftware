@@ -62,9 +62,9 @@ if __name__ == "__main__":
 	if err := os.WriteFile(script, []byte(scriptText), 0644); err != nil {
 		t.Fatal(err)
 	}
-	bugLine := lineContaining(t, scriptText, "BUG_LINE")
-	beforeAssertLine := lineContaining(t, scriptText, "BEFORE_ASSERT_LINE")
-	assertLine := lineContaining(t, scriptText, "ASSERT_LINE")
+	bugLine := lineContaining(t, scriptText, "# BUG_LINE")
+	beforeAssertLine := lineContaining(t, scriptText, "# BEFORE_ASSERT_LINE")
+	assertLine := lineContaining(t, scriptText, "# ASSERT_LINE")
 
 	tracePath := filepath.Join(tmpDir, "trace.retrace")
 	pidFile, cleanup := extractPidFile(t, python, script, tracePath)

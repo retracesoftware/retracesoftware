@@ -70,13 +70,6 @@ def test_replay_does_not_live_run_llama_cpp_model_execution_boundary(
     )
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "Rich status output before a real HuggingFace download leaves replay "
-        "misaligned at the recorded download boundary"
-    ),
-)
 def test_replay_huggingface_download_after_rich_status_output_matches_record(
     tmp_path: Path,
 ) -> None:

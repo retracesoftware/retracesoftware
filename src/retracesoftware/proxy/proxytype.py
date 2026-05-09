@@ -31,7 +31,15 @@ def dynamic_proxytype(handler, cls, wrapped_base = utils.ExternalWrapped):
     assert not issubclass(cls, DynamicProxy)
     assert not issubclass(cls, BaseException)
 
-    blacklist = ['__getattribute__', '__hash__', '__del__', '__call__', '__new__']
+    blacklist = [
+        '__getattribute__',
+        '__hash__',
+        '__del__',
+        '__init__',
+        '__call__',
+        '__new__',
+        '__repr__',
+    ]
 
     spec = {}
 

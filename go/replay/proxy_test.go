@@ -6,8 +6,10 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -150,6 +152,8 @@ func TestSetBreakpointsReplacesOnlyMatchingSource(t *testing.T) {
 
 	mainPath := filepath.Join(t.TempDir(), "main.py")
 	servicePath := filepath.Join(t.TempDir(), "service.py")
+	writeBreakpointFixture(t, mainPath, 9)
+	writeBreakpointFixture(t, servicePath, 17)
 
 	if _, err := proxy.handleSetBreakpoints(mustSetBreakpointsArgs(t, mainPath, 9)); err != nil {
 		t.Fatalf("set main breakpoints: %v", err)
@@ -180,6 +184,18 @@ func TestSetBreakpointsReplacesOnlyMatchingSource(t *testing.T) {
 	}
 	if _, ok := proxy.breakpointIDs[breakpointKey(BreakpointSpec{File: servicePath, Line: 17})]; !ok {
 		t.Fatalf("service breakpoint was removed")
+	}
+}
+
+func writeBreakpointFixture(t *testing.T, path string, line int) {
+	t.Helper()
+
+	var b strings.Builder
+	for i := 1; i <= line; i++ {
+		fmt.Fprintf(&b, "print(%d)\n", i)
+	}
+	if err := os.WriteFile(path, []byte(b.String()), 0o644); err != nil {
+		t.Fatalf("write breakpoint fixture: %v", err)
 	}
 }
 

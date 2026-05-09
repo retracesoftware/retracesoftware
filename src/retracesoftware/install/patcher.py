@@ -86,6 +86,7 @@ def install_hash_patching(system):
 #   bind           pre-register objects (enums expanded to members)
 #   disable        system.disable_for, replace in namespace
 #   wrap           resolve dotted path, replace in namespace
+#   system_wrap    resolve dotted path, call wrapper_factory(value, system)
 #   replay_materialize
 #                  register disabled-context real-object needs only; normal
 #                  replay must not live-call these targets
@@ -321,6 +322,10 @@ def patch(
         name: resolve(dotted_path)
         for name, dotted_path in spec.get("wrap", {}).items()
     }
+    resolved_system_wrap = {
+        name: resolve(dotted_path)
+        for name, dotted_path in spec.get("system_wrap", {}).items()
+    }
     resolved_patch_class = {
         name: {
             attr: resolve(transform)
@@ -426,6 +431,15 @@ def patch(
                 new = wrapper_factory(value)
                 _apply(name, value, new)
 
+        elif directive == 'system_wrap':
+            for name, dotted_path in config.items():
+                if name not in namespace:
+                    continue
+                value = namespace[name]
+                wrapper_factory = resolved_system_wrap[name]
+                new = wrapper_factory(value, system)
+                _apply(name, value, new)
+
         elif directive == 'replay_materialize':
             if replay_materialize is None:
                 continue
@@ -492,6 +506,7 @@ def patch(
                                     value = getattr(cls, attr)
                                     if not callable(value) or isinstance(value, type):
                                         continue
+                                    value = utils.try_unwrap(value)
                                     set_type_attr(attr, system._wrapped_method(value))
                                 continue
 
@@ -502,6 +517,7 @@ def patch(
                                     value = getattr(cls, attr)
                                     if not callable(value) or isinstance(value, type):
                                         continue
+                                    value = utils.try_unwrap(value)
                                     set_type_attr(attr, system.disabled_method_for(value))
                                 continue
 
@@ -512,6 +528,7 @@ def patch(
                                     value = getattr(cls, attr)
                                     if not callable(value) or isinstance(value, type):
                                         continue
+                                    value = utils.try_unwrap(value)
                                     set_type_attr(attr, system.sync_for(value))
                                 continue
 
@@ -522,6 +539,7 @@ def patch(
                                     value = getattr(cls, attr)
                                     if not callable(value) or isinstance(value, type):
                                         continue
+                                    value = utils.try_unwrap(value)
                                     predicate = resolve(dotted_path)
                                     set_type_attr(
                                         attr,
@@ -536,6 +554,7 @@ def patch(
                                     value = getattr(cls, attr)
                                     if not callable(value) or isinstance(value, type):
                                         continue
+                                    value = utils.try_unwrap(value)
                                     set_type_attr(attr, system.sync_disabled_for(value))
                                 continue
 
@@ -544,6 +563,7 @@ def patch(
                                     if not hasattr(cls, attr):
                                         continue
                                     value = getattr(cls, attr)
+                                    value = utils.try_unwrap(value)
                                     wrapper_factory = resolve(dotted_path)
                                     set_type_attr(attr, wrapper_factory(value))
                                 continue
