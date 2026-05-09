@@ -15,11 +15,16 @@ minimal reproducer, Python version, and OS.
 
 ## Python versions
 
-[TODO: 3.x, 3.y]
+Retrace is tested with CPython 3.11 and CPython 3.12.
+
+Python 3.12 has the strongest debugger support because the reverse-debugger
+cursor machinery uses `sys.monitoring`.
 
 ## Operating systems
 
-[TODO: Linux x86_64, macOS arm64, ...]
+Retrace is tested on Linux and macOS 64-bit environments. Current CI builds
+wheels on Linux x86_64, Linux arm64, and macOS. Windows and free-threaded
+CPython builds are not supported yet.
 
 ---
 

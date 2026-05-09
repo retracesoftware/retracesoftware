@@ -6,8 +6,6 @@ Retrace is the first reverse debugger designed for production CPython
 applications. Record a failing execution once, replay it locally and
 deterministically in VS Code, and step backwards from the crash to the cause.
 
-![Retrace reverse-step in VS Code](docs/assets/reverse-step.gif)
-
 Retrace records the boundary between your Python code and nondeterministic
 outside behavior (network, database, filesystem, time, randomness, model
 output, subprocess behavior), then replays the execution locally. Your Python
@@ -56,8 +54,8 @@ Pydantic, psycopg2, plus the standard-library determinism boundaries
 See [COMPATIBILITY.md](./COMPATIBILITY.md) for the full matrix, what "tested"
 means, and known gaps (SQLAlchemy, Redis, boto3, Celery).
 
-**Python versions:** [TODO]
-**Operating systems:** [TODO]
+**Python versions:** CPython 3.11 and 3.12
+**Operating systems:** macOS and Linux, 64-bit
 
 ## Quick Start
 

@@ -159,7 +159,8 @@ RETRACE_RECORDING=/tmp/recording python external_boundary_benchmark.py
 
 ## Benchmark Environment
 
-- Python 3.11
+- Benchmarks can be run under supported CPython versions.
+- Reference runs use Python 3.11.
 - Single-threaded execution
 - 5 runs per test, averaged
 - Warmup runs, discarded
