@@ -6,12 +6,18 @@ PidFile, and replaying that PidFile.  Replay gets through the user-visible
 request path, but during asyncio/Uvicorn shutdown the reader consumes a
 recorded float monotonic-clock result where selectors expects a socket fd.
 
-Current failure signature:
+Current failure signatures have moved as the replay pipeline has improved:
+
+    Checkpoint difference: ... was expecting time.monotonic
+
+Older builds reached asyncio shutdown and delivered a recorded time-like result
+to the selector self-pipe fd call:
 
     ValueError: Invalid file object: 3617...
 
-That float is the important fingerprint: replay is delivering a recorded
-time-like result to the selector self-pipe fd call during shutdown.
+Both fingerprints belong to the same Datasette/Uvicorn PidFile replay contract:
+recording succeeds, extraction succeeds, replay restarts the server, and replay
+then consumes the next recorded shutdown/event-loop message in the wrong order.
 """
 
 from __future__ import annotations
@@ -108,8 +114,8 @@ def _wait_for_datasette(port: int) -> None:
 @pytest.mark.xfail(
     strict=True,
     reason=(
-        "Datasette/Uvicorn PidFile replay misroutes shutdown results so "
-        "selector fd lookup receives a recorded monotonic float"
+        "Datasette/Uvicorn PidFile replay misroutes shutdown/event-loop "
+        "messages after SIGINT"
     ),
 )
 def test_datasette_uvicorn_sigint_pidfile_replay_does_not_misroute_selector_fd(
@@ -174,9 +180,10 @@ def test_datasette_uvicorn_sigint_pidfile_replay_does_not_misroute_selector_fd(
                 record.wait(timeout=5)
 
     record_output = record_log.read_text(encoding="utf-8")
-    assert record_rc == 0, (
+    assert record_rc in (0, -signal.SIGINT), (
         f"record failed (exit {record_rc})\ncombined output:\n{record_output}"
     )
+    assert recording.exists()
     assert "GET /demo/items.json?_shape=array HTTP/1.1" in record_output
 
     extract = _run([str(recording), "--extract"], cwd=tmp_path, env=env)
@@ -212,5 +219,6 @@ def test_datasette_uvicorn_sigint_pidfile_replay_does_not_misroute_selector_fd(
         f"stdout:\n{replay.stdout}\n"
         f"stderr:\n{replay.stderr}"
     )
+    assert "Checkpoint difference" not in combined_replay
     assert "Invalid file object" not in combined_replay
     assert "GET /demo/items.json?_shape=array HTTP/1.1" in combined_replay
