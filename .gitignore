@@ -218,4 +218,5 @@ go/cmd/replay/replay
 
 # Trace recordings
 *.retrace
+benchmarks/results/
 *.bin

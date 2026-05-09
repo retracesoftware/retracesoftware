@@ -21,6 +21,7 @@ real application command examples, and VS Code replay debugging.
 - [Recording Python Commands](getting-started/recording-python-commands.md)
 - [VS Code Extension](getting-started/vscode-extension.md)
 - [Compatibility](../COMPATIBILITY.md)
+- [Performance And Benchmarks](performance.md)
 - [Troubleshooting](troubleshooting.md)
 
 ## Reference
