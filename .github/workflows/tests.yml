@@ -23,6 +23,11 @@ jobs:
           python-version: '3.11'
           cache: 'pip'
 
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go/go.mod
+          cache-dependency-path: go/go.sum
+
       - name: Install build dependencies
         run: pip install meson-python meson ninja setuptools_scm pytest
 

@@ -34,3 +34,11 @@ def test_dockertest_replay_services_do_not_seed_recording_environment():
 
         assert "RETRACE_FORMAT" not in replay_block
         assert "RETRACE_REPLAY_BIN" not in replay_block
+
+
+def test_dockertest_base_requirements_do_not_pull_external_replay_binary():
+    """Dockertests should exercise the local checkout's packaged replay binary."""
+
+    requirements = (DOCKERTESTS / "base-requirements.txt").read_text()
+
+    assert "retracesoftware_replay" not in requirements

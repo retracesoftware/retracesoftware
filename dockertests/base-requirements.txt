@@ -3,6 +3,4 @@
 #
 # retracesoftware itself is installed from the local checkout by install.sh
 # so dockertests exercise the current branch rather than a published wheel.
-#
-# The Go replay helper is still consumed as a platform-specific binary wheel.
-retracesoftware_replay
+# The local checkout now builds and installs the Go replay helper itself.
