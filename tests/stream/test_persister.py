@@ -64,6 +64,19 @@ def _unframe(data: bytes) -> bytes:
     return bytes(out)
 
 
+def test_detect_raw_trace_does_not_confuse_pid_low_byte_for_json_preamble(tmp_path):
+    path = tmp_path / "trace.bin"
+    pid = 0x0102037B
+    payload = b'{"type":"exec","encoding_version":1}\n'
+    frame = pid.to_bytes(4, "little") + len(payload).to_bytes(2, "little") + payload
+    path.write_bytes(b"#!replay --recording\n" + frame)
+
+    assert stream.detect_raw_trace(path) is False
+    assert stream.list_pids(path) == {pid}
+    info, _ = stream.read_process_info(path, raw=False)
+    assert info["type"] == "exec"
+
+
 # ---------------------------------------------------------------------------
 # Construction / teardown
 # ---------------------------------------------------------------------------

@@ -667,10 +667,21 @@ def _skip_shebang(f):
 
 def detect_raw_trace(path):
     """Return True for unframed traces, False for PID-framed traces."""
+    import json
+
     with open(str(path), 'rb') as f:
         _skip_shebang(f)
         first = f.read(1)
-    return first == b'{'
+        if first != b'{':
+            return False
+
+        line = first + f.readline()
+
+    try:
+        json.loads(line)
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        return False
+    return True
 
 
 def list_pids(path):

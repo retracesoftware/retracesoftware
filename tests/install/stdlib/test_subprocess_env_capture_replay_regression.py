@@ -148,7 +148,10 @@ def _write_env_capture_program(tmp_path: Path) -> Path:
 def _test_env(tmp_path: Path) -> dict[str, str]:
     env = os.environ.copy()
     env["PYTHONFAULTHANDLER"] = "1"
-    env["RETRACE_CONFIG"] = "debug"
+    # These tests invoke Retrace explicitly around the parent process.  The
+    # child process should stay plain so subprocess capture sees only the
+    # child's stdout/stderr, not auto-enabled writer diagnostics.
+    env.pop("RETRACE_CONFIG", None)
     env["PYTHONPATH"] = (
         f"{tmp_path}{os.pathsep}{env['PYTHONPATH']}"
         if env.get("PYTHONPATH")

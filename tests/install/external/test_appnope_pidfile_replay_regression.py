@@ -79,7 +79,11 @@ def test_appnope_pidfile_replay_does_not_read_past_trace_at_finalize(
     env["MESONPY_EDITABLE_SKIP"] = _editable_skip()
     env["PYTHONFAULTHANDLER"] = "1"
     env["PYTHONPATH"] = _local_pythonpath()
-    env["RETRACE_CONFIG"] = "debug"
+    # The test invokes ``python -m retracesoftware`` explicitly.  Leaving
+    # RETRACE_CONFIG in the inherited environment lets spawn-based
+    # multiprocessing children auto-enable and race verbose writer output into
+    # the parent's captured stdout before ``terminate()`` wins.
+    env.pop("RETRACE_CONFIG", None)
 
     replay_env = env.copy()
     replay_env["RETRACE_SKIP_CHECKSUMS"] = "1"
