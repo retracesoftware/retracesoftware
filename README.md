@@ -223,6 +223,7 @@ Replay it:
 - [Troubleshooting](https://github.com/retracesoftware/retracesoftware/blob/main/docs/troubleshooting.md)
 - [Internals](https://github.com/retracesoftware/retracesoftware/blob/main/docs/internals/README.md)
 - [Architecture](https://github.com/retracesoftware/retracesoftware/blob/main/docs/internals/architecture.md)
+- [Test harnesses](https://github.com/retracesoftware/retracesoftware/blob/main/docs/internals/test-harnesses.md)
 
 ## Development From Source
 

@@ -36,6 +36,7 @@ the Go-owned replay/debug path.
 ## Architecture References
 
 - [Architecture](architecture.md)
+- [Test Harnesses](test-harnesses.md)
 - [Module Layers](../LAYERS.md)
 - [Stream Architecture](../STREAM.md)
 - [Thread Replay](../THREAD_REPLAY.md)

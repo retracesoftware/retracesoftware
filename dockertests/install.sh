@@ -14,6 +14,8 @@ TARGET="/app/packages"
 
 export PIP_RETRIES="${PIP_RETRIES:-10}"
 export PIP_DEFAULT_TIMEOUT="${PIP_DEFAULT_TIMEOUT:-60}"
+export NINJAFLAGS="${NINJAFLAGS:--j2}"
+export RETRACE_GO_VERSION="${RETRACE_GO_VERSION:-1.25.0}"
 
 mkdir -p "$TARGET"
 
@@ -38,16 +40,72 @@ if [ -f "/app/dockertests/base-requirements.txt" ]; then
     pip install --no-cache-dir --upgrade --target "$TARGET" -r /app/dockertests/base-requirements.txt
 fi
 
+go_is_new_enough() {
+    python - "$1" <<'PY'
+import re
+import sys
+
+version = sys.argv[1]
+match = re.search(r"go(\d+)\.(\d+)", version)
+if not match:
+    sys.exit(1)
+major, minor = map(int, match.groups())
+sys.exit(0 if (major, minor) >= (1, 25) else 1)
+PY
+}
+
+install_go_toolchain() {
+    current="$(go env GOVERSION 2>/dev/null || true)"
+    if [ -n "$current" ] && go_is_new_enough "$current"; then
+        return
+    fi
+
+    arch="$(dpkg --print-architecture)"
+    case "$arch" in
+        amd64) go_arch="amd64" ;;
+        arm64) go_arch="arm64" ;;
+        *)
+            echo "[install.sh] Unsupported architecture for Go install: $arch" >&2
+            exit 1
+            ;;
+    esac
+
+    echo "[install.sh] Installing Go ${RETRACE_GO_VERSION} for linux-${go_arch}..."
+    APT_PACKAGES=()
+    if ! command -v wget >/dev/null 2>&1; then
+        APT_PACKAGES+=(wget)
+    fi
+    if [ ! -d /etc/ssl/certs ]; then
+        APT_PACKAGES+=(ca-certificates)
+    fi
+    if [ "${#APT_PACKAGES[@]}" -gt 0 ]; then
+        apt-get update -qq
+        DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends \
+            "${APT_PACKAGES[@]}" >/dev/null
+    fi
+    rm -rf /usr/local/go
+    wget -q "https://go.dev/dl/go${RETRACE_GO_VERSION}.linux-${go_arch}.tar.gz" -O /tmp/go.tgz
+    tar -C /usr/local -xzf /tmp/go.tgz
+    rm -f /tmp/go.tgz
+    export PATH="/usr/local/go/bin:$PATH"
+}
+
 # Install the current checkout, not the latest published retracesoftware wheel.
 # meson-python creates temporary build directories inside the source tree, so
 # /app/repo is mounted writable by the compose harness.
 if [ -f "/app/repo/pyproject.toml" ]; then
+    BUILD_PACKAGES=()
     if ! command -v c++ >/dev/null 2>&1; then
-        echo "[install.sh] Installing native build toolchain..."
+        BUILD_PACKAGES+=(g++)
+    fi
+    if [ "${#BUILD_PACKAGES[@]}" -gt 0 ]; then
+        echo "[install.sh] Installing build tools: ${BUILD_PACKAGES[*]}"
         apt-get update -qq
-        DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends g++ >/dev/null
+        DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends "${BUILD_PACKAGES[@]}" >/dev/null
         rm -rf /var/lib/apt/lists/*
     fi
+
+    install_go_toolchain
 
     echo "[install.sh] Installing local retracesoftware checkout to $TARGET..."
     PIP_BUILD_OPTIONS=()

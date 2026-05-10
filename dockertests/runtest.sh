@@ -5,12 +5,21 @@
 #   ./runtest.sh <test_name> [options]
 #
 # Options:
-#   --image <image>   Docker image (default: python:3.11-slim)
-#   --debug           Run record under GDB, drop to console on crash
+#   --image <image>            Docker image (default: python:3.12)
+#   --record-mode <pth|direct> Record with .pth auto-enable or direct CLI wrapper
+#   --replay-mode <pidfile|recording>
+#                              Replay extracted root PidFile or legacy unframed trace
+#   --retrace-config <normal|debug>
+#                              Retrace config preset (default: normal)
+#   --keep-recording           Keep recording artifacts after successful replay
+#   --timeout <seconds>        Pipeline timeout for this test
+#   --debug                    Run record under GDB, drop to console on crash
 #
 # Examples:
 #   ./runtest.sh postgress_test
-#   ./runtest.sh time1 --image python:3.11-slim
+#   ./runtest.sh time1 --image python:3.12
+#   ./runtest.sh time1 --record-mode pth --replay-mode pidfile
+#   ./runtest.sh time1 --retrace-config debug
 #   ./runtest.sh time1 --debug
 
 set -e
@@ -20,7 +29,11 @@ PIPELINE_TIMEOUT_SEC="${RETRACE_PIPELINE_TIMEOUT_SEC:-600}"
 
 # Parse arguments
 DEBUG_MODE=false
-TEST_IMAGE="python:3.11-slim"
+KEEP_RECORDING=false
+TEST_IMAGE="python:3.12"
+RETRACE_RECORD_MODE="pth"
+RETRACE_REPLAY_MODE="pidfile"
+RETRACE_CONFIG_MODE="${RETRACE_CONFIG:-normal}"
 TEST_NAME=""
 
 while [[ $# -gt 0 ]]; do
@@ -29,8 +42,28 @@ while [[ $# -gt 0 ]]; do
             DEBUG_MODE=true
             shift
             ;;
+        --keep-recording)
+            KEEP_RECORDING=true
+            shift
+            ;;
         --image)
             TEST_IMAGE="$2"
+            shift 2
+            ;;
+        --record-mode)
+            RETRACE_RECORD_MODE="$2"
+            shift 2
+            ;;
+        --replay-mode)
+            RETRACE_REPLAY_MODE="$2"
+            shift 2
+            ;;
+        --retrace-config)
+            RETRACE_CONFIG_MODE="$2"
+            shift 2
+            ;;
+        --timeout)
+            PIPELINE_TIMEOUT_SEC="$2"
             shift 2
             ;;
         -*)
@@ -47,8 +80,53 @@ while [[ $# -gt 0 ]]; do
 done
 
 if [ -z "$TEST_NAME" ]; then
-    echo "Usage: ./runtest.sh <test_name> [--image <image>] [--debug]"
+    echo "Usage: ./runtest.sh <test_name> [--image <image>] [--record-mode pth|direct] [--replay-mode pidfile|recording] [--retrace-config normal|debug] [--keep-recording] [--timeout seconds] [--debug]"
     exit 1
+fi
+
+case "$RETRACE_RECORD_MODE" in
+    pth|direct) ;;
+    *)
+        echo "❌ Unknown record mode: $RETRACE_RECORD_MODE"
+        exit 1
+        ;;
+esac
+
+case "$RETRACE_REPLAY_MODE" in
+    pidfile|recording) ;;
+    *)
+        echo "❌ Unknown replay mode: $RETRACE_REPLAY_MODE"
+        exit 1
+        ;;
+esac
+
+case "$RETRACE_CONFIG_MODE" in
+    normal|release)
+        export RETRACE_CONFIG=release
+        RETRACE_CONFIG_LABEL="normal"
+        ;;
+    debug)
+        export RETRACE_CONFIG=debug
+        RETRACE_CONFIG_LABEL="debug"
+        ;;
+    *)
+        echo "❌ Unknown retrace config: $RETRACE_CONFIG_MODE"
+        exit 1
+        ;;
+esac
+
+if [ -z "${RETRACE_FORMAT:-}" ]; then
+    if [ "$RETRACE_REPLAY_MODE" = "recording" ]; then
+        export RETRACE_FORMAT=unframed_binary
+    else
+        export RETRACE_FORMAT=binary
+    fi
+fi
+
+if [ "$KEEP_RECORDING" = true ]; then
+    export RETRACE_CLEAN_RECORDING=0
+else
+    export RETRACE_CLEAN_RECORDING="${RETRACE_CLEAN_RECORDING:-1}"
 fi
 
 TEST_DIR="./tests/${TEST_NAME}"
@@ -87,6 +165,11 @@ fi
 
 echo "🧪 Running test: $TEST_NAME ($TEST_TYPE)"
 echo "   Image: $TEST_IMAGE"
+echo "   Record mode: $RETRACE_RECORD_MODE"
+echo "   Replay mode: $RETRACE_REPLAY_MODE"
+echo "   Retrace config: $RETRACE_CONFIG_LABEL ($RETRACE_CONFIG)"
+echo "   Recording format: $RETRACE_FORMAT"
+echo "   Keep recording: $KEEP_RECORDING"
 if [ "$DEBUG_MODE" = true ]; then
     echo "   Mode: DEBUG (GDB)"
 fi
@@ -112,6 +195,11 @@ export TEST_IMAGE
 export TEST_DIR
 export TEST_PACKAGES_DIR
 export COMPOSE_PROJECT_NAME
+export RETRACE_RECORD_MODE
+export RETRACE_REPLAY_MODE
+export RETRACE_CONFIG
+export RETRACE_FORMAT
+export RETRACE_CLEAN_RECORDING
 
 # Build compose command
 COMPOSE_CMD="docker compose --progress plain -p $COMPOSE_PROJECT_NAME -f $BASE_COMPOSE"
@@ -266,6 +354,89 @@ print("")
 '
 }
 
+run_compose_phase() {
+    local phase="$1"
+    shift
+    echo "▶ Phase: $phase"
+    run_with_timeout "$PIPELINE_TIMEOUT_SEC" "$@"
+}
+
+stop_server_service() {
+    local service="$1"
+    set +e
+    bash -lc "$COMPOSE_CMD stop -t 15 $service >/dev/null 2>&1"
+    bash -lc "$COMPOSE_CMD rm -f $service >/dev/null 2>&1"
+    set -e
+}
+
+wait_for_server_service() {
+    local service="$1"
+    local port="${SERVER_PORT:-5000}"
+    local attempts="${SERVER_READY_ATTEMPTS:-30}"
+
+    echo "  waiting for $service on 127.0.0.1:$port"
+    for _ in $(seq 1 "$attempts"); do
+        if bash -lc "$COMPOSE_CMD exec -T -e RETRACE_RECORDING=disable -e RETRACE_CONFIG=release $service python -c \"import socket; s=socket.create_connection(('127.0.0.1', $port), 2); s.close()\" >/dev/null 2>&1"; then
+            return 0
+        fi
+        sleep 1
+    done
+
+    echo "server service did not become ready: $service" >&2
+    return 1
+}
+
+run_server_pipeline() {
+    local phase
+    local rc
+
+    phase="install"
+    run_compose_phase "$phase" bash -lc "$COMPOSE_CMD run --rm --quiet-pull install"
+    rc=$?
+    if [ "$rc" -ne 0 ]; then FAILED_PHASE="$phase"; return "$rc"; fi
+
+    phase="server-dryrun"
+    run_compose_phase "$phase" bash -lc "$COMPOSE_CMD up -d --quiet-pull --no-deps server-dryrun"
+    rc=$?
+    if [ "$rc" -ne 0 ]; then FAILED_PHASE="$phase"; return "$rc"; fi
+    wait_for_server_service server-dryrun
+    rc=$?
+    if [ "$rc" -ne 0 ]; then FAILED_PHASE="$phase"; return "$rc"; fi
+
+    phase="dryrun"
+    run_compose_phase "$phase" bash -lc "$COMPOSE_CMD run --rm --quiet-pull --no-deps dryrun"
+    rc=$?
+    stop_server_service server-dryrun
+    if [ "$rc" -ne 0 ]; then FAILED_PHASE="$phase"; return "$rc"; fi
+
+    phase="server-record"
+    run_compose_phase "$phase" bash -lc "$COMPOSE_CMD up -d --quiet-pull --no-deps server-record"
+    rc=$?
+    if [ "$rc" -ne 0 ]; then FAILED_PHASE="$phase"; return "$rc"; fi
+    wait_for_server_service server-record
+    rc=$?
+    if [ "$rc" -ne 0 ]; then FAILED_PHASE="$phase"; return "$rc"; fi
+
+    phase="record"
+    run_compose_phase "$phase" bash -lc "$COMPOSE_CMD run --rm --quiet-pull --no-deps record"
+    rc=$?
+    stop_server_service server-record
+    if [ "$rc" -ne 0 ]; then FAILED_PHASE="$phase"; return "$rc"; fi
+
+    phase="replay"
+    run_compose_phase "$phase" bash -lc "$COMPOSE_CMD run --rm --quiet-pull --no-deps replay"
+    rc=$?
+    if [ "$rc" -ne 0 ]; then FAILED_PHASE="$phase"; return "$rc"; fi
+
+    phase="cleanup"
+    run_compose_phase "$phase" bash -lc "$COMPOSE_CMD run --rm --quiet-pull --no-deps cleanup"
+    rc=$?
+    if [ "$rc" -ne 0 ]; then FAILED_PHASE="$phase"; return "$rc"; fi
+
+    FAILED_PHASE=""
+    return 0
+}
+
 run_with_timeout() {
     local timeout_sec="$1"
     shift
@@ -342,6 +513,10 @@ if [ "$DEBUG_MODE" = true ]; then
         -w /recording \
         -e "PYTHONPATH=/app/packages" \
         -e "RETRACE_CONFIG=debug" \
+        -e "RETRACE_FORMAT=${RETRACE_FORMAT:-binary}" \
+        -e "RETRACE_RECORDING=/recording/test.retrace" \
+        -e "REPLAY_BIN=/app/packages/bin/replay" \
+        -e "RETRACE_REPLAY_BIN=/app/packages/bin/replay" \
         "$TEST_IMAGE" \
         bash -c "apt-get update -qq && apt-get install -qq -y gdb > /dev/null && \
                  python -m retracesoftware install && \
@@ -358,8 +533,8 @@ if [ "$DEBUG_MODE" = true ]; then
     else
         echo "❌ Debug session failed (exit code: $DEBUG_EXIT_CODE)."
     fi
-    if [ "$DEBUG_EXIT_CODE" -eq 0 ] && [ ! -f "$TEST_DIR/recording/trace.bin" ]; then
-        echo "❌ Debug record completed but trace.bin is missing at $TEST_DIR/recording/trace.bin"
+    if [ "$DEBUG_EXIT_CODE" -eq 0 ] && [ ! -f "$TEST_DIR/recording/test.retrace" ]; then
+        echo "❌ Debug record completed but test.retrace is missing at $TEST_DIR/recording/test.retrace"
         exit 1
     fi
     echo "Recording may be incomplete."
@@ -368,7 +543,12 @@ fi
 
 # Normal mode: run full pipeline
 set +e
-run_with_timeout "$PIPELINE_TIMEOUT_SEC" bash -lc "$COMPOSE_CMD run --rm --quiet-pull cleanup"
+FAILED_PHASE=""
+if [ "$TEST_TYPE" = "server" ]; then
+    run_server_pipeline
+else
+    run_with_timeout "$PIPELINE_TIMEOUT_SEC" bash -lc "$COMPOSE_CMD run --rm --quiet-pull cleanup"
+fi
 EXIT_CODE=$?
 set -e
 
@@ -380,7 +560,9 @@ fi
 if [ $EXIT_CODE -eq 0 ]; then
     echo "✅ Test passed: $TEST_NAME"
 else
-    FAILED_PHASE="$(detect_failed_phase)"
+    if [ -z "$FAILED_PHASE" ]; then
+        FAILED_PHASE="$(detect_failed_phase)"
+    fi
     if [ "$EXIT_CODE" -eq 124 ] && [ -n "$TIMED_OUT_PHASE" ]; then
         FAILED_PHASE="$TIMED_OUT_PHASE"
     fi
