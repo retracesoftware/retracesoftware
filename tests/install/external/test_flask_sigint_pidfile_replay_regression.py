@@ -10,12 +10,17 @@ messages while the PidFile reader is still waiting for ordinary call results.
 from __future__ import annotations
 
 from pathlib import Path
+import fcntl
 import os
+import pty
+import select
 import signal
 import socket
 import subprocess
 import sys
+import termios
 import textwrap
+import threading
 import time
 
 import pytest
@@ -89,6 +94,31 @@ def _run(
         timeout=timeout,
         env=env,
     )
+
+
+def _drain_pty(master_fd: int, chunks: list[bytes]) -> None:
+    while True:
+        try:
+            ready, _, _ = select.select([master_fd], [], [], 0.1)
+        except OSError:
+            return
+        if not ready:
+            continue
+        try:
+            data = os.read(master_fd, 4096)
+        except OSError:
+            return
+        if not data:
+            return
+        chunks.append(data)
+
+
+def _claim_controlling_tty(slave_fd: int):
+    def setup() -> None:
+        os.setsid()
+        fcntl.ioctl(slave_fd, termios.TIOCSCTTY, 0)
+
+    return setup
 
 
 def test_flask_dev_server_sigint_pidfile_replay_consumes_terminal_shutdown(
@@ -236,6 +266,168 @@ def test_flask_dev_server_sigint_pidfile_replay_consumes_terminal_shutdown(
     )
 
 
+@pytest.mark.xfail(
+    strict=True,
+    reason=(
+        "Flask dev-server PidFile replay can desync after many recorded "
+        "request threads and terminal Ctrl-C shutdown"
+    ),
+)
+def test_flask_dev_server_many_requests_sigint_pidfile_replay_replays_all_requests(
+    tmp_path: Path,
+):
+    pytest.importorskip("flask")
+    requests = pytest.importorskip("requests")
+
+    script = tmp_path / "flask_many_requests_sigint_repro.py"
+    script.write_text(
+        textwrap.dedent(
+            """
+            import os
+
+            from flask import Flask, jsonify
+
+
+            app = Flask(__name__)
+            state = {"hits": 0}
+
+
+            @app.get("/")
+            def index():
+                state["hits"] += 1
+                return jsonify(message="hello", hits=state["hits"])
+
+
+            if __name__ == "__main__":
+                print("many-request flask server starting", flush=True)
+                app.run(
+                    host="127.0.0.1",
+                    port=int(os.environ["PORT"]),
+                    debug=False,
+                    use_reloader=False,
+                )
+            """
+        ),
+        encoding="utf-8",
+    )
+
+    port = _free_port()
+    env = os.environ.copy()
+    env["MESONPY_EDITABLE_SKIP"] = _editable_skip()
+    env["PORT"] = str(port)
+    env["PYTHONFAULTHANDLER"] = "1"
+    env["PYTHONPATH"] = _local_pythonpath()
+    env["RETRACE_CONFIG"] = "debug"
+
+    recording = tmp_path / "trace.retrace"
+    master_fd, slave_fd = pty.openpty()
+    output_chunks: list[bytes] = []
+    reader = threading.Thread(
+        target=_drain_pty,
+        args=(master_fd, output_chunks),
+        daemon=True,
+    )
+
+    record = subprocess.Popen(
+        [
+            sys.executable,
+            "-m",
+            "retracesoftware",
+            "--recording",
+            str(recording),
+            "--",
+            script.name,
+        ],
+        cwd=tmp_path,
+        env=env,
+        stdin=slave_fd,
+        stdout=slave_fd,
+        stderr=slave_fd,
+        text=False,
+        preexec_fn=_claim_controlling_tty(slave_fd),
+    )
+    os.close(slave_fd)
+    reader.start()
+    try:
+        _wait_for_tcp_port(port)
+
+        for _ in range(74):
+            response = requests.get(f"http://127.0.0.1:{port}/", timeout=5)
+            assert response.status_code == 200
+            favicon = requests.get(
+                f"http://127.0.0.1:{port}/favicon.ico",
+                timeout=5,
+            )
+            assert favicon.status_code == 404
+
+        os.write(master_fd, b"\x03")
+        try:
+            record_rc = record.wait(timeout=20)
+        except subprocess.TimeoutExpired:
+            record.kill()
+            record.wait(timeout=5)
+            raise
+    finally:
+        if record.poll() is None:
+            record.kill()
+            record.wait(timeout=5)
+        try:
+            os.close(master_fd)
+        except OSError:
+            pass
+
+    reader.join(timeout=2)
+    record_output = b"".join(output_chunks).decode("utf-8", "replace")
+    assert record_rc == 0, (
+        f"record failed (exit {record_rc})\ncombined output:\n{record_output}"
+    )
+    assert recording.exists()
+    assert record_output.count('"GET / HTTP/1.1" 200') >= 74
+    assert record_output.count("GET /favicon.ico HTTP/1.1") >= 74
+
+    extract = _run([str(recording), "--extract"], cwd=tmp_path, env=env)
+    assert extract.returncode == 0, _completed_process_error("extract", extract)
+
+    list_pids = _run(
+        [
+            sys.executable,
+            "-m",
+            "retracesoftware",
+            "--recording",
+            str(recording),
+            "--list_pids",
+        ],
+        cwd=tmp_path,
+        env=env,
+    )
+    assert list_pids.returncode == 0, _completed_process_error(
+        "list_pids",
+        list_pids,
+    )
+    root_pid = list_pids.stdout.splitlines()[0]
+    pidfile = tmp_path / "trace.d" / f"{root_pid}.bin"
+    assert pidfile.exists()
+
+    replay_env = env.copy()
+    replay_env["RETRACE_SKIP_CHECKSUMS"] = "1"
+    replay = _run([str(pidfile)], cwd=tmp_path, env=replay_env)
+    combined_replay = replay.stdout + replay.stderr
+
+    assert replay.returncode == 0, (
+        f"pidfile replay diverged before replaying all recorded requests "
+        f"(exit {replay.returncode})\n"
+        f"stdout:\n{replay.stdout}\n"
+        f"stderr:\n{replay.stderr}"
+    )
+    assert combined_replay.count('"GET / HTTP/1.1" 200') >= 74
+    assert combined_replay.count("GET /favicon.ico HTTP/1.1") >= 74
+    assert (
+        "Checkpoint difference: 'SYNC' was expecting "
+        "type:retracesoftware.proxy.io.CallMarkerMessage"
+        not in combined_replay
+    )
+
+
 def _wait_for_server(requests, port: int) -> None:
     deadline = time.monotonic() + 15
     last_error: Exception | None = None
@@ -251,3 +443,16 @@ def _wait_for_server(requests, port: int) -> None:
             last_error = exc
         time.sleep(0.1)
     raise AssertionError(f"Flask server did not become ready: {last_error}")
+
+
+def _wait_for_tcp_port(port: int) -> None:
+    deadline = time.monotonic() + 15
+    last_error: Exception | None = None
+    while time.monotonic() < deadline:
+        try:
+            with socket.create_connection(("127.0.0.1", port), timeout=0.5):
+                return
+        except Exception as exc:  # noqa: BLE001 - test helper reports context.
+            last_error = exc
+        time.sleep(0.1)
+    raise AssertionError(f"Flask server did not open TCP port: {last_error}")
