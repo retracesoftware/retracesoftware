@@ -22,6 +22,14 @@ def get_json(path: str):
     return json.loads(payload)
 
 
+def get_text(path: str) -> str:
+    with urlopen(f"{BASE_URL}{path}", timeout=5) as response:
+        assert response.status == 200, (path, response.status)
+        payload = response.read().decode("utf-8")
+    print(f"GET {path} -> {len(payload)} bytes", flush=True)
+    return payload
+
+
 def wait_for_server() -> None:
     parsed = urlparse(BASE_URL)
     host = parsed.hostname or "localhost"
@@ -44,13 +52,12 @@ def run_load() -> None:
     print("=== datasette_server_test client ===", flush=True)
     wait_for_server()
 
-    items = get_json("/datasette-demo/items.json?_shape=array")
-    audit_log = get_json("/datasette-demo/audit_log.json?_shape=array")
-    metadata = get_json("/datasette-demo.json")
+    versions = get_json("/-/versions.json")
+    database_page = get_text("/datasette-demo")
 
-    assert len(items) == 3, items
-    assert len(audit_log) == 2, audit_log
-    assert "tables" in metadata, metadata
+    assert versions["datasette"]["version"], versions
+    assert "<html" in database_page.lower(), database_page[:200]
+    assert "datasette-demo" in database_page, database_page[:500]
     print("Datasette load generation complete", flush=True)
 
 

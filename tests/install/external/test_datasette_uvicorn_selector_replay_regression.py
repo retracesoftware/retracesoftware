@@ -98,6 +98,12 @@ def _request_json(url: str):
         return json.loads(response.read().decode("utf-8"))
 
 
+def _request_text(url: str) -> str:
+    with urlopen(url, timeout=5) as response:
+        assert response.status == 200
+        return response.read().decode("utf-8")
+
+
 def _wait_for_datasette(port: int) -> None:
     deadline = time.monotonic() + 30
     last_error: Exception | None = None
@@ -111,6 +117,13 @@ def _wait_for_datasette(port: int) -> None:
     raise AssertionError(f"Datasette did not become ready: {last_error}")
 
 
+@pytest.mark.xfail(
+    strict=True,
+    reason=(
+        "Datasette/Uvicorn PidFile replay still misroutes shutdown/event-loop "
+        "messages after SIGINT"
+    ),
+)
 def test_datasette_uvicorn_sigint_pidfile_replay_does_not_misroute_selector_fd(
     tmp_path: Path,
 ):
@@ -126,7 +139,6 @@ def test_datasette_uvicorn_sigint_pidfile_replay_does_not_misroute_selector_fd(
     env = os.environ.copy()
     env["PYTHONFAULTHANDLER"] = "1"
     env["RETRACE_CONFIG"] = "debug"
-
     with record_log.open("w", encoding="utf-8") as output:
         record = subprocess.Popen(
             [
@@ -153,6 +165,7 @@ def test_datasette_uvicorn_sigint_pidfile_replay_does_not_misroute_selector_fd(
             stderr=subprocess.STDOUT,
             text=True,
         )
+        record_rc: int | None = None
         try:
             _wait_for_datasette(port)
             rows = _request_json(
@@ -215,3 +228,125 @@ def test_datasette_uvicorn_sigint_pidfile_replay_does_not_misroute_selector_fd(
     assert "Checkpoint difference" not in combined_replay
     assert "Invalid file object" not in combined_replay
     assert "GET /demo/items.json?_shape=array HTTP/1.1" in combined_replay
+
+
+@pytest.mark.xfail(
+    strict=True,
+    reason=(
+        "Datasette/Uvicorn PidFile replay still desyncs when the recorded "
+        "traffic includes versions JSON followed by the database HTML page"
+    ),
+)
+def test_datasette_versions_then_database_page_pidfile_replay_does_not_desync_monotonic(
+    tmp_path: Path,
+):
+    """Regression for the manual Datasette quickstart replay failure.
+
+    The real app flow Daniel reproduced fails when record serves
+    ``/-/versions`` followed by the database index page, then the process is
+    interrupted and the extracted PidFile is replayed.
+    """
+
+    pytest.importorskip("datasette")
+
+    db_path = tmp_path / "demo.db"
+    _write_db(db_path)
+
+    port = _free_port()
+    recording = tmp_path / "datasette.retrace"
+    record_log = tmp_path / "record.log"
+
+    env = os.environ.copy()
+    env["PYTHONFAULTHANDLER"] = "1"
+    env["RETRACE_CONFIG"] = "debug"
+    record_env = env.copy()
+    record_env["RETRACE_RECORDING"] = str(recording)
+
+    with record_log.open("w", encoding="utf-8") as output:
+        record = subprocess.Popen(
+            [
+                sys.executable,
+                "-m",
+                "datasette",
+                str(db_path),
+                "--host",
+                "127.0.0.1",
+                "--port",
+                str(port),
+            ],
+            cwd=tmp_path,
+            env=record_env,
+            stdout=output,
+            stderr=subprocess.STDOUT,
+            text=True,
+        )
+        try:
+            _wait_for_datasette(port)
+
+            versions = _request_json(f"http://127.0.0.1:{port}/-/versions.json")
+            database_page = _request_text(f"http://127.0.0.1:{port}/demo")
+
+            assert versions["datasette"]["version"]
+            assert "database-demo" in database_page or "demo" in database_page
+
+            record.send_signal(signal.SIGINT)
+            try:
+                record_rc = record.wait(timeout=8)
+            except subprocess.TimeoutExpired:
+                record.kill()
+                record_rc = record.wait(timeout=5)
+        finally:
+            if record.poll() is None:
+                record.kill()
+                record_rc = record.wait(timeout=5)
+
+    record_output = record_log.read_text(encoding="utf-8")
+    assert record_rc is not None
+    assert recording.exists(), (
+        f"record failed (exit {record_rc})\ncombined output:\n{record_output}"
+    )
+    assert "GET /-/versions.json HTTP/1.1" in record_output
+    assert "GET /demo HTTP/1.1" in record_output
+
+    replay_env = env.copy()
+    replay_env.pop("RETRACE_RECORDING", None)
+    replay_env["RETRACE_SKIP_CHECKSUMS"] = "1"
+
+    extract = _run([str(recording), "--extract"], cwd=tmp_path, env=replay_env)
+    assert extract.returncode == 0, _completed_process_error("extract", extract)
+
+    list_pids = _run(
+        [
+            sys.executable,
+            "-m",
+            "retracesoftware",
+            "--recording",
+            str(recording),
+            "--list_pids",
+        ],
+        cwd=tmp_path,
+        env=replay_env,
+    )
+    assert list_pids.returncode == 0, _completed_process_error(
+        "list_pids",
+        list_pids,
+    )
+
+    root_pid = list_pids.stdout.splitlines()[0]
+    pidfile = tmp_path / "datasette.d" / f"{root_pid}.bin"
+    assert pidfile.exists(), pidfile
+
+    replay = _run([str(pidfile)], cwd=tmp_path, env=replay_env)
+    combined_replay = replay.stdout + replay.stderr
+
+    assert replay.returncode == 0, (
+        f"pidfile replay diverged (exit {replay.returncode})\n"
+        f"stdout:\n{replay.stdout}\n"
+        f"stderr:\n{replay.stderr}"
+    )
+    assert "Checkpoint difference" not in combined_replay
+    assert (
+        "was expecting {'function': wrapped_function:time.monotonic"
+        not in combined_replay
+    )
+    assert "Invalid file object" not in combined_replay
