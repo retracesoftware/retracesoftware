@@ -266,13 +266,6 @@ def test_flask_dev_server_sigint_pidfile_replay_consumes_terminal_shutdown(
     )
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "Flask dev-server PidFile replay can desync after many recorded "
-        "request threads and terminal Ctrl-C shutdown"
-    ),
-)
 def test_flask_dev_server_many_requests_sigint_pidfile_replay_replays_all_requests(
     tmp_path: Path,
 ):

@@ -42,13 +42,6 @@ def _run(
     )
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "pth auto-enable plus RETRACE_CONFIG=debug can desync replay protocol "
-        "messages: ResultMessage is delivered where CheckpointMessage is expected"
-    ),
-)
 def test_pth_debug_psutil_pidfile_replay_keeps_checkpoint_alignment(
     tmp_path: Path,
 ):

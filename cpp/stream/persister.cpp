@@ -97,7 +97,7 @@ namespace retracesoftware_stream {
         inline void emit(Control control) { emit(control.raw); }
         inline void emit(FixedSizeTypes obj) {
             if (verbose) {
-                printf("%s ", FixedSizeTypes_Name(obj));
+                fprintf(stderr, "%s ", FixedSizeTypes_Name(obj));
             }
             emit(create_fixed_size(obj));
         }
@@ -439,7 +439,7 @@ namespace retracesoftware_stream {
         assert(type < 16);
 
         if (verbose) {
-            printf("%s(%llu) ", SizedTypes_Name(type), (unsigned long long)size);
+            fprintf(stderr, "%s(%llu) ", SizedTypes_Name(type), (unsigned long long)size);
         }
 
         Control control;

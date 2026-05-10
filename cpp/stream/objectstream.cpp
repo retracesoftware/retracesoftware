@@ -500,12 +500,12 @@ namespace retracesoftware_stream {
                 size_t start = bytes_read;
                 Control control = read_control();
                 if (verbose > 1) {
-                    printf("    read control: 0x%02X at byte %zu\n", control.raw, bytes_read - 1);
+                    fprintf(stderr, "    read control: 0x%02X at byte %zu\n", control.raw, bytes_read - 1);
                 }
 
                 if (control == Intern) {
                     if (verbose) {
-                        printf("Retrace - ObjectStream[%lu, %zu] - Inline INTERN\n", messages_read, start);
+                        fprintf(stderr, "Retrace - ObjectStream[%lu, %zu] - Inline INTERN\n", messages_read, start);
                     }
                     interns[interns.size()] = read();
                     messages_read++;
@@ -565,11 +565,11 @@ namespace retracesoftware_stream {
                 Control control = read_control();
                 
                 if (verbose > 1) {
-                    printf("  consume: control 0x%02X at byte %zu\n", control.raw, start);
+                    fprintf(stderr, "  consume: control 0x%02X at byte %zu\n", control.raw, start);
                 }
                 
                 if (control == Intern) {
-                    if (verbose) printf("Retrace - ObjectStream[%lu, %lu] - Consumed INTERN\n", messages_read, start);
+                    if (verbose) fprintf(stderr, "Retrace - ObjectStream[%lu, %lu] - Consumed INTERN\n", messages_read, start);
                     interns[interns.size()] = read();
                     messages_read++;
                 } else {
@@ -626,7 +626,7 @@ namespace retracesoftware_stream {
                 PyObject * count = read();
                 if (verbose) {
                     PyObject * s = PyObject_Str(count);
-                    printf("Retrace - ObjectStream[%lu, %lu] - Consumed DROPPED(%s)\n", messages_read, start, PyUnicode_AsUTF8(s));
+                    fprintf(stderr, "Retrace - ObjectStream[%lu, %lu] - Consumed DROPPED(%s)\n", messages_read, start, PyUnicode_AsUTF8(s));
                     Py_DECREF(s);
                 }
                 messages_read++;
@@ -641,7 +641,7 @@ namespace retracesoftware_stream {
             if (control == Heartbeat) {
                 PyObject * payload = read();
                 if (verbose) {
-                    printf("Retrace - ObjectStream[%lu, %lu] - Consumed HEARTBEAT\n", messages_read, start);
+                    fprintf(stderr, "Retrace - ObjectStream[%lu, %lu] - Consumed HEARTBEAT\n", messages_read, start);
                 }
                 messages_read++;
                 if (create_heartbeat) {
@@ -656,7 +656,7 @@ namespace retracesoftware_stream {
 
             if (verbose) {
                 PyObject * s = PyObject_Str(result);
-                printf("Retrace - ObjectStream[%lu, %lu] - Read: %s\n", messages_read, start, PyUnicode_AsUTF8(s));
+                fprintf(stderr, "Retrace - ObjectStream[%lu, %lu] - Read: %s\n", messages_read, start, PyUnicode_AsUTF8(s));
                 Py_DECREF(s);
             }
             messages_read++;

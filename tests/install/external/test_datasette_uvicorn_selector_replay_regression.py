@@ -6,7 +6,7 @@ PidFile, and replaying that PidFile.  Replay gets through the user-visible
 request path, but during asyncio/Uvicorn shutdown the reader consumes a
 recorded float monotonic-clock result where selectors expects a socket fd.
 
-Current failure signatures have moved as the replay pipeline has improved:
+Recent failure signatures moved as the replay pipeline improved:
 
     Checkpoint difference: ... was expecting time.monotonic
 
@@ -117,13 +117,6 @@ def _wait_for_datasette(port: int) -> None:
     raise AssertionError(f"Datasette did not become ready: {last_error}")
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "Datasette/Uvicorn PidFile replay still misroutes shutdown/event-loop "
-        "messages after SIGINT"
-    ),
-)
 def test_datasette_uvicorn_sigint_pidfile_replay_does_not_misroute_selector_fd(
     tmp_path: Path,
 ):
@@ -231,9 +224,9 @@ def test_datasette_uvicorn_sigint_pidfile_replay_does_not_misroute_selector_fd(
 
 
 @pytest.mark.xfail(
-    strict=True,
+    strict=False,
     reason=(
-        "Datasette/Uvicorn PidFile replay still desyncs when the recorded "
+        "Datasette/Uvicorn PidFile replay can still desync when the recorded "
         "traffic includes versions JSON followed by the database HTML page"
     ),
 )

@@ -6,10 +6,9 @@ The public recording flow is:
     RETRACE_RECORDING=trace.retrace python app.py
 
 On macOS, an app that imports ``appnope`` and starts a
-``multiprocessing.Process`` records successfully through that pth path, but the
-extracted PidFile fails before user code replays.  Replay reaches
-``install_retrace(... patch_already_loaded)`` and then exhausts the trace while
-binding ``_io.open``.
+``multiprocessing.Process`` must record and replay through that pth path without
+auto-enabling retrace inside multiprocessing helper bootstrap processes or
+desynchronizing debug checkpoints around the spawn pipe writes.
 
 The same app body passes through the direct wrapper flow:
 
@@ -52,13 +51,6 @@ def _run(
 @pytest.mark.skipif(
     sys.platform != "darwin",
     reason="appnope is a macOS app-nap integration library",
-)
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "pth auto-enable appnope/multiprocessing recordings replay-exhaust "
-        "while patching already-loaded _io.open"
-    ),
 )
 def test_appnope_pth_autoenable_pidfile_replay_patches_loaded_io_open():
     pytest.importorskip("appnope")

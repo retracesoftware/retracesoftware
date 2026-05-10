@@ -447,11 +447,19 @@ def _normalized_call_args(fn, args):
 
 
 def _checkpoint_marker_matches_type(value, cls):
-    if not _is_checkpoint_sync_marker(value):
-        return False
-    return value[1:] == (
+    expected = (
         getattr(cls, "__module__", ""),
         getattr(cls, "__qualname__", getattr(cls, "__name__", "")),
+    )
+    if (
+        _is_checkpoint_sync_marker(value)
+        or _is_checkpoint_external_marker(value)
+    ):
+        return value[1:] == expected
+
+    return (
+        _checkpoint_external_type_key(value) == expected
+        or _checkpoint_sync_key(value) == expected
     )
 
 
@@ -474,6 +482,45 @@ def _is_dynamic_proxy_shim(fn):
     return (
         getattr(fn, "__qualname__", "")
         == "_ext_proxytype_from_spec.<locals>.unbound_function.<locals>.<lambda>"
+    )
+
+
+def _is_buffered_writer_write_function(fn):
+    objclass = getattr(fn, "__objclass__", None)
+    return (
+        getattr(fn, "__name__", "") == "write"
+        and getattr(objclass, "__module__", "") == "_io"
+        and getattr(objclass, "__qualname__", getattr(objclass, "__name__", ""))
+        == "BufferedWriter"
+    )
+
+
+def _buffer_bytes(value):
+    if isinstance(value, memoryview):
+        return value.tobytes()
+    if isinstance(value, (bytes, bytearray)):
+        return bytes(value)
+    return None
+
+
+def _is_multiprocessing_spawn_payload(value):
+    data = _buffer_bytes(value)
+    if data is None:
+        return False
+    return (
+        b"multiprocessing" in data
+        and b"AuthenticationString" in data
+        and b"start_method" in data
+        and b"init_main_from_path" in data
+    )
+
+
+def _is_multiprocessing_spawn_write(args_a, args_b):
+    if len(args_a) != 1 or len(args_b) != 1:
+        return False
+    return (
+        _is_multiprocessing_spawn_payload(args_a[0])
+        and _is_multiprocessing_spawn_payload(args_b[0])
     )
 
 
@@ -526,20 +573,28 @@ def _equal_call_payload(a, b):
         _is_dynamic_proxy_shim(target_a)
         and _is_dynamic_proxy_shim(target_b)
     )
+    same_callable = (
+        equal(fn_a, fn_b)
+        or equal(target_a, target_b)
+        or same_dynamic_proxy_shim
+    )
 
     args_a = a.get("args", ())
     args_b = b.get("args", ())
     kwargs_a = a.get("kwargs", {})
     kwargs_b = b.get("kwargs", {})
 
-    if not equal(fn_a, fn_b) and not same_dynamic_proxy_shim:
+    if not same_callable:
         return kwargs_a == kwargs_b and _call_payload_has_sync_receivers(args_a, args_b)
 
-    normalized_a = _normalized_call_args(fn_a, args_a)
-    normalized_b = _normalized_call_args(fn_b, args_b)
+    normalized_a = _normalized_call_args(target_a, args_a)
+    normalized_b = _normalized_call_args(target_b, args_b)
     args_equal = equal(normalized_a, normalized_b)
     if kwargs_a == kwargs_b and args_equal:
         return True
+
+    if kwargs_a == kwargs_b and _is_buffered_writer_write_function(target_a):
+        return _is_multiprocessing_spawn_write(normalized_a, normalized_b)
 
     if kwargs_a == kwargs_b and _is_socketpair_function(target_a):
         return (
@@ -1395,9 +1450,9 @@ def replayer(*, next_object,
 
                 return on_unexpected(message)
             
-    # safeequal = system.disable_for(equal)
+    safeequal = system.disable_for(equal, unwrap_args=False)
     def diff(record, replay):
-        if not equal(record, replay):
+        if not safeequal(record, replay):
             on_desync(record, replay)
 
     def checkpoint(replay):

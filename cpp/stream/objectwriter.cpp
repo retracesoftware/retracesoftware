@@ -126,7 +126,7 @@ namespace retracesoftware_stream {
         }
 
         void debug_prefix(size_t bytes_written = 0) {
-            printf("Retrace(%i) - ObjectWriter[%lu] -- ", ::pid(), messages_written);
+            fprintf(stderr, "Retrace(%i) - ObjectWriter[%lu] -- ", ::pid(), messages_written);
         }
 
         // Avoid re-entrant repr() on complex proxied objects in verbose mode.
@@ -168,7 +168,7 @@ namespace retracesoftware_stream {
 
             if (verbose) {
                 debug_prefix();
-                printf("INTERN(%s)\n", Py_TYPE(obj)->tp_name);
+                fprintf(stderr, "INTERN(%s)\n", Py_TYPE(obj)->tp_name);
             }
 
             if (!disable_if_push_failed(queue->push_intern(obj, intern_handle(obj)))) return;
@@ -241,7 +241,7 @@ namespace retracesoftware_stream {
         void write_root(PyObject * obj) {
             if (verbose) {
                 debug_prefix();
-                printf("%s\n", debugstr(obj));
+                fprintf(stderr, "%s\n", debugstr(obj));
             }
 
             if (queue->target_is_native_persister()) {

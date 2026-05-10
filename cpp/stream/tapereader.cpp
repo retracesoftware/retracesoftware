@@ -531,12 +531,12 @@ namespace retracesoftware_stream {
                 size_t start = bytes_read;
                 Control control = read_control();
                 if (verbose > 1) {
-                    printf("    read control: 0x%02X at byte %zu\n", control.raw, bytes_read - 1);
+                    fprintf(stderr, "    read control: 0x%02X at byte %zu\n", control.raw, bytes_read - 1);
                 }
 
                 if (control == Intern) {
                     if (verbose) {
-                        printf("Retrace - TapeReader[%lu, %zu] - Inline INTERN\n", messages_read, start);
+                        fprintf(stderr, "Retrace - TapeReader[%lu, %zu] - Inline INTERN\n", messages_read, start);
                     }
                     interns[intern_counter++] = read();
                     messages_read++;

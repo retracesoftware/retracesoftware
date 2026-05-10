@@ -28,6 +28,24 @@ else:
                 and sys.orig_argv[1] == '-m'
                 and sys.orig_argv[2].startswith('retracesoftware'))
 
+    def _is_multiprocessing_bootstrap():
+        import sys
+        args = sys.orig_argv[1:]
+        return (
+            '--multiprocessing-fork' in args
+            or any(
+                (
+                    'multiprocessing.spawn' in arg
+                    and 'spawn_main' in arg
+                )
+                or (
+                    'multiprocessing.resource_tracker' in arg
+                    and 'main' in arg
+                )
+                for arg in args
+            )
+        )
+
     def _script_stem():
         """Derive the base script name (no extension) from sys.orig_argv."""
         import sys
@@ -64,7 +82,7 @@ else:
     if 'RETRACE_RECORDING' in os.environ or 'RETRACE_CONFIG' in os.environ:
         import sys
 
-        if not _is_running_retrace():
+        if not _is_running_retrace() and not _is_multiprocessing_bootstrap():
             from retracesoftware.install.config import load_retrace_config, config_to_argv
 
             config = load_retrace_config()
