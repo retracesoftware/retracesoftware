@@ -8,6 +8,8 @@ recorded float monotonic-clock result where selectors expects a socket fd.
 
 Recent failure signatures moved as the replay pipeline improved:
 
+    RuntimeError: Dispatcher: too many threads waiting for item
+
     Checkpoint difference: ... was expecting time.monotonic
 
 Older builds reached asyncio shutdown and delivered a recorded time-like result
@@ -30,10 +32,19 @@ import socket
 import sqlite3
 import subprocess
 import sys
+import tempfile
 import time
 from urllib.request import urlopen
 
 import pytest
+from retracesoftware.tape import checksums
+
+
+_DATASSETTE_DISPATCHER_PIDFILE_FIXTURE = (
+    Path(__file__).resolve().parents[2]
+    / "fixtures"
+    / "datasette_dispatcher_repro_pidfile.fixture"
+)
 
 
 def _free_port() -> int:
@@ -221,6 +232,90 @@ def test_datasette_uvicorn_sigint_pidfile_replay_does_not_misroute_selector_fd(
     assert "Checkpoint difference" not in combined_replay
     assert "Invalid file object" not in combined_replay
     assert "GET /demo/items.json?_shape=array HTTP/1.1" in combined_replay
+
+
+def _write_rebased_datasette_pidfile_fixture(
+    *,
+    source: Path,
+    target: Path,
+    cwd: Path,
+    port: int,
+) -> None:
+    with source.open("rb") as src:
+        shebang = src.readline()
+        header = json.loads(src.readline())
+        body = src.read()
+
+    header["cwd"] = str(cwd)
+    header["executable"] = sys.executable
+    header["python_version"] = sys.version
+    header["checksums"] = checksums()
+    header["env"] = os.environ.copy()
+    header["env"].pop("RETRACE_RECORDING", None)
+    header["env"].pop("RETRACE_CONFIG", None)
+    header["env"]["PYTHONFAULTHANDLER"] = "1"
+
+    argv = header["argv"]
+    argv[argv.index("--port") + 1] = str(port)
+
+    with target.open("wb") as dst:
+        dst.write(shebang)
+        dst.write(json.dumps(header, separators=(",", ":")).encode("utf-8"))
+        dst.write(b"\n")
+        dst.write(body)
+    target.chmod(0o755)
+
+
+@pytest.mark.xfail(
+    strict=False,
+    reason=(
+        "Captured Datasette/Uvicorn PidFile replay overfills the thread "
+        "dispatcher during asyncio/logging shutdown"
+    ),
+)
+def test_datasette_captured_pidfile_replay_does_not_overfill_dispatcher():
+    """Regression for Daniel's exact current Datasette replay failure.
+
+    Freshly generated minimal Datasette recordings can currently pass or fail
+    with the older ``Invalid file object`` fingerprint depending on the served
+    traffic. This captured current-format PidFile locks down the exact failure
+    Daniel hit from the manual replay:
+
+        RuntimeError: Dispatcher: too many threads waiting for item
+    """
+
+    pytest.importorskip("datasette")
+
+    workdir = Path(tempfile.mkdtemp(prefix="retrace-datasette-dispatcher-", dir="/tmp"))
+    db_path = workdir / "demo.db"
+    _write_db(db_path)
+
+    port = _free_port()
+    pidfile = workdir / "datasette_dispatcher_repro.bin"
+    _write_rebased_datasette_pidfile_fixture(
+        source=_DATASSETTE_DISPATCHER_PIDFILE_FIXTURE,
+        target=pidfile,
+        cwd=workdir,
+        port=port,
+    )
+
+    replay_env = os.environ.copy()
+    replay_env.pop("RETRACE_RECORDING", None)
+    replay_env.pop("RETRACE_CONFIG", None)
+    replay_env["PYTHONFAULTHANDLER"] = "1"
+    replay = _run(
+        [sys.executable, "-m", "retracesoftware", "--recording", str(pidfile)],
+        cwd=workdir,
+        env=replay_env,
+    )
+    combined_replay = replay.stdout + replay.stderr
+
+    assert replay.returncode == 0, (
+        f"pidfile replay diverged (exit {replay.returncode})\n"
+        f"stdout:\n{replay.stdout}\n"
+        f"stderr:\n{replay.stderr}"
+    )
+    assert "Dispatcher: too many threads waiting for item" not in combined_replay
 
 
 @pytest.mark.xfail(
