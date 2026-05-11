@@ -19,12 +19,14 @@ python run.py --list
 ```
 The harness runs each test through `install -> dryrun -> record -> replay -> cleanup`.
 On failure, `runtest.sh` reports the failed phase and prints service logs.
+The default image is `retracesoftware-test`; if it is missing locally,
+`runtest.sh` builds it from `Dockerfile.test` before running the test.
 
 ## How It Works
 
 ### Dependency install and caching
 
-Each run uses the selected image (default `python:3.11-slim`) and executes `install.sh`:
+Each run uses the selected image (default `retracesoftware-test`) and executes `install.sh`:
    ```bash
    pip install -r /app/dockertests/base-requirements.txt  # Common
    pip install -r /app/test/requirements.txt              # Test-specific
@@ -36,7 +38,7 @@ Package installs are isolated per test and image under:
 
 ### Performance
 
-- **First run:** ~30-60s (image pull + pip install)
+- **First run:** ~30-90s (test image build + pip install)
 - **Subsequent runs:** ~5-10s (cached image + cached packages)
 - **After dep changes:** Only installs new/changed packages
 
@@ -172,12 +174,13 @@ For tests needing postgres, redis, etc., create a custom `docker-compose.yml`:
 
 ## CI/CD Integration
 
-GitHub Actions automatically builds and pushes base images to GHCR when `base-requirements.txt` changes.
+GitHub Actions builds the local `retracesoftware-test` image from `Dockerfile.test`
+before running scenario tests.
 
-**Workflow:** `.github/workflows/build-test-image.yml`
-- Triggers on: changes to `base-requirements.txt`, manual dispatch
-- Builds: `python:3.11-slim` + `base-requirements.txt` + retrace autoenable
-- Pushes to: `ghcr.io/<owner>/<repo>/retrace-test-base:latest` (public)
+**Workflow:** `.github/workflows/docker-test.yml`
+- Builds: `retracesoftware-test` with Python 3.11, Go 1.25, g++, Meson, Ninja,
+  and setuptools-scm
+- Runs: `python run.py --clean --image retracesoftware-test`
 
 **Running tests in CI:**
 ```yaml
@@ -194,7 +197,7 @@ For debugging or running individual tests, use `runtest.sh`:
 ./runtest.sh postgres_test
 
 # Override image
-./runtest.sh postgres_test --image python:3.11-slim
+./runtest.sh postgres_test --image custom-retrace-test-image
 
 # Debug mode (record under gdb)
 ./runtest.sh postgres_test --debug
@@ -228,9 +231,11 @@ When you add/change requirements:
 - Make sure Docker Desktop is running
 
 **"Could not pull image"**
-- Use `--image` to pick a known-good image:
-  - `python run.py --image python:3.11-slim`
-  - `./runtest.sh <test_name> --image python:3.11-slim`
+- Let the harness build the default image:
+  - `python run.py simple_test`
+  - `./runtest.sh simple_test`
+- If you override `--image`, make sure the image has Go, g++, Meson, Ninja,
+  and setuptools-scm available. Current Retrace source installs need Go.
 
 **Slow first run**
 - Image pull: ~1-2 minutes (one-time, cached locally)

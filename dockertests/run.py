@@ -9,7 +9,7 @@
 #     python run.py postgres_test       # Run specific test
 #     python run.py --list              # List available tests
 #     python run.py --tags db,slow      # Run tests with specific tags
-#     python run.py --image python:3.12 # Use specific Python image
+#     python run.py --image python:3.12 # Use custom Python image
 
 # Each test can have a 'tags' file with one tag per line:
 #     db
@@ -122,7 +122,7 @@
 #     parser.add_argument('tests', nargs='*', help='Specific tests to run')
 #     parser.add_argument('--list', '-l', action='store_true', help='List available tests')
 #     parser.add_argument('--tags', '-t', help='Run tests with these tags (comma-separated)')
-#     parser.add_argument('--image', '-i', help='Docker image to use (default: python:3.11-slim)')
+#     parser.add_argument('--image', '-i', help='Docker image to use')
     
 #     args = parser.parse_args()
     
@@ -232,7 +232,7 @@ Usage:
     python run.py --tags db,slow            # Run tests with specific tags
     python run.py --tags perf               # Run only perf tests
     python run.py --include-perf            # Include perf tests in run
-    python run.py --image python:3.12       # Use specific Python image
+    python run.py --image python:3.12       # Use a custom Python image
     python run.py --exclude asgiref_test    # Exclude tests by name
     python run.py -x asgiref_test -x py_test # Exclude tests (repeatable)
 
@@ -248,8 +248,12 @@ import sys
 import time
 import shutil
 import json
+import os
 from dataclasses import dataclass, field
 from pathlib import Path
+
+
+DEFAULT_TEST_IMAGE = os.environ.get("RETRACE_DEFAULT_TEST_IMAGE", "retracesoftware-test")
 
 
 @dataclass
@@ -460,7 +464,11 @@ def main():
     parser.add_argument('tests', nargs='*', help='Specific tests to run')
     parser.add_argument('--list', '-l', action='store_true', help='List available tests')
     parser.add_argument('--tags', '-t', help='Run tests with these tags (comma-separated)')
-    parser.add_argument('--image', '-i', help='Docker image to use (default: python:3.11-slim)')
+    parser.add_argument(
+        '--image', '-i',
+        default=DEFAULT_TEST_IMAGE,
+        help=f'Docker image to use (default: {DEFAULT_TEST_IMAGE})'
+    )
     parser.add_argument(
         '--exclude', '-x',
         action='append',
@@ -555,8 +563,7 @@ def main():
         print(f"   Tags: {args.tags}")
     if excluded:
         print(f"   Excluding: {', '.join(sorted(excluded))}")
-    if args.image:
-        print(f"   Image: {args.image}")
+    print(f"   Image: {args.image}")
     print("=" * 60)
 
     results = []

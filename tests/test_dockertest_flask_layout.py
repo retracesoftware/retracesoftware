@@ -42,3 +42,21 @@ def test_dockertest_base_requirements_do_not_pull_external_replay_binary():
     requirements = (DOCKERTESTS / "base-requirements.txt").read_text()
 
     assert "retracesoftware_replay" not in requirements
+
+
+def test_dockertest_default_image_has_retrace_build_toolchain():
+    """The default dockertest image must include Go for local source installs."""
+
+    dockerfile = (DOCKERTESTS / "Dockerfile.test").read_text()
+    run_py = (DOCKERTESTS / "run.py").read_text()
+    runtest = (DOCKERTESTS / "runtest.sh").read_text()
+    base_compose = (DOCKERTESTS / "docker-compose.base.yml").read_text()
+    server_compose = (DOCKERTESTS / "docker-compose.server-base.yml").read_text()
+
+    assert 'DEFAULT_TEST_IMAGE = os.environ.get("RETRACE_DEFAULT_TEST_IMAGE", "retracesoftware-test")' in run_py
+    assert 'DEFAULT_TEST_IMAGE="${RETRACE_DEFAULT_TEST_IMAGE:-retracesoftware-test}"' in runtest
+    assert "docker build -t \"$TEST_IMAGE\" -f Dockerfile.test .." in runtest
+    assert "FROM golang:1.25-bookworm AS go" in dockerfile
+    assert 'COPY --from=go /usr/local/go /usr/local/go' in dockerfile
+    assert "${TEST_IMAGE:-retracesoftware-test}" in base_compose
+    assert "${TEST_IMAGE:-retracesoftware-test}" in server_compose

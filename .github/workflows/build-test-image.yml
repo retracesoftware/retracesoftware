@@ -31,27 +31,6 @@ jobs:
         with:
           python-version: '3.11'
 
-      - name: Generate Dockerfile
-        run: |
-          cat > dockertests/Dockerfile.generated << 'DEOF'
-          FROM python:3.11-slim
-
-          WORKDIR /app
-
-          # Install common dependencies (retrace + shared test deps)
-          COPY dockertests/base-requirements.txt /tmp/base-requirements.txt
-          RUN pip install --no-cache-dir -r /tmp/base-requirements.txt
-
-          # Setup autoenable
-          COPY src/retracesoftware /tmp/retracesoftware
-          ENV PYTHONPATH=/tmp
-          RUN python -m retracesoftware.autoenable
-          ENV PYTHONPATH=
-          RUN rm -rf /tmp/retracesoftware
-
-          # Test-specific requirements installed at runtime by install.sh
-          DEOF
-
       - name: Log in to GitHub Container Registry
         uses: docker/login-action@v3
         with:
@@ -71,7 +50,7 @@ jobs:
         uses: docker/build-push-action@v5
         with:
           context: .
-          file: dockertests/Dockerfile.generated
+          file: dockertests/Dockerfile.test
           push: ${{ github.event_name != 'pull_request' }}
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}

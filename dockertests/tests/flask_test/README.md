@@ -59,8 +59,8 @@ python run.py flask_test
 
 # Manual docker-compose
 cd dockertests/tests/flask_test
-TEST_IMAGE=python:3.11-slim docker-compose up --abort-on-container-exit record
-TEST_IMAGE=python:3.11-slim docker-compose up --abort-on-container-exit replay
+TEST_IMAGE=retracesoftware-test docker-compose up --abort-on-container-exit record
+TEST_IMAGE=retracesoftware-test docker-compose up --abort-on-container-exit replay
 ```
 
 ## Expected Output

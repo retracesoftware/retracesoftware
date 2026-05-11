@@ -3,7 +3,7 @@
 
 services:
   server-dryrun:
-    image: ${TEST_IMAGE:-python:3.11-slim}
+    image: ${TEST_IMAGE:-retracesoftware-test}
     depends_on:
       install:
         condition: service_completed_successfully
@@ -31,7 +31,7 @@ services:
       FLASK_URL: http://server-dryrun:5000
 
   server-record:
-    image: ${TEST_IMAGE:-python:3.11-slim}
+    image: ${TEST_IMAGE:-retracesoftware-test}
     depends_on:
       dryrun:
         condition: service_completed_successfully

@@ -159,10 +159,10 @@ python run.py flask_server_test
 
 # Manual docker-compose (record phase)
 cd dockertests/tests/flask_server_test
-TEST_IMAGE=python:3.11-slim docker-compose up --abort-on-container-exit record
+TEST_IMAGE=retracesoftware-test docker-compose up --abort-on-container-exit record
 
 # Manual docker-compose (replay phase)
-TEST_IMAGE=python:3.11-slim docker-compose up --abort-on-container-exit replay
+TEST_IMAGE=retracesoftware-test docker-compose up --abort-on-container-exit replay
 ```
 
 ---

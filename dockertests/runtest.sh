@@ -5,7 +5,7 @@
 #   ./runtest.sh <test_name> [options]
 #
 # Options:
-#   --image <image>   Docker image (default: python:3.11-slim)
+#   --image <image>   Docker image (default: retracesoftware-test)
 #   --debug           Run record under GDB, drop to console on crash
 #
 # Examples:
@@ -20,7 +20,8 @@ PIPELINE_TIMEOUT_SEC="${RETRACE_PIPELINE_TIMEOUT_SEC:-600}"
 
 # Parse arguments
 DEBUG_MODE=false
-TEST_IMAGE="python:3.11-slim"
+DEFAULT_TEST_IMAGE="${RETRACE_DEFAULT_TEST_IMAGE:-retracesoftware-test}"
+TEST_IMAGE="$DEFAULT_TEST_IMAGE"
 TEST_NAME=""
 
 while [[ $# -gt 0 ]]; do
@@ -91,6 +92,22 @@ if [ "$DEBUG_MODE" = true ]; then
     echo "   Mode: DEBUG (GDB)"
 fi
 echo ""
+
+ensure_default_image() {
+    if [ "$TEST_IMAGE" != "$DEFAULT_TEST_IMAGE" ]; then
+        return
+    fi
+
+    if docker image inspect "$TEST_IMAGE" >/dev/null 2>&1; then
+        return
+    fi
+
+    echo "🔧 Building default Docker test image: $TEST_IMAGE"
+    docker build -t "$TEST_IMAGE" -f Dockerfile.test ..
+    echo ""
+}
+
+ensure_default_image
 
 # Isolate installed packages by test name and image to avoid cross-test contamination.
 SAFE_IMAGE_TAG="$(printf '%s' "$TEST_IMAGE" | tr '/:@' '___' | tr -c '[:alnum:]_.-' '_' | tr -d '\n')"

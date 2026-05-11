@@ -10,14 +10,14 @@
 #
 # Environment variables:
 #   - TEST_DIR: Path to test directory (e.g., ./tests/flask_test)
-#   - TEST_IMAGE: Base image (default: python:3.11-slim)
+#   - TEST_IMAGE: Base image (default: retracesoftware-test)
 #   - SERVER_PORT: Port server listens on (default: 5000)
 #   - SERVER_HEALTH_PATH: Health check path (default: /health)
 
 services:
   # Install dependencies
   install:
-    image: ${TEST_IMAGE:-python:3.11-slim}
+    image: ${TEST_IMAGE:-retracesoftware-test}
     volumes:
       - ./install.sh:/app/install.sh:ro
       - ./base-requirements.txt:/app/dockertests/base-requirements.txt:ro
@@ -29,7 +29,7 @@ services:
 
   # Dryrun - server runs native, client generates load
   server-dryrun:
-    image: ${TEST_IMAGE:-python:3.11-slim}
+    image: ${TEST_IMAGE:-retracesoftware-test}
     depends_on:
       install:
         condition: service_completed_successfully
@@ -46,7 +46,7 @@ services:
     command: python /app/test/test.py
 
   dryrun:
-    image: ${TEST_IMAGE:-python:3.11-slim}
+    image: ${TEST_IMAGE:-retracesoftware-test}
     depends_on:
       server-dryrun:
         condition: service_healthy
@@ -58,7 +58,7 @@ services:
 
   # Record - server under retrace, client generates load
   server-record:
-    image: ${TEST_IMAGE:-python:3.11-slim}
+    image: ${TEST_IMAGE:-retracesoftware-test}
     depends_on:
       dryrun:
         condition: service_completed_successfully
@@ -82,7 +82,7 @@ services:
     command: bash -c "python -m retracesoftware install && python /app/test/test.py"
 
   record:
-    image: ${TEST_IMAGE:-python:3.11-slim}
+    image: ${TEST_IMAGE:-retracesoftware-test}
     depends_on:
       server-record:
         condition: service_healthy
@@ -94,7 +94,7 @@ services:
 
   # Replay - server replays from recording (no client needed)
   replay:
-    image: ${TEST_IMAGE:-python:3.11-slim}
+    image: ${TEST_IMAGE:-retracesoftware-test}
     depends_on:
       record:
         condition: service_completed_successfully
@@ -109,7 +109,7 @@ services:
 
   # Cleanup
   cleanup:
-    image: ${TEST_IMAGE:-python:3.11-slim}
+    image: ${TEST_IMAGE:-retracesoftware-test}
     depends_on:
       replay:
         condition: service_completed_successfully

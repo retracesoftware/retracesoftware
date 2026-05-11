@@ -25,23 +25,7 @@ jobs:
           python-version: '3.11'
 
       - name: Build Docker test image
-        run: |
-          docker build -t retracesoftware-test -f - . <<'DOCKERFILE'
-          FROM golang:1.25-bookworm AS go
-
-          FROM python:3.11-slim
-
-          COPY --from=go /usr/local/go /usr/local/go
-          ENV PATH="/usr/local/go/bin:${PATH}" \
-              GOTOOLCHAIN=local
-
-          RUN apt-get update -qq \
-              && apt-get install -y -qq --no-install-recommends g++ \
-              && rm -rf /var/lib/apt/lists/*
-
-          RUN pip install --no-cache-dir \
-              meson-python meson ninja setuptools_scm
-          DOCKERFILE
+        run: docker build -t retracesoftware-test -f dockertests/Dockerfile.test .
 
       - name: Run Docker scenario tests
         working-directory: dockertests
