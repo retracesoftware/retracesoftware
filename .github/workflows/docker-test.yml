@@ -9,6 +9,7 @@ on:
 
 permissions:
   contents: read
+  packages: read
 
 jobs:
   dockertests:
@@ -24,9 +25,32 @@ jobs:
         with:
           python-version: '3.11'
 
-      - name: Build Docker test image
-        run: docker build -t retracesoftware-test -f dockertests/Dockerfile.test .
+      - name: Prepare Docker test image
+        env:
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+
+          repo="$(printf '%s' "${GITHUB_REPOSITORY}" | tr '[:upper:]' '[:lower:]')"
+          image_name="ghcr.io/${repo}/retrace-test-base"
+          image_tag="dockerfile-$(sha256sum dockertests/Dockerfile.test | awk '{print $1}')"
+          remote_image="${image_name}:${image_tag}"
+
+          echo "Using Docker test image tag: ${remote_image}"
+
+          if [ -n "${GHCR_TOKEN:-}" ] && echo "${GHCR_TOKEN}" | docker login ghcr.io -u "${GITHUB_ACTOR}" --password-stdin >/dev/null 2>&1; then
+            echo "Logged in to GHCR"
+          else
+            echo "GHCR login failed; will build locally if pull fails"
+          fi
+
+          if docker pull "${remote_image}"; then
+            docker tag "${remote_image}" retracesoftware-test
+          else
+            echo "GHCR image unavailable; building Docker test image locally"
+            docker build -t retracesoftware-test -f dockertests/Dockerfile.test .
+          fi
 
       - name: Run Docker scenario tests
         working-directory: dockertests
-        run: python run.py --clean --image retracesoftware-test
+        run: python run.py --clean --smoke --image retracesoftware-test

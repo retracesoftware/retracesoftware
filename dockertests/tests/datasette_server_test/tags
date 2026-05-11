@@ -3,3 +3,5 @@ uvicorn
 asgi
 sqlite
 server
+manual
+regression

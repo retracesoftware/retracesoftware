@@ -60,3 +60,46 @@ def test_dockertest_default_image_has_retrace_build_toolchain():
     assert 'COPY --from=go /usr/local/go /usr/local/go' in dockerfile
     assert "${TEST_IMAGE:-retracesoftware-test}" in base_compose
     assert "${TEST_IMAGE:-retracesoftware-test}" in server_compose
+
+
+def test_dockertest_default_run_excludes_non_default_tags():
+    """Known repro/perf/stress scenarios should not poison the default run."""
+
+    run_py = (DOCKERTESTS / "run.py").read_text()
+    datasette_tags = (DOCKERTESTS / "tests" / "datasette_server_test" / "tags").read_text()
+    flask_basic_tags = (DOCKERTESTS / "tests" / "flask_basic_test" / "tags").read_text()
+    flask_server_tags = (DOCKERTESTS / "tests" / "flask_server_test" / "tags").read_text()
+
+    assert '"manual": "use --include-manual or --tags manual to run them"' in run_py
+    assert '"perf": "use --include-perf or --tags perf to run them"' in run_py
+    assert '"stress": "use --include-stress or --tags stress to run them"' in run_py
+    assert "--include-manual" in run_py
+    assert "--include-stress" in run_py
+    assert "manual" in datasette_tags
+    assert "regression" in datasette_tags
+    assert "manual" in flask_basic_tags
+    assert "regression" in flask_basic_tags
+    assert "manual" in flask_server_tags
+    assert "regression" in flask_server_tags
+
+
+def test_dockertest_smoke_tier_keeps_representative_record_replay_coverage():
+    """Push CI should stay fast without dropping real record/replay coverage."""
+
+    run_py = (DOCKERTESTS / "run.py").read_text()
+    workflow = (REPO_ROOT / ".github" / "workflows" / "docker-test.yml").read_text()
+
+    assert "--smoke" in run_py
+    assert "python run.py --clean --smoke --image retracesoftware-test" in workflow
+    for name in (
+        "simple_test",
+        "datetime_test",
+        "asyncio_test",
+        "requests_test",
+        "flask_test",
+        "fastapi_test",
+        "psycopg2_test",
+        "subprocess_terminate_wait_timeout_test",
+        "llama_cpp_model_boundary_test",
+    ):
+        assert f'"{name}"' in run_py

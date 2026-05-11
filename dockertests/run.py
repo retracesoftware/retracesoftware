@@ -226,12 +226,15 @@ Run all retrace docker tests.
 Discovers tests in tests/ directory and runs each via runtest.sh.
 
 Usage:
-    python run.py                           # Run all tests (excludes perf tests)
+    python run.py                           # Run default tests
     python run.py postgres_test             # Run specific test(s)
     python run.py --list                    # List available tests
     python run.py --tags db,slow            # Run tests with specific tags
     python run.py --tags perf               # Run only perf tests
     python run.py --include-perf            # Include perf tests in run
+    python run.py --include-manual          # Include manual repro tests in run
+    python run.py --include-stress          # Include stress tests in run
+    python run.py --smoke                   # Run fast representative CI smoke set
     python run.py --image python:3.12       # Use a custom Python image
     python run.py --exclude asgiref_test    # Exclude tests by name
     python run.py -x asgiref_test -x py_test # Exclude tests (repeatable)
@@ -240,7 +243,9 @@ Each test can have a 'tags' file with one tag per line:
     db
     slow
     network
-    perf  # Excluded by default (use --include-perf or --tags perf)
+    perf    # Excluded by default (use --include-perf or --tags perf)
+    manual  # Excluded by default (use --include-manual or --tags manual)
+    stress  # Excluded by default (use --include-stress or --tags stress)
 """
 
 import subprocess
@@ -254,6 +259,25 @@ from pathlib import Path
 
 
 DEFAULT_TEST_IMAGE = os.environ.get("RETRACE_DEFAULT_TEST_IMAGE", "retracesoftware-test")
+DEFAULT_EXCLUDED_TAGS = {
+    "manual": "use --include-manual or --tags manual to run them",
+    "perf": "use --include-perf or --tags perf to run them",
+    "stress": "use --include-stress or --tags stress to run them",
+}
+SMOKE_TESTS = (
+    "simple_test",
+    "datetime_test",
+    "asyncio_test",
+    "requests_test",
+    "httpcore_test",
+    "flask_test",
+    "fastapi_test",
+    "psycopg2_test",
+    "subprocess_terminate_wait_timeout_test",
+    "llama_cpp_model_boundary_test",
+    "grpc_test",
+    "coreapi_test",
+)
 
 
 @dataclass
@@ -358,6 +382,50 @@ def parse_excludes(exclude_args: list[str]) -> set[str]:
             if p:
                 excluded.add(p)
     return excluded
+
+
+def exclude_default_tags(
+    tests: list[TestInfo],
+    *,
+    explicitly_requested_names: set[str],
+    explicitly_requested_tags: set[str],
+    include_manual: bool,
+    include_perf: bool,
+    include_stress: bool,
+) -> list[TestInfo]:
+    """Exclude non-default scenario classes unless the user asked for them."""
+    excluded_tags = dict(DEFAULT_EXCLUDED_TAGS)
+    if include_manual or "manual" in explicitly_requested_tags:
+        excluded_tags.pop("manual", None)
+    if include_perf or "perf" in explicitly_requested_tags:
+        excluded_tags.pop("perf", None)
+    if include_stress or "stress" in explicitly_requested_tags:
+        excluded_tags.pop("stress", None)
+
+    if not excluded_tags:
+        return tests
+
+    kept: list[TestInfo] = []
+    excluded_by_tag: dict[str, list[str]] = {tag: [] for tag in excluded_tags}
+    for test in tests:
+        if test.name in explicitly_requested_names:
+            kept.append(test)
+            continue
+
+        matched_tags = sorted(set(test.tags) & set(excluded_tags))
+        if matched_tags:
+            for tag in matched_tags:
+                excluded_by_tag[tag].append(test.name)
+        else:
+            kept.append(test)
+
+    for tag, names in sorted(excluded_by_tag.items()):
+        if not names:
+            continue
+        reason = excluded_tags[tag]
+        print(f"ℹ️  Excluding {tag} tests ({reason}): {', '.join(sorted(names))}")
+
+    return kept
 
 
 def clean_harness_state(dockertests_dir: Path) -> None:
@@ -481,6 +549,21 @@ def main():
         help='Include perf-tagged tests (excluded by default because they take a long time)'
     )
     parser.add_argument(
+        '--include-manual',
+        action='store_true',
+        help='Include manual reproducer tests (excluded by default)'
+    )
+    parser.add_argument(
+        '--include-stress',
+        action='store_true',
+        help='Include stress-tagged tests (excluded by default)'
+    )
+    parser.add_argument(
+        '--smoke',
+        action='store_true',
+        help='Run the fast representative scenario set used by push CI'
+    )
+    parser.add_argument(
         '--clean',
         action='store_true',
         help='Clean harness caches/orphan compose artifacts before running tests'
@@ -533,15 +616,24 @@ def main():
             print(f"No tests found with tags: {', '.join(tags)}")
             sys.exit(0)
 
-    # Exclude perf tests by default (they take forever)
-    # Include them only if: --include-perf, --tags perf, or explicitly named
+    if args.smoke:
+        smoke_set = set(SMOKE_TESTS)
+        tests_to_run = [t for t in tests_to_run if t.name in smoke_set]
+        missing_smoke = sorted(smoke_set - {t.name for t in all_tests})
+        for name in missing_smoke:
+            print(f"⚠️  Smoke test not found: {name}")
+
+    # Exclude non-default test classes unless explicitly requested.
     requested_tags = {t.strip() for t in (args.tags or '').split(',') if t.strip()}
     requested_by_name = set(args.tests) if args.tests else set()
-    if not args.include_perf and 'perf' not in requested_tags:
-        perf_excluded = [t.name for t in tests_to_run if 'perf' in t.tags and t.name not in requested_by_name]
-        if perf_excluded:
-            print(f"ℹ️  Excluding perf tests (use --include-perf or --tags perf to run them): {', '.join(perf_excluded)}")
-        tests_to_run = [t for t in tests_to_run if 'perf' not in t.tags or t.name in requested_by_name]
+    tests_to_run = exclude_default_tags(
+        tests_to_run,
+        explicitly_requested_names=requested_by_name,
+        explicitly_requested_tags=requested_tags,
+        include_manual=args.include_manual,
+        include_perf=args.include_perf,
+        include_stress=args.include_stress,
+    )
 
     # Exclude tests
     excluded = parse_excludes(args.exclude)
@@ -561,6 +653,8 @@ def main():
     print(f"🧪 Running {len(tests_to_run)} test(s)")
     if args.tags:
         print(f"   Tags: {args.tags}")
+    if args.smoke:
+        print("   Smoke: yes")
     if excluded:
         print(f"   Excluding: {', '.join(sorted(excluded))}")
     print(f"   Image: {args.image}")

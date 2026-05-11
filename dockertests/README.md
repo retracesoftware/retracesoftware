@@ -5,7 +5,10 @@ Record/replay tests using Docker containers for consistent environments and netw
 ## Quick Start
 
 ```bash
-# Run all tests
+# Run the fast representative smoke set
+python run.py --smoke
+
+# Run the full default matrix
 python run.py
 
 # Run specific test
@@ -21,6 +24,11 @@ The harness runs each test through `install -> dryrun -> record -> replay -> cle
 On failure, `runtest.sh` reports the failed phase and prints service logs.
 The default image is `retracesoftware-test`; if it is missing locally,
 `runtest.sh` builds it from `Dockerfile.test` before running the test.
+Default runs exclude `manual`, `stress`, and `perf` scenarios. They remain
+runnable by name, by tag, or with `--include-manual`, `--include-stress`, and
+`--include-perf`.
+Push CI uses the faster `--smoke` set; run the full default matrix before
+release validation or when changing harness behavior.
 
 ## How It Works
 
@@ -35,12 +43,17 @@ Each run uses the selected image (default `retracesoftware-test`) and executes `
 Package installs are isolated per test and image under:
 - `./.cache/packages/<test_name>/<image_tag>/`
 - `./.cache/packages-debug/<test_name>/<image_tag>/` (debug mode)
+The package target is rebuilt for each scenario so the harness always tests the
+current checkout and cannot pass because of stale installed code. Pip download
+state is cached under `./.cache/pip/`.
 
 ### Performance
 
-- **First run:** ~30-90s (test image build + pip install)
-- **Subsequent runs:** ~5-10s (cached image + cached packages)
-- **After dep changes:** Only installs new/changed packages
+- **Smoke run:** representative scenario coverage for push CI.
+- **Full default run:** broader compatibility matrix; slower because each
+  scenario runs install, dryrun, record, and replay in isolation.
+- **Manual/perf/stress runs:** opt in with `--include-manual`,
+  `--include-perf`, `--include-stress`, explicit test names, or matching tags.
 
 ### Test Structure
 
@@ -174,18 +187,21 @@ For tests needing postgres, redis, etc., create a custom `docker-compose.yml`:
 
 ## CI/CD Integration
 
-GitHub Actions builds the local `retracesoftware-test` image from `Dockerfile.test`
-before running scenario tests.
+GitHub Actions first tries to pull the exact GHCR image tag for the current
+`Dockerfile.test` hash from the existing package linked to this repository. If
+that image is unavailable, it builds the local `retracesoftware-test` image
+from `Dockerfile.test` before running scenario tests.
 
 **Workflow:** `.github/workflows/docker-test.yml`
-- Builds: `retracesoftware-test` with Python 3.11, Go 1.25, g++, Meson, Ninja,
+- Pulls/builds: `retracesoftware-test` with Python 3.11, Go 1.25, g++, Meson, Ninja,
   and setuptools-scm
-- Runs: `python run.py --clean --image retracesoftware-test`
+- Runs: `python run.py --clean --smoke --image retracesoftware-test`
+- Full matrix command: `python run.py --clean --image retracesoftware-test`
 
 **Running tests in CI:**
 ```yaml
 - name: Run tests
-  run: python run.py
+  run: python run.py --smoke
 ```
 
 ## Manual Test Execution

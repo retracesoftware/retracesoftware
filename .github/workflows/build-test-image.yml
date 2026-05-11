@@ -4,17 +4,20 @@ on:
   push:
     branches: [main, master]
     paths:
+      - '.github/workflows/build-test-image.yml'
+      - 'dockertests/Dockerfile.test'
       - 'dockertests/base-requirements.txt'
       - 'dockertests/tests/**/requirements.txt'
   pull_request:
     paths:
+      - '.github/workflows/build-test-image.yml'
+      - 'dockertests/Dockerfile.test'
       - 'dockertests/base-requirements.txt'
       - 'dockertests/tests/**/requirements.txt'
   workflow_dispatch:  # Manual trigger
 
 env:
   REGISTRY: ghcr.io
-  IMAGE_NAME: ${{ github.repository }}/retrace-test-base
 
 jobs:
   build:
@@ -26,12 +29,24 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Compute Docker image tag
+        id: image
+        run: |
+          set -euo pipefail
+          repo="$(printf '%s' "${GITHUB_REPOSITORY}" | tr '[:upper:]' '[:lower:]')"
+          image_name="${REGISTRY}/${repo}/retrace-test-base"
+          image_tag="dockerfile-$(sha256sum dockertests/Dockerfile.test | awk '{print $1}')"
+          echo "name=${image_name}" >> "${GITHUB_OUTPUT}"
+          echo "tag=${image_tag}" >> "${GITHUB_OUTPUT}"
+          echo "Image: ${image_name}:${image_tag}"
+
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
           python-version: '3.11'
 
       - name: Log in to GitHub Container Registry
+        if: github.event_name != 'pull_request'
         uses: docker/login-action@v3
         with:
           registry: ${{ env.REGISTRY }}
@@ -42,9 +57,10 @@ jobs:
         id: meta
         uses: docker/metadata-action@v5
         with:
-          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          images: ${{ steps.image.outputs.name }}
           tags: |
             type=raw,value=latest
+            type=raw,value=${{ steps.image.outputs.tag }}
 
       - name: Build and push
         uses: docker/build-push-action@v5
@@ -57,4 +73,5 @@ jobs:
 
       - name: Output image info
         run: |
-          echo "Image built and pushed: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest"
+          echo "Image built and pushed: ${{ steps.image.outputs.name }}:${{ steps.image.outputs.tag }}"
+          echo "Also tagged: ${{ steps.image.outputs.name }}:latest"
