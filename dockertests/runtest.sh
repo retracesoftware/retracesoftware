@@ -123,6 +123,14 @@ if [ -z "${RETRACE_FORMAT:-}" ]; then
     fi
 fi
 
+if [ -z "${RETRACE_REPLAY_FORMAT:-}" ]; then
+    if [ "$RETRACE_REPLAY_MODE" = "recording" ]; then
+        export RETRACE_REPLAY_FORMAT="$RETRACE_FORMAT"
+    else
+        export RETRACE_REPLAY_FORMAT=binary
+    fi
+fi
+
 if [ "$KEEP_RECORDING" = true ]; then
     export RETRACE_CLEAN_RECORDING=0
 else
@@ -169,6 +177,7 @@ echo "   Record mode: $RETRACE_RECORD_MODE"
 echo "   Replay mode: $RETRACE_REPLAY_MODE"
 echo "   Retrace config: $RETRACE_CONFIG_LABEL ($RETRACE_CONFIG)"
 echo "   Recording format: $RETRACE_FORMAT"
+echo "   Replay format: $RETRACE_REPLAY_FORMAT"
 echo "   Keep recording: $KEEP_RECORDING"
 if [ "$DEBUG_MODE" = true ]; then
     echo "   Mode: DEBUG (GDB)"
@@ -199,6 +208,7 @@ export RETRACE_RECORD_MODE
 export RETRACE_REPLAY_MODE
 export RETRACE_CONFIG
 export RETRACE_FORMAT
+export RETRACE_REPLAY_FORMAT
 export RETRACE_CLEAN_RECORDING
 
 # Build compose command
