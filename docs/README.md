@@ -38,7 +38,6 @@ Start at [Internals](internals/README.md) if you are changing Retrace itself.
 Current internal references:
 
 - [Architecture](internals/architecture.md)
-- [Test Harnesses](internals/test-harnesses.md)
 - [Module Layers](LAYERS.md)
 - [Stream Architecture](STREAM.md)
 - [Thread Replay](THREAD_REPLAY.md)

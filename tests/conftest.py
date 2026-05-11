@@ -20,15 +20,6 @@ if str(_REPO_ROOT) not in sys.path:
 from tests.helpers import run_record, run_replay  # noqa: F401 — re-exported for fixtures
 
 
-def pytest_addoption(parser):
-    parser.addoption(
-        "--retrace-config",
-        choices=("normal", "debug"),
-        default="normal",
-        help="Retrace config preset for harnesses that expose a normal/debug lane",
-    )
-
-
 def _append_mesonpy_editable_skip(path: Path) -> None:
     if not path.exists():
         return

@@ -1,289 +1,248 @@
 # Docker Tests
 
-Docker scenario tests exercise Retrace against real libraries and small apps in
-isolated containers. The harness is intentionally closer to how users run
-Retrace than to a unit-test fixture: it installs the current checkout, runs the
-program once normally, records it, extracts the recording, and replays the root
-PidFile with networking disabled.
+Record/replay tests using Docker containers for consistent environments and network isolation.
 
 ## Quick Start
 
 ```bash
-# Run all non-performance tests
+# Run all tests
 python run.py
 
-# Run one test
-python run.py simple_test
+# Run specific test
+python run.py postgres_test
 
 # List available tests
 python run.py --list
 
-# Clean package caches and stale harness containers before running
-python run.py --clean simple_test
+# Run single test manually (for debugging)
+./runtest.sh postgres_test
+```
+The harness runs each test through `install -> dryrun -> record -> replay -> cleanup`.
+On failure, `runtest.sh` reports the failed phase and prints service logs.
+
+## How It Works
+
+### Dependency install and caching
+
+Each run uses the selected image (default `python:3.11-slim`) and executes `install.sh`:
+   ```bash
+   pip install -r /app/dockertests/base-requirements.txt  # Common
+   pip install -r /app/test/requirements.txt              # Test-specific
+   ```
+
+Package installs are isolated per test and image under:
+- `./.cache/packages/<test_name>/<image_tag>/`
+- `./.cache/packages-debug/<test_name>/<image_tag>/` (debug mode)
+
+### Performance
+
+- **First run:** ~30-60s (image pull + pip install)
+- **Subsequent runs:** ~5-10s (cached image + cached packages)
+- **After dep changes:** Only installs new/changed packages
+
+### Test Structure
+
+Each test directory is mounted as `/app/test/` with:
+- `test.py` - Test code
+- `requirements.txt` - Test-specific deps (optional)
+- `docker-compose.yml` - Service definitions
+- Any other files needed by the test
+
+## Directory Structure
+
+```
+dockertests/
+├── base-requirements.txt
+├── docker-compose.base.yml
+├── docker-compose.server-base.yml
+├── install.sh
+├── run.py
+├── runtest.sh
+└── tests/
+    └── my_test/
+        ├── test.py
+        ├── docker-compose.yml      # Optional override
+        ├── requirements.txt        # Optional
+        └── tags                    # Optional
 ```
 
-Default behavior:
+**Architecture:**
+- `run.py` - Discovers/tests filters and invokes `runtest.sh` per test
+- `runtest.sh` - Runs one test pipeline and reports failed phase/logs
+- `docker-compose.base.yml` / `docker-compose.server-base.yml` - Base workflows
 
-- Docker image: `python:3.12`
-- Record mode: `.pth` auto-enable flow
-- Replay mode: extracted root PidFile
-- Retrace config: `normal` (`release` preset)
-- Successful recordings are cleaned unless `--keep-recording` is passed
+**Note:** `docker-compose.yml` is optional!
+- If present: merged as an override (for postgres, flask, perf, etc.)
+- If missing: base compose handles install/dryrun/record/replay/cleanup
 
-## Pipeline
+## Creating a Test
 
-Script tests run:
+### Simple Test (No Infrastructure Needed)
 
-```text
-install -> dryrun -> record -> replay -> cleanup
-```
+Most tests don't need external services. Just create `test.py`:
 
-Server tests, identified by a `client.py` next to `test.py`, run:
+1. **Create test:**
+   ```bash
+   mkdir -p dockertests/tests/my_test
+   cat > dockertests/tests/my_test/test.py << 'EOF'
+   def test():
+       print("Hello from test!")
+       assert 1 + 1 == 2
+   
+   if __name__ == "__main__":
+       test()
+   EOF
+   ```
 
-```text
-install -> server-dryrun -> dryrun -> server-record -> record -> replay -> cleanup
-```
+2. **Add dependencies (optional):**
+   ```bash
+   echo "requests" > dockertests/tests/my_test/requirements.txt
+   ```
 
-`dryrun` proves the app works without Retrace. `record` uses the same `.pth`
-auto-enable path documented for users:
+3. **Run:**
+   ```bash
+   python run.py my_test
+   ```
 
-```bash
-python -m retracesoftware install
-RETRACE_RECORDING=/recording/test.retrace python /app/test/test.py
-```
+**That's it!** The runner automatically uses a default `docker-compose.yml`.
 
-`replay` extracts and runs the recorded root process:
+---
 
-```bash
-/recording/test.retrace --extract
-ROOT_PID=$(python -m retracesoftware --recording /recording/test.retrace --list_pids | head -n 1)
-/recording/test.d/${ROOT_PID}.bin
-```
+### Complex Test (With Infrastructure)
 
-Replay runs with `network_mode: none`, so a passing replay cannot be silently
-touching live network services from the recording phase.
+For tests needing postgres, redis, etc., create a custom `docker-compose.yml`:
 
-## Commands
+1. **Create test directory:**
+   ```bash
+   mkdir -p dockertests/tests/postgres_test
+   ```
 
-```bash
-# Run one test with the default modern flow
-./runtest.sh simple_test
+2. **Create `docker-compose.yml`:**
+   ```yaml
+   services:
+     postgres:
+       image: postgres:15
+       environment:
+         POSTGRES_PASSWORD: test
+         POSTGRES_DB: testdb
 
-# Keep /recording/test.retrace and /recording/test.d/ after success
-./runtest.sh simple_test --keep-recording
+     record:
+       depends_on:
+         - postgres
+       environment:
+         DATABASE_URL: postgres://postgres:test@postgres:5432/testdb
+         RETRACE_RECORDING: /recording/trace.bin
+       command: bash -c "python -m retracesoftware install && python /app/test/test.py"
 
-# Run the same flow with Retrace's debug preset
-./runtest.sh simple_test --retrace-config debug
+     replay:
+       network_mode: none
+       command: python -m retracesoftware --recording /recording/trace.bin
+   ```
 
-# Compare against the legacy direct/unframed Python replay path
-./runtest.sh simple_test --record-mode direct --replay-mode recording
+   This file is merged with `docker-compose.base.yml`, which supplies the image,
+   package mounts, `/app/test`, and `/recording` volumes.
 
-# Use a different Python image
-./runtest.sh simple_test --image python:3.11-slim
+3. **Create test:**
+   ```bash
+   cat > dockertests/tests/postgres_test/test.py << 'EOF'
+   import os
+   import psycopg2
+   
+   def test():
+       conn = psycopg2.connect(os.environ['DATABASE_URL'])
+       cursor = conn.cursor()
+       cursor.execute("SELECT 1")
+       assert cursor.fetchone()[0] == 1
+       print("✓ Postgres test passed!")
+   
+   if __name__ == "__main__":
+       test()
+   EOF
+   ```
 
-# Increase one-test timeout
-./runtest.sh simple_test --timeout 1200
+4. **Add dependencies:**
+   ```bash
+   echo "psycopg2-binary" > dockertests/tests/postgres_test/requirements.txt
+   ```
 
-# Run all tests tagged with db, excluding perf tests unless explicitly requested
-python run.py --tags db
+5. **Run:**
+   ```bash
+   python run.py postgres_test
+   ```
 
-# Run through the Python wrapper with the debug preset
-python run.py simple_test --retrace-config debug
+## CI/CD Integration
 
-# Include performance tests
-python run.py --include-perf
-```
+GitHub Actions automatically builds and pushes base images to GHCR when `base-requirements.txt` changes.
 
-`normal` maps to Retrace's bundled `release` config. Use
-`--retrace-config debug` when you want the richer checkpoint/protocol path used
-for debugging replay desyncs.
+**Workflow:** `.github/workflows/build-test-image.yml`
+- Triggers on: changes to `base-requirements.txt`, manual dispatch
+- Builds: `python:3.11-slim` + `base-requirements.txt` + retrace autoenable
+- Pushes to: `ghcr.io/<owner>/<repo>/retrace-test-base:latest` (public)
 
-## Test Layout
-
-Each test directory is mounted at `/app/test` and usually contains:
-
-```text
-dockertests/tests/my_test/
-  test.py
-  requirements.txt        # optional
-  docker-compose.yml      # optional override
-  tags                    # optional, one tag per line
-  client.py               # optional; marks the test as a server scenario
-```
-
-If `docker-compose.yml` is missing, the base workflow is enough. If it is
-present, Docker Compose merges it on top of the base workflow so the test can
-add services such as Postgres, custom health checks, or test-specific
-environment variables.
-
-## Creating A Script Test
-
-```bash
-mkdir -p dockertests/tests/my_test
-```
-
-Create `dockertests/tests/my_test/test.py`:
-
-```python
-import random
-from datetime import datetime
-
-
-def main():
-    print("now", datetime.now())
-    print("random", random.random())
-
-
-if __name__ == "__main__":
-    main()
-```
-
-Add dependencies only when needed:
-
-```bash
-printf "requests\n" > dockertests/tests/my_test/requirements.txt
-```
-
-Run it:
-
-```bash
-cd dockertests
-python run.py my_test --keep-recording
-```
-
-## Creating A Server Test
-
-A server test has a long-running `test.py` and a foreground `client.py`.
-
-```text
-dockertests/tests/flask_like_test/
-  test.py       # starts the server under Retrace during record
-  client.py     # sends requests during dryrun/record
-  requirements.txt
-```
-
-The harness records only the server process. During replay, the server code
-re-executes from the recording with no live client and no live network.
-
-Use `docker-compose.yml` only for overrides, for example:
-
+**Running tests in CI:**
 ```yaml
-services:
-  server-dryrun:
-    environment:
-      DB_FILE: /tmp/app.db
-
-  server-record:
-    environment:
-      DB_FILE: /tmp/app.db
-
-  replay:
-    environment:
-      DB_FILE: /tmp/app.db
-
-  dryrun:
-    environment:
-      FLASK_URL: http://server-dryrun:5000
-
-  record:
-    environment:
-      FLASK_URL: http://server-record:5000
+- name: Run tests
+  run: python run.py
 ```
 
-The base server workflow supplies package mounts, recording mounts, health
-readiness waits, record/replay commands, server shutdown, and cleanup.
+## Manual Test Execution
 
-Do not add continuous Docker healthchecks to `server-record`: healthchecks are
-real HTTP traffic into the recorded process and will become part of the trace.
-The harness already waits for the TCP port once before running `client.py`.
+For debugging or running individual tests, use `runtest.sh`:
 
-## Dependency Install
+```bash
+# Run full test (record + replay)
+./runtest.sh postgres_test
 
-`install.sh` installs into a per-test/per-image target under `.cache/packages`.
-It installs:
+# Override image
+./runtest.sh postgres_test --image python:3.11-slim
 
-1. the test's `requirements.txt`, if present
-2. `dockertests/base-requirements.txt`
-3. the current Retrace checkout mounted at `/app/repo`
-
-That means docker tests validate the current source tree, not the published
-PyPI package.
-
-The current checkout build needs native compilation and Go 1.25+. The harness
-installs missing build tools inside the test container, including a Go 1.25
-toolchain when the base image does not provide one.
-
-Use `python run.py --clean ...` to remove package caches, stale per-test
-recordings, and stale Compose objects for projects named `retracetest_*`.
-
-## Record And Replay Modes
-
-The default mode is the product path:
-
-```text
---record-mode pth --replay-mode pidfile
+# Debug mode (record under gdb)
+./runtest.sh postgres_test --debug
 ```
 
-This creates `/recording/test.retrace`, extracts `/recording/test.d/`, and
-executes the recorded root PidFile.
+**Features:**
+- ✅ Uses the same pipeline as `run.py`
+- ✅ Reports failed phase (`dryrun`, `record`, `replay`, etc.) on error
+- ✅ Supports custom compose overrides and image selection
 
-The legacy mode is still available for isolating older replay bugs:
+**Use cases:**
+- Debugging individual tests
+- Re-running failed tests
+- Inspecting generated docker-compose files
+- Manual cleanup of test resources
 
-```text
---record-mode direct --replay-mode recording
-```
+## Requirements Management
 
-That writes an unframed recording and replays it directly through
-`python -m retracesoftware --recording`.
+- **`base-requirements.txt`** - Common deps installed in base image (retrace, etc.)
+- **`tests/*/requirements.txt`** - Test-specific deps (installed at runtime by install.sh)
+
+When you add/change requirements:
+1. Update `base-requirements.txt` or test-specific `requirements.txt`
+2. If base requirements changed, CI rebuilds base image
+3. Test-specific requirements auto-installed at runtime
+4. No manual intervention needed!
 
 ## Troubleshooting
 
-**Docker is not available**
+**"Cannot connect to Docker"**
+- Make sure Docker Desktop is running
 
-Start Docker Desktop or use local manual commands for the specific scenario.
+**"Could not pull image"**
+- Use `--image` to pick a known-good image:
+  - `python run.py --image python:3.11-slim`
+  - `./runtest.sh <test_name> --image python:3.11-slim`
 
-**Replay fails**
+**Slow first run**
+- Image pull: ~1-2 minutes (one-time, cached locally)
+- Pip install: ~30-60s (cached in volumes)
+- Subsequent runs: ~5-10s
 
-Run the test again with:
+**Tests fail in replay**
+- Check if test code is deterministic
+- Verify recording directory has content
+- Run with `-v` for verbose output
 
-```bash
-./runtest.sh <test_name> --keep-recording
-```
-
-Then inspect:
-
-```text
-dockertests/tests/<test_name>/recording/test.retrace
-dockertests/tests/<test_name>/recording/test.d/
-```
-
-**Need to keep the failing recording**
-
-Run:
-
-```bash
-./runtest.sh <test_name> --keep-recording
-```
-
-Then inspect:
-
-```text
-dockertests/tests/<test_name>/recording/test.retrace
-dockertests/tests/<test_name>/recording/test.d/
-```
-
-**Packages look stale**
-
-```bash
-python run.py --clean <test_name>
-```
-
-**Need lower-level logs**
-
-Use:
-
-```bash
-RETRACE_STACKTRACES=1 ./runtest.sh <test_name> --keep-recording
-```
-
-On failure, `runtest.sh` prints the failed phase and the relevant Compose logs.
+**Force refresh**
+- Remove cached package installs:
+  - `rm -rf .cache/packages .cache/packages-debug`
+- Re-run the test to reinstall dependencies

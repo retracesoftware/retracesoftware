@@ -10,14 +10,14 @@
 #
 # Environment variables:
 #   - TEST_DIR: Path to test directory (e.g., ./tests/flask_test)
-#   - TEST_IMAGE: Base image (default: python:3.12)
+#   - TEST_IMAGE: Base image (default: python:3.11-slim)
 #   - SERVER_PORT: Port server listens on (default: 5000)
 #   - SERVER_HEALTH_PATH: Health check path (default: /health)
 
 services:
   # Install dependencies
   install:
-    image: ${TEST_IMAGE:-python:3.12}
+    image: ${TEST_IMAGE:-python:3.11-slim}
     volumes:
       - ./install.sh:/app/install.sh:ro
       - ./base-requirements.txt:/app/dockertests/base-requirements.txt:ro
@@ -29,9 +29,7 @@ services:
 
   # Dryrun - server runs native, client generates load
   server-dryrun:
-    image: ${TEST_IMAGE:-python:3.12}
-    stop_signal: SIGINT
-    stop_grace_period: 15s
+    image: ${TEST_IMAGE:-python:3.11-slim}
     depends_on:
       install:
         condition: service_completed_successfully
@@ -40,13 +38,18 @@ services:
       - ${TEST_PACKAGES_DIR:-./.cache/packages}:/app/packages:ro
     environment:
       PYTHONPATH: /app/packages
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:${SERVER_PORT:-5000}${SERVER_HEALTH_PATH:-/health}')"]
+      interval: 2s
+      retries: 10
+      start_period: 3s
     command: python /app/test/test.py
 
   dryrun:
-    image: ${TEST_IMAGE:-python:3.12}
+    image: ${TEST_IMAGE:-python:3.11-slim}
     depends_on:
       server-dryrun:
-        condition: service_started
+        condition: service_healthy
     volumes:
       - ${TEST_DIR}/client.py:/app/client.py:ro
     environment:
@@ -55,9 +58,7 @@ services:
 
   # Record - server under retrace, client generates load
   server-record:
-    image: ${TEST_IMAGE:-python:3.12}
-    stop_signal: SIGINT
-    stop_grace_period: 15s
+    image: ${TEST_IMAGE:-python:3.11-slim}
     depends_on:
       dryrun:
         condition: service_completed_successfully
@@ -68,39 +69,23 @@ services:
     working_dir: /recording
     environment:
       PYTHONPATH: /app/packages
-      RETRACE_CONFIG: ${RETRACE_CONFIG:-release}
-      RETRACE_FORMAT: ${RETRACE_FORMAT:-binary}
-      RETRACE_RECORDING: /recording/test.retrace
-      REPLAY_BIN: /app/packages/bin/replay
+      RETRACE_CONFIG: debug
+      RETRACE_FORMAT: unframed_binary
+      RETRACE_RECORDING: /recording/trace.bin
       RETRACE_REPLAY_BIN: /app/packages/bin/replay
       RETRACE_STACKTRACES: ${RETRACE_STACKTRACES:-0}
-      RETRACE_RECORD_MODE: ${RETRACE_RECORD_MODE:-pth}
-    command: >
-      bash -euc '
-        case "$$RETRACE_RECORD_MODE" in
-          pth)
-            python -m retracesoftware install
-            python /app/test/test.py
-            ;;
-          direct)
-            python -m retracesoftware \
-              --recording "$$RETRACE_RECORDING" \
-              --format "$$RETRACE_FORMAT" \
-              --replay_bin "$$REPLAY_BIN" \
-              -- /app/test/test.py
-            ;;
-          *)
-            echo "unknown RETRACE_RECORD_MODE=$$RETRACE_RECORD_MODE" >&2
-            exit 2
-            ;;
-        esac
-      '
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:${SERVER_PORT:-5000}${SERVER_HEALTH_PATH:-/health}')"]
+      interval: 2s
+      retries: 10
+      start_period: 5s
+    command: bash -c "python -m retracesoftware install && python /app/test/test.py"
 
   record:
-    image: ${TEST_IMAGE:-python:3.12}
+    image: ${TEST_IMAGE:-python:3.11-slim}
     depends_on:
       server-record:
-        condition: service_started
+        condition: service_healthy
     volumes:
       - ${TEST_DIR}/client.py:/app/client.py:ro
     environment:
@@ -109,63 +94,27 @@ services:
 
   # Replay - server replays from recording (no client needed)
   replay:
-    image: ${TEST_IMAGE:-python:3.12}
+    image: ${TEST_IMAGE:-python:3.11-slim}
     depends_on:
       record:
         condition: service_completed_successfully
     network_mode: none
     volumes:
       - ${TEST_DIR}:/app/test:ro
-      - ${TEST_DIR}/recording:/recording:rw
+      - ${TEST_DIR}/recording:/recording:ro
       - ${TEST_PACKAGES_DIR:-./.cache/packages}:/app/packages:ro
     environment:
       PYTHONPATH: /app/packages
-      RETRACE_REPLAY_MODE: ${RETRACE_REPLAY_MODE:-pidfile}
-      RETRACE_REPLAY_FORMAT: ${RETRACE_REPLAY_FORMAT:-binary}
-    command: >
-      bash -euc '
-        case "$$RETRACE_REPLAY_MODE" in
-          pidfile)
-            /recording/test.retrace --extract
-            ROOT_PID="$$(python -m retracesoftware --recording /recording/test.retrace --list_pids | head -n 1)"
-            if [ -z "$$ROOT_PID" ]; then
-              echo "no root pid found in /recording/test.retrace" >&2
-              exit 1
-            fi
-            echo "ROOT_PID=$$ROOT_PID"
-            /recording/test.d/$$ROOT_PID.bin
-            ;;
-          recording)
-            python -m retracesoftware \
-              --recording /recording/test.retrace \
-              --format "$$RETRACE_REPLAY_FORMAT"
-            ;;
-          *)
-            echo "unknown RETRACE_REPLAY_MODE=$$RETRACE_REPLAY_MODE" >&2
-            exit 2
-            ;;
-        esac
-      '
+    command: python -m retracesoftware --recording /recording/trace.bin
 
   # Cleanup
   cleanup:
-    image: ${TEST_IMAGE:-python:3.12}
+    image: ${TEST_IMAGE:-python:3.11-slim}
     depends_on:
       replay:
         condition: service_completed_successfully
     volumes:
       - ${TEST_DIR}/recording:/recording:rw
-    environment:
-      RETRACE_CLEAN_RECORDING: ${RETRACE_CLEAN_RECORDING:-1}
-    command: >
-      sh -c '
-        if [ "$${RETRACE_CLEAN_RECORDING:-1}" = "1" ]; then
-          rm -rf /recording/*
-          echo "recording artifacts cleaned"
-        else
-          echo "recording artifacts kept in /recording"
-          find /recording -maxdepth 2 -print
-        fi
-      '
+    command: sh -c "rm -rf /recording/* && echo '✓ Recording cleaned up'"
 
 # No named volumes - using local .cache/ directory for packages

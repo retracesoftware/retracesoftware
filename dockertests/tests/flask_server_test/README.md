@@ -136,20 +136,17 @@ lifecycles clean:
 
 ```yaml
 # Record phase
-server-record:     # Flask under retrace
+flask-record:      # Flask under retrace
   environment:
-    RETRACE_RECORDING: /recording/test.retrace
+    RETRACE_RECORDING: /recording/trace.bin
   command: bash -c "python -m retracesoftware install && python /app/test/test.py"
   
 record:            # Test client (plain Python)
+  depends_on:
+    flask-record:
+      condition: service_healthy
   command: python /app/client.py
 ```
-
-The harness starts `server-record`, waits for the TCP port once, runs
-`client.py`, stops the recorded server with `SIGINT`, then extracts and replays
-the root PidFile. Continuous Docker healthchecks are intentionally not used for
-the recorded server because they are real HTTP traffic and would become part of
-the trace.
 
 ## Running
 
@@ -160,8 +157,12 @@ the trace.
 # Or main runner
 python run.py flask_server_test
 
-# Keep generated /recording artifacts for inspection
-./runtest.sh flask_server_test --keep-recording
+# Manual docker-compose (record phase)
+cd dockertests/tests/flask_server_test
+TEST_IMAGE=python:3.11-slim docker-compose up --abort-on-container-exit record
+
+# Manual docker-compose (replay phase)
+TEST_IMAGE=python:3.11-slim docker-compose up --abort-on-container-exit replay
 ```
 
 ---
@@ -278,7 +279,7 @@ Both tests use **separate containers** for client and server. The key difference
 ```yaml
 record:  # Test client UNDER retrace
   environment:
-    RETRACE_RECORDING: /recording/test.retrace
+    RETRACE_RECORDING: /recording/trace.bin
   command: bash -c "python -m retracesoftware install && python /app/test/test.py"
 
 flask:   # Normal Flask server
@@ -289,7 +290,7 @@ flask:   # Normal Flask server
 ```yaml
 flask-record:  # test.py (Flask) UNDER retrace
   environment:
-    RETRACE_RECORDING: /recording/test.retrace
+    RETRACE_RECORDING: /recording/trace.bin
   command: bash -c "python -m retracesoftware install && python /app/test/test.py"
 
 record:  # client.py (load generator)

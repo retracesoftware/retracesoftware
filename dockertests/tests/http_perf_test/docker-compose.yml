@@ -42,7 +42,7 @@ services:
     command: sh -c "echo 'replay skipped for perf test'"
 
   cleanup:
-    image: ${TEST_IMAGE:-python:3.12}
+    image: ${TEST_IMAGE:-python:3.11-slim}
     depends_on:
       replay:
         condition: service_completed_successfully
