@@ -266,6 +266,13 @@ def test_flask_dev_server_sigint_pidfile_replay_consumes_terminal_shutdown(
     )
 
 
+@pytest.mark.xfail(
+    strict=True,
+    reason=(
+        "Flask dev-server PidFile replay can desync after many request "
+        "threads and terminal Ctrl-C shutdown"
+    ),
+)
 def test_flask_dev_server_many_requests_sigint_pidfile_replay_replays_all_requests(
     tmp_path: Path,
 ):
@@ -414,6 +421,168 @@ def test_flask_dev_server_many_requests_sigint_pidfile_replay_replays_all_reques
     )
     assert combined_replay.count('"GET / HTTP/1.1" 200') >= 74
     assert combined_replay.count("GET /favicon.ico HTTP/1.1") >= 74
+    assert (
+        "Checkpoint difference: 'SYNC' was expecting "
+        "type:retracesoftware.proxy.io.CallMarkerMessage"
+        not in combined_replay
+    )
+
+
+@pytest.mark.xfail(
+    strict=True,
+    reason=(
+        "Flask dev-server PidFile replay can consume shutdown SYNC while "
+        "a request thread expects CallMarkerMessage after pth auto-enable "
+        "recording with many external requests"
+    ),
+)
+def test_flask_dev_server_many_requests_pth_autoenable_replay_keeps_thread_markers(
+    tmp_path: Path,
+):
+    pytest.importorskip("flask")
+    requests = pytest.importorskip("requests")
+
+    script = tmp_path / "flask_many_requests_pth_repro.py"
+    script.write_text(
+        textwrap.dedent(
+            """
+            import os
+
+            from flask import Flask, jsonify
+
+
+            app = Flask(__name__)
+            state = {"hits": 0}
+
+
+            @app.get("/")
+            def index():
+                state["hits"] += 1
+                return jsonify(message="hello", hits=state["hits"])
+
+
+            if __name__ == "__main__":
+                print("many-request pth flask server starting", flush=True)
+                app.run(
+                    host="127.0.0.1",
+                    port=int(os.environ["PORT"]),
+                    debug=False,
+                    use_reloader=False,
+                    threaded=True,
+                )
+            """
+        ),
+        encoding="utf-8",
+    )
+
+    port = _free_port()
+    recording_name = "trace.retrace"
+    recording = tmp_path / recording_name
+
+    install_env = os.environ.copy()
+    install_env["MESONPY_EDITABLE_SKIP"] = _editable_skip()
+    install_env["PYTHONPATH"] = _local_pythonpath()
+    install = _run(
+        [sys.executable, "-m", "retracesoftware", "install"],
+        cwd=tmp_path,
+        env=install_env,
+    )
+    assert install.returncode == 0, _completed_process_error(
+        "install auto-enable",
+        install,
+    )
+
+    record_env = install_env.copy()
+    record_env["PORT"] = str(port)
+    record_env["PYTHONFAULTHANDLER"] = "1"
+    record_env["RETRACE_RECORDING"] = recording_name
+    record_env.pop("RETRACE_CONFIG", None)
+    record_env.pop("RETRACE_SKIP_CHECKSUMS", None)
+
+    server_log = tmp_path / "server.log"
+    with server_log.open("w", encoding="utf-8") as output:
+        record = subprocess.Popen(
+            [sys.executable, script.name],
+            cwd=tmp_path,
+            env=record_env,
+            stdout=output,
+            stderr=subprocess.STDOUT,
+            text=True,
+        )
+        try:
+            _wait_for_tcp_port(port)
+
+            session = requests.Session()
+            for _ in range(1000):
+                response = session.get(f"http://127.0.0.1:{port}/", timeout=30)
+                assert response.status_code == 200
+                favicon = session.get(
+                    f"http://127.0.0.1:{port}/favicon.ico",
+                    timeout=30,
+                )
+                assert favicon.status_code == 404
+
+            record.send_signal(signal.SIGINT)
+            time.sleep(2)
+            if record.poll() is None:
+                record.terminate()
+            try:
+                record_rc = record.wait(timeout=20)
+            except subprocess.TimeoutExpired:
+                record.kill()
+                record.wait(timeout=5)
+                raise
+        finally:
+            if record.poll() is None:
+                record.kill()
+                record.wait(timeout=5)
+
+    record_output = server_log.read_text(encoding="utf-8")
+    assert record_rc in (0, -signal.SIGINT, -signal.SIGTERM), (
+        f"record failed (exit {record_rc})\ncombined output:\n{record_output}"
+    )
+    assert recording.exists()
+    assert record_output.count('"GET / HTTP/1.1" 200') >= 1000
+    assert record_output.count("GET /favicon.ico HTTP/1.1") >= 1000
+
+    extract = _run([str(recording), "--extract"], cwd=tmp_path, env=install_env)
+    assert extract.returncode == 0, _completed_process_error("extract", extract)
+
+    list_pids = _run(
+        [
+            sys.executable,
+            "-m",
+            "retracesoftware",
+            "--recording",
+            str(recording),
+            "--list_pids",
+        ],
+        cwd=tmp_path,
+        env=install_env,
+    )
+    assert list_pids.returncode == 0, _completed_process_error(
+        "list_pids",
+        list_pids,
+    )
+    root_pid = list_pids.stdout.splitlines()[0]
+    pidfile = tmp_path / "trace.d" / f"{root_pid}.bin"
+    assert pidfile.exists()
+
+    replay_env = install_env.copy()
+    replay_env.pop("RETRACE_RECORDING", None)
+    replay_env.pop("RETRACE_CONFIG", None)
+    replay_env.pop("RETRACE_SKIP_CHECKSUMS", None)
+    replay = _run([str(pidfile)], cwd=tmp_path, env=replay_env)
+    combined_replay = replay.stdout + replay.stderr
+
+    assert replay.returncode == 0, (
+        f"pth pidfile replay diverged before replaying all recorded requests "
+        f"(exit {replay.returncode})\n"
+        f"stdout:\n{replay.stdout}\n"
+        f"stderr:\n{replay.stderr}"
+    )
+    assert combined_replay.count('"GET / HTTP/1.1" 200') >= 1000
+    assert combined_replay.count("GET /favicon.ico HTTP/1.1") >= 1000
     assert (
         "Checkpoint difference: 'SYNC' was expecting "
         "type:retracesoftware.proxy.io.CallMarkerMessage"
