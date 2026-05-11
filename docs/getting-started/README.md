@@ -2,6 +2,11 @@
 
 These guides cover the public workflow for a new Retrace user.
 
+The included Flask quickstart takes about 5 minutes. Before starting it, check
+that Python 3.12, Go 1.25 or newer, Git, and VS Code are installed. The guide
+also shows how to confirm the Retrace package is installed and that the
+`.retrace` recording was created before opening VS Code.
+
 Read them in order:
 
 1. [Installation](installation.md)
@@ -16,6 +21,7 @@ go version
 python3.12 -m venv .venv
 source .venv/bin/activate
 python -m pip install retracesoftware
+python -m pip show retracesoftware
 python -m retracesoftware install
 RETRACE_RECORDING=recordings/run.retrace python your_script.py
 code .

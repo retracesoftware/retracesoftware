@@ -1,22 +1,19 @@
 # Retrace Quickstart
 
-This is a minimal quickstart for trying Retrace with a small Flask example.
+This is a minimal quickstart for trying Retrace with a small Flask example. It
+takes about 5 minutes.
 
-The goal is simple:
+Before you start, make sure you have:
 
-1. Clone the Retrace repo.
-2. Open the `quickstart` folder.
-3. Check that Go is installed for replay/debugging.
-4. Create a Python 3.12 virtual environment.
-5. Install Retrace with one `pip` command.
-6. Enable Retrace auto-recording for that virtual environment.
-7. Install the Flask demo dependency.
-8. Run the Flask demo normally.
-9. Record the Flask demo by running ordinary Python with `RETRACE_RECORDING`.
-10. Install the Retrace VS Code extension from the Marketplace.
-11. Open the recording in VS Code.
-12. Add breakpoints, step forward, and step backward through the recorded execution.
-13. Optionally replay the recording in the terminal as a sanity check.
+1. Python 3.12 (`python3.12 --version`)
+2. Go 1.25 or newer (`go version`)
+3. Git
+4. VS Code for replay debugging
+
+See [../COMPATIBILITY.md](../COMPATIBILITY.md) for current platform details.
+
+By the end you will have a `.retrace` recording of a small Flask app and a VS
+Code session that can step backward from a breakpoint inside that recording.
 
 ## Requirements
 
@@ -119,10 +116,17 @@ python -m pip install retracesoftware
 
 That installs the Retrace Python package into this virtual environment.
 
-Check the installed package version:
+Check that the installation worked before continuing:
 
 ```
 python -m pip show retracesoftware
+```
+
+You should see package details that include:
+
+```
+Name: retracesoftware
+Version: ...
 ```
 
 ## 5. Enable Auto-Recording In This Virtual Environment
@@ -189,6 +193,12 @@ recordings/flask.retrace
 ```
 
 That `.retrace` file is the recording.
+
+Check that the recording was written:
+
+```
+ls -lh recordings/flask.retrace
+```
 
 `recordings/` is just the folder where this quickstart stores generated
 recordings. Retrace creates the folder automatically if it does not already
@@ -276,6 +286,11 @@ Then use the Retrace sidebar to start replaying the recorded process.
 During replay, VS Code should stop on your breakpoint. You can inspect local
 variables, step forward, step backward, and continue through the recorded
 execution.
+
+You are done when VS Code stops at your breakpoint, the Retrace sidebar shows
+the recorded process tree, and the Step Back button moves backward through the
+recording. From there you can inspect variables, continue, step backward and
+forward, reverse, and restart without rerunning the Flask demo live.
 
 ## Optional: Replay The Recording In The Terminal
 

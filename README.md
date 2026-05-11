@@ -61,30 +61,68 @@ means, and known gaps (SQLAlchemy, Redis, boto3, Celery).
 
 ## Quick Start
 
-The fastest way to try Retrace is the included Flask demo.
+The fastest way to try Retrace is the included Flask demo. It takes about 5
+minutes.
+
+Before you start, make sure you have:
+
+1. Python 3.12 (`python3.12 --version`)
+2. Go 1.25 or newer (`go version`)
+3. Git
+4. VS Code for replay debugging
+
+See [COMPATIBILITY.md](./COMPATIBILITY.md) for current platform details. For
+the full walkthrough, see [quickstart/README.md](https://github.com/retracesoftware/retracesoftware/blob/main/quickstart/README.md).
+
+By the end you will have a `.retrace` recording of a small Flask app and a VS
+Code session that can step backward from a breakpoint inside that recording.
 
 ```bash
 git clone https://github.com/retracesoftware/retracesoftware.git
 cd retracesoftware/quickstart
-
-# Retrace's replay tool is written in Go; verify Go 1.25+ is on your PATH
-go version
 
 python3.12 -m venv .venv
 source .venv/bin/activate
 
 python -m pip install --upgrade pip
 python -m pip install retracesoftware
-python -m retracesoftware install
+python -m pip show retracesoftware
+python -m retracesoftware install  # one-time: enables auto-recording for this venv
 python -m pip install -r requirements.txt
+```
 
+`python -m pip show retracesoftware` should print package details that include
+`Name: retracesoftware` and `Version: ...`.
+
+Now record the demo:
+
+```bash
 RETRACE_RECORDING=recordings/flask.retrace python examples/flask_demo.py
+```
+
+The demo should print:
+
+```
+=== Retrace Flask demo ===
+GET /health: status=200 body=...
+POST /users Ada: status=201 body=...
+POST /users Grace: status=201 body=...
+GET /users/1: status=200 body=...
+GET /summary: status=200 body=...
+Flask demo complete.
+```
+
+A file is now written at `recordings/flask.retrace`. That is your recording.
+Check it before opening VS Code:
+
+```bash
+ls -lh recordings/flask.retrace
 code .
 ```
 
 In VS Code:
 
-1. Install the `Retrace Debug Extension` from the Marketplace.
+1. Install the `Retrace Debug Extension` from the Marketplace. The publisher is `RetraceSoftware`.
 2. Open the Retrace sidebar.
 3. Choose `Open Recording...`.
 4. Select `recordings/flask.retrace`.
@@ -92,11 +130,10 @@ In VS Code:
 6. Set a breakpoint inside a route handler or inside `main()`.
 7. Start replay from the Retrace view.
 
-The replay should stop at your breakpoint inside the recorded execution. You can
-inspect variables, continue, step forward, and step backward without running
-the Flask demo live again.
-
-For the full walkthrough, see [quickstart/README.md](https://github.com/retracesoftware/retracesoftware/blob/main/quickstart/README.md).
+You are done when VS Code stops at your breakpoint, the Retrace sidebar shows
+the recorded process tree, and the Step Back button moves backward through the
+recording. From there you can inspect variables, continue, step backward and
+forward, reverse, and restart without rerunning the Flask demo live.
 
 ## Requirements
 
