@@ -1,8 +1,14 @@
 import gc
+import os
 import pytest
 
 from retracesoftware.proxy.tape import TapeReader, TapeWriter
-from retracesoftware.testing.memorytape import MemoryTape, _BindCloseMarker
+from retracesoftware.testing.memorytape import (
+    MemoryReader,
+    MemoryTape,
+    MemoryWriter,
+    _BindCloseMarker,
+)
 import retracesoftware.stream as stream
 
 
@@ -57,6 +63,18 @@ def test_memory_tape_uses_tape_local_binding_indices_not_global_binder_handles()
     assert tape.tape[1].index == 1
     assert repr(tape.tape[2][0]) == "Binding(0)"
     assert repr(tape.tape[2][1]) == "Binding(1)"
+
+
+def test_memory_writer_preserves_tuple_subclass_results():
+    value = os.stat_result((0,) * 10)
+
+    writer = MemoryWriter()
+    writer.write_result(value)
+
+    replayed = MemoryReader(writer.tape).read_result()
+
+    assert type(replayed) is os.stat_result
+    assert replayed.st_mtime == value.st_mtime
 
 
 def test_memory_tape_reader_bind_requires_binding_create_marker():

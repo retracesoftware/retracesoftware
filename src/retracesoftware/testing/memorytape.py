@@ -383,7 +383,7 @@ class MemoryWriter:
 
         if isinstance(value, list):
             return [self._encode_value(item) for item in value]
-        if isinstance(value, tuple):
+        if type(value) is tuple:
             return tuple(self._encode_value(item) for item in value)
         if isinstance(value, dict):
             return {
