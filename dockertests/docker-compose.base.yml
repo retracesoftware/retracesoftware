@@ -80,7 +80,7 @@ services:
     environment:
       PYTHONPATH: /app/packages
       RETRACE_REPLAY_MODE: ${RETRACE_REPLAY_MODE:-pidfile}
-      RETRACE_FORMAT: ${RETRACE_FORMAT:-binary}
+      RETRACE_REPLAY_FORMAT: ${RETRACE_REPLAY_FORMAT:-binary}
     command: >
       bash -euc '
         case "$$RETRACE_REPLAY_MODE" in
@@ -97,7 +97,7 @@ services:
           recording)
             python -m retracesoftware \
               --recording /recording/test.retrace \
-              --format "$$RETRACE_FORMAT"
+              --format "$$RETRACE_REPLAY_FORMAT"
             ;;
           *)
             echo "unknown RETRACE_REPLAY_MODE=$$RETRACE_REPLAY_MODE" >&2
