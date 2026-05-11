@@ -220,3 +220,7 @@ go/cmd/replay/replay
 *.retrace
 benchmarks/results/
 *.bin
+examples/*.d/
+examples/*.code-workspace
+test/recording_otel/
+test/output_otel/
