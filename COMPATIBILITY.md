@@ -83,19 +83,26 @@ full causal sequence.
 
 - **SQLite** via `sqlite3`
 - **PostgreSQL** via psycopg2
+- **PostgreSQL async clients** via asyncpg and aiopg
+- **MySQL async clients** via aiomysql
 - **SQLAlchemy** with SQLite
 - **Django ORM** with SQLite
-
-> asyncpg and aiopg are on the near-term roadmap. See
-> [Not yet tested](#not-yet-tested).
 
 ## Cache / Redis
 
 - Redis client APIs through redis-py / fakeredis
+- Live Redis server operations through redis-py
 
 ## Cloud SDKs
 
 - boto3 / botocore with `Stubber`-backed S3 clients
+- aiobotocore / botocore with `Stubber`-backed S3 clients
+
+## Messaging and queues
+
+- Celery eager tasks with memory broker/backend
+- Kombu memory transport
+- kafka-python, aiokafka, and confluent-kafka client package APIs
 
 ## Data validation and serialisation
 
@@ -194,11 +201,12 @@ Listed for reproducibility, not as record/replay compatibility claims:
 Libraries with active user demand that we have not yet validated. Listed openly
 so you can see exactly where coverage stops:
 
-- asyncpg, aiopg, aiomysql
-- Live Redis server coverage beyond redis-py / fakeredis
-- aiobotocore
-- Celery, kombu
-- Kafka clients (kafka-python, aiokafka, confluent-kafka)
+- Live cloud-provider calls beyond Stubber-backed boto3/botocore and
+  aiobotocore/botocore clients
+- Broker-backed Celery and Kombu deployments beyond the memory transport
+- Live Kafka broker record/replay beyond client package APIs
+- Redis Cluster, Sentinel, and failover scenarios beyond single-server redis-py
+  coverage
 
 If you need one of these, open an issue with your stack details. Prioritisation
 follows demand.
