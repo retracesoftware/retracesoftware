@@ -13,6 +13,12 @@ verified." Known caveats are noted inline.
 If you hit a problem with a library listed here, please open an issue with a
 minimal reproducer, Python version, and OS.
 
+## Current caveats
+
+- Threading support is currently experimental, with full support being released
+  in the next version. Under certain scenarios threading diverges; see
+  [threading issues](https://github.com/retracesoftware/retracesoftware/issues?q=is%3Aissue%20is%3Aopen%20threading).
+
 ## Python versions
 
 [TODO: 3.x, 3.y]
@@ -30,9 +36,12 @@ record and replay across them is the foundation everything else depends on.
 Most other tools approximate these with hooks or sampling; Retrace captures the
 full causal sequence.
 
-- **Threading and synchronisation:** `threading`, `queue`
+- **Threading and synchronisation:** `threading`, `queue`,
+  `concurrent.futures`, `weakref` finalizers (experimental; see
+  [current caveats](#current-caveats))
 - **Networking:** `socket`, `select`, `ssl`
-- **Process and IPC:** `subprocess`, `_posixsubprocess`, `billiard`
+- **Process and IPC:** `subprocess`, `_posixsubprocess`, `multiprocessing`,
+  `billiard`
 - **Filesystem and paths:** `pathlib`
 - **Time and randomness:** `time`, `random`
 - **Database:** `sqlite3` (`_sqlite3`)
@@ -42,13 +51,14 @@ full causal sequence.
 ## Async runtime
 
 - `asyncio`
-- `anyio`
+- `anyio`, `asgiref`
 - `uvicorn`
 - `aiosignal`, `aiorwlock`, `async-lru`
 
 ## Web frameworks
 
 - Flask, Django, FastAPI, Starlette, Wagtail
+- Datasette / Uvicorn
 - Django REST Framework, slowapi, fastapi-utils
 - ariadne, strawberry-graphql, graphql-core
 
@@ -61,6 +71,8 @@ full causal sequence.
 ## HTTP clients
 
 - requests, httpx, httpcore, aiohttp
+- requests streaming responses
+- httpx mock transports
 - aiohttp-cors, requests-cache, requests-oauthlib, requests-toolbelt
 
 ### HTTP test doubles and recorders
@@ -71,9 +83,19 @@ full causal sequence.
 
 - **SQLite** via `sqlite3`
 - **PostgreSQL** via psycopg2
+- **SQLAlchemy** with SQLite
+- **Django ORM** with SQLite
 
-> SQLAlchemy, asyncpg, and aiopg are on the near-term roadmap. See
+> asyncpg and aiopg are on the near-term roadmap. See
 > [Not yet tested](#not-yet-tested).
+
+## Cache / Redis
+
+- Redis client APIs through redis-py / fakeredis
+
+## Cloud SDKs
+
+- boto3 / botocore with `Stubber`-backed S3 clients
 
 ## Data validation and serialisation
 
@@ -83,11 +105,16 @@ full causal sequence.
 
 ## Templating
 
-- Jinja2
+- Jinja2, Werkzeug routing
 
 ## Scientific and data
 
 - NumPy, Pandas, SciPy
+
+## LLM and model boundaries
+
+- HuggingFace Hub boundary calls
+- llama-cpp model boundary calls
 
 ## Observability
 
@@ -114,6 +141,7 @@ full causal sequence.
 ## Date and time
 
 - python-dateutil, pytz, arrow, dateparser, Babel
+- freezegun
 
 ## Resilience and retry
 
@@ -166,10 +194,9 @@ Listed for reproducibility, not as record/replay compatibility claims:
 Libraries with active user demand that we have not yet validated. Listed openly
 so you can see exactly where coverage stops:
 
-- SQLAlchemy
 - asyncpg, aiopg, aiomysql
-- Redis clients (redis-py, aioredis)
-- boto3, aiobotocore
+- Live Redis server coverage beyond redis-py / fakeredis
+- aiobotocore
 - Celery, kombu
 - Kafka clients (kafka-python, aiokafka, confluent-kafka)
 

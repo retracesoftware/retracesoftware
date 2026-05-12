@@ -18,7 +18,15 @@ Retrace is useful when a bug depends on timing, network responses, filesystem
 state, model output, subprocess behavior, random values, clocks, or anything
 else that is painful to reproduce from logs alone.
 
-This is an open-source preview. We have tested on a broad range of libraries: See [Compatibility](#compatibility). Threading support is currently experimental. Under certain scenarios threading diverges. See issues
+This is an open-source preview. We have tested a broad range of libraries: see
+[Compatibility](./COMPATIBILITY.md). Threading support is currently
+experimental, with full support being released in the next version. Under
+certain scenarios threading diverges. See
+[issues](https://github.com/retracesoftware/retracesoftware/issues?q=is%3Aissue%20is%3Aopen%20threading).
+Join us in
+[GitHub Discussions](https://github.com/retracesoftware/retracesoftware/discussions)
+to ask questions, share feedback, describe your use case, and talk with the
+team as the project evolves.
 
 ## What Retrace Is Not
 
@@ -47,13 +55,9 @@ Full benchmark methodology and reproducible results:
 
 ## Compatibility
 
-Retrace works with the mainstream Python web and async stack: Flask, Django,
-FastAPI, Starlette, requests, httpx, aiohttp, asyncio, AnyIO, NumPy, Pandas,
-Pydantic, psycopg2, plus the standard-library determinism boundaries
-(threading, sockets, subprocess, ssl, sqlite3).
-
 See [COMPATIBILITY.md](./COMPATIBILITY.md) for the full matrix, what "tested"
-means, and known gaps (SQLAlchemy, Redis, boto3, Celery).
+means, and current caveats around threading, Redis/fakeredis, Datasette/Uvicorn,
+and model-boundary replay.
 
 **Python versions:** [TODO]
 **Operating systems:** [TODO]
