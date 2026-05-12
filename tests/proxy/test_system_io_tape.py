@@ -1121,6 +1121,60 @@ def test_system_io_replays_dynamic_internal_proxy_callback_side_effect_with_memo
     assert replay_calls == ["called"]
 
 
+def test_system_io_replays_callback_object_result_through_external_frame_with_memory_tape():
+    tape = IOMemoryTape()
+    writer = tape.writer()
+
+    class CallbackResult:
+        def __init__(self, calls):
+            self.calls = calls
+
+        def ping(self):
+            self.calls.append("ping")
+            return 20
+
+    class External:
+        def run(self, callback_obj):
+            result = callback_obj.make_result()
+            return result.ping() + 1
+
+    class Callback:
+        def __init__(self, calls):
+            self.calls = calls
+
+        def make_result(self):
+            self.calls.append("make_result")
+            return CallbackResult(self.calls)
+
+    record_calls = []
+
+    with _entered(writer) as writer:
+        with _recorder_context(IOMode("plain"), writer) as record_system:
+            patch_type(record_system, External)
+
+            def run_callback(external_cls, callback_cls, calls):
+                return external_cls().run(callback_cls(calls))
+
+            recorded = record_system.run(run_callback, External, Callback, record_calls)
+
+    assert recorded == 21
+    assert record_calls == ["make_result", "ping"]
+
+    reader = tape.reader()
+    replay_calls = []
+    with _entered(reader) as reader:
+        with _replayer_context(IOMode("plain"), reader) as replay_system:
+            patch_type(replay_system, External)
+
+            def run_callback(external_cls, callback_cls, calls):
+                return external_cls().run(callback_cls(calls))
+
+            replayed = replay_system.run(run_callback, External, Callback, replay_calls)
+
+    assert replayed == recorded
+    assert replay_calls == ["make_result", "ping"]
+
+
 def test_system_io_round_trips_external_result_proxy_hydration_with_memory_tape():
     tape = IOMemoryTape()
     writer = tape.writer()
