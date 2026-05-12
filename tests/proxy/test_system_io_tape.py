@@ -617,6 +617,72 @@ def test_replayer_binds_stub_callback_result_while_reading_external_result():
     assert replayed == recorded
 
 
+def test_replayer_unproxies_callback_arguments_before_external_call():
+    tape = IOMemoryTape()
+
+    class External:
+        pass
+
+    def external_call():
+        return "external-result"
+
+    def require_type(result_cls):
+        if not isinstance(result_cls, type):
+            raise TypeError("callback expected an unproxied type")
+        return result_cls.__name__
+
+    def flow(call, emit_callback):
+        if emit_callback is not None:
+            emit_callback()
+        return call()
+
+    writer = tape.writer()
+    with _entered(writer) as writer:
+        with _recorder_context(IOMode("plain"), writer) as record_system:
+            patch_type(record_system, External)
+            recorded_external = record_system.patch_function(external_call)
+
+            def emit_callback_envelope():
+                record_system.primary_hooks.on_call(require_type, External)
+                record_system.secondary_hooks.on_result("External")
+
+            recorded = record_system.run(
+                flow,
+                recorded_external,
+                emit_callback_envelope,
+            )
+
+    assert recorded == "external-result"
+
+    raw = _raw_tape(tape)
+    assert raw is not None
+    callback_index = raw.index("CALLBACK")
+    assert raw[callback_index + 1] is require_type
+    assert "CALLBACK_RESULT" in raw[callback_index:]
+
+    reader = tape.reader()
+    with _entered(reader) as reader:
+        replay_system = replayer(
+            next_object=reader.read,
+            close=getattr(reader, "close", None),
+            on_desync=lambda record, replay: (_ for _ in ()).throw(
+                AssertionError(f"desync: {record!r} vs {replay!r}")
+            ),
+            on_unexpected=lambda message: (_ for _ in ()).throw(
+                AssertionError(f"unexpected: {message!r}")
+            ),
+        )
+        try:
+            _configure_system(replay_system)
+            patch_type(replay_system, External)
+            replayed_external = replay_system.patch_function(external_call)
+            replayed = replay_system.run(flow, replayed_external, None)
+        finally:
+            replay_system.unpatch_types()
+
+    assert replayed == recorded
+
+
 def test_replayer_runs_callback_before_internal_patched_alloc_bind():
     tape = IOMemoryTape()
     callback_calls = []
