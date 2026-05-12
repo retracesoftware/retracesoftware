@@ -18,8 +18,7 @@ Retrace is useful when a bug depends on timing, network responses, filesystem
 state, model output, subprocess behavior, random values, clocks, or anything
 else that is painful to reproduce from logs alone.
 
-This is an open-source preview. See [Compatibility](#compatibility) for current
-scope.
+This is an open-source preview. We have tested on a broad range of libraries: See [Compatibility](#compatibility). Threading support is currently experimental. Under certain scenarios threading diverges. See issues
 
 ## What Retrace Is Not
 
