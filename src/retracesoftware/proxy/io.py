@@ -33,6 +33,7 @@ from retracesoftware.proxy.gateway import (
     ext_replay_gateway,
     ext_replay_method_gateway,
     int_replay_gateway,
+    unproxy_int,
 )
 
 class _MarkerMessage:
@@ -1276,6 +1277,7 @@ def replayer(*, next_object,
     read_message = message_source.read
     read_raw_message = raw_message_source.read
     system = System(tape_reader.bind)
+    callback_int_proxy = system.int_proxy
     on_unexpected = system.disable_for(on_unexpected, unwrap_args=False)
     on_desync = system.disable_for(on_desync, unwrap_args=False)
     system.retrace_mode = "replay"
@@ -1341,6 +1343,16 @@ def replayer(*, next_object,
 
         on_desync(message, expected_type)
 
+    def is_create_stub_callback(callback_fn):
+        target = _unwrap_callable(callback_fn)
+        return (
+            target is utils.create_stub_object
+            or (
+                getattr(target, "__name__", "") == "create_stub_object"
+                and getattr(target, "__module__", "").startswith("_retracesoftware_utils")
+            )
+        )
+
     def run_callback(message):
         nonlocal replayed_signal_callback
         call_callback = system.gate.apply_with("internal", functional.call)
@@ -1352,11 +1364,17 @@ def replayer(*, next_object,
             message.fn,
         )
         try:
-            result = call_callback(callback_fn, message.args, message.kwargs)
+            result = call_callback(
+                callback_fn,
+                unproxy_int(message.args),
+                unproxy_int(message.kwargs),
+            )
         except Exception as exc:
             if debug:
                 checkpoint(_on_error(exc))
             return None
+        if not is_create_stub_callback(callback_fn):
+            result = system.gate.apply_with("internal", callback_int_proxy)(result)
         bind_pending_callback_result(result)
         if debug:
             checkpoint(_on_result(result))
@@ -1376,13 +1394,15 @@ def replayer(*, next_object,
             )
             result = call_callback(
                 callback_fn,
-                tape_reader.resolve(message.args),
-                tape_reader.resolve(message.kwargs),
+                unproxy_int(tape_reader.resolve(message.args)),
+                unproxy_int(tape_reader.resolve(message.kwargs)),
             )
         except Exception as exc:
             if debug:
                 raw_checkpoint(_on_error(exc))
             return None
+        if not is_create_stub_callback(callback_fn):
+            result = system.gate.apply_with("internal", callback_int_proxy)(result)
         bind_pending_callback_result(result)
         if debug:
             raw_checkpoint(_on_result(result))

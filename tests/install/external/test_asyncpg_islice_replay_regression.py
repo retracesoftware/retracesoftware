@@ -161,13 +161,6 @@ def _write_rebased_asyncpg_pidfile_fixture(
     target.chmod(0o755)
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "asyncpg PidFile replay currently creates the internal itertools.islice "
-        "proxy where the trace expects the recorded islice result"
-    ),
-)
 def test_asyncpg_captured_pidfile_replay_keeps_islice_result_order() -> None:
     """Regression for Daniel's exact asyncpg replay failure.
 
