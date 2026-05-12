@@ -92,15 +92,18 @@ full causal sequence.
 
 - Redis client APIs through redis-py / fakeredis
 - Live Redis server operations through redis-py
+- Redis Sentinel and failover flows in local container scenarios
 
 ## Cloud SDKs
 
 - boto3 / botocore with `Stubber`-backed S3 clients
 - aiobotocore / botocore with `Stubber`-backed S3 clients
+- boto3 / botocore against a local S3-compatible Moto server
 
 ## Messaging and queues
 
 - Celery eager tasks with memory broker/backend
+- Broker-backed Celery and Kombu with Redis
 - Kombu memory transport
 - kafka-python, aiokafka, and confluent-kafka client package APIs
 
@@ -198,15 +201,17 @@ Listed for reproducibility, not as record/replay compatibility claims:
 
 ## Not yet tested
 
-Libraries with active user demand that we have not yet validated. Listed openly
-so you can see exactly where coverage stops:
+Libraries with active user demand that we have not yet validated. Listed
+openly so you can see exactly where coverage stops:
 
-- Live cloud-provider calls beyond Stubber-backed boto3/botocore and
-  aiobotocore/botocore clients
-- Broker-backed Celery and Kombu deployments beyond the memory transport
-- Live Kafka broker record/replay beyond client package APIs
-- Redis Cluster, Sentinel, and failover scenarios beyond single-server redis-py
-  coverage
+- Production cloud-provider endpoints beyond Stubber-backed clients and local
+  Moto/S3-compatible server coverage
+- AMQP/RabbitMQ-backed Celery and Kombu deployments beyond Redis-backed broker
+  scenarios
+- Kafka TLS/SASL, multi-broker clusters, and managed Kafka deployments beyond
+  client APIs and local single-node scenarios
+- Redis Cluster, production Sentinel HA, and managed Redis failover scenarios
+  beyond local container coverage
 
 If you need one of these, open an issue with your stack details. Prioritisation
 follows demand.

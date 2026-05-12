@@ -1,0 +1,90 @@
+services:
+  redis-master:
+    image: redis:7-alpine
+    command: ["redis-server", "--appendonly", "no"]
+    ports:
+      - "16381:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 2s
+      retries: 30
+
+  redis-replica:
+    image: redis:7-alpine
+    command:
+      [
+        "redis-server",
+        "--replicaof",
+        "redis-master",
+        "6379",
+        "--replica-announce-ip",
+        "redis-replica",
+        "--replica-announce-port",
+        "6379",
+        "--appendonly",
+        "no",
+      ]
+    ports:
+      - "16382:6379"
+    depends_on:
+      redis-master:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 2s
+      retries: 30
+
+  redis-sentinel:
+    image: redis:7-alpine
+    command:
+      - sh
+      - -c
+      - |
+        cat > /tmp/sentinel.conf <<'EOF'
+        port 26379
+        sentinel monitor mymaster redis-master 6379 1
+        sentinel resolve-hostnames yes
+        sentinel announce-hostnames yes
+        sentinel down-after-milliseconds mymaster 1000
+        sentinel failover-timeout mymaster 10000
+        sentinel parallel-syncs mymaster 1
+        EOF
+        redis-server /tmp/sentinel.conf --sentinel
+    ports:
+      - "26379:26379"
+    depends_on:
+      redis-master:
+        condition: service_healthy
+      redis-replica:
+        condition: service_healthy
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "redis-cli",
+          "-p",
+          "26379",
+          "sentinel",
+          "get-master-addr-by-name",
+          "mymaster",
+        ]
+      interval: 2s
+      retries: 30
+
+  dryrun:
+    depends_on:
+      redis-sentinel:
+        condition: service_healthy
+    environment:
+      REDIS_SENTINEL_HOST: redis-sentinel
+      REDIS_SENTINEL_PORT: "26379"
+      REDIS_SENTINEL_MASTER: mymaster
+
+  record:
+    depends_on:
+      redis-sentinel:
+        condition: service_healthy
+    environment:
+      REDIS_SENTINEL_HOST: redis-sentinel
+      REDIS_SENTINEL_PORT: "26379"
+      REDIS_SENTINEL_MASTER: mymaster

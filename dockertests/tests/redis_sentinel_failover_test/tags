@@ -1,0 +1,4 @@
+redis
+sentinel
+failover
+manual
