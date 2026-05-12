@@ -1,0 +1,33 @@
+services:
+  postgres:
+    image: postgres:15
+    environment:
+      POSTGRES_PASSWORD: test
+      POSTGRES_USER: test_user
+      POSTGRES_DB: test_db
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "test_user", "-d", "test_db"]
+      interval: 2s
+      retries: 15
+
+  dryrun:
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      DB_NAME: test_db
+      DB_USER: test_user
+      DB_PASSWORD: test
+      DB_HOST: postgres
+      DB_PORT: "5432"
+
+  record:
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      DB_NAME: test_db
+      DB_USER: test_user
+      DB_PASSWORD: test
+      DB_HOST: postgres
+      DB_PORT: "5432"

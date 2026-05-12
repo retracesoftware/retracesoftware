@@ -1,0 +1,2 @@
+celery>=5.3
+kombu>=5.3

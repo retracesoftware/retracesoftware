@@ -1,0 +1,34 @@
+services:
+  mysql:
+    image: mariadb:11
+    environment:
+      MARIADB_ROOT_PASSWORD: test
+      MARIADB_DATABASE: test_db
+      MARIADB_USER: test_user
+      MARIADB_PASSWORD: test
+    healthcheck:
+      test: ["CMD", "mariadb-admin", "ping", "-h", "127.0.0.1", "-uroot", "-ptest"]
+      interval: 2s
+      retries: 30
+
+  dryrun:
+    depends_on:
+      mysql:
+        condition: service_healthy
+    environment:
+      MYSQL_HOST: mysql
+      MYSQL_PORT: "3306"
+      MYSQL_DATABASE: test_db
+      MYSQL_USER: test_user
+      MYSQL_PASSWORD: test
+
+  record:
+    depends_on:
+      mysql:
+        condition: service_healthy
+    environment:
+      MYSQL_HOST: mysql
+      MYSQL_PORT: "3306"
+      MYSQL_DATABASE: test_db
+      MYSQL_USER: test_user
+      MYSQL_PASSWORD: test
