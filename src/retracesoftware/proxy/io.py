@@ -1,24 +1,35 @@
 """IO bridge helpers for the gate-based ``System``."""
-from collections import deque
 from contextlib import contextmanager
 import enum
+import functools
+import _thread
+import _signal
 import threading
 import retracesoftware.functional as functional
 import retracesoftware.stream as stream
 import retracesoftware.utils as utils
+from retracesoftware.install.monitoring import (
+    begin_suppress_monitoring,
+    end_suppress_monitoring,
+)
+
 from retracesoftware.protocol.messages import (
-    CallMessage,
     CheckpointMessage,
     ErrorMessage,
     ResultMessage,
     StacktraceMessage,
 )
-from retracesoftware.stream import (
-    _BIND_OPEN_TAG,
-    _is_bind_close,
-    _is_bind_open,
+from retracesoftware.proxy.messagestream import (
+    BindingStream,
+    CallbackErrorMessage,
+    CallbackMessage,
+    CallbackResultMessage,
+    ExpectedBindMarker,
+    MessageStream,
+    OnStartMessage,
+    PeekableStream,
+    SchedulerStream,
 )
-from retracesoftware.stream.reader import ExpectedBindMarker, PeekableReader
 
 from retracesoftware.proxy.system import (
     CallHooks,
@@ -27,6 +38,7 @@ from retracesoftware.proxy.system import (
     System,
 )
 import gc
+import signal
 import sys
 import os
 import types
@@ -36,56 +48,83 @@ from retracesoftware.proxy.gateway import (
     int_replay_gateway,
 )
 
-class _MarkerMessage:
-    __slots__ = ("thread_id",)
-
-    def __init__(self, thread_id=None):
-        self.thread_id = thread_id
-
-    def __repr__(self):
-        return type(self).__name__
-
-
-class OnStartMessage(_MarkerMessage):
-    __slots__ = ()
-
-
-class CallMarkerMessage(_MarkerMessage):
-    __slots__ = ()
-
-
-class CallbackResultMessage(ResultMessage):
-    __slots__ = ()
-
-
-class CallbackErrorMessage(ErrorMessage):
-    __slots__ = ()
-
-
-class CallbackMessage(CallMessage):
-    __slots__ = ()
-
-
 _THREAD_YIELD_TAG = "THREAD_YIELD"
 _THREAD_RESUME_TAG = "THREAD_RESUME"
+_THREAD_START_TAG = "THREAD_START"
+
+
+def _debug_thread_schedule(message):
+    if os.environ.get("RETRACE_THREAD_SCHEDULE_DEBUG"):
+        print(f"Retrace scheduler: {message}", file=sys.stderr, flush=True)
 
 
 def _load_retrace_probe():
     try:
-        import _retrace
+        import retrace as probe
     except ImportError:
         return None
 
     required = (
-        "coordinates_delta",
-        "get_thread_resume_callback",
-        "get_thread_yield_callback",
-        "set_thread_resume_callback",
-        "set_thread_yield_callback",
+        "callbacks",
+        "call_at",
+        "thread_delta",
     )
-    if all(hasattr(_retrace, name) for name in required):
-        return _retrace
+    if all(hasattr(probe, name) for name in required):
+        return probe
     return None
+
+
+def _probe_callback_name(kind):
+    return f"thread_{kind}"
+
+
+def _get_thread_callback(probe, kind):
+    previous_count = begin_suppress_monitoring()
+    try:
+        callbacks = getattr(probe, "callbacks", None)
+        if callbacks is not None:
+            return getattr(callbacks, _probe_callback_name(kind), None)
+        getter = getattr(probe, f"get_thread_{kind}_callback", None)
+        if getter is None:
+            return None
+        return getter()
+    finally:
+        end_suppress_monitoring(previous_count)
+
+
+def _set_thread_callback(probe, kind, callback):
+    previous_count = begin_suppress_monitoring()
+    try:
+        callbacks = getattr(probe, "callbacks", None)
+        if callbacks is not None:
+            setattr(callbacks, _probe_callback_name(kind), callback)
+            return True
+        setter = getattr(probe, f"set_thread_{kind}_callback", None)
+        if setter is None:
+            return False
+        setter(callback)
+        return True
+    finally:
+        end_suppress_monitoring(previous_count)
+
+
+def _retrace_include(probe, function):
+    include = getattr(probe, "include", None)
+    if include is None:
+        return function
+    return include(function)
+
+
+def _in_disabled_method_wrapper():
+    frame = sys._getframe()
+    while frame is not None:
+        if (
+            frame.f_code.co_name == "wrapper"
+            and frame.f_globals.get("__name__") == "retracesoftware.proxy.system"
+        ):
+            return True
+        frame = frame.f_back
+    return False
 
 
 def _retrace_thread_switch_callback_hooks(system, writer):
@@ -95,382 +134,192 @@ def _retrace_thread_switch_callback_hooks(system, writer):
 
     lock = threading.Lock()
     active_count = 0
+    old_start_callback = None
     old_yield_callback = None
     old_resume_callback = None
 
+    def should_write_thread_schedule():
+        if not system.enabled():
+            _debug_thread_schedule("skip record schedule: system disabled")
+            return False
+        if _in_disabled_method_wrapper():
+            _debug_thread_schedule("skip record schedule: disabled method wrapper")
+            return False
+        return True
+
+    def should_write_thread_start():
+        if not system.enabled():
+            _debug_thread_schedule("skip record start: system disabled")
+            return False
+        if _in_disabled_method_wrapper():
+            _debug_thread_schedule("skip record start: disabled method wrapper")
+            return False
+        return True
+
+    def write_thread_start():
+        if not should_write_thread_start():
+            return
+        thread_id = system.thread_id()
+        _debug_thread_schedule(f"record start thread={thread_id}")
+        writer(_THREAD_START_TAG, thread_id)
+
     def write_thread_yield():
-        writer(_THREAD_YIELD_TAG, tuple(probe.coordinates_delta()))
+        if not should_write_thread_schedule():
+            return
+        _debug_thread_schedule(f"record yield thread={system.thread_id()}")
+        writer(_THREAD_YIELD_TAG, tuple(probe.thread_delta()))
 
     def write_thread_resume():
-        writer(_THREAD_RESUME_TAG, system.thread_id())
+        if not should_write_thread_schedule():
+            return
+        thread_id = system.thread_id()
+        _debug_thread_schedule(f"record resume thread={thread_id}")
+        writer(_THREAD_RESUME_TAG, thread_id)
 
-    def install_callbacks():
-        nonlocal active_count, old_resume_callback, old_yield_callback
+    def install_callbacks(*_args, **_kwargs):
+        nonlocal active_count, old_resume_callback, old_start_callback, old_yield_callback
         with lock:
             if active_count == 0:
-                old_yield_callback = probe.get_thread_yield_callback()
-                old_resume_callback = probe.get_thread_resume_callback()
-                probe.set_thread_yield_callback(write_thread_yield)
-                probe.set_thread_resume_callback(write_thread_resume)
+                old_start_callback = _get_thread_callback(probe, "start")
+                old_yield_callback = _get_thread_callback(probe, "yield")
+                old_resume_callback = _get_thread_callback(probe, "resume")
+                _set_thread_callback(probe, "start", write_thread_start)
+                _set_thread_callback(probe, "yield", write_thread_yield)
+                _set_thread_callback(probe, "resume", write_thread_resume)
             active_count += 1
 
-    def uninstall_callbacks():
+    def uninstall_callbacks(*_args, **_kwargs):
         nonlocal active_count
         with lock:
             if active_count == 0:
                 return
             active_count -= 1
             if active_count == 0:
-                probe.set_thread_yield_callback(old_yield_callback)
-                probe.set_thread_resume_callback(old_resume_callback)
+                _set_thread_callback(probe, "start", old_start_callback)
+                _set_thread_callback(probe, "yield", old_yield_callback)
+                _set_thread_callback(probe, "resume", old_resume_callback)
 
     return install_callbacks, uninstall_callbacks
 
 
-class _StampedProtocolSource:
-    __slots__ = ("_close", "_read", "thread_id")
+def _retrace_gc_callback_hooks(system, writer, write_callback_result):
+    probe = _load_retrace_probe()
+    if probe is None or not hasattr(probe, "coordinates"):
+        return None, None
 
-    def __init__(self, read, *, initial_thread_id, close=None):
-        self._read = read
-        self._close = close
-        self.thread_id = initial_thread_id
+    active = False
 
-    def __call__(self):
-        return self.next()
+    def write_thread_yield():
+        # Keep retrace-python's delta state current, but record the interrupted
+        # application cursor rather than this gc.callbacks frame.
+        probe.thread_delta()
+        cursor = tuple(probe.coordinates())[:-1]
+        writer(_THREAD_YIELD_TAG, (0, *cursor))
 
-    def next(self):
-        while True:
-            item = self._read()
+    def write_thread_resume():
+        writer(_THREAD_RESUME_TAG, system.thread_id())
 
-            if item == "THREAD_SWITCH":
-                next_thread_id = self._read()
-                if next_thread_id is not None:
-                    self.thread_id = next_thread_id
-                continue
+    def on_gc(phase, info):
+        nonlocal active
+        if not system.enabled():
+            return
 
-            if item == _THREAD_YIELD_TAG:
-                self._read()
-                continue
+        if phase == "start":
+            if active:
+                return
+            active = True
+            write_thread_yield()
+            system.write_callback(gc.collect, info.get("generation", 2))
+            return
 
-            if item == _THREAD_RESUME_TAG:
-                next_thread_id = self._read()
-                if next_thread_id is not None:
-                    self.thread_id = next_thread_id
-                continue
-
-            return (self.thread_id, item)
-
-    def close(self):
-        if self._close is not None:
-            return self._close()
-
-
-class _RawTapeSource:
-    __slots__ = ("_close", "_next_object", "_on_bind_close")
-
-    def __init__(self, next_object, *, close=None):
-        self._next_object = next_object
-        self._close = close
-        self._on_bind_close = None
-
-    def read(self):
-        while True:
-            item = self._next_object()
-
-            if _is_bind_close(item):
-                if self._on_bind_close is not None:
-                    self._on_bind_close(stream._bind_index(item))
-                continue
-
-            if _is_bind_open(item):
-                return item
-
-            if item == "NEW_BINDING":
-                binding = self._next_object()
-                while binding == "NEW_BINDING":
-                    binding = self._next_object()
-                handle = binding.handle if hasattr(binding, "handle") else binding
-                return (_BIND_OPEN_TAG, handle)
-
-            if item == "BINDING_DELETE":
-                binding = self._next_object()
-                while binding == "BINDING_DELETE":
-                    binding = self._next_object()
-                handle = binding.handle if hasattr(binding, "handle") else binding
-                if self._on_bind_close is not None:
-                    self._on_bind_close(handle)
-                continue
-
-            return item
-
-    def close(self):
-        if self._close is not None:
-            return self._close()
-
-
-class _BindOpenEvent:
-    __slots__ = ("index",)
-
-    def __init__(self, index):
-        self.index = index
-
-
-class _BindCloseEvent:
-    __slots__ = ("index",)
-
-    def __init__(self, index):
-        self.index = index
-
-
-class _ReplayBindingState:
-    __slots__ = ("_bindings", "_buffers", "_close", "_read", "_source", "_thread_id")
-
-    def __init__(self, source):
-        read = source.read if hasattr(source, "read") else source
-        self._read = read
-        self._source = source
-        self._thread_id = getattr(source, "_thread_id", lambda: None)
-        self._buffers = {}
-        self._bindings = {}
-        self._close = getattr(source, "close", None)
-
-    def resolve(self, obj, bindings=None):
-        if bindings is None:
-            bindings = self._bindings
-
-        def transform(value):
-            if isinstance(value, stream.Binding):
-                value = bindings[value.handle]
-            if isinstance(value, ProxyRef):
-                return value()
-            return value
-
-        return functional.walker(transform)(obj)
-
-    def _normalize(self, value, bindings=None, *, resolve=True):
-        if _is_bind_open(value):
-            return _BindOpenEvent(stream._bind_index(value))
-        if _is_bind_close(value):
-            return _BindCloseEvent(stream._bind_index(value))
-        if resolve:
-            return self.resolve(value, bindings)
-        return value
-
-    def _peek_item(self, bindings=None, *, resolve=True):
-        if bindings is None:
-            bindings = self._bindings
-
-        buffer = self._buffers.setdefault(self._thread_id(), deque())
-        if not buffer:
-            buffer.append(self._read())
-
-        return self._normalize(buffer[0], bindings, resolve=resolve)
-
-    def _peek_buffered_item(self, bindings=None, *, resolve=True):
-        if bindings is None:
-            bindings = self._bindings
-
-        thread_id = self._thread_id()
-        buffer = self._buffers.setdefault(thread_id, deque())
-        if not buffer:
-            peek_buffered = getattr(self._source, "peek_buffered", None)
-            if peek_buffered is None:
-                raise LookupError(thread_id)
-            buffer.append(peek_buffered())
-
-        return self._normalize(buffer[0], bindings, resolve=resolve)
-
-    def _discard_peeked(self):
-        buffer = self._buffers.setdefault(self._thread_id(), deque())
-        if buffer:
-            buffer.popleft()
-        else:
-            self._read()
-
-    def consume_pending_closes(self, *, ignore_end_of_stream=False, buffered_only=False):
-        while True:
+        if phase == "stop" and active:
             try:
-                peek = self._peek_buffered_item if buffered_only else self._peek_item
-                value = peek(resolve=False)
-            except LookupError:
-                return
-            except StopIteration:
-                return
-            except RuntimeError:
-                if ignore_end_of_stream:
-                    return
-                raise
+                result = info.get("collected", 0) + info.get("uncollectable", 0)
+                write_callback_result(result)
+            finally:
+                active = False
+                write_thread_resume()
 
-            if not isinstance(value, _BindCloseEvent):
-                return
+    def install_callbacks():
+        gc.callbacks.append(on_gc)
 
-            self._bindings.pop(value.index, None)
-            self._discard_peeked()
-
-    def read(self):
-        self.consume_pending_closes()
-        value = self._peek_item()
-
-        if isinstance(value, _BindOpenEvent):
-            raise RuntimeError("bind marker returned when bind was expected")
-
-        self._discard_peeked()
-        return value
-
-    def read_raw(self):
-        self.consume_pending_closes()
-        value = self._peek_item(resolve=False)
-
-        if isinstance(value, _BindOpenEvent):
-            raise RuntimeError("bind marker returned when bind was expected")
-
-        self._discard_peeked()
-        return value
-
-    def bind(self, obj):
-        self.consume_pending_closes()
-        value = self._peek_item(resolve=False)
-
-        if not isinstance(value, _BindOpenEvent):
-            raise ExpectedBindMarker(value)
-
-        self._discard_peeked()
-        self._bindings[value.index] = obj
-
-    def bind_handle(self, handle, obj):
-        self._bindings[handle] = obj
-
-    def lookup_handle(self, handle):
-        return self._bindings[handle]
-
-    def delete_handle(self, handle):
-        self._bindings.pop(handle, None)
-
-    def close(self):
-        if self._close is not None:
-            return self._close()
-
-
-def _read_thread_id(thread_id):
-    if callable(thread_id):
-        return thread_id()
-    return thread_id
-
-
-class _ThreadDemuxSource:
-    __slots__ = ("_close", "_dispatcher", "_peekable_reader", "_source", "_thread_id")
-
-    def __init__(self, next_object, *, thread_id, initial_thread_id, close=None):
-        self._source = _StampedProtocolSource(
-            next_object,
-            initial_thread_id=initial_thread_id,
-            close=close,
-        )
-        self._peekable_reader = PeekableReader(self._source)
-        self._dispatcher = utils.Dispatcher(self._peekable_reader)
-        self._thread_id = thread_id
-        self._close = close
-
-    def _next_item(self):
-        _, item = self._dispatcher.next(
-            lambda entry: entry[0] == self._thread_id()
-        )
-        return item
-
-    def read(self):
-        return self._next_item()
-
-    def peek_buffered(self):
-        current_thread_id = self._thread_id()
-
+    def uninstall_callbacks():
         try:
-            buffered = self._dispatcher.buffered
-        except StopIteration:
-            buffered = None
-        except BaseException as exc:
-            if isinstance(exc, (KeyboardInterrupt, SystemExit)):
+            gc.callbacks.remove(on_gc)
+        except ValueError:
+            pass
+
+    return install_callbacks, uninstall_callbacks
+
+
+def _retrace_signal_callback_hooks(system, writer, write_callback_result, write_callback_error):
+    probe = _load_retrace_probe()
+    if probe is None or not hasattr(probe, "coordinates"):
+        return None, None
+
+    old_signal = _signal.signal
+    wrapped_handlers = {}
+    active = False
+
+    def write_thread_yield():
+        probe.thread_delta()
+        cursor = tuple(probe.coordinates())[:-1]
+        writer(_THREAD_YIELD_TAG, (0, *cursor))
+
+    def write_thread_resume():
+        writer(_THREAD_RESUME_TAG, system.thread_id())
+
+    def wrap_handler(handler):
+        if not callable(handler):
+            return handler
+
+        wrapped = wrapped_handlers.get(handler)
+        if wrapped is not None:
+            return wrapped
+
+        @functools.wraps(handler)
+        def signal_handler(signum, frame):
+            nonlocal active
+            if active or not system.enabled():
+                return handler(signum, frame)
+
+            active = True
+            write_thread_yield()
+            system.write_callback(handler, signum, None)
+            try:
+                result = handler(signum, frame)
+            except BaseException:
+                write_callback_error(*sys.exc_info())
                 raise
-            buffered = None
-        else:
-            if buffered[0] == current_thread_id:
-                return buffered[1]
+            else:
+                write_callback_result(result)
+                return result
+            finally:
+                active = False
+                write_thread_resume()
 
-        for entry in self._peekable_reader._buffer:
-            if entry[0] == current_thread_id:
-                return entry[1]
+        wrapped_handlers[handler] = signal_handler
+        return signal_handler
 
-        raise LookupError(current_thread_id)
+    def signal_signal(signum, handler):
+        return old_signal(signum, wrap_handler(handler))
 
-    def close(self):
-        if self._close is not None:
-            return self._close()
+    def install_callbacks():
+        _signal.signal = signal_signal
 
+    def uninstall_callbacks():
+        _signal.signal = old_signal
 
-class _IoMessageSource:
-    __slots__ = ("_close", "_read", "_thread_id")
-
-    def __init__(self, read, *, thread_id, close=None):
-        self._read = read
-        self._thread_id = thread_id
-        self._close = close
-
-    def read(self):
-        return _message_from_tag(self._read(), self._read, self._thread_id)
-
-    def close(self):
-        if self._close is not None:
-            return self._close()
-
-
-def _message_from_tag(tag, reader, thread_id=None):
-    current_thread_id = _read_thread_id(thread_id)
-
-    if tag == "ON_START":
-        return OnStartMessage(current_thread_id)
-    if tag == "CALL":
-        return CallMarkerMessage(current_thread_id)
-    if tag == "CALLBACK":
-        return CallbackMessage(
-            reader(),
-            reader(),
-            reader(),
-            thread_id=current_thread_id,
-        )
-    if tag == "RESULT":
-        return ResultMessage(reader(), thread_id=current_thread_id)
-    if tag == "ERROR":
-        return ErrorMessage(reader(), thread_id=current_thread_id)
-    if tag == "CALLBACK_RESULT":
-        return CallbackResultMessage(reader(), thread_id=current_thread_id)
-    if tag == "CALLBACK_ERROR":
-        return CallbackErrorMessage(reader(), thread_id=current_thread_id)
-    if tag == "CHECKPOINT":
-        return CheckpointMessage(reader(), thread_id=current_thread_id)
-    if tag == "STACKTRACE":
-        return StacktraceMessage(reader(), thread_id=current_thread_id)
-
-    return tag
+    return install_callbacks, uninstall_callbacks
 
 
 def _normalized_call_args(fn, args):
     target = _unwrap_callable(fn)
 
     objclass = getattr(target, "__objclass__", None)
-    if objclass is not None and args and (
-        isinstance(args[0], objclass)
-        or _checkpoint_marker_matches_type(args[0], objclass)
-    ):
+    if objclass is not None and args and isinstance(args[0], objclass):
         return args[1:]
     return args
-
-
-def _checkpoint_marker_matches_type(value, cls):
-    if not _is_checkpoint_sync_marker(value):
-        return False
-    return value[1:] == (
-        getattr(cls, "__module__", ""),
-        getattr(cls, "__qualname__", getattr(cls, "__name__", "")),
-    )
 
 
 def _is_socketpair_function(fn):
@@ -492,19 +341,6 @@ def _is_dynamic_proxy_shim(fn):
     return (
         getattr(fn, "__qualname__", "")
         == "_ext_proxytype_from_spec.<locals>.unbound_function.<locals>.<lambda>"
-    )
-
-
-def _is_checkpoint_sync_value(value):
-    return _is_checkpoint_sync_marker(value) or _checkpoint_sync_key(value) is not None
-
-
-def _call_payload_has_sync_receivers(args_a, args_b):
-    return (
-        bool(args_a)
-        and bool(args_b)
-        and _is_checkpoint_sync_value(args_a[0])
-        and _is_checkpoint_sync_value(args_b[0])
     )
 
 
@@ -551,7 +387,7 @@ def _equal_call_payload(a, b):
     kwargs_b = b.get("kwargs", {})
 
     if not equal(fn_a, fn_b) and not same_dynamic_proxy_shim:
-        return kwargs_a == kwargs_b and _call_payload_has_sync_receivers(args_a, args_b)
+        return False
 
     normalized_a = _normalized_call_args(fn_a, args_a)
     normalized_b = _normalized_call_args(fn_b, args_b)
@@ -611,11 +447,6 @@ def equal(a, b):
         return _checkpoint_traceback_marker_matches_value(a, b)
     if _is_checkpoint_traceback_marker(b):
         return _checkpoint_traceback_marker_matches_value(b, a)
-    if _is_checkpoint_sync_marker(a):
-        return _checkpoint_sync_marker_matches_value(a, b)
-    if _is_checkpoint_sync_marker(b):
-        return _checkpoint_sync_marker_matches_value(b, a)
-
     unwrapped_a = _unwrap_callable(a)
     unwrapped_b = _unwrap_callable(b)
     if unwrapped_a is not a or unwrapped_b is not b:
@@ -733,18 +564,6 @@ _CHECKPOINT_DESCRIPTOR_MARKER = "__retrace_checkpoint_descriptor__"
 _CHECKPOINT_ENUM_MARKER = "__retrace_checkpoint_enum__"
 _CHECKPOINT_EXCEPTION_MARKER = "__retrace_checkpoint_exception__"
 _CHECKPOINT_TRACEBACK_MARKER = "__retrace_checkpoint_traceback__"
-_CHECKPOINT_SYNC_MARKER = "__retrace_checkpoint_sync__"
-
-_CHECKPOINT_SYNC_TYPES = frozenset(
-    {
-        ("_thread", "lock"),
-        ("_thread", "RLock"),
-        ("threading", "Semaphore"),
-        ("threading", "BoundedSemaphore"),
-        ("threading", "Condition"),
-        ("threading", "Event"),
-    }
-)
 
 
 def _external_type_key(value):
@@ -885,24 +704,6 @@ def _checkpoint_traceback_marker(value):
     return (_CHECKPOINT_TRACEBACK_MARKER,)
 
 
-def _checkpoint_sync_key(value):
-    cls = type(value)
-    key = (
-        getattr(cls, "__module__", ""),
-        getattr(cls, "__qualname__", getattr(cls, "__name__", "")),
-    )
-    if key in _CHECKPOINT_SYNC_TYPES:
-        return key
-    return None
-
-
-def _checkpoint_sync_marker(value):
-    key = _checkpoint_sync_key(value)
-    if key is None:
-        return value
-    return (_CHECKPOINT_SYNC_MARKER, *key)
-
-
 def _checkpoint_stable_marker(value):
     for marker in (
         _checkpoint_descriptor_marker,
@@ -910,7 +711,6 @@ def _checkpoint_stable_marker(value):
         _checkpoint_external_marker,
         _checkpoint_exception_marker,
         _checkpoint_traceback_marker,
-        _checkpoint_sync_marker,
     ):
         marked = marker(value)
         if marked is not value:
@@ -958,14 +758,6 @@ def _is_checkpoint_traceback_marker(value):
     )
 
 
-def _is_checkpoint_sync_marker(value):
-    return (
-        isinstance(value, tuple)
-        and len(value) == 3
-        and value[0] == _CHECKPOINT_SYNC_MARKER
-    )
-
-
 def _checkpoint_marker_matches_value(marker, value):
     if _is_checkpoint_external_marker(value):
         return marker == value
@@ -1000,12 +792,6 @@ def _checkpoint_traceback_marker_matches_value(marker, value):
     return isinstance(value, types.TracebackType)
 
 
-def _checkpoint_sync_marker_matches_value(marker, value):
-    if _is_checkpoint_sync_marker(value):
-        return marker == value
-    return marker[1:] == _checkpoint_sync_key(value)
-
-
 def normalize_stack_delta(delta):
     to_drop, frames = delta
     return (
@@ -1022,8 +808,7 @@ def recorder(*,
     writer,
     # tape_writer: TapeWriter, 
     debug: bool = False,
-    stacktraces: bool = False,
-    gc_collect_multiplier: int = None) -> System:
+    stacktraces: bool = False) -> System:
 
     system = System()
     system.retrace_mode = "record"
@@ -1065,7 +850,7 @@ def recorder(*,
     def binding_writer(writer):
         return functional.sequence(add_bindings, writer)
 
-    def write_callback(fn, args, kwargs):
+    def write_callback(fn, *args, **kwargs):
         write(
             "CALLBACK",
             add_bindings(fn),
@@ -1087,10 +872,7 @@ def recorder(*,
         _retrace_thread_switch_callback_hooks(system, writer)
     )
     if install_thread_switch_callbacks is not None:
-        on_start = functional.sequence(
-            install_thread_switch_callbacks,
-            on_start,
-        )
+        on_start = utils.runall(on_start, install_thread_switch_callbacks)
         on_end = uninstall_thread_switch_callbacks
 
     checkpoint = functional.sequence(
@@ -1098,8 +880,7 @@ def recorder(*,
         binding_writer(tagged("CHECKPOINT")),
     )
 
-    call = functional.sequence(_on_call, checkpoint) \
-        if debug else functional.repeatedly(write, "CALL")
+    call = functional.sequence(_on_call, checkpoint) if debug else None
     # on_start = check_thread_switch(functional.repeatedly(write, "ON_START"))
 
     if stacktraces:
@@ -1111,7 +892,8 @@ def recorder(*,
             functional.sequence(stack.delta, normalize_stack_delta, stacktrace),
             utils.noop))
 
-        call = utils.observer(on_call=system.disable_for(write_stacktrace), function=call)
+        stacktrace_call = system.disable_for(write_stacktrace)
+        call = utils.runall(stacktrace_call, call) if call is not None else stacktrace_call
         on_start = functional.sequence(functional.repeatedly(stack.delta), on_start)
 
     def get_error(*funcs):
@@ -1123,16 +905,30 @@ def recorder(*,
     on_callback_error = get_error(_on_error, checkpoint) \
         if debug else tagged("CALLBACK_ERROR")
 
+    install_gc_callbacks, uninstall_gc_callbacks = _retrace_gc_callback_hooks(
+        system,
+        writer,
+        on_callback_result,
+    )
+    if install_gc_callbacks is not None:
+        on_start = utils.runall(on_start, install_gc_callbacks)
+        on_end = utils.runall(uninstall_gc_callbacks, on_end)
+
+    install_signal_callbacks, uninstall_signal_callbacks = _retrace_signal_callback_hooks(
+        system,
+        writer,
+        on_callback_result,
+        on_callback_error,
+    )
+    if install_signal_callbacks is not None:
+        on_start = utils.runall(on_start, install_signal_callbacks)
+        on_end = utils.runall(uninstall_signal_callbacks, on_end)
+
     create_stub_object = system.wrap_async(utils.create_stub_object)
-    collect = system.wrap_async(gc.collect)
 
     system.checkpoint = functional.if_then_else(
         functional.repeatedly(system.enabled),
         checkpoint, utils.noop)
-    system.sync = system.disable_for(
-        functional.repeatedly(write, "SYNC"),
-        unwrap_args=False,
-    )
 
     system.lifecycle_hooks = LifecycleHooks(
             on_start = on_start,
@@ -1140,7 +936,11 @@ def recorder(*,
             #functional.repeatedly(write, "ON_END")
             )
             
-    on_call = functional.pack_call(1, write_callback)
+    system.write_callback = write_callback
+    system.write_callback_result = on_callback_result
+    system.write_callback_error = on_callback_error
+
+    on_call = write_callback
 
     on_result = functional.sequence(
         system.serialize_ext_wrapped,
@@ -1154,10 +954,6 @@ def recorder(*,
             tagged("ERROR"),
             utils.noop))
 
-    if gc_collect_multiplier:
-        gc_collector = utils.Collector(multiplier = gc_collect_multiplier, collect = collect)
-        on_result = utils.observer(on_call = gc_collector, function = on_result)
-    
     system.primary_hooks = CallHooks(
         on_call = on_call,
         on_result = on_result,
@@ -1180,9 +976,9 @@ def recorder(*,
             "async_new_patched expected the patched type to be bound, got "
             f"{cls.__module__}.{cls.__qualname__}"
         )
-        system.primary_hooks.on_call(create_stub_object, cls)
+        system.write_callback(create_stub_object, cls)
         system.bind(obj)
-        system.secondary_hooks.on_result(obj)
+        system.write_callback_result(obj)
 
     system.async_new_patched = async_new_patched
 
@@ -1212,41 +1008,56 @@ def replayer(*, next_object,
              on_desync = default_desync_handler,
              debug: bool = False,
              stacktraces: bool = False) -> System:
-    system = None
+    current_thread_id = _thread.get_ident
+    replay_probe = _load_retrace_probe()
+    handoff = (
+        replay_probe.ThreadHandoff()
+        if replay_probe is not None and hasattr(replay_probe, "ThreadHandoff")
+        else None
+    )
 
-    def current_thread_id():
-        if system is None:
-            return 0
-        return system.thread_id()
-
-    raw_source = _RawTapeSource(next_object, close=close)
-    thread_source = _ThreadDemuxSource(
-        raw_source.read,
-        thread_id=current_thread_id,
+    raw_messages = PeekableStream(MessageStream(next_object, close=close))
+    thread_source = SchedulerStream(
+        raw_messages,
+        probe=replay_probe,
+        handoff=handoff,
         initial_thread_id=current_thread_id(),
-        close=raw_source.close,
+        current_thread_id=current_thread_id,
+        close=raw_messages.close,
+        active=False,
     )
-    tape_reader = _ReplayBindingState(thread_source)
-    raw_source._on_bind_close = tape_reader.delete_handle
-    message_source = _IoMessageSource(
-        tape_reader.read,
-        thread_id=current_thread_id,
-        close=tape_reader.close,
-    )
-    raw_message_source = _IoMessageSource(
-        tape_reader.read_raw,
-        thread_id=current_thread_id,
-        close=tape_reader.close,
-    )
+    scheduled_messages = PeekableStream(thread_source)
+    tape_reader = BindingStream(scheduled_messages)
 
-    read_message = message_source.read
-    read_raw_message = raw_message_source.read
+    read_message = tape_reader.next
+    peek_message = tape_reader.peek
     system = System(tape_reader.bind)
+    if handoff is not None:
+        system.is_bound.add(handoff)
+    thread_source.set_disable_for(system.disable_for)
+
+    def should_replay_thread_schedule():
+        if not system.enabled():
+            return False
+        if _in_disabled_method_wrapper():
+            return False
+        return True
+
+    def should_replay_thread_start():
+        if not system.enabled():
+            return False
+        if _in_disabled_method_wrapper():
+            return False
+        return True
+
+    thread_source.set_replay_guards(
+        should_schedule=should_replay_thread_schedule,
+        should_start=should_replay_thread_start,
+    )
     on_unexpected = system.disable_for(on_unexpected, unwrap_args=False)
     on_desync = system.disable_for(on_desync, unwrap_args=False)
     system.retrace_mode = "replay"
     system._replay_trace_active = True
-    system.replay_materialize = set()
 
     stack = utils.StackFactory()
     current_stack = utils.ThreadLocal([])
@@ -1310,7 +1121,8 @@ def replayer(*, next_object,
     def run_callback(message):
         call_callback = system.gate.apply_with("internal", functional.call)
         try:
-            result = call_callback(message.fn, message.args, message.kwargs)
+            fn = _retrace_include(replay_probe, message.fn)
+            result = call_callback(fn, message.args, message.kwargs)
         except Exception as exc:
             if debug:
                 checkpoint(_on_error(exc))
@@ -1320,31 +1132,21 @@ def replayer(*, next_object,
         return result
 
     def run_raw_callback(message):
-        call_callback = system.gate.apply_with("internal", functional.call)
-        try:
-            result = call_callback(
-                tape_reader.resolve(message.fn),
-                tape_reader.resolve(message.args),
-                tape_reader.resolve(message.kwargs),
-            )
-        except Exception as exc:
-            if debug:
-                raw_checkpoint(_on_error(exc))
-            return None
-        if debug:
-            raw_checkpoint(_on_result(result))
-        return result
+        return run_callback(message)
 
     def consume_callback_completion():
         try:
-            next_value = tape_reader._peek_item(resolve=False)
+            message = peek_message()
         except StopIteration:
             return False
 
-        if next_value not in ("CALLBACK_RESULT", "CALLBACK_ERROR", "CHECKPOINT"):
+        if not isinstance(
+            message,
+            (CallbackResultMessage, CallbackErrorMessage, CheckpointMessage),
+        ):
             return False
 
-        message = read_raw_message()
+        read_message()
         return isinstance(
             message,
             (CallbackResultMessage, CallbackErrorMessage, CheckpointMessage),
@@ -1362,7 +1164,7 @@ def replayer(*, next_object,
                     pending_callback_completions -= 1
                 return result
             except ExpectedBindMarker:
-                message = read_raw_message()
+                message = read_message()
 
                 if isinstance(message, CallbackMessage):
                     pending_callback_completions += 1
@@ -1374,7 +1176,6 @@ def replayer(*, next_object,
                     (
                         CallbackResultMessage,
                         CallbackErrorMessage,
-                        CallMarkerMessage,
                         ResultMessage,
                         ErrorMessage,
                         CheckpointMessage,
@@ -1394,17 +1195,15 @@ def replayer(*, next_object,
         diff(record = message.value, replay = replay)
 
     def raw_checkpoint(replay):
-        message = read_raw_message()
+        message = read_message()
         if isinstance(message, CheckpointMessage):
-            diff(record=tape_reader.resolve(message.value), replay=replay)
+            diff(record=message.value, replay=replay)
             return
         on_desync(message, CheckpointMessage)
 
     in_sandbox = system.enabled
 
-    call = functional.sequence(
-        _on_call, 
-        checkpoint) if debug else functional.repeatedly(expect_message, CallMarkerMessage)
+    call = functional.sequence(_on_call, checkpoint) if debug else None
 
     if stacktraces:
         def next_stacktrace(*args, **kwargs):
@@ -1412,22 +1211,13 @@ def replayer(*, next_object,
                 on_stacktrace()
 
         stacktrace_call = system.disable_for(next_stacktrace)
-        checkpoint_call = call
-
-        def call(*args, **kwargs):
-            stacktrace_call(*args, **kwargs)
-            return checkpoint_call(*args, **kwargs)
+        call = utils.runall(stacktrace_call, call) if call is not None else stacktrace_call
 
     system.wrap_async(utils.create_stub_object)
-    system.wrap_async(gc.collect)
 
     system.checkpoint = functional.if_then_else(
         functional.repeatedly(system.enabled),
         checkpoint, utils.noop)
-    system.sync = system.disable_for(
-        functional.repeatedly(expect_message, "SYNC"),
-        unwrap_args=False,
-    )
 
     system.primary_hooks = CallHooks(
         on_call=None,
@@ -1468,8 +1258,10 @@ def replayer(*, next_object,
     def on_start():
         stack.delta() # reset the stack position for delta
         expect_message(OnStartMessage)
+        thread_source.activate()
 
     def on_end():
+        thread_source.deactivate()
         try:
             tape_reader.consume_pending_closes(
                 ignore_end_of_stream=True,

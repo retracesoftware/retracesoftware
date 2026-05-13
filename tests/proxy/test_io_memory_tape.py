@@ -1,4 +1,3 @@
-from retracesoftware.protocol.record import CALL
 from retracesoftware.testing.memorytape import MemoryTape
 
 
@@ -13,9 +12,9 @@ def test_memory_tape_round_trips_call_shape():
     writer.bind(fn)
     reader.bind(fn)
 
-    writer.write(CALL, fn, 3, scale=2)
+    writer.write("TOKEN", fn, 3, scale=2)
 
-    assert reader.read() == CALL
+    assert reader.read() == "TOKEN"
     assert reader.read() is fn
     assert reader.read() == (3,)
     assert reader.read() == {"scale": 2}

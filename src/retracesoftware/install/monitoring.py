@@ -33,6 +33,18 @@ from contextlib import contextmanager
 _monitor_state = _thread._local()
 
 
+def _disable_retrace_callback(callback):
+    try:
+        import retrace
+    except ImportError:
+        return callback
+
+    disable = getattr(retrace, "disable", None) or getattr(retrace, "exclude", None)
+    if disable is None:
+        return callback
+    return disable(callback)
+
+
 def begin_suppress_monitoring():
     count = getattr(_monitor_state, "suppressed", 0)
     _monitor_state.suppressed = count + 1
@@ -134,8 +146,11 @@ else:
         retrace_dirs = _build_retrace_dirs(realpath=realpath, isdir=isdir)
 
         def _is_retrace(filename):
-            with suppress_monitoring():
+            previous_count = begin_suppress_monitoring()
+            try:
                 return _is_retrace_filename(filename, retrace_dirs, realpath=realpath)
+            finally:
+                end_suppress_monitoring(previous_count)
 
         def _is_suppressed():
             return getattr(_monitor_state, "suppressed", 0) > 0
@@ -159,23 +174,23 @@ else:
         # ── PY_START / PY_RETURN callbacks ────────────────────────
 
         def _py_start(code, instruction_offset):
-            if _is_retrace(code.co_filename):
-                return sys.monitoring.DISABLE
             if _is_suppressed() or _is_active():
                 return
             _monitor_state.active = True
             try:
+                if _is_retrace(code.co_filename):
+                    return sys.monitoring.DISABLE
                 checkpoint_fn('S:' + code.co_qualname)
             finally:
                 _monitor_state.active = False
 
         def _py_return(code, instruction_offset, retval):
-            if _is_retrace(code.co_filename):
-                return sys.monitoring.DISABLE
             if _is_suppressed() or _is_active():
                 return
             _monitor_state.active = True
             try:
+                if _is_retrace(code.co_filename):
+                    return sys.monitoring.DISABLE
                 checkpoint_fn('R:' + code.co_qualname)
             finally:
                 _monitor_state.active = False
@@ -183,34 +198,34 @@ else:
         # ── CALL / C_RETURN / C_RAISE callbacks (level 2+) ───────
 
         def _call(code, instruction_offset, callable_obj, arg0):
-            if _is_retrace(code.co_filename):
-                return
             if _is_suppressed() or _is_active():
                 return
             _monitor_state.active = True
             try:
+                if _is_retrace(code.co_filename):
+                    return
                 checkpoint_fn('C:' + _callable_name(callable_obj))
             finally:
                 _monitor_state.active = False
 
         def _c_return(code, instruction_offset, callable_obj, arg0):
-            if _is_retrace(code.co_filename):
-                return
             if _is_suppressed() or _is_active():
                 return
             _monitor_state.active = True
             try:
+                if _is_retrace(code.co_filename):
+                    return
                 checkpoint_fn('CR:' + _callable_name(callable_obj))
             finally:
                 _monitor_state.active = False
 
         def _c_raise(code, instruction_offset, callable_obj, arg0):
-            if _is_retrace(code.co_filename):
-                return
             if _is_suppressed() or _is_active():
                 return
             _monitor_state.active = True
             try:
+                if _is_retrace(code.co_filename):
+                    return
                 checkpoint_fn('CX:' + _callable_name(callable_obj))
             finally:
                 _monitor_state.active = False
@@ -218,12 +233,12 @@ else:
         # ── LINE callback (level 3) ──────────────────────────────
 
         def _line(code, line_number):
-            if _is_retrace(code.co_filename):
-                return sys.monitoring.DISABLE
             if _is_suppressed() or _is_active():
                 return
             _monitor_state.active = True
             try:
+                if _is_retrace(code.co_filename):
+                    return sys.monitoring.DISABLE
                 checkpoint_fn('L:' + code.co_qualname + ':' + str(line_number))
             finally:
                 _monitor_state.active = False
@@ -234,22 +249,28 @@ else:
 
         if events & sys.monitoring.events.PY_START:
             sys.monitoring.register_callback(
-                _TOOL_ID, sys.monitoring.events.PY_START, _py_start)
+                _TOOL_ID, sys.monitoring.events.PY_START,
+                _disable_retrace_callback(_py_start))
         if events & sys.monitoring.events.PY_RETURN:
             sys.monitoring.register_callback(
-                _TOOL_ID, sys.monitoring.events.PY_RETURN, _py_return)
+                _TOOL_ID, sys.monitoring.events.PY_RETURN,
+                _disable_retrace_callback(_py_return))
         if events & sys.monitoring.events.CALL:
             sys.monitoring.register_callback(
-                _TOOL_ID, sys.monitoring.events.CALL, _call)
+                _TOOL_ID, sys.monitoring.events.CALL,
+                _disable_retrace_callback(_call))
         if events & sys.monitoring.events.C_RETURN:
             sys.monitoring.register_callback(
-                _TOOL_ID, sys.monitoring.events.C_RETURN, _c_return)
+                _TOOL_ID, sys.monitoring.events.C_RETURN,
+                _disable_retrace_callback(_c_return))
         if events & sys.monitoring.events.C_RAISE:
             sys.monitoring.register_callback(
-                _TOOL_ID, sys.monitoring.events.C_RAISE, _c_raise)
+                _TOOL_ID, sys.monitoring.events.C_RAISE,
+                _disable_retrace_callback(_c_raise))
         if events & sys.monitoring.events.LINE:
             sys.monitoring.register_callback(
-                _TOOL_ID, sys.monitoring.events.LINE, _line)
+                _TOOL_ID, sys.monitoring.events.LINE,
+                _disable_retrace_callback(_line))
 
         sys.monitoring.set_events(_TOOL_ID, events)
 

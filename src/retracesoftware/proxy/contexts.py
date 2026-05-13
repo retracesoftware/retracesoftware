@@ -44,8 +44,10 @@ def record_context(
         system.is_bound.add,
         _stacktrace_before(stacktraces, writer, writer.bind),
     )
-    write_call = _stacktrace_before(stacktraces, writer, writer.write_call)
     async_call = _stacktrace_before(stacktraces, writer, writer.async_call)
+    on_external_call = (
+        writer.stacktrace if stacktraces and hasattr(writer, "stacktrace") else None
+    )
     checkpoint = _normalized_checkpoint(getattr(writer, "checkpoint", None), normalize)
 
     def write_result(value):
@@ -75,7 +77,7 @@ def record_context(
     )
     ext_spec = create_ext_spec(
         system,
-        on_call=write_call,
+        on_call=on_external_call,
         on_result=write_result,
         on_error=write_error,
         track=bind,
@@ -121,7 +123,7 @@ def replay_context(
     )
     ext_spec = create_ext_spec(
         system,
-        on_call=reader.write_call,
+        on_call=None,
         on_result=checkpoint,
         on_error=callback_error,
         track=bind,

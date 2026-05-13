@@ -6,6 +6,7 @@
 #include <cassert>
 #include <condition_variable>
 #include <cstdint>
+#include <deque>
 #include <mutex>
 #include <string>
 #include <thread>
@@ -38,6 +39,7 @@ namespace retracesoftware_stream {
 
     class Queue : public PyObject {
         rigtorp::SPSCQueue<QEntry> entries;
+        std::deque<QEntry> injected_entries;
         rigtorp::SPSCQueue<PyObject*> returned;
         PyObject* target_obj = nullptr;
         PyObject* push_fail_callback = nullptr;
@@ -104,6 +106,8 @@ namespace retracesoftware_stream {
         bool producer_can_dispatch_entry(QEntry entry) const;
         bool try_consume_with_persister_lock(std::unique_lock<std::mutex>& lock);
         bool try_consume_for_producer_with_gil();
+        int worker_wait_timeout_ms() const;
+        bool maybe_enqueue_heartbeat();
         bool dispatch_command(QEntry entry);
         bool dispatch_entry(QEntry entry);
         void dispatch_release(QEntry entry);

@@ -3,348 +3,141 @@ from types import CodeType
 
 import pytest
 
-_utils = pytest.importorskip("retracesoftware.utils")
-from retracesoftware.utils.trace import _classify_position  # noqa: E402
-
-requires_312 = pytest.mark.skipif(
-    sys.version_info < (3, 12),
-    reason="INSTRUCTION monitoring requires Python 3.12+",
-)
+retrace = pytest.importorskip("retrace")
+utils = pytest.importorskip("retracesoftware.utils")
 
 
-@pytest.fixture(autouse=True)
-def _clean_default():
-    """Ensure the module-level default call counter is clean between tests."""
-    yield
-    try:
-        _utils.uninstall_call_counter()
-    except Exception:
-        pass
+def _busy_loop():
+    value = 0
+    for index in range(1000):
+        value += index
+        value ^= index
+        value += 1
+    return value
 
 
-def _arm_trace(*args, **kwargs):
-    wrapped = _utils.call_counter_disable_for(_utils.trace_function_instructions)
-    return wrapped(*args, **kwargs)
+def test_trace_current_frame_with_explicit_target_frame():
+    hits = []
+    completed = []
+    holder = {}
 
-
-def _restart_call_counter():
-    try:
-        _utils.uninstall_call_counter()
-    except Exception:
-        pass
-    _utils.install_call_counter()
-
-
-# ============================================================================
-# _classify_position — pure logic, no C extension
-# ============================================================================
-
-
-class TestClassifyPosition:
-    def test_exact_match(self):
-        assert _classify_position((3, 2), (3, 2)) == "exact"
-
-    def test_exact_empty(self):
-        assert _classify_position((), ()) == "exact"
-
-    def test_behind_first_element(self):
-        assert _classify_position((3, 2), (3, 5)) == "behind"
-
-    def test_behind_second_element(self):
-        assert _classify_position((3, 2), (4, 0)) == "behind"
-
-    def test_ahead_first_element(self):
-        assert _classify_position((3, 5), (3, 2)) == "ahead"
-
-    def test_ahead_second_element(self):
-        assert _classify_position((4, 0), (3, 2)) == "ahead"
-
-    def test_ancestor_prefix(self):
-        assert _classify_position((3,), (3, 2, 1)) == "ancestor"
-
-    def test_ancestor_single_level(self):
-        assert _classify_position((3, 2), (3, 2, 1)) == "ancestor"
-
-    def test_ahead_deeper_target(self):
-        assert _classify_position((3, 2, 1), (3,)) == "ahead"
-
-    def test_ahead_much_deeper(self):
-        assert _classify_position((3, 2, 1, 5), (3, 2)) == "ahead"
-
-    def test_behind_diverges_early(self):
-        assert _classify_position((1, 9, 9), (2, 0, 0)) == "behind"
-
-    def test_ahead_diverges_early(self):
-        assert _classify_position((2, 0, 0), (1, 9, 9)) == "ahead"
-
-
-# ============================================================================
-# TargetUnreachableError — "behind" case
-# ============================================================================
-
-
-@requires_312
-class TestBehindRaisesError:
-    def test_raises_when_target_already_passed(self):
-        _utils.install_call_counter()
-
-        results = []
-
-        def mark():
-            results.append(_utils.current_call_counts())
-
-        mark()
-        mark()
-        mark()
-
-        target = results[0]
-
-        with pytest.raises(_utils.TargetUnreachableError):
-            _utils.trace_function_instructions(
-                target, lambda code, offset: None
-            )
-
-
-# ============================================================================
-# "ahead" case — target not yet entered
-# ============================================================================
-
-
-@requires_312
-class TestAheadCase:
-    def test_callback_fires_for_target_instructions(self):
-        _utils.install_call_counter()
-        _restart_call_counter()
-
-        hits = []
-
-        def target_fn(*, capture=False):
-            counters = _utils.current_call_counts()
-            if capture:
-                return counters
-            x = 1  # noqa: F841
-            y = 2  # noqa: F841
-            return x + y
-
-        target_fn(capture=True)
-        target_counters = target_fn(capture=True)
-
-        _restart_call_counter()
-
-        monitor = _arm_trace(
-            target_counters,
+    def traced():
+        frame = sys._getframe()
+        monitor = utils.trace_function_instructions(
+            retrace.coordinates(),
             lambda code, offset: hits.append((code, offset)),
+            target_frame=frame,
+            on_complete=lambda: completed.append(True),
         )
+        holder["monitor"] = monitor
+        x = 1
+        y = 2
+        return x + y
 
-        target_fn()
-        target_fn()
+    assert traced() == 3
 
-        assert len(hits) > 0
-        monitor.close()
-
-    def test_callback_receives_code_and_int_offset(self):
-        _utils.install_call_counter()
-        _restart_call_counter()
-
-        hits = []
-
-        def target_fn(*, capture=False):
-            counters = _utils.current_call_counts()
-            if capture:
-                return counters
-            return 42
-
-        target_fn(capture=True)
-        counters = target_fn(capture=True)
-
-        _restart_call_counter()
-
-        monitor = _arm_trace(
-            counters,
-            lambda code, offset: hits.append((code, offset)),
-        )
-
-        target_fn()
-        target_fn()
-
-        assert len(hits) > 0
-        code_obj, offset = hits[0]
-        assert isinstance(code_obj, CodeType)
-        assert isinstance(offset, int)
-        monitor.close()
+    assert completed == [True]
+    assert holder["monitor"]._closed
+    assert hits
+    assert all(isinstance(code, CodeType) for code, _ in hits)
+    assert all(isinstance(offset, int) for _, offset in hits)
+    assert any(code is traced.__code__ for code, _ in hits)
 
 
-# ============================================================================
-# "ancestor" case — currently deeper than target
-# ============================================================================
+def test_trace_future_coordinate_uses_retrace_call_at():
+    hits = []
+    monitor = None
 
-
-@requires_312
-class TestAncestorCase:
-    def test_activates_when_returning_to_target(self):
-        _utils.install_call_counter()
-        _restart_call_counter()
-
-        hits = []
-        monitor_holder = [None]
-
-        def outer():
-            x = 1  # noqa: F841
-            inner()
-            y = 2  # noqa: F841
-            return x + y
-
-        def inner():
-            outer_counters = _utils.current_call_counts()[:-1]
-            monitor_holder[0] = _arm_trace(
-                outer_counters,
-                lambda code, offset: hits.append(offset),
-                target_frame=sys._getframe(1),
+    for delta in range(1, 1000):
+        base = tuple(retrace.coordinates())
+        target = (*base[:-1], base[-1] + delta)
+        try:
+            monitor = utils.trace_function_instructions(
+                target,
+                lambda code, offset: hits.append((code, offset)),
             )
+        except utils.TargetUnreachableError:
+            continue
+        try:
+            _busy_loop()
+            if hits:
+                break
+        finally:
+            monitor.close()
+            retrace.call_at(None)
+    else:
+        pytest.fail("could not find a reachable future coordinate")
 
-        outer()
-
-        assert monitor_holder[0] is not None
-        if monitor_holder[0] is not None:
-            monitor_holder[0].close()
-
-
-# ============================================================================
-# Auto-teardown on function exit
-# ============================================================================
-
-
-@requires_312
-class TestAutoTeardown:
-    def test_monitor_closes_after_target_returns(self):
-        _utils.install_call_counter()
-        _restart_call_counter()
-
-        def target_fn(*, capture=False):
-            counters = _utils.current_call_counts()
-            if capture:
-                return counters
-            return 42
-
-        target_fn(capture=True)
-        counters = target_fn(capture=True)
-
-        _restart_call_counter()
-
-        monitor = _arm_trace(
-            counters,
-            lambda code, offset: None,
-        )
-
-        assert not monitor._closed
-
-        target_fn()
-        target_fn()
-
-        assert not monitor._closed
-        monitor.close()
+    assert hits
+    assert all(isinstance(code, CodeType) for code, _ in hits)
+    assert all(isinstance(offset, int) for _, offset in hits)
 
 
-# ============================================================================
-# Manual .close()
-# ============================================================================
+def test_target_unreachable_error_releases_monitoring_tool_id():
+    coordinates = tuple(retrace.coordinates())
+    for _ in range(1000):
+        if coordinates[-1] > 0:
+            break
+        coordinates = tuple(retrace.coordinates())
+    assert coordinates[-1] > 0
+    past = (*coordinates[:-1], coordinates[-1] - 1)
 
+    for _ in range(8):
+        with pytest.raises(utils.TargetUnreachableError):
+            utils.trace_function_instructions(past, lambda code, offset: None)
 
-@requires_312
-class TestManualClose:
-    def test_close_stops_callbacks(self):
-        _utils.install_call_counter()
-        _restart_call_counter()
+    hits = []
 
-        hits = []
-
-        def target_fn(*, capture=False):
-            counters = _utils.current_call_counts()
-            if capture:
-                return counters
-            x = 1  # noqa: F841
-            y = 2  # noqa: F841
-            return x + y
-
-        target_fn(capture=True)
-        counters = target_fn(capture=True)
-
-        _restart_call_counter()
-
-        monitor = _arm_trace(
-            counters,
+    def traced():
+        monitor = utils.trace_function_instructions(
+            retrace.coordinates(),
             lambda code, offset: hits.append(offset),
+            target_frame=sys._getframe(),
         )
+        holder.append(monitor)
+        return 42
 
+    holder = []
+    assert traced() == 42
+    assert holder[0]._closed
+    assert hits
+
+
+def test_monitor_close_is_idempotent():
+    hits = []
+
+    def traced():
+        monitor = utils.trace_function_instructions(
+            retrace.coordinates(),
+            lambda code, offset: hits.append(offset),
+            target_frame=sys._getframe(),
+        )
         monitor.close()
+        monitor.close()
+        x = 1
+        y = 2
+        return x + y, monitor
 
-        assert monitor._closed
+    result, monitor = traced()
 
-        target_fn()
-        target_fn()
+    assert result == 3
+    assert monitor._closed
 
-        assert monitor._closed
 
-    def test_double_close_is_safe(self):
-        _utils.install_call_counter()
-        _restart_call_counter()
+def test_on_complete_is_not_called_by_manual_close():
+    completed = []
 
-        def target_fn(*, capture=False):
-            counters = _utils.current_call_counts()
-            if capture:
-                return counters
-            return 42
-
-        target_fn(capture=True)
-        counters = target_fn(capture=True)
-
-        _restart_call_counter()
-
-        monitor = _arm_trace(
-            counters,
+    def traced():
+        monitor = utils.trace_function_instructions(
+            retrace.coordinates(),
             lambda code, offset: None,
+            target_frame=sys._getframe(),
+            on_complete=lambda: completed.append(True),
         )
-
         monitor.close()
-        monitor.close()
-        assert monitor._closed
+        return monitor
 
+    monitor = traced()
 
-# ============================================================================
-# "exact" case — requires target_frame
-# ============================================================================
-
-
-@requires_312
-class TestExactCase:
-    def test_raises_without_target_frame(self):
-        _utils.install_call_counter()
-
-        def target_fn():
-            counters = _utils.current_call_counts()
-            with pytest.raises((ValueError, _utils.TargetUnreachableError)):
-                _arm_trace(
-                    counters,
-                    lambda code, offset: None,
-                )
-
-        target_fn()
-
-    def test_works_with_target_frame(self):
-        _utils.install_call_counter()
-        _restart_call_counter()
-
-        def target_fn():
-            frame = sys._getframe(0)
-            counters = _utils.current_call_counts()
-            with pytest.raises(_utils.TargetUnreachableError):
-                _arm_trace(
-                    counters,
-                    lambda code, offset: None,
-                    target_frame=frame,
-                )
-            x = 1  # noqa: F841
-            y = 2  # noqa: F841
-            return x + y
-
-        target_fn()
+    assert monitor._closed
+    assert completed == []

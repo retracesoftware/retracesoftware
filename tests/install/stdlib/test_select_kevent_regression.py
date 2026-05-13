@@ -10,9 +10,10 @@ import os
 from pathlib import Path
 import select
 import subprocess
-import sys
 
 import pytest
+
+from tests.helpers import PYTHON
 
 
 needs_kqueue = pytest.mark.skipif(
@@ -70,7 +71,7 @@ t.join()
         env["RETRACE_REPLAY_BIN"] = extract_binary_path()
 
     proc = subprocess.run(
-        [sys.executable, str(script)],
+        [PYTHON, str(script)],
         capture_output=True,
         text=True,
         timeout=60,

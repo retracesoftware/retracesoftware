@@ -8,6 +8,8 @@ from pathlib import Path
 
 import pytest
 
+from tests.helpers import PYTHON
+
 
 _ROOT = Path(__file__).resolve().parents[3]
 
@@ -39,7 +41,7 @@ def _run_retrace_script(tmp_path, source: str):
     env["RETRACE_RECORDING"] = str(tmp_path / "trace.bin")
 
     proc = subprocess.run(
-        [sys.executable, str(script)],
+        [PYTHON, str(script)],
         cwd=tmp_path,
         env=env,
         capture_output=True,

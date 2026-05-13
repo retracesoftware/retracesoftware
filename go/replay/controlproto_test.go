@@ -17,8 +17,8 @@ func TestParseControlMessageKinds(t *testing.T) {
 	}{
 		{`{"id":"1","method":"hello","params":{}}`, "", ""},
 		{`{"id":"1","ok":true,"result":{"x":1}}`, "", ""},
-		{`{"id":"1","kind":"event","event":"breakpoint_hit","payload":{"cursor":{"thread_id":1,"function_counts":[1,2]}}}`, "event", ""},
-		{`{"kind":"stop","payload":{"reason":"cursor","cursor":{"thread_id":1,"function_counts":[1,2]}}}`, "stop", ""},
+		{`{"id":"1","kind":"event","event":"breakpoint_hit","payload":{"cursor":{"thread_id":1,"coordinates":[1,2]}}}`, "event", ""},
+		{`{"kind":"stop","payload":{"reason":"cursor","cursor":{"thread_id":1,"coordinates":[1,2]}}}`, "stop", ""},
 		// backward compat: old-style messages with "type" still parse
 		{`{"id":"1","type":"response","ok":true,"result":{"x":1}}`, "", "response"},
 	}
@@ -180,14 +180,14 @@ func TestParseStopResult(t *testing.T) {
 		"reason":        "breakpoint",
 		"message_index": float64(12),
 		"cursor": map[string]any{
-			"thread_id":       float64(1),
-			"function_counts": []any{float64(1), float64(2)},
-			"f_lasti":         float64(42),
+			"thread_id":   float64(1),
+			"coordinates": []any{float64(1), float64(2)},
+			"f_lasti":     float64(42),
 		},
 		"thread_cursors": map[string]any{
 			"1": map[string]any{
-				"thread_id":       float64(1),
-				"function_counts": []any{float64(7), float64(8)},
+				"thread_id":   float64(1),
+				"coordinates": []any{float64(7), float64(8)},
 			},
 		},
 	})
@@ -197,14 +197,14 @@ func TestParseStopResult(t *testing.T) {
 	if got.Cursor.ThreadID != 1 {
 		t.Fatalf("unexpected cursor thread_id: %d", got.Cursor.ThreadID)
 	}
-	if len(got.Cursor.FunctionCounts) != 2 || got.Cursor.FunctionCounts[0] != 1 {
-		t.Fatalf("unexpected cursor function_counts: %#v", got.Cursor.FunctionCounts)
+	if len(got.Cursor.Coordinates) != 2 || got.Cursor.Coordinates[0] != 1 {
+		t.Fatalf("unexpected cursor coordinates: %#v", got.Cursor.Coordinates)
 	}
 	if got.Cursor.FLasti == nil || *got.Cursor.FLasti != 42 {
 		t.Fatalf("unexpected cursor f_lasti: %v", got.Cursor.FLasti)
 	}
 	tc := got.ThreadCursors[1]
-	if len(tc.FunctionCounts) != 2 || tc.FunctionCounts[1] != 8 {
+	if len(tc.Coordinates) != 2 || tc.Coordinates[1] != 8 {
 		t.Fatalf("unexpected thread cursors: %#v", got.ThreadCursors)
 	}
 }

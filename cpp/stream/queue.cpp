@@ -15,6 +15,8 @@ namespace retracesoftware_stream {
     class Persister;
 
     extern bool Persister_write_heartbeat(Persister* persister);
+    extern int Persister_heartbeat_wait_timeout_ms(Persister* persister, int fallback);
+    extern PyObject* Persister_create_heartbeat_payload(Persister* persister);
     extern bool Persister_start_collection(Persister* persister, PyObject* type, size_t len);
     extern bool Persister_write_binding_lookup(Persister* persister, BindingHandle handle);
     extern bool Persister_write_object(Persister* persister, PyObject* obj);
@@ -689,6 +691,35 @@ namespace retracesoftware_stream {
         return true;
     }
 
+    int Queue::worker_wait_timeout_ms() const {
+        retracesoftware::GILGuard gstate;
+        if (!is_persister()) return worker_wait_timeout_ms_value;
+        return Persister_heartbeat_wait_timeout_ms(
+            native_persister(target_obj),
+            worker_wait_timeout_ms_value);
+    }
+
+    bool Queue::maybe_enqueue_heartbeat() {
+        retracesoftware::GILGuard gstate;
+        if (!is_persister()) return false;
+        PyObject* payload = Persister_create_heartbeat_payload(native_persister(target_obj));
+        if (!payload) {
+            capture_current_target_error();
+            return false;
+        }
+        if (payload == Py_None) {
+            Py_DECREF(payload);
+            return false;
+        }
+
+        const int64_t estimated_size = queue_estimate_size(payload);
+        if (estimated_size > 0) reserve_inflight(estimated_size);
+        injected_entries.push_back(cmd_entry(CMD_HEARTBEAT, 0));
+        injected_entries.push_back(object_entry(payload));
+        injected_entries.push_back(cmd_entry(CMD_FLUSH, 0));
+        return true;
+    }
+
     void Queue::return_loop() {
         ActiveConsumerScope active_consumer(this);
 
@@ -722,7 +753,7 @@ namespace retracesoftware_stream {
 
 
     bool Queue::has_entries() {
-        return entries.front() != nullptr;
+        return !injected_entries.empty() || entries.front() != nullptr;
     }
 
     bool Queue::entry_needs_gil_for_dispatch(QEntry entry) const {
@@ -765,7 +796,16 @@ namespace retracesoftware_stream {
     }
 
     bool Queue::try_consume_with_persister_lock(std::unique_lock<std::mutex>& lock) {
-        QEntry* front = entries.front();
+        QEntry injected_front;
+        auto front_entry = [this, &injected_front]() -> QEntry* {
+            if (!injected_entries.empty()) {
+                injected_front = injected_entries.front();
+                return &injected_front;
+            }
+            return entries.front();
+        };
+
+        QEntry* front = front_entry();
         if (!front) return false;
 
         std::optional<retracesoftware::GILGuard> gstate;
@@ -773,7 +813,7 @@ namespace retracesoftware_stream {
             lock.unlock();
             gstate.emplace();
             lock.lock();
-            front = entries.front();
+            front = front_entry();
             if (!front) return false;
         }
 
@@ -940,6 +980,11 @@ namespace retracesoftware_stream {
     }
 
     bool Queue::try_pop_entry(QEntry& entry) {
+        if (!injected_entries.empty()) {
+            entry = injected_entries.front();
+            injected_entries.pop_front();
+            return true;
+        }
         QEntry* ep = entries.front();
         if (!ep) return false;
         entry = *ep;
@@ -1310,14 +1355,23 @@ namespace retracesoftware_stream {
                 std::unique_lock<std::mutex> lock(wake_mutex);
                 worker_waiting.store(true, std::memory_order_release);
                 wake_cv.wait_for(lock,
-                                 std::chrono::milliseconds(worker_wait_timeout_ms_value),
+                                 std::chrono::milliseconds(worker_wait_timeout_ms()),
                                  [this] {
-                                     return shutdown_flag.load(std::memory_order_acquire);
+                                     return shutdown_flag.load(std::memory_order_acquire) || has_entries();
                                  });
                 worker_waiting.store(false, std::memory_order_release);
                 {
                     std::lock_guard<std::mutex> persister_lock(persister_mutex);
                     if (shutdown_flag.load(std::memory_order_acquire) && !has_entries()) return;
+                }
+                if (!has_entries()) {
+                    if (maybe_enqueue_heartbeat()) continue;
+                    if (has_target_error()) {
+                        retracesoftware::GILGuard gstate;
+                        handle_target_failure(take_target_error_message());
+                        maybe_notify_return_thread(true);
+                        return;
+                    }
                 }
                 continue;
             }

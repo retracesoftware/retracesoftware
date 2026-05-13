@@ -4,7 +4,6 @@ Verifies that retrace record can write its trace stream through a
 named pipe, which is the foundation for concurrent record+replay.
 """
 import os
-import sys
 import stat
 import tempfile
 import shutil
@@ -13,7 +12,8 @@ import subprocess
 
 import pytest
 
-PYTHON = sys.executable
+from tests.helpers import PYTHON
+
 TIMEOUT = 30
 
 

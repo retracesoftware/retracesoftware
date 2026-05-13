@@ -8,15 +8,28 @@ import sys
 import json
 import time
 import atexit
-import retracesoftware.cursor as cursor
+import _thread
+import retrace
 
 DISABLE = sys.monitoring.DISABLE
+
+
+def _disable_retrace_callback(callback):
+    disable = getattr(retrace, "disable", None) or retrace.exclude
+    return disable(callback)
 
 
 class ReplayStop(Exception):
     def __init__(self, payload):
         super().__init__(payload.get("reason", "stop"))
         self.payload = payload
+
+
+def _coordinate_snapshot():
+    return {
+        "thread_id": _thread.get_ident(),
+        "coordinates": list(retrace.coordinates()),
+    }
 
 
 def install_breakpoint_search(target_file, target_line, condition=None):
@@ -28,8 +41,6 @@ def install_breakpoint_search(target_file, target_line, condition=None):
     """
     search_output = sys.stdout
     sys.stdout = open(os.devnull, 'w')
-
-    cursor.install_call_counter()
 
     tool_id = None
     for tid in range(6):
@@ -63,12 +74,11 @@ def install_breakpoint_search(target_file, target_line, condition=None):
                     return None
             except Exception:
                 return None
-        cursor = cursor.cursor_snapshot().to_dict()
-        json.dump({"cursor": cursor}, search_output)
+        json.dump({"cursor": _coordinate_snapshot()}, search_output)
         search_output.write("\n")
         search_output.flush()
 
-    _disable = cursor.call_counter_disable_for
+    _disable = _disable_retrace_callback
     sys.monitoring.register_callback(tool_id, E.PY_START, _disable(on_py_start))
     sys.monitoring.register_callback(tool_id, E.LINE, _disable(on_line))
     sys.monitoring.set_events(tool_id, E.PY_START)
@@ -89,8 +99,6 @@ def install_protocol_stop_search(
     - cursor
     - backstop
     """
-    cursor.install_call_counter()
-
     tool_id = None
     for tid in range(6):
         try:
@@ -119,7 +127,7 @@ def install_protocol_stop_search(
         payload = {
             "reason": reason,
             "message_index": int(get_offset()),
-            "cursor": cursor.cursor_snapshot().to_dict(),
+            "cursor": _coordinate_snapshot(),
         }
         raise ReplayStop(payload)
 
@@ -128,7 +136,7 @@ def install_protocol_stop_search(
             if int(get_offset()) >= int(backstop_message_index):
                 _raise_stop("backstop")
         if target_cursor_tuple is not None:
-            current = tuple(cursor.current_call_counts())
+            current = tuple(retrace.coordinates())
             if current == target_cursor_tuple:
                 _raise_stop("cursor")
 
@@ -159,7 +167,7 @@ def install_protocol_stop_search(
             _raise_stop("breakpoint")
         return None
 
-    _disable = cursor.call_counter_disable_for
+    _disable = _disable_retrace_callback
     sys.monitoring.register_callback(tool_id, E.PY_START, _disable(on_py_start))
     sys.monitoring.register_callback(tool_id, E.PY_RETURN, _disable(on_py_event))
     sys.monitoring.register_callback(tool_id, E.PY_UNWIND, _disable(on_py_event))
@@ -228,7 +236,7 @@ def install_timeslice_search(chunk_ms, get_offset):
             pass
 
     atexit.register(emit_final)
-    _disable = cursor.call_counter_disable_for
+    _disable = _disable_retrace_callback
     sys.monitoring.register_callback(tool_id, E.PY_START, _disable(on_event))
     sys.monitoring.register_callback(tool_id, E.PY_RETURN, _disable(on_event))
     sys.monitoring.register_callback(tool_id, E.PY_UNWIND, _disable(on_event))

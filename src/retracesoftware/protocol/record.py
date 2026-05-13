@@ -2,11 +2,8 @@
 
 from types import SimpleNamespace
 from retracesoftware import utils
-from retracesoftware import functional
 from .normalize import normalize
 
-
-CALL = "CALL"
 
 def _materialize_stack_delta(delta):
     to_drop, frames = delta
@@ -57,7 +54,6 @@ def stream_writer(writer, stackfactory=None, on_write_error=None, debug = False)
             stacktrace()
         checkpoint_handle(normalize(value))
 
-    call = functional.repeatedly(writer.handle(CALL))
     bind = getattr(writer, "bind", None)
     if bind is None:
         raise TypeError(
@@ -70,14 +66,6 @@ def stream_writer(writer, stackfactory=None, on_write_error=None, debug = False)
            checkpoint({'type': 'on_bind', 'bound': obj})
 
         bind = utils.runall(on_bind, bind)
-
-        def on_call(fn, *args, **kwargs):
-            checkpoint({'type': 'on_call',
-                        'fn': fn,
-                        'args': args, 
-                        'kwargs': kwargs})
-
-        call = functional.runall(on_call, call)
 
         def on_async_call(fn, *args, **kwargs):
             checkpoint({'type': 'on_async_call',
@@ -93,8 +81,6 @@ def stream_writer(writer, stackfactory=None, on_write_error=None, debug = False)
 
     return SimpleNamespace(
         type_serializer=writer.type_serializer,
-        sync = bind_write_error(writer.handle("SYNC")),
-        write_call = bind_write_error(call),
         write_result = bind_write_error(writer.handle("RESULT")),
         write_error = bind_write_error(write_error),
         bind = bind_write_error(bind),
@@ -106,4 +92,4 @@ def stream_writer(writer, stackfactory=None, on_write_error=None, debug = False)
     )
 
 
-__all__ = ["CALL", "stream_writer"]
+__all__ = ["stream_writer"]

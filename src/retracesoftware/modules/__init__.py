@@ -33,10 +33,9 @@ from pathlib import Path
 from importlib.resources import files as resource_files
 
 DIRECTIVE_KEYS = frozenset({
-    "proxy", "ext_proxy_result", "immutable", "bind", "disable", "patch_hash",
+    "proxy", "ext_proxy_result", "immutable", "bind", "disable",
     "wrap", "patch_class", "type_attributes", "patch_types",
-    "default", "ignore", "pathparam", "replay_materialize",
-    "stub_for_replay", "sync",
+    "default", "ignore", "pathparam", "stub_for_replay",
 })
 
 DEFAULT_USER_MODULES_DIR = ".retrace/modules"

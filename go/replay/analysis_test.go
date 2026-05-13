@@ -106,9 +106,9 @@ func TestRunAnalysisProbeBreakpointHit(t *testing.T) {
 			"kind": "event", "event": "breakpoint_hit",
 			"payload": map[string]any{
 				"cursor": map[string]any{
-					"thread_id":       1,
-					"function_counts": []int{100, 200},
-					"f_lasti":         50,
+					"thread_id":   1,
+					"coordinates": []int{100, 200},
+					"f_lasti":     50,
 				},
 			},
 		})
@@ -126,8 +126,8 @@ func TestRunAnalysisProbeBreakpointHit(t *testing.T) {
 	if result.LastCheckpointCursor == nil {
 		t.Fatal("expected non-nil cursor")
 	}
-	if len(result.LastCheckpointCursor.FunctionCounts) != 2 || result.LastCheckpointCursor.FunctionCounts[0] != 100 {
-		t.Fatalf("unexpected cursor function_counts: %v", result.LastCheckpointCursor.FunctionCounts)
+	if len(result.LastCheckpointCursor.Coordinates) != 2 || result.LastCheckpointCursor.Coordinates[0] != 100 {
+		t.Fatalf("unexpected cursor coordinates: %v", result.LastCheckpointCursor.Coordinates)
 	}
 }
 
@@ -146,9 +146,9 @@ func TestRunAnalysisProbeEOFStop(t *testing.T) {
 		_ = json.NewEncoder(w).Encode(map[string]any{
 			"kind": "stop",
 			"payload": map[string]any{
-				"reason":        "eof",
-				"message_index": 500,
-				"cursor":        map[string]any{},
+				"reason":         "eof",
+				"message_index":  500,
+				"cursor":         map[string]any{},
 				"thread_cursors": map[string]any{},
 			},
 		})
@@ -170,9 +170,9 @@ func TestAnalysisCacheRoundTrip(t *testing.T) {
 	path := filepath.Join(dir, "analysis.json")
 
 	rc := RawCursor{
-		ThreadID:       1,
-		FunctionCounts: []int{10, 20, 30},
-		FLasti:         intPtr(50),
+		ThreadID:    1,
+		Coordinates: []int{10, 20, 30},
+		FLasti:      intPtr(50),
 	}
 	original := &TraceAnalysis{
 		LastCheckpointCursor: &rc,
@@ -194,8 +194,8 @@ func TestAnalysisCacheRoundTrip(t *testing.T) {
 	if loaded.LastCheckpointCursor == nil {
 		t.Fatal("expected non-nil cursor")
 	}
-	if len(loaded.LastCheckpointCursor.FunctionCounts) != 3 || loaded.LastCheckpointCursor.FunctionCounts[1] != 20 {
-		t.Fatalf("cursor mismatch: %v", loaded.LastCheckpointCursor.FunctionCounts)
+	if len(loaded.LastCheckpointCursor.Coordinates) != 3 || loaded.LastCheckpointCursor.Coordinates[1] != 20 {
+		t.Fatalf("cursor mismatch: %v", loaded.LastCheckpointCursor.Coordinates)
 	}
 }
 

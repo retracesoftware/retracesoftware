@@ -17,6 +17,8 @@ import textwrap
 
 import pytest
 
+from tests.helpers import PYTHON
+
 
 _ROOT = Path(__file__).resolve().parents[3]
 
@@ -119,7 +121,7 @@ def test_flask_live_pidfile_replay_does_not_diverge(tmp_path: Path):
     recording = tmp_path / "trace.retrace"
     record = subprocess.run(
         [
-            sys.executable,
+            PYTHON,
             "-m",
             "retracesoftware",
             "--recording",
@@ -144,7 +146,7 @@ def test_flask_live_pidfile_replay_does_not_diverge(tmp_path: Path):
 
     extract = subprocess.run(
         [
-            sys.executable,
+            PYTHON,
             "-m",
             "retracesoftware.replay",
             "--recording",
@@ -168,7 +170,7 @@ def test_flask_live_pidfile_replay_does_not_diverge(tmp_path: Path):
 
     replay = subprocess.run(
         [
-            sys.executable,
+            PYTHON,
             "-m",
             "retracesoftware.replay",
             str(pidfiles[0]),

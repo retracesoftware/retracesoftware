@@ -18,6 +18,7 @@ import gc
 import os
 import socket
 import sys
+import _thread
 from pathlib import Path
 
 
@@ -58,8 +59,7 @@ _bootstrap_local_checkout()
 from retracesoftware.install import ReplayDivergence, install_retrace
 from retracesoftware.proxy.io import _ReplayBindingState, recorder, replayer
 from retracesoftware.proxy.system import LifecycleHooks
-from retracesoftware.testing.memorytape import _IOThreadAwareTapeWriter, _thread_id_context
-from retracesoftware.threadid import ThreadId
+from retracesoftware.testing.memorytape import _IOThreadAwareTapeWriter
 
 
 IMMUTABLE_TYPES = {int, float, str, bytes, bool, type, type(None)}
@@ -79,23 +79,21 @@ def _work(_system):
 
 
 def _build_recording():
-    record_thread_ids = ThreadId()
     tape_storage: list[object] = []
-    writer = _IOThreadAwareTapeWriter(tape_storage, thread=record_thread_ids.id.get)
+    writer = _IOThreadAwareTapeWriter(tape_storage, thread=_thread.get_ident)
     record_system = recorder(writer=writer.write, debug=False, stacktraces=False)
     record_system.immutable_types.update(IMMUTABLE_TYPES)
 
-    with _thread_id_context(record_thread_ids):
-        uninstall = install_retrace(
-            system=record_system,
-            monitor_level=0,
-            verbose=False,
-            retrace_shutdown=False,
-        )
-        try:
-            recorded = record_system.run(lambda: _work(record_system))
-        finally:
-            uninstall()
+    uninstall = install_retrace(
+        system=record_system,
+        monitor_level=0,
+        verbose=False,
+        retrace_shutdown=False,
+    )
+    try:
+        recorded = record_system.run(lambda: _work(record_system))
+    finally:
+        uninstall()
 
     gc.collect()
     return tape_storage, recorded
@@ -144,36 +142,35 @@ def main():
 
     replay_system, tape_reader = _make_replay_system(tape_storage)
 
-    with _thread_id_context(ThreadId()):
-        uninstall = install_retrace(
-            system=replay_system,
-            monitor_level=0,
-            verbose=False,
-            retrace_shutdown=False,
-        )
-        try:
-            replayed = replay_system.run(lambda: _work(replay_system))
-            print(f"replayed={replayed}", flush=True)
+    uninstall = install_retrace(
+        system=replay_system,
+        monitor_level=0,
+        verbose=False,
+        retrace_shutdown=False,
+    )
+    try:
+        replayed = replay_system.run(lambda: _work(replay_system))
+        print(f"replayed={replayed}", flush=True)
 
-            held = []
-            for handle in list(tape_reader._bindings):
-                value = tape_reader._bindings.pop(handle)
-                if isinstance(value, socket.socket):
-                    held.append((handle, value))
+        held = []
+        for handle in list(tape_reader._bindings):
+            value = tape_reader._bindings.pop(handle)
+            if isinstance(value, socket.socket):
+                held.append((handle, value))
 
-            print(f"sockets_retained={len(held)}", flush=True)
+        print(f"sockets_retained={len(held)}", flush=True)
 
-            for index, (handle, value) in enumerate(held):
-                print(
-                    f"release {index} handle={handle} type={type(value).__name__} repr={repr(value)[:120]}",
-                    flush=True,
-                )
-                held[index] = (handle, None)
+        for index, (handle, value) in enumerate(held):
+            print(
+                f"release {index} handle={handle} type={type(value).__name__} repr={repr(value)[:120]}",
+                flush=True,
+            )
+            held[index] = (handle, None)
 
-            print("released_all", flush=True)
-            gc.collect()
-        finally:
-            uninstall()
+        print("released_all", flush=True)
+        gc.collect()
+    finally:
+        uninstall()
 
 
 if __name__ == "__main__":

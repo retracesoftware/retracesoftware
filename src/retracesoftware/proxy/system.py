@@ -5,7 +5,7 @@
 - the phase gate that distinguishes internal from external execution
 - proxy/unproxy helpers and passthrough predicates
 - patch/unpatch support for types and callables
-- thread inheritance and install-time wiring
+- stable thread identity and install-time wiring
 
 Mode-specific behavior such as recording, replay reads, checkpoints,
 and callback/result hooks is assembled elsewhere and injected through
@@ -13,18 +13,23 @@ gateway factories plus lifecycle/hook attributes.
 """
 
 from typing import NamedTuple, Callable, Any
+from contextlib import contextmanager
 import functools
+import _thread
 import retracesoftware.functional as functional
 import retracesoftware.stream as stream
 import retracesoftware.utils as utils
 import types
 import gc
-import threading
+import sys
 
 from retracesoftware.proxy.proxytype import method_names, superdict
 from retracesoftware.proxy.proxytype import DynamicProxy
-from retracesoftware.install.patcher import install_hash_patching
 from retracesoftware.install.edgecases import patchtype
+from retracesoftware.install.monitoring import (
+    begin_suppress_monitoring,
+    end_suppress_monitoring,
+)
 from retracesoftware.proxy.gateway import ext_gateway, ext_method_gateway, int_gateway
 from retracesoftware.proxy.patchtype import patch_type, _module_unpatch_type
 
@@ -50,7 +55,6 @@ wrapped_callable = utils.wrapped_callable
 class disabled_callable(wrapped_callable):
     """Callable that intentionally runs with retrace disabled."""
 
-    __retrace_disabled_thread_target__ = True
     __slots__ = ("_retrace_call",)
 
     def __new__(cls, wrapped, call):
@@ -134,21 +138,6 @@ class CallHooks(NamedTuple):
     on_result: Callable[..., Any] | None = None
     on_error: Callable[..., Any] | None = None
 
-class ThreadSafeCounter:
-    def __init__(self, initial=0):
-        self._value = initial
-        self._lock = threading.Lock()
-
-    def next(self):
-        with self._lock:
-            value = self._value
-            self._value += 1
-            return value
-
-    def peek(self):
-        with self._lock:
-            return self._value
-
 def when_instanceof(cls, on_then, on_else = functional.identity):
     return functional.if_then_else(functional.isinstanceof(cls), on_then, on_else)
 
@@ -196,108 +185,14 @@ def _ext_proxytype_from_spec(
 fallback = functional.mapargs(transform = functional.walker(utils.try_unwrap), function = functional.apply)
 
 
-def _is_disabled_thread_target(function):
-    if isinstance(function, disabled_callable):
-        return True
-    if _has_disabled_thread_target_marker(function):
-        return True
-
-    owner = getattr(function, "__self__", None)
-    target = getattr(owner, "_target", None)
-    return isinstance(target, disabled_callable) or _has_disabled_thread_target_marker(target)
-
-
-def _has_disabled_thread_target_marker(function):
-    if getattr(function, "__retrace_disabled_thread_target__", False):
-        return True
-
-    underlying = getattr(function, "__func__", None)
-    return getattr(underlying, "__retrace_disabled_thread_target__", False)
-
-
 class System:
     """Mutable runtime state shared by record and replay assemblers."""
 
-    def wrap_start_new_thread(self, original_start_new_thread):
-        """Wrap ``start_new_thread`` so child threads inherit active retrace state."""
-        def wrap_thread_function(function):
-            if _is_disabled_thread_target(function):
-                return function
-
-            if self.enabled():
-                next_id = self.counter.next()
-                wrapped = self.thread_wrapper(function)
-
-                def in_child(*args, **kwargs):
-                    self._thread_id.set(next_id)
-                    self.sync()
-                    return self.gate.apply_with('internal', wrapped)(*args, **kwargs)
-
-                return in_child
-            else:
-                return function
-
-        def wrapped_start_new_thread(function, args, kwargs=None):
-            disabled_thread_target = _is_disabled_thread_target(function)
-            wrapped = wrap_thread_function(function)
-            if kwargs is None:
-                thread_id = original_start_new_thread(wrapped, args)
-            else:
-                thread_id = original_start_new_thread(wrapped, args, kwargs)
-
-            if disabled_thread_target:
-                owner = getattr(function, "__self__", None)
-                started = getattr(owner, "_started", None)
-                if started is not None:
-                    try:
-                        started.wait = self.disable_for(started.wait, unwrap_args=False)
-                    except Exception:
-                        self.disable_for(started.wait, unwrap_args=False)()
-
-            return thread_id
-
-        return wrapped_start_new_thread
-
-    def wrap_thread_start(self, original_start):
-        """Wrap ``threading.Thread.start`` without tracing CPython startup locks."""
-        disabled_start = self.disable_for(original_start, unwrap_args=False)
-
-        def wrapped_thread_start(thread, *args, **kwargs):
-            if not self.enabled():
-                return original_start(thread, *args, **kwargs)
-
-            if (
-                _is_disabled_thread_target(thread.run)
-                or _is_disabled_thread_target(getattr(thread, "_bootstrap", None))
-            ):
-                return disabled_start(thread, *args, **kwargs)
-
-            next_id = self.counter.next()
-            original_run = thread.run
-            wrapped_run = self.thread_wrapper(original_run)
-            start_barrier = self.disable_for(threading.Event, unwrap_args=False)()
-            barrier_set = self.disable_for(start_barrier.set, unwrap_args=False)
-            barrier_wait = self.disable_for(start_barrier.wait, unwrap_args=False)
-
-            def retraced_run(*run_args, **run_kwargs):
-                thread.run = original_run
-                self._thread_id.set(next_id)
-                try:
-                    self.sync()
-                finally:
-                    barrier_set()
-                return self.gate.apply_with('internal', wrapped_run)(*run_args, **run_kwargs)
-
-            thread.run = retraced_run
-            try:
-                result = disabled_start(thread, *args, **kwargs)
-            except Exception:
-                thread.run = original_run
-                raise
-            barrier_wait()
-            return result
-
-        return wrapped_thread_start
+    @contextmanager
+    def disable(self):
+        """Run the current thread with retrace disabled."""
+        with self.gate.context(None):
+            yield
 
     def patch_function(self, fn):
         """Return a wrapper that routes *fn* through the external gate.
@@ -375,29 +270,6 @@ class System:
         applied = self.gate.apply_with(None, functional.partial(disabled, function))
         return disabled_callable(function, applied)
 
-    def sync_for(self, function):
-        """Run *function* normally while emitting a synchronization marker."""
-        return utils.observer(
-            function=function,
-            on_call=self.gate.cond(
-                "internal",
-                functional.repeatedly(self.sync),
-                utils.noop,
-            ),
-        )
-
-    def sync_disabled_for(self, function):
-        """Run *function* disabled while emitting a synchronization marker."""
-        disabled_function = self.disable_for(function, unwrap_args=False)
-        return utils.observer(
-            function=disabled_function,
-            on_call=self.gate.cond(
-                "internal",
-                functional.repeatedly(self.sync),
-                utils.noop,
-            ),
-        )
-
     def disabled_method_for(self, function):
         """Disable a method while preserving descriptor binding."""
         disabled_function = self.disable_for(function, unwrap_args=False)
@@ -410,7 +282,7 @@ class System:
 
     def __init__(self, on_bind = None) -> None:
 
-        self.gate = utils.ThreadLocal(None)
+        self.gate = utils.ThreadLocal("internal")
         self.int_gateway = self.gate.if_then_else('external', fallback, fallback)
         self.ext_gateway = self.gate.if_then_else('internal', fallback, fallback)
 
@@ -432,6 +304,9 @@ class System:
         self.bind = utils.runall(self.is_bound.add, on_bind)
 
         self.async_new_patched = utils.noop
+        self.write_callback = utils.noop
+        self.write_callback_result = utils.noop
+        self.write_callback_error = utils.noop
 
         self.create_stub_object = utils.runall(self.is_bound.add, utils.create_stub_object)
         self.is_retraced = functional.or_predicate(self.is_bound, utils.is_wrapped)
@@ -468,15 +343,9 @@ class System:
             when_instanceof(utils.ExternalWrapped, with_type_of(self.proxy_ref)))
 
         self.checkpoint = utils.noop
-        self.sync = utils.noop
 
         self.descriptor_proxytype = functional.memoize_one_arg(self.descriptor_proxytype)
-
-        self.counter = ThreadSafeCounter(initial = 0)
-
-        self._thread_id = utils.ThreadLocal(None)
-        self._thread_id.set(self.counter.next())
-        self.thread_id = self._thread_id.get
+        self.thread_id = _thread.get_ident
 
     @property
     def ext_proxy(self):
@@ -534,8 +403,8 @@ class System:
             disabled,
         )
 
-    def run(self, function, *args, **kwargs):
-
+    @contextmanager
+    def enable(self):
         self.int_gateway.on_then = self.int_gateway_factory(
             gate = self.gate,
             int_proxy = self.int_proxy,
@@ -563,27 +432,41 @@ class System:
                 on_result = self.primary_hooks.on_result if self.primary_hooks else None,
                 on_error = self.primary_hooks.on_error if self.primary_hooks else None))
 
-        def observe(function):
-            return utils.observer(
-                            on_call = functional.repeatedly(self.lifecycle_hooks.on_start) if self.lifecycle_hooks.on_start else None,
-                            on_result = functional.repeatedly(self.lifecycle_hooks.on_end) if self.lifecycle_hooks.on_end else None,
-                            on_error = functional.repeatedly(self.lifecycle_hooks.on_end) if self.lifecycle_hooks.on_end else None,
-                            function = function)
-
-        self.thread_wrapper = observe
-
         gc.collect()
-
-        run_internal = self.gate.apply_with('internal', function)
 
         try:
             self.lifecycle_hooks.on_start()
-            return run_internal(*args, **kwargs)
+            with self.gate.context('internal'):
+                yield
         finally:            
             if callable(self.lifecycle_hooks.on_end):
                 self.lifecycle_hooks.on_end()
-                
-            self.thread_wrapper = None
+
+    def run(self, function, *args, **kwargs):
+        previous_count = begin_suppress_monitoring()
+        try:
+            manager = self.enable()
+            manager.__enter__()
+        finally:
+            end_suppress_monitoring(previous_count)
+        try:
+            result = function(*args, **kwargs)
+        except BaseException:
+            exc_info = sys.exc_info()
+            previous_count = begin_suppress_monitoring()
+            try:
+                suppress = manager.__exit__(*exc_info)
+            finally:
+                end_suppress_monitoring(previous_count)
+            if not suppress:
+                raise
+        else:
+            previous_count = begin_suppress_monitoring()
+            try:
+                manager.__exit__(None, None, None)
+            finally:
+                end_suppress_monitoring(previous_count)
+            return result
 
     @property
     def location(self):
@@ -731,26 +614,11 @@ class System:
         )
 
     def install(self):
-        import _thread
-        import threading
-        original_start_new_thread = _thread.start_new_thread
-        original_thread_start = threading.Thread.start
-
-        _thread.start_new_thread = self.wrap_start_new_thread(_thread.start_new_thread)
-        threading._start_new_thread = _thread.start_new_thread
-        threading.Thread.start = self.wrap_thread_start(threading.Thread.start)
-
-        uninstall_hash_patching = install_hash_patching(self)
-
         def uninstall():
             if getattr(self, "retrace_mode", None) == "replay":
                 self._replay_trace_active = False
                 self.int_gateway.on_then = fallback
                 self.ext_gateway.on_then = fallback
                 self.ext_method_gateway.on_then = fallback
-            _thread.start_new_thread = original_start_new_thread
-            threading._start_new_thread = original_start_new_thread
-            threading.Thread.start = original_thread_start
-            uninstall_hash_patching()
 
         return uninstall

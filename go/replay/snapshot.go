@@ -5,7 +5,7 @@ import "context"
 // Snapshot is a reusable checkpoint in a recorded trace. It knows its
 // per-thread positions and can produce a live *Replay via fork.
 type Snapshot struct {
-	positions map[uint64][]int // threadID -> callCounts
+	positions map[uint64][]int // threadID -> coordinates
 	source    *Replay
 }
 
@@ -13,7 +13,7 @@ func NewSnapshot(positions map[uint64][]int, source *Replay) *Snapshot {
 	return &Snapshot{positions: positions, source: source}
 }
 
-// Positions returns the per-thread call counts for this checkpoint.
+// Positions returns the per-thread coordinates for this checkpoint.
 func (s *Snapshot) Positions() map[uint64][]int { return s.positions }
 
 // Replay forks the internal checkpointed process and returns a fresh
@@ -26,8 +26,8 @@ func (s *Snapshot) Replay(ctx context.Context) (*Replay, error) {
 // SnapshotProvider manages a pool of Snapshots and finds the closest
 // one before a target call or return position.
 type SnapshotProvider interface {
-	ClosestBeforeCall(ctx context.Context, threadID uint64, callCounts FunctionCounts) (*Snapshot, error)
-	ClosestBeforeReturn(ctx context.Context, threadID uint64, callCounts FunctionCounts) (*Snapshot, error)
+	ClosestBeforeCall(ctx context.Context, threadID uint64, coordinates Coordinates) (*Snapshot, error)
+	ClosestBeforeReturn(ctx context.Context, threadID uint64, coordinates Coordinates) (*Snapshot, error)
 }
 
 // SimpleSnapshotProvider is a SnapshotProvider seeded with a single
@@ -42,10 +42,10 @@ func NewSimpleSnapshotProvider(root *Replay) *SimpleSnapshotProvider {
 	}
 }
 
-func (p *SimpleSnapshotProvider) ClosestBeforeCall(_ context.Context, _ uint64, _ FunctionCounts) (*Snapshot, error) {
+func (p *SimpleSnapshotProvider) ClosestBeforeCall(_ context.Context, _ uint64, _ Coordinates) (*Snapshot, error) {
 	return p.snapshots[0], nil
 }
 
-func (p *SimpleSnapshotProvider) ClosestBeforeReturn(_ context.Context, _ uint64, _ FunctionCounts) (*Snapshot, error) {
+func (p *SimpleSnapshotProvider) ClosestBeforeReturn(_ context.Context, _ uint64, _ Coordinates) (*Snapshot, error) {
 	return p.snapshots[0], nil
 }

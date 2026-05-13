@@ -18,21 +18,6 @@ static PyTypeObject * exposed_types[] = {
     nullptr
 };
 
-static PyObject * thread_id(PyObject * module, PyObject * unused) {
-    PyObject * id = PyDict_GetItem(PyThreadState_GetDict(), module);
-
-    return Py_NewRef(id ? id : Py_None);
-}
-
-static PyObject * set_thread_id(PyObject * module, PyObject * id) {
-
-    if (PyDict_SetItem(PyThreadState_GetDict(), module, Py_NewRef(id)) == -1) {
-        Py_DECREF(id);        
-        return nullptr;
-    }
-    Py_RETURN_NONE;
-}
-
 static PyObject * add_bind_support(PyObject * module, PyObject * cls) {
     if (!PyType_Check(cls)) {
         PyErr_SetString(PyExc_TypeError, "add_bind_support takes a type");
@@ -75,16 +60,12 @@ static PyObject * get_bind_support_original_dealloc(PyObject * module, PyObject 
 }
 
 static PyMethodDef module_methods[] = {
-    {"thread_id", (PyCFunction)thread_id, METH_NOARGS, "TODO"},
-    {"set_thread_id", (PyCFunction)set_thread_id, METH_O, "TODO"},
     {"add_bind_support", (PyCFunction)add_bind_support, METH_O, "Enable binder lifecycle support for instances of a type"},
     {"remove_bind_support", (PyCFunction)remove_bind_support, METH_O, "Disable binder lifecycle support for instances of a type"},
     {"set_bind_support", (PyCFunction)add_bind_support, METH_O, "Alias for add_bind_support"},
     {"_get_bind_support_original_dealloc", (PyCFunction)get_bind_support_original_dealloc, METH_O, "Internal helper for composing native dealloc wrappers"},
     // {"create_wrapping_proxy_type", (PyCFunction)create_wrapping_proxy_type, METH_VARARGS | METH_KEYWORDS, "TODO"},
     // {"unwrap_apply", (PyCFunction)unwrap_apply, METH_FASTCALL | METH_KEYWORDS, "Call the wrapped target with unproxied *args/**kwargs."},
-    // {"thread_id", (PyCFunction)thread_id, METH_NOARGS, "TODO"},
-    // {"set_thread_id", (PyCFunction)set_thread_id, METH_O, "TODO"},
     // {"proxy_test", (PyCFunction)proxy_test, METH_O, "TODO"},
     // {"unwrap", (PyCFunction)unwrap, METH_O, "TODO"},
     // {"yields_callable_instances", (PyCFunction)yields_callable_instances, METH_O, "TODO"},

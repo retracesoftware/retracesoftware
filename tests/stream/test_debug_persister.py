@@ -20,12 +20,7 @@ def _intern_payloads(events):
     ]
 
 
-def _disable_heartbeat(monkeypatch):
-    monkeypatch.setattr(stream, "call_periodically", lambda interval, func: None)
-
-
-def test_debug_persister_emits_low_level_events(monkeypatch):
-    _disable_heartbeat(monkeypatch)
+def test_debug_persister_emits_low_level_events():
     events = []
     persister = stream.DebugPersister(events.append)
 
@@ -48,8 +43,7 @@ def test_debug_persister_emits_low_level_events(monkeypatch):
     assert _command_events(events, "flush")
 
 
-def test_debug_persister_resume_cycle(monkeypatch):
-    _disable_heartbeat(monkeypatch)
+def test_debug_persister_resume_cycle():
     class Handler:
         def __init__(self):
             self.events = []
@@ -81,8 +75,7 @@ def test_debug_persister_resume_cycle(monkeypatch):
     assert _command_events(handler.events, "flush")
 
 
-def test_writer_wraps_plain_python_persister(monkeypatch):
-    _disable_heartbeat(monkeypatch)
+def test_writer_wraps_plain_python_persister():
     class RecordingPersister:
         def __init__(self):
             self.events = []
@@ -215,8 +208,7 @@ def test_raw_queue_passes_collection_lengths_as_python_ints():
         queue.close()
 
 
-def test_debug_persister_serializes_binding_objects_as_handle_refs(monkeypatch):
-    _disable_heartbeat(monkeypatch)
+def test_debug_persister_serializes_binding_objects_as_handle_refs():
     events = []
     persister = stream.DebugPersister(events.append)
 
@@ -231,8 +223,7 @@ def test_debug_persister_serializes_binding_objects_as_handle_refs(monkeypatch):
     assert ("handle_ref", 0) in events
 
 
-def test_debug_persister_emits_intern_then_ref(monkeypatch):
-    _disable_heartbeat(monkeypatch)
+def test_debug_persister_emits_intern_then_ref():
     events = []
     persister = stream.DebugPersister(events.append)
 
@@ -247,8 +238,7 @@ def test_debug_persister_emits_intern_then_ref(monkeypatch):
     assert ("bound_ref", 0) in events
 
 
-def test_async_new_patched_uses_bind_lifecycle_tracking(monkeypatch):
-    _disable_heartbeat(monkeypatch)
+def test_async_new_patched_uses_bind_lifecycle_tracking():
     events = []
     persister = stream.DebugPersister(events.append)
 
@@ -273,8 +263,7 @@ def test_async_new_patched_uses_bind_lifecycle_tracking(monkeypatch):
     assert any(event[0] == "object" and type(event[1]).__name__ == "Patched" for event in events)
 
 
-def test_async_new_patched_handles_nonweakrefable_instance_tokens(monkeypatch):
-    _disable_heartbeat(monkeypatch)
+def test_async_new_patched_handles_nonweakrefable_instance_tokens():
     events = []
     persister = stream.DebugPersister(events.append)
 
@@ -299,8 +288,7 @@ def test_async_new_patched_handles_nonweakrefable_instance_tokens(monkeypatch):
     assert any(event[0] == "object" and type(event[1]).__name__ == "Patched" for event in events)
 
 
-def test_debug_persister_emits_new_ext_wrapped_for_external_result(monkeypatch):
-    _disable_heartbeat(monkeypatch)
+def test_debug_persister_emits_new_ext_wrapped_for_external_result():
     import retracesoftware.utils as utils
 
     events = []

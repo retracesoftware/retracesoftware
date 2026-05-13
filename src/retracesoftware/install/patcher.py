@@ -3,8 +3,6 @@ import inspect
 import types
 from retracesoftware.proxy.typeutils import modify
 from retracesoftware.install.replace import restore_module_refs, update, update_module_refs
-import threading
-import sys
 import retracesoftware.utils as utils
 import retracesoftware.functional as functional
 import importlib
@@ -12,61 +10,6 @@ from retracesoftware.install.installation import Installation
 from retracesoftware.proxy.patchtype import patch_type
 
 _MISSING_ATTR = object()
-
-
-# ── Hash patching ──────────────────────────────────────────────────
-
-def install_hash_patching(system):
-    """Patch ``__hash__`` on ``object`` and ``FunctionType`` for deterministic ordering.
-
-    Uses ``system.create_dispatch`` to build a hash function that
-    dispatches based on the system's primary gate state:
-
-    - **Disabled** (no context active): returns ``None`` → identity hash.
-    - **External / internal** (record/replay active): returns the next
-      value from a deterministic ``utils.counter()`` → sequential hash.
-
-    The gate piggybacks on the system's existing ``_external`` and
-    ``_internal`` gates, so no manual ``set``/``disable`` is needed —
-    it activates automatically when ``record_context`` or
-    ``replay_context`` is entered.
-
-    Call once during bootstrap, before any modules are loaded.
-
-    Returns
-    -------
-    callable
-        An uninstall function.  Since there is no C-level
-        ``unpatch_hash``, this re-patches with ``constantly(None)``
-        so all hashes fall back to identity.  The gate-based hashfunc
-        already does this when no context is active, so the uninstall
-        is mainly for symmetry and to release the counter references.
-    """
-    hashfunc = system.create_dispatch(
-        disabled = functional.constantly(None),
-        external = utils.counter(),
-        internal = utils.counter())
-    for cls in (object, types.FunctionType):
-        try:
-            utils.patch_hashes(hashfunc, cls)
-        except TypeError:
-            # Hash patching is process-global and currently not truly
-            # uninstallable. Repeated installs in one process should
-            # therefore be harmless rather than failing.
-            pass
-
-    def uninstall():
-        # The hash types were already patched during install, and the C API
-        # rejects re-patching (types no longer have identity hash).  The
-        # installed hashfunc already falls back to identity when the gate is
-        # disabled, so this is a no-op in practice.
-        try:
-            identity = functional.constantly(None)
-            utils.patch_hashes(identity, object, types.FunctionType)
-        except TypeError:
-            pass
-
-    return uninstall
 
 
 # ── Lightweight patcher for System ─────────────────────────────────
@@ -86,15 +29,10 @@ def install_hash_patching(system):
 #   bind           pre-register objects (enums expanded to members)
 #   disable        system.disable_for, replace in namespace
 #   wrap           resolve dotted path, replace in namespace
-#   replay_materialize
-#                  register disabled-context real-object needs only; normal
-#                  replay must not live-call these targets
-#   sync           functions → emit SYNC, then call normally
 #   patch_class    apply {attr: dotted_path} transforms to a class
 #   type_attributes  recurse — apply directives to a type's attributes
 #   stub_for_replay
 #                  replay-only native-type stubs before normal proxying
-#   patch_hash     handled by install_hash_patching (above)
 
 
 class ReplayStubCallError(RuntimeError):
@@ -224,23 +162,6 @@ def _is_function(obj):
                              types.ClassMethodDescriptorType))
             or callable(obj) and not isinstance(obj, type))
 
-def _sync_for_unless(system, function, predicate):
-    emit_sync = system.gate.cond(
-        "internal",
-        functional.repeatedly(system.sync),
-        utils.noop,
-    )
-
-    def on_call(*args, **kwargs):
-        try:
-            if predicate(*args, **kwargs):
-                return None
-        except Exception:
-            pass
-        return emit_sync()
-
-    return utils.observer(function=function, on_call=on_call)
-
 def param_predicate(signature, param_name, predicate, *, fallback_index=None):
     if signature is None:
         if fallback_index is None:
@@ -301,7 +222,6 @@ def patch(
 
     system = installation.system
     install_session = installation.install_session
-    replay_materialize = getattr(system, "replay_materialize", None)
     if update_refs is None:
         update_refs = installation.update_refs
 
@@ -312,7 +232,6 @@ def patch(
     type_attr_undos = []  # (cls, attr, old_value)
     originals = {}      # name → first (pre-patch) value
     added_immutables = []  # types added to system.immutable_types
-    added_replay_materialize = []  # callables added to system.replay_materialize
     # Resolve dotted helper imports before mutating the module being patched.
     # This avoids importing support code (for example edgecase wrappers for
     # ``_io``) after core types in that same module have already been live-
@@ -426,41 +345,6 @@ def patch(
                 new = wrapper_factory(value)
                 _apply(name, value, new)
 
-        elif directive == 'replay_materialize':
-            if replay_materialize is None:
-                continue
-            for name in config:
-                if name not in namespace:
-                    continue
-                # Track the post-patch callable identity for the narrow
-                # disabled-context materialization registry. When a callable is
-                # both proxied and in replay_materialize (for example
-                # ``_thread.allocate_lock``), the live module slot points at
-                # the patched wrapper, not the original builtin, so record the
-                # current callable object.
-                value = namespace[name]
-                if not callable(value):
-                    value = originals.get(name, value)
-                if callable(value):
-                    replay_materialize.add(value)
-                    added_replay_materialize.append(value)
-
-        elif directive == 'sync':
-            for name in config:
-                if name not in namespace:
-                    continue
-                value = namespace[name]
-                if callable(value):
-                    _apply(name, value, system.sync_for(value))
-
-        elif directive == 'sync_disable':
-            for name in config:
-                if name not in namespace:
-                    continue
-                value = namespace[name]
-                if callable(value):
-                    _apply(name, value, system.sync_disabled_for(value))
-
         elif directive == 'patch_class':
             for name, transforms in config.items():
                 if name not in namespace:
@@ -503,40 +387,6 @@ def patch(
                                     if not callable(value) or isinstance(value, type):
                                         continue
                                     set_type_attr(attr, system.disabled_method_for(value))
-                                continue
-
-                            if sub_directive == 'sync':
-                                for attr in sub_names:
-                                    if not hasattr(cls, attr):
-                                        continue
-                                    value = getattr(cls, attr)
-                                    if not callable(value) or isinstance(value, type):
-                                        continue
-                                    set_type_attr(attr, system.sync_for(value))
-                                continue
-
-                            if sub_directive == 'sync_unless':
-                                for attr, dotted_path in sub_names.items():
-                                    if not hasattr(cls, attr):
-                                        continue
-                                    value = getattr(cls, attr)
-                                    if not callable(value) or isinstance(value, type):
-                                        continue
-                                    predicate = resolve(dotted_path)
-                                    set_type_attr(
-                                        attr,
-                                        _sync_for_unless(system, value, predicate),
-                                    )
-                                continue
-
-                            if sub_directive == 'sync_disable':
-                                for attr in sub_names:
-                                    if not hasattr(cls, attr):
-                                        continue
-                                    value = getattr(cls, attr)
-                                    if not callable(value) or isinstance(value, type):
-                                        continue
-                                    set_type_attr(attr, system.sync_disabled_for(value))
                                 continue
 
                             if sub_directive == 'wrap':
@@ -604,9 +454,6 @@ def patch(
                         ns_undos.append((name, patched, wrapped, "module", module_ref_changes))
                         originals.setdefault(name, patched)
 
-        elif directive == 'patch_hash':
-            pass  # Deferred — requires deterministic hash counter
-
         elif directive in ('default', 'ignore', 'stub_for_replay'):
             pass  # Informational directives, no action needed
 
@@ -623,9 +470,6 @@ def patch(
         # Remove types we added to the immutable set.
         for cls in added_immutables:
             system.immutable_types.discard(cls)
-        if replay_materialize is not None:
-            for fn in added_replay_materialize:
-                replay_materialize.discard(fn)
         for cls, attr, old_value in reversed(type_attr_undos):
             with modify(cls):
                 if old_value is _MISSING_ATTR:
@@ -656,11 +500,6 @@ def patch_class(transforms, cls):
 
     return cls
 
-class PerThread(threading.local):
-    def __init__(self):
-        self.internal = utils.counter()
-        self.external = utils.counter()
-
 def create_patcher(system):
 
     patcher = {}
@@ -690,47 +529,6 @@ def create_patcher(system):
         system.immutable_types.add(obj)
         return obj
 
-    per_thread = PerThread()
-        
-    # Hash patching for deterministic record/replay
-    # 
-    # Why we patch __hash__:
-    # Python's default object hashes are based on memory addresses, which vary
-    # between runs. Sets iterate in hash order, so iteration order is 
-    # non-deterministic. For record/replay to work correctly, we need identical
-    # set iteration order during both phases, so we replace __hash__ with a
-    # deterministic counter-based hash that returns stable values.
-    # (Note: dicts maintain insertion order since Python 3.7, so they're stable.)
-    #
-    # The hashfunc dispatches based on thread state:
-    # - disabled: returns None (unhashable, triggers fallback)
-    # - internal: counter for when thread is inside the sandbox (proxied code)
-    # - external: counter for when thread is outside the sandbox (user code)
-    #
-    # IMPORTANT - Python 3.12 compatibility:
-    # Python 3.12 changed typing._tp_cache to use a global _caches dict with
-    # functions as keys (see bpo GH-98253). If typing is imported BEFORE we
-    # patch FunctionType.__hash__, those functions won't be in our internal
-    # hash cache, and lookups will fail. utils.patch_hash handles this by
-    # pre-populating the cache with all existing instances of the patched type.
-    #
-    hashfunc = system.thread_state.dispatch(
-        functional.constantly(None),
-        internal = functional.repeatedly(functional.partial(getattr, per_thread, 'internal')),
-        external = functional.repeatedly(functional.partial(getattr, per_thread, 'external')))
-
-    def patch_hash(obj):
-        """Patch __hash__ on a type to use deterministic counter-based hashing.
-        
-        This ensures stable set iteration order for instances of this type,
-        which is required for record/replay consistency.
-        """
-        if not isinstance(obj, type):
-            raise Exception("TODO")
-
-        utils.patch_hash(cls = obj, hashfunc = hashfunc)
-        return obj
-    
     patcher.update({
         'type_attributes': selector(type_attributes),
         'patch_class': selector(patch_class),
@@ -741,7 +539,6 @@ def create_patcher(system):
         'bind': simple_patcher(bind),
         'wrap': lambda config: {name: resolve(action) for name,action in config.items() },
         'immutable': simple_patcher(add_immutable_type),
-        'patch_hash': simple_patcher(patch_hash),
         'stub_for_replay': foreach(functional.identity),
     })
     return patcher

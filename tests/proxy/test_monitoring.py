@@ -27,7 +27,7 @@ class FakeStackFactory:
 
 class TestMonitorMessage:
     def test_parse_monitor_tag(self):
-        tape = ['MONITOR', 'S:foo', 'SYNC']
+        tape = ['MONITOR', 'S:foo']
         msg = next_message(
             iter(tape).__next__,
             stacktrace_factory=lambda *_: None,
@@ -51,7 +51,7 @@ class TestMonitorMessage:
 
     def test_monitor_checkpoint_wrong_message_type(self):
         from retracesoftware.install import ReplayDivergence
-        tape = ['SYNC']
+        tape = ['RESULT', 42]
         ms = ReplayReader(iter(tape).__next__, bind=lambda obj: None, monitor_enabled=True)
         with pytest.raises(ReplayDivergence, match='expected MONITOR'):
             ms.monitor_checkpoint('S:foo')
@@ -60,18 +60,6 @@ class TestMonitorMessage:
 # ── Skip behavior tests ──────────────────────────────────────
 
 class TestMonitorSkip:
-    def test_sync_skips_monitor_when_disabled(self):
-        tape = ['MONITOR', 'S:foo', 'MONITOR', 'R:foo', 'SYNC']
-        ms = ReplayReader(iter(tape).__next__, bind=lambda obj: None, monitor_enabled=False)
-        ms.sync()
-
-    def test_sync_raises_on_monitor_when_enabled(self):
-        from retracesoftware.install import ReplayDivergence
-        tape = ['MONITOR', 'S:foo', 'SYNC']
-        ms = ReplayReader(iter(tape).__next__, bind=lambda obj: None, monitor_enabled=True)
-        with pytest.raises(ReplayDivergence, match='unexpected MONITOR'):
-            ms.sync()
-
     def test_result_skips_monitor_when_disabled(self):
         tape = ['MONITOR', 'S:foo', 'RESULT', 42]
         ms = ReplayReader(iter(tape).__next__, bind=lambda obj: None, monitor_enabled=False)
@@ -112,30 +100,22 @@ class TestMonitorSkip:
 class TestMemoryWriterReader:
     def test_monitor_event_roundtrip(self):
         w = MemoryWriter()
-        w.sync()
         w.monitor_event('S:foo')
         w.monitor_event('R:foo')
-        w.sync()
         w.write_result(42)
 
         r = MemoryReader(w.tape, monitor_enabled=False)
-        r.sync()
-        r.sync()
         assert r.read_result() == 42
 
     def test_monitor_event_roundtrip_with_verify(self):
         w = MemoryWriter()
-        w.sync()
         w.monitor_event('S:foo')
         w.monitor_event('R:foo')
-        w.sync()
         w.write_result(42)
 
         r = MemoryReader(w.tape, monitor_enabled=True)
-        r.sync()
         r.monitor_checkpoint('S:foo')
         r.monitor_checkpoint('R:foo')
-        r.sync()
         assert r.read_result() == 42
 
 

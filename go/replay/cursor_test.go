@@ -17,10 +17,10 @@ func TestCursorStepIntoFollowsReplayInsteadOfSynthesizingCursor(t *testing.T) {
 
 	serverConn, clientConn := net.Pipe()
 	start := Location{
-		ThreadID:       1,
-		FunctionCounts: FunctionCounts{3, 5},
-		Lineno:         13,
-		MessageIndex:   100,
+		ThreadID:     1,
+		Coordinates:  Coordinates{3, 5},
+		Lineno:       13,
+		MessageIndex: 100,
 	}
 	rp := &Replay{
 		client:   NewControlClient(clientConn),
@@ -63,9 +63,9 @@ func TestCursorStepIntoFollowsReplayInsteadOfSynthesizingCursor(t *testing.T) {
 				"reason":        "step",
 				"message_index": 101,
 				"cursor": map[string]any{
-					"thread_id":       1,
-					"function_counts": []int{3, 5},
-					"lineno":          17,
+					"thread_id":   1,
+					"coordinates": []int{3, 5},
+					"lineno":      17,
 				},
 			},
 		}); err != nil {
@@ -95,8 +95,8 @@ func TestCursorStepIntoFollowsReplayInsteadOfSynthesizingCursor(t *testing.T) {
 	if got.MessageIndex != 101 {
 		t.Fatalf("message index = %d, want 101", got.MessageIndex)
 	}
-	if !slices.Equal(got.FunctionCounts, FunctionCounts{3, 5}) {
-		t.Fatalf("function counts = %v, want [3 5]", got.FunctionCounts)
+	if !slices.Equal(got.Coordinates, Coordinates{3, 5}) {
+		t.Fatalf("function counts = %v, want [3 5]", got.Coordinates)
 	}
 }
 
@@ -150,8 +150,8 @@ func TestRunToCursorReturnsErrorWhenReplayOvershoots(t *testing.T) {
 	}()
 
 	_, err := rp.RunToCursor(ctx, RawCursor{
-		ThreadID:       1,
-		FunctionCounts: FunctionCounts{999},
+		ThreadID:    1,
+		Coordinates: Coordinates{999, 0},
 	})
 	if err == nil {
 		t.Fatal("expected overshoot error, got nil")

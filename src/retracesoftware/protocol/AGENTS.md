@@ -51,8 +51,8 @@ async materialization.
 
 - `next_message()` tag parsing and event ordering.
 - `ASYNC_NEW_PATCHED` creation/materialization ordering.
-- `MonitorMessage` and `CheckpointMessage` handling during `sync()`,
-  `read_result()`, and `checkpoint()`.
+- `MonitorMessage` and `CheckpointMessage` handling during `read_result()`
+  and `checkpoint()`.
 - Callback/exception round-tripping across protocol boundaries.
 - Differences between in-memory replay and file-backed replay.
 - Any change that changes whether a semantic event is skipped, consumed, or

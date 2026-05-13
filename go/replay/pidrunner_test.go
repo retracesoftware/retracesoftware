@@ -96,9 +96,9 @@ func TestBreakpointSpecArg(t *testing.T) {
 func TestParseLocationFromJSON(t *testing.T) {
 	line, _ := json.Marshal(map[string]any{
 		"cursor": map[string]any{
-			"thread_id":       1,
-			"function_counts": []int{1, 2, 3},
-			"f_lasti":         42,
+			"thread_id":   1,
+			"coordinates": []int{1, 2, 3},
+			"f_lasti":     42,
 		},
 	})
 	loc, err := parseLocationFromJSON(line)
@@ -108,8 +108,8 @@ func TestParseLocationFromJSON(t *testing.T) {
 	if loc.ThreadID != 1 {
 		t.Fatalf("thread_id = %d, want 1", loc.ThreadID)
 	}
-	if len(loc.FunctionCounts) != 3 || loc.FunctionCounts[0] != 1 || loc.FunctionCounts[2] != 3 {
-		t.Fatalf("unexpected function_counts: %#v", loc.FunctionCounts)
+	if len(loc.Coordinates) != 3 || loc.Coordinates[0] != 1 || loc.Coordinates[2] != 3 {
+		t.Fatalf("unexpected coordinates: %#v", loc.Coordinates)
 	}
 	if loc.FLasti == nil || *loc.FLasti != 42 {
 		t.Fatalf("unexpected f_lasti: %v", loc.FLasti)
@@ -119,8 +119,8 @@ func TestParseLocationFromJSON(t *testing.T) {
 func TestParseLocationFromJSON_NoFLasti(t *testing.T) {
 	line, _ := json.Marshal(map[string]any{
 		"cursor": map[string]any{
-			"thread_id":       5,
-			"function_counts": []int{10, 20},
+			"thread_id":   5,
+			"coordinates": []int{10, 20},
 		},
 	})
 	loc, err := parseLocationFromJSON(line)
@@ -138,10 +138,10 @@ func TestParseLocationFromJSON_NoFLasti(t *testing.T) {
 func TestLocationJSONRoundTrip(t *testing.T) {
 	fLasti := 30
 	orig := Location{
-		ThreadID:       1,
-		FunctionCounts: []int{10, 20, 30},
-		FLasti:         &fLasti,
-		MessageIndex:   42,
+		ThreadID:     1,
+		Coordinates:  []int{10, 20, 30},
+		FLasti:       &fLasti,
+		MessageIndex: 42,
 	}
 	data, err := json.Marshal(orig)
 	if err != nil {
@@ -158,8 +158,8 @@ func TestLocationJSONRoundTrip(t *testing.T) {
 	if loaded.ThreadID != 1 {
 		t.Fatalf("thread_id = %d, want 1", loaded.ThreadID)
 	}
-	if len(loaded.FunctionCounts) != 3 || loaded.FunctionCounts[1] != 20 {
-		t.Fatalf("function_counts mismatch: %v", loaded.FunctionCounts)
+	if len(loaded.Coordinates) != 3 || loaded.Coordinates[1] != 20 {
+		t.Fatalf("coordinates mismatch: %v", loaded.Coordinates)
 	}
 	if loaded.FLasti == nil || *loaded.FLasti != 30 {
 		t.Fatalf("f_lasti mismatch: %v", loaded.FLasti)
@@ -168,9 +168,9 @@ func TestLocationJSONRoundTrip(t *testing.T) {
 
 func TestLocationJSONRoundTrip_NilFLasti(t *testing.T) {
 	orig := Location{
-		ThreadID:       2,
-		FunctionCounts: []int{5, 10},
-		MessageIndex:   99,
+		ThreadID:     2,
+		Coordinates:  []int{5, 10},
+		MessageIndex: 99,
 	}
 	data, err := json.Marshal(orig)
 	if err != nil {
@@ -189,10 +189,10 @@ func TestLocationJSONRoundTrip_NilFLasti(t *testing.T) {
 func TestCursorJSONRoundTrip(t *testing.T) {
 	fLasti := 30
 	loc := Location{
-		ThreadID:       1,
-		FunctionCounts: []int{10, 20, 30},
-		FLasti:         &fLasti,
-		MessageIndex:   42,
+		ThreadID:     1,
+		Coordinates:  []int{10, 20, 30},
+		FLasti:       &fLasti,
+		MessageIndex: 42,
 	}
 	orig := NewCursor(loc, nil, nil)
 	data, err := json.Marshal(orig)
@@ -211,8 +211,8 @@ func TestCursorJSONRoundTrip(t *testing.T) {
 	if got.ThreadID != 1 {
 		t.Fatalf("thread_id = %d, want 1", got.ThreadID)
 	}
-	if len(got.FunctionCounts) != 3 || got.FunctionCounts[1] != 20 {
-		t.Fatalf("function_counts mismatch: %v", got.FunctionCounts)
+	if len(got.Coordinates) != 3 || got.Coordinates[1] != 20 {
+		t.Fatalf("coordinates mismatch: %v", got.Coordinates)
 	}
 	if got.FLasti == nil || *got.FLasti != 30 {
 		t.Fatalf("f_lasti mismatch: %v", got.FLasti)
@@ -236,9 +236,9 @@ func TestSnapshotProviderAt(t *testing.T) {
 				"reason":        "cursor",
 				"message_index": 42,
 				"cursor": map[string]any{
-					"thread_id":       1,
-					"function_counts": []int{1, 2},
-					"f_lasti":         10,
+					"thread_id":   1,
+					"coordinates": []int{1, 2},
+					"f_lasti":     10,
 				},
 			},
 		})
@@ -256,13 +256,13 @@ func TestSnapshotProviderAt(t *testing.T) {
 	provider := NewSimpleSnapshotProvider(root)
 	fLasti := 10
 	loc := Location{
-		ThreadID:       1,
-		FunctionCounts: []int{1, 2},
-		FLasti:         &fLasti,
-		MessageIndex:   42,
+		ThreadID:     1,
+		Coordinates:  []int{1, 2},
+		FLasti:       &fLasti,
+		MessageIndex: 42,
 	}
 
-	snap, err := provider.ClosestBeforeCall(ctx, loc.ThreadID, loc.FunctionCounts)
+	snap, err := provider.ClosestBeforeCall(ctx, loc.ThreadID, loc.Coordinates)
 	if err != nil {
 		t.Fatalf("ClosestBeforeCall error: %v", err)
 	}
@@ -277,7 +277,7 @@ func TestSnapshotProviderAt(t *testing.T) {
 }
 
 func TestCursorWithoutProviderReturnsNotImplemented(t *testing.T) {
-	loc := Location{ThreadID: 1, FunctionCounts: []int{1, 2}, MessageIndex: 10}
+	loc := Location{ThreadID: 1, Coordinates: []int{1, 2}, MessageIndex: 10}
 	cur := NewCursor(loc, nil, nil)
 	_, err := cur.Next(context.Background())
 	if err == nil {
@@ -345,9 +345,9 @@ func TestDebuggerAddBreakpointPopulatesHitList(t *testing.T) {
 	if hits.At(0).BreakpointID != id {
 		t.Fatalf("hit breakpoint ID = %d, want %d", hits.At(0).BreakpointID, id)
 	}
-	fc := hits.At(0).Location.FunctionCounts
+	fc := hits.At(0).Location.Coordinates
 	if len(fc) != 2 || fc[0] != 10 || fc[1] != 20 {
-		t.Fatalf("unexpected function_counts: %v", fc)
+		t.Fatalf("unexpected coordinates: %v", fc)
 	}
 	if hits.At(0).Location.ThreadID != 1 {
 		t.Fatalf("unexpected thread_id: %d", hits.At(0).Location.ThreadID)
@@ -391,9 +391,9 @@ func mockBreakpointScanServer(conn net.Conn) {
 		"kind": "event", "event": "breakpoint_hit",
 		"payload": map[string]any{
 			"cursor": map[string]any{
-				"thread_id":       1,
-				"function_counts": []int{10, 20},
-				"f_lasti":         100,
+				"thread_id":   1,
+				"coordinates": []int{10, 20},
+				"f_lasti":     100,
 			},
 			"message_index": 5,
 		},
@@ -403,9 +403,9 @@ func mockBreakpointScanServer(conn net.Conn) {
 		"kind": "event", "event": "breakpoint_hit",
 		"payload": map[string]any{
 			"cursor": map[string]any{
-				"thread_id":       1,
-				"function_counts": []int{30, 40},
-				"f_lasti":         200,
+				"thread_id":   1,
+				"coordinates": []int{30, 40},
+				"f_lasti":     200,
 			},
 			"message_index": 15,
 		},

@@ -1,131 +1,91 @@
 # Thread-Aware Record/Replay
 
-Retrace records a single ordered stream for each process. Multi-threaded
-programs still produce one trace stream, so Retrace writes thread-switch
-control markers whenever recorded boundary traffic moves to another logical
-thread. During replay, the reader demultiplexes that stream and each replay
-thread blocks until the next recorded message for its logical thread is
-available.
+Retrace records one interleaved stream of events from all application threads.
+Each write is tagged with the current stable retrace-python thread id from
+`_thread.get_ident()`. During replay, a single peekable stream is consumed in
+recorded order. Thread scheduling is driven by cursor checkpoints rather than
+per-thread replay queues.
 
-That recorded order is the synchronization mechanism. Replay should not rely on
-live lock timing, scheduler timing, socket timing, or OS thread ids to decide
-what happens next.
+Replay should not rely on live lock timing, scheduler timing, socket timing, or
+OS thread ids to decide what happens next. The recorded stream order is the
+replay synchronization mechanism.
 
-## Two Thread Id Layers
+## Thread Identity
 
-There are two related thread-id mechanisms:
+This branch assumes retrace-python provides deterministic `_thread.get_ident()`
+values. Retrace does not assign hierarchical Python-side thread ids anymore.
+The same API is used everywhere thread identity is needed:
 
-- The top-level record path in `src/retracesoftware/__main__.py` creates a
-  `src/retracesoftware/threadid/ThreadId` and passes its getter to
-  `src/retracesoftware/tape.py` / the stream writer. This preserves low-level
-  stream thread context.
-- The proxy `System` in `src/retracesoftware/proxy/system.py` owns the logical
-  ids used for replay message routing. The main replay context gets an initial
-  integer id. Wrapped thread-start functions assign deterministic child ids and
-  call `sync()` when the child starts.
+- record writer routing
+- replay scheduler routing
+- control-runtime coordinate snapshots
+- debugger/control-plane thread reporting
 
-The reader stack still understands both legacy `stream.ThreadSwitch` objects
-and current protocol-level `"THREAD_SWITCH"` markers. New debugging should focus
-on the protocol markers emitted by the proxy recorder.
+`threading.Thread.start` runs under the disabled gate via module config. That
+keeps CPython's bootstrap bookkeeping out of the boundary before the native
+thread is created, while still leaving `_thread.start_new_thread` and
+`threading._start_new_thread` unpatched.
 
 ## Recording Path
 
-At record time:
+`stream.writer` is created with `thread=_thread.get_ident`. The native writer
+emits a `THREAD_SWITCH` marker when the writing thread changes, followed by the
+stable thread id. Record-side `retrace` eval-loop callbacks can also emit
+`THREAD_START, <thread-id>`, `THREAD_YIELD, <cursor-delta>`, and
+`THREAD_RESUME, <thread-id>` scheduling telemetry.
 
-1. `src/retracesoftware/__main__.py` creates the tape writer with a thread
-   getter.
-2. `src/retracesoftware/install/` patches configured runtime and library
-   surfaces.
-3. `src/retracesoftware/proxy/system.py` wraps thread-start APIs so new Python
-   threads inherit deterministic logical ids.
-4. `src/retracesoftware/proxy/io.py` creates the recorder writer. Its
-   `write_thread_switch` helper emits a `"THREAD_SWITCH"` marker before the
-   next message when the current logical thread changes.
-5. Boundary calls write results, errors, bindings, and sync/checkpoint messages
-   to the single process stream.
-
-The important invariant is that every recorded external result is associated
-with the logical thread that observed it during record.
+Those routing messages are transport metadata. They are not user-visible
+application events.
 
 ## Replay Path
 
-At replay time:
+Replay reads the same interleaved stream globally. `THREAD_START` names a newly
+started thread before it has a Python cursor. If replay sees a future start
+before the child start callback runs, it records that id as pending so the
+child can claim it later without parking inside Python thread bootstrap.
+`THREAD_YIELD` updates the current scheduled thread's cursor from its delta and
+arms `retrace.call_at(thread_id, cursor, callback)` for yielded cursors.
+`THREAD_RESUME` names the scheduled thread id; replay only performs a native
+handoff when that target has a yielded cursor.
 
-1. A `.retrace` recording is extracted into per-process PidFiles such as
-   `recording.d/12345.bin`.
-2. Replaying a PidFile launches Python through `python -m retracesoftware
-   --recording <PidFile>`.
-3. `src/retracesoftware/proxy/io.py` builds a `_ThreadDemuxSource` and an
-   `_IoMessageSource`.
-4. Each replay thread asks the demux for messages matching
-   `system.thread_id()`.
-5. If the next message in the trace belongs to another thread, it is buffered
-   for that thread. The current thread waits until its own next message is
-   available.
+The checkpoint callback consumes the scheduler event and then arms the next
+scheduler cursor. Protocol messages are consumed directly from the global
+stream once the recorded thread reaches the matching cursor.
 
-This is why replay can make live Python threads appear to follow the same
-interleaving as the recording even though the OS scheduler is free to choose a
-different order.
+Replay uses `retrace.ThreadHandoff` as the native parking primitive at yielded
+cursors: `handoff.to(thread_id)` transfers execution to the recorded target
+thread and parks the current one until the next transfer.
 
-## Stream Reader Stack
+## Synchronization
 
-The file reader pipeline in `src/retracesoftware/stream/reader.py` handles
-low-level tape concerns before proxy replay consumes messages:
-
-- `HeartbeatReader` strips heartbeats.
-- `WithThreadReader` converts thread-switch controls into `(thread_id, item)`
-  tuples. It supports both legacy `ThreadSwitch` controls and newer
-  `"THREAD_SWITCH"` markers.
-- `PeekableReader` buffers future tuples.
-- `DemuxReader` routes tuples by thread id.
-- `ResolvingReader` resolves recorded binding objects.
-- `ObjectReader` wires those layers together.
-
-The proxy replay path then layers binding state, IO message handling, and
-boundary-result validation on top of that stream.
-
-## Synchronization Guarantees
-
-Thread replay depends on three contracts:
-
-- Child threads must receive the same logical ids on record and replay.
-- Thread-switch markers must be written before messages for a different logical
-  thread.
-- The demux must deliver each recorded boundary result to the replay thread that
-  originally observed it.
-
-When those contracts hold, normal synchronization primitives can be replayed as
-ordinary recorded boundary results. For example, if thread A acquired a lock
-before thread B during record, B cannot observe its recorded acquire result
-until the demux has delivered A's earlier messages.
+The recorded stream order is the replay synchronization mechanism. If one
+thread observed a boundary result before another during record, replay
+preserves that order by only allowing threads to continue at the cursor points
+recorded by the scheduler.
 
 ## Common Failure Fingerprints
 
 Thread-routing bugs usually show up as one of these symptoms:
 
-- replay timeout with multiple threads blocked in `proxy/io.py`
+- replay scheduler timeout with multiple threads parked in `proxy/io.py`
 - `Unexpected message: ... was expecting ...`
 - read-past-end errors such as `Could not read: 1 bytes from tracefile`
 - a replay thread consuming a result that belongs to another thread
 - a background finalizer or shutdown callback trying to read after the trace is
   exhausted
 
-When investigating these, first identify the record/replay point where the
-message stream and the current logical thread diverge. Avoid fixing the library
-or framework that exposed the bug before confirming the demux/message-order
-contract being violated.
+When investigating these, first identify where the message stream, scheduler
+cursor, and current logical thread diverge. Avoid fixing the library or
+framework that exposed the bug before confirming the message-order contract
+being violated.
 
 ## Related Files
 
 | File | Role |
-|---|---|
-| `src/retracesoftware/__main__.py` | Creates the top-level `ThreadId`, opens tape readers/writers, and starts record/replay. |
-| `src/retracesoftware/threadid/__init__.py` | Low-level thread-id helper used by the top-level record path. |
-| `src/retracesoftware/proxy/system.py` | Owns proxy logical thread ids and wraps thread-start APIs. |
-| `src/retracesoftware/proxy/io.py` | Emits thread-switch markers during record and demuxes replay messages by logical thread. |
-| `src/retracesoftware/stream/reader.py` | Builds the file-reader stack that understands thread-switch controls and bindings. |
-| `src/retracesoftware/stream/__init__.py` | Exposes stream control types and reader/writer plumbing. |
-| `src/retracesoftware/protocol/messages.py` | Defines protocol message types consumed by record/replay. |
-| `src/retracesoftware/testing/memorytape.py` | In-memory tape helpers used by tests. |
-| `cpp/stream/objectwriter.cpp` | Native stream writer implementation. |
-| `cpp/stream/wireformat.h` | Low-level wire format tags and controls. |
+| --- | --- |
+| `src/retracesoftware/__main__.py` | Creates the record writer with `_thread.get_ident`. |
+| `src/retracesoftware/proxy/system.py` | Enables retrace on child threads without assigning custom ids. |
+| `src/retracesoftware/proxy/io.py` | Writes protocol-level thread routing and replays `retrace` scheduler checkpoints. |
+| `src/retracesoftware/proxy/messagestream.py` | Decodes, binds, buffers, and schedules replay messages. |
+| `src/retracesoftware/stream/reader.py` | Lower-level reader helpers for thread-tagged streams. |
+| `retrace.coordinates()` | Runtime cursor snapshots use retrace-python coordinates and `_thread.get_ident()`. |

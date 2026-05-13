@@ -457,8 +457,6 @@ During recording, `System.record_context()` and related proxy logic
 expect a writer that can express a very specific sequence of events:
 
 - `bind`
-- `write_call`
-- `sync`
 - `write_result`
 - `write_passthrough_result`
 - `write_error`
@@ -471,7 +469,6 @@ model:
 - sandbox objects crossing into retraced code
 - external results crossing back out
 - ext→int callbacks
-- thread synchronization points
 - divergence-check checkpoints
 - stack trace annotations
 
@@ -481,7 +478,6 @@ The stream writer exists to faithfully encode that model.
 
 On replay, `System.replay_context()` expects a reader that can:
 
-- resynchronize the current thread with `sync()`
 - return the next recorded result with `read_result()`
 - surface recorded errors as replay exceptions
 - reintroduce binds at the correct time
@@ -516,23 +512,23 @@ Stream implements those rules with:
 So object identity is not purely a stream concern and not purely a proxy
 concern. The meaning is shared across both layers.
 
-### Threading semantics are shared
+### Threading Semantics Are Shared
 
-The stream layer’s thread switch and sync machinery is also tightly tied
-to proxy behavior.
+The stream layer’s thread switch machinery is also tightly tied to proxy
+behavior.
 
 Proxy needs:
 
 - a way to interleave many threads into one recording
 - a way for replay to recover “the next message for this thread”
-- a way to make ext calls return to the correct logical thread
+- a way to make ext calls return to the correct stable `_thread.get_ident()`
+  thread
 
 Stream implements that with:
 
 - writer-side thread stamps
 - persister-side thread-handle switching
 - replay-side thread-switch message reconstruction
-- `sync()` markers in the protocol contract
 
 So this is another area where the coupling is semantic, not just
 incidental.
@@ -777,7 +773,7 @@ When changing `proxy`, ask:
 
 - does this introduce a new kind of record/replay event?
 - does this change bind or identity timing?
-- does this affect sync, thread switching, or callback ordering?
+- does this affect scheduling, thread switching, or callback ordering?
 - does this change checkpoint or stacktrace semantics?
 
 If the answer is yes, stream probably needs to change too.
@@ -810,8 +806,6 @@ the current stream implementation.
 | Proxy writer hook | Stream entrypoint | Main native path | Notes |
 |---|---|---|---|
 | `bind(obj)` | `stream.writer.bind()` | `ObjectWriter.bind()` | Records that a patched object/type is now known in the stream identity model. |
-| `write_call(...)` | native `ObjectWriter` call-writing path | `ObjectWriter.write_all()` and value emission | Records ext→int callback activity in stream form. |
-| `sync()` | native `ObjectWriter.sync()` | queue thread-stamp / sync message path | Gives replay a way to resynchronize the current logical thread. |
 | `write_result(value)` | native `ObjectWriter.write_result()` | `push_value()` and queue semantic pushes | Encodes the result value of an external call. |
 | `write_passthrough_result(value)` | native `ObjectWriter.write_passthrough_result()` | same serialization path with passthrough semantics | Used when a call should be replayed as a live passthrough result. |
 | `write_error(exc)` | native `ObjectWriter.write_error()` | exception serialization path | Records external-call failure so replay can re-raise it. |
@@ -823,7 +817,6 @@ the current stream implementation.
 | Proxy reader hook | Stream entrypoint | Main native path | Notes |
 |---|---|---|---|
 | `bind(...)` | replay adapter around `ObjectStream` | bind message handling in `ObjectStream` | Reintroduces bound identities into replay at the right time. |
-| `sync()` | replay adapter around `ObjectStream` | sync/thread-switch message consumption | Advances until this thread reaches its next replay boundary. |
 | `read_result()` | replay adapter around `ObjectStream` | next replay message/value from `ObjectStream` | Returns the recorded result or raises the recorded error. |
 | `checkpoint(value)` | replay adapter around `ObjectStream` | checkpoint message comparison path | Compares current normalized replay value against recorded data. |
 

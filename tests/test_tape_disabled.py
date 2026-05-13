@@ -8,6 +8,6 @@ def test_create_tape_writer_disable_discards_protocol_writes():
 
     writer = create_tape_writer(options, ["script.py"], thread_getter=lambda: 0)
 
-    writer("CALL", "ignored")
+    writer("TOKEN", "ignored")
     writer.write("RESULT", "ignored")
     writer.__exit__(None, None, None)

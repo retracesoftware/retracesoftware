@@ -1,6 +1,8 @@
 #include "writer.h"
 
+#include <algorithm>
 #include <cassert>
+#include <chrono>
 #include <cerrno>
 #include <new>
 #include <stdexcept>
@@ -73,6 +75,9 @@ namespace retracesoftware_stream {
         FramedWriter* fw = nullptr;
         PyObject* serializer = nullptr;
         PyObject* intern_serializer = nullptr;
+        PyObject* heartbeat_callback = nullptr;
+        double heartbeat_interval = 0.0;
+        std::chrono::steady_clock::time_point next_heartbeat_at = std::chrono::steady_clock::time_point::max();
         map<BindingHandle, int> interns;
         int intern_counter = 0;
         size_t bytes_written = 0;
@@ -127,6 +132,9 @@ namespace retracesoftware_stream {
         PyObject* writer_object() const { return framed_writer_obj; }
         FramedWriter* native_writer() const { return fw; }
         void reset_state();
+        void set_heartbeat(PyObject* callback, double interval);
+        int heartbeat_wait_timeout_ms(int fallback) const;
+        PyObject* create_heartbeat_payload();
 
         bool intern(PyObject* obj, BindingHandle handle);
         void flush();
@@ -187,6 +195,7 @@ namespace retracesoftware_stream {
             Py_VISIT(self->framed_writer_obj);
             Py_VISIT(self->serializer);
             Py_VISIT(self->intern_serializer);
+            Py_VISIT(self->heartbeat_callback);
             for (auto& [key, value] : self->interned_index) {
                 visit(key, arg);
             }
@@ -196,6 +205,7 @@ namespace retracesoftware_stream {
         static int clear(Persister* self) {
             Py_CLEAR(self->serializer);
             Py_CLEAR(self->intern_serializer);
+            Py_CLEAR(self->heartbeat_callback);
             for (auto& [key, value] : self->interned_index) {
                 Py_DECREF(key);
             }
@@ -206,6 +216,8 @@ namespace retracesoftware_stream {
             self->intern_counter = 0;
             self->bytes_written = 0;
             self->interned_counter = 0;
+            self->heartbeat_interval = 0.0;
+            self->next_heartbeat_at = std::chrono::steady_clock::time_point::max();
             return 0;
         }
 
@@ -378,6 +390,27 @@ namespace retracesoftware_stream {
             return call_persister_method([&] { self->write_heartbeat(); });
         }
 
+        PyObject* Persister_py_set_heartbeat(Persister* self, PyObject* args, PyObject* kwds) {
+            PyObject* callback = Py_None;
+            double interval = 0.0;
+            static const char* kwlist[] = {"callback", "interval", nullptr};
+
+            if (!PyArg_ParseTupleAndKeywords(args, kwds, "Od", (char**)kwlist, &callback, &interval)) {
+                return nullptr;
+            }
+            if (callback != Py_None && !PyCallable_Check(callback)) {
+                PyErr_SetString(PyExc_TypeError, "heartbeat callback must be callable or None");
+                return nullptr;
+            }
+            if (interval < 0.0) {
+                PyErr_SetString(PyExc_ValueError, "heartbeat interval must be non-negative");
+                return nullptr;
+            }
+
+            self->set_heartbeat(callback, interval);
+            Py_RETURN_NONE;
+        }
+
         PyObject* Persister_py_write_pickled(Persister* self, PyObject* obj) {
             PyObject* owned = Py_NewRef(obj);
             PyObject* result = call_persister_method([&] { self->write_pickled(owned); });
@@ -410,6 +443,7 @@ namespace retracesoftware_stream {
             {"start_dict", (PyCFunction)Persister_py_start_dict, METH_O, "Write a dict header while mimicking consumer threading"},
             {"start_collection", (PyCFunction)Persister_py_start_collection, METH_VARARGS, "Write a collection header while mimicking consumer threading"},
             {"write_heartbeat", (PyCFunction)Persister_py_write_heartbeat, METH_NOARGS, "Write a heartbeat while mimicking consumer threading"},
+            {"set_heartbeat", (PyCFunction)Persister_py_set_heartbeat, METH_VARARGS | METH_KEYWORDS, "Set the optional heartbeat callback and interval"},
             {"write_pickled", (PyCFunction)Persister_py_write_pickled, METH_O, "Write a pre-pickled payload while mimicking consumer threading"},
             {"reset_state", (PyCFunction)Persister_py_reset_state, METH_NOARGS, "Reset persister state while mimicking consumer threading"},
             {nullptr}
@@ -760,6 +794,54 @@ namespace retracesoftware_stream {
         emit_control(Heartbeat);
     }
 
+    void Persister::set_heartbeat(PyObject* callback, double interval) {
+        PyObject* value = callback == Py_None ? nullptr : Py_NewRef(callback);
+        Py_XSETREF(heartbeat_callback, value);
+        heartbeat_interval = heartbeat_callback && interval > 0.0 ? interval : 0.0;
+        next_heartbeat_at = heartbeat_interval > 0.0
+            ? std::chrono::steady_clock::now()
+                + std::chrono::duration_cast<std::chrono::steady_clock::duration>(
+                    std::chrono::duration<double>(heartbeat_interval))
+            : std::chrono::steady_clock::time_point::max();
+    }
+
+    int Persister::heartbeat_wait_timeout_ms(int fallback) const {
+        if (!heartbeat_callback || heartbeat_interval <= 0.0) return fallback;
+
+        auto now = std::chrono::steady_clock::now();
+        if (now >= next_heartbeat_at) return 0;
+
+        auto remaining = std::chrono::duration_cast<std::chrono::milliseconds>(
+            next_heartbeat_at - now);
+        int wait_ms = static_cast<int>(remaining.count());
+        if (wait_ms <= 0) wait_ms = 1;
+        return std::min(fallback, wait_ms);
+    }
+
+    PyObject* Persister::create_heartbeat_payload() {
+        if (!heartbeat_callback || heartbeat_interval <= 0.0) {
+            Py_RETURN_NONE;
+        }
+
+        auto now = std::chrono::steady_clock::now();
+        if (now < next_heartbeat_at) {
+            Py_RETURN_NONE;
+        }
+        next_heartbeat_at = now
+            + std::chrono::duration_cast<std::chrono::steady_clock::duration>(
+                std::chrono::duration<double>(heartbeat_interval));
+
+        PyObject* payload = PyObject_CallNoArgs(heartbeat_callback);
+        if (!payload) return nullptr;
+        if (payload == Py_None) return payload;
+        if (!PyDict_Check(payload)) {
+            PyErr_SetString(PyExc_TypeError, "heartbeat callback must return dict or None");
+            Py_DECREF(payload);
+            return nullptr;
+        }
+        return payload;
+    }
+
     void Persister::write_pickled(PyObject* obj) {
         PyGILState_STATE gil = PyGILState_Ensure();
         write_pickled_value(obj);
@@ -814,6 +896,14 @@ namespace retracesoftware_stream {
     bool Persister_write_heartbeat(Persister * persister) {
         persister->write_heartbeat();
         return true;
+    }
+
+    int Persister_heartbeat_wait_timeout_ms(Persister * persister, int fallback) {
+        return persister->heartbeat_wait_timeout_ms(fallback);
+    }
+
+    PyObject* Persister_create_heartbeat_payload(Persister * persister) {
+        return persister->create_heartbeat_payload();
     }
     
     bool Persister_write_binding_lookup(Persister * persister, BindingHandle handle) {

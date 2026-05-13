@@ -152,13 +152,11 @@ def test_write_multiple_messages(tmp_path):
     assert len(payload) > 0
 
 
-def test_writer_forwards_intern_serializer_to_native_persister(tmp_path, monkeypatch):
+def test_writer_forwards_intern_serializer_to_native_persister(tmp_path):
     """writer(..., intern_serializer=...) should auto-intern matching identities."""
     path = tmp_path / "writer_intern_serializer.bin"
     value = object()
     calls = []
-
-    monkeypatch.setattr(stream, "call_periodically", lambda interval, func: None)
 
     def intern_serializer(obj):
         calls.append(obj)
@@ -232,6 +230,33 @@ def test_close_drains_queue(tmp_path):
     assert len(raw) > 0
     payload = _unframe(raw)
     assert len(payload) > 0
+
+
+def test_native_persister_heartbeat_callback_is_queued(tmp_path):
+    path = tmp_path / "heartbeat.bin"
+
+    with stream.writer(
+        path,
+        thread=_thread_id,
+        format="unframed_binary",
+        flush_interval=0.01,
+    ):
+        deadline = time.monotonic() + 1
+        while (not path.exists() or path.stat().st_size == 0) and time.monotonic() < deadline:
+            time.sleep(0.01)
+
+    reader = _make_raw_native_reader(
+        path,
+        on_heartbeat=lambda payload: ("heartbeat", payload),
+    )
+    try:
+        kind, payload = reader()
+    finally:
+        reader.close()
+
+    assert kind == "heartbeat"
+    assert payload["messages"] == 0
+    assert "ts" in payload
 
 
 def test_open_preserves_existing_file(tmp_path):
@@ -563,7 +588,6 @@ def test_message_stream_ignores_unreturned_async_new_patched_helpers():
         ("__bind__", 1),
         "RESULT",
         stream.Binding(1),
-        "CALL",
         "RESULT",
         None,
     ])
@@ -577,7 +601,6 @@ def test_message_stream_ignores_unreturned_async_new_patched_helpers():
     assert isinstance(materialized, dict)
     assert materialized == {}
 
-    messages.write_call()
     assert messages.read_result() is None
 
 
@@ -599,16 +622,14 @@ def test_memory_writer_reader_roundtrip_uses_binding_lookup_for_bound_results():
     writer = MemoryWriter()
     bound = object()
     writer.bind(bound)
-    writer.write_call()
     writer.write_result(bound)
 
     assert stream._is_bind_open(writer.tape[0])
-    assert isinstance(writer.tape[3], stream.Binding)
+    assert isinstance(writer.tape[2], stream.Binding)
 
     reader = MemoryReader(writer.tape)
     resolved = object()
     reader.bind(resolved)
-    reader.write_call()
     assert reader.read_result() is resolved
 
 
@@ -692,6 +713,8 @@ def test_with_thread_reader_attaches_current_thread_to_objects():
         None,
         "a2",
         "THREAD_SWITCH",
+        thread_b,
+        "THREAD_START",
         thread_b,
         "b1",
         "THREAD_YIELD",

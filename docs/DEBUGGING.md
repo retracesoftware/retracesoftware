@@ -46,7 +46,6 @@ RETRACE_DEBUG=1 python -m retracesoftware \
 | `--trace_inputs` | Records normalized call arguments for debugging boundary mismatches. |
 | `--trace_shutdown` | Keeps tracing active through interpreter shutdown and cleanup hooks. |
 | `--quit_on_error` | Terminates on serialization errors instead of dropping them. |
-| `--gc_collect_multiplier N` | Triggers `gc.collect(gen)` at intercepted safe points when GC pressure is due. `0` disables it. Larger values make collection more eager because retrace checks `count * multiplier > threshold`. Useful for reducing weakref/finalizer timing drift. |
 | `--monitor N` | Enable `sys.monitoring` divergence detection (Python 3.12+).  `0` = off (default), `1` = Python calls/returns, `2` = + C calls, `3` = + line events.  See [Monitor mode](#7-using-monitor-mode) below. |
 | `--format FORMAT` | Recording backend format. Current normal recordings use `binary`. |
 | `--replay_bin PATH` | Override the replay binary path written into the recording shebang. |
@@ -80,7 +79,7 @@ Examples:
 ```
 Retrace(12345) - ObjectWriter[0, 4545] -- {'argv': [...], ...}
 Retrace(12345) - ObjectWriter[1, 4545] -- NEW_HANDLE(ERROR)
-Retrace(12345) - ObjectWriter[8, 4624] -- BIND(_thread.RLock)
+Retrace(12345) - ObjectWriter[8, 4624] -- BIND(_socket.socket)
 Retrace(12345) - ObjectWriter[9, 4650] -- RESULT
 Retrace(12345) - ObjectWriter[10, 4654, 4698] -- os.getcwd()
 Retrace(12345) - ObjectWriter[11] -- THREAD_SWITCH(())
@@ -159,7 +158,7 @@ RuntimeError: Can't reading next as unbound pending bind
 ```
 
 or the reader returns a `Bind` / `HandleMessage` / `ThreadSwitch`
-where the replay code expected a `RESULT` or `SYNC`.
+where the replay code expected a `RESULT` or `ERROR`.
 
 **What this means:**
 
@@ -167,14 +166,13 @@ The reader's position in the trace has drifted out of sync with the
 replay execution.  The message stream is a flat sequence:
 
 ```
-SYNC RESULT value SYNC RESULT value SYNC ERROR exc ...
+RESULT value RESULT value ERROR exc ...
 ```
 
-During replay, `MessageStream.sync()` advances to the next `SYNC`
-marker, then `result()` reads the next `RESULT` or `ERROR`.  If the
-replay takes a different code path than the recording (e.g. an
-un-intercepted non-deterministic call changes control flow), the
-reader lands on the wrong message.
+During replay, the next live external call reads the next `RESULT` or `ERROR`.
+If the replay takes a different code path than the recording (e.g. an
+un-intercepted non-deterministic call changes control flow), the reader lands
+on the wrong message.
 
 **Common causes:**
 
@@ -187,16 +185,15 @@ reader lands on the wrong message.
   through unrecorded.
 - **Bind protocol violation** — After a PID switch in fork replay,
   the child's stream may contain `Bind` markers for classes bound
-  after the fork (e.g. `_thread.RLock` from CPython's post-fork
-  threading cleanup).  `MessageStream._next_message()` must
-  handle these by calling `tag.value(None)` to clear the reader's
-  `pending_bind` flag.
+  after the fork. `MessageStream._next_message()` must handle these
+  by calling `tag.value(None)` to clear the reader's `pending_bind`
+  flag.
 
 **How to investigate:**
 
 1. Record with `--verbose --stacktraces`.
 2. Replay with `--verbose`.
-3. Find the last successful `SYNC`/`RESULT` pair in both logs.
+3. Find the last successful external `RESULT` or `ERROR` in both logs.
    The message *after* that is where alignment broke.
 4. The stack trace on the recording side (from `--stacktraces`)
    tells you which Python call site produced the divergent message.
@@ -275,12 +272,11 @@ PidFile directly.
   both `posix.fork` AND `os.fork`, since user code may call either.
 - **Bind markers after PID switch** — After switching to the child's
   frames, the reader may encounter `Bind` tags for classes the child
-  bound after forking (e.g. `_thread.RLock` from CPython's internal
-  `threading._after_fork_child()`).  `MessageStream._next_message()`
-  must handle these.
+  bound after forking. `MessageStream._next_message()` must handle
+  these.
 - **Orphaned RESULT(0)** — The child's first message is the fork
-  return value `RESULT(0)`.  `MessageStream.sync()` naturally skips
-  it.  Do NOT try to consume it explicitly.
+  return value `RESULT(0)`. The replay reader skips unrelated child messages
+  while aligning the next live call. Do NOT try to consume it explicitly.
 
 **How to investigate:**
 
@@ -296,18 +292,17 @@ PidFile directly.
 **Symptoms:**
 
 ```
-ReplayDivergence: replay demux timed out after 30s waiting for thread main-thread
+ReplayDivergence: replay scheduler timed out waiting for thread main-thread
 ```
 
 or the replay hangs indefinitely.
 
 **What this means:**
 
-Multi-threaded replay uses thread-switch markers to enforce
-the recorded thread interleaving.  Each thread blocks until the tape
-cursor reaches its segment.  If a thread takes a different code path
-(fewer or more proxied calls), it never reaches the expected switch
-point, and the other thread waits forever.
+Multi-threaded replay uses `THREAD_START`, `THREAD_YIELD`, and `THREAD_RESUME`
+scheduler telemetry plus cursor checkpoints to enforce the recorded thread
+interleaving. If a thread takes a different code path, it never reaches the
+expected scheduler cursor, and replay waits forever.
 
 **Common causes:**
 
@@ -318,7 +313,7 @@ point, and the other thread waits forever.
 **How to investigate:**
 
 - Record with `--verbose --stacktraces` to identify the call sites
-  around each `THREAD_SWITCH` message.
+  around each scheduler marker.
 - Check which thread is blocked and what call it's waiting for.
 
 ### 7. Using monitor mode
@@ -494,7 +489,7 @@ Signs of an uncaptured call:
 - The replay produces a different value for something that should be
   deterministic (e.g. a cached file path).
 - The message count differs between record and replay (extra or
-  missing `SYNC`/`RESULT` pairs).
+  missing `RESULT` / `ERROR` entries).
 
 Fix: Add the call to the appropriate module TOML config.
 
@@ -524,10 +519,10 @@ The recording also stores `python_version` and `executable` path.
 | `RuntimeError: object: X already bound` | `writer.h` | Writer tried to bind an object that was already bound |
 | `Persister: PID mismatch!` | `persister.cpp` | Frame stamped with wrong PID (fork lifecycle bug) |
 | `VersionMismatchError` | `__main__.py` | Module checksums differ between record and replay |
-| `ReplayDivergence: replay demux timed out` | `proxy/io.py` / `stream/reader.py` | Thread could not acquire its turn on the tape |
-| `ReplayDivergence: monitor divergence: expected X, got Y` | `proxy/io.py` / monitor hooks | MONITOR checkpoint mismatch — function call/return differs between record and replay |
-| `ReplayDivergence: expected MONITOR(X), got ...` | `proxy/io.py` / monitor hooks | Replay produced a function call that the recording did not have |
-| `ReplayDivergence: unexpected MONITOR(X) during sync` | `proxy/io.py` / monitor hooks | Recording had function calls that replay did not replicate |
+| `ReplayDivergence: replay scheduler timed out` | `proxy/io.py` | Thread did not reach its recorded scheduler cursor |
+| `ReplayDivergence: monitor divergence: expected X, got Y` | `messagestream.py` | MONITOR checkpoint mismatch — function call/return differs between record and replay |
+| `ReplayDivergence: expected MONITOR(X), got ...` | `messagestream.py` | Replay produced a function call that the recording didn't have |
+| `ReplayDivergence: unexpected MONITOR(X) while advancing ...` | `protocol/replay.py` | Recording had function calls that replay didn't replicate |
 
 ---
 

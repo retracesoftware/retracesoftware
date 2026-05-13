@@ -34,15 +34,30 @@ import retracesoftware.functional as functional
 from retracesoftware.install.replace import update
 
 
+def _disable_retrace_callback(callback):
+    if not callable(callback):
+        return callback
+    try:
+        import retrace
+    except ImportError:
+        return callback
+
+    disable = getattr(retrace, "disable", None) or getattr(retrace, "exclude", None)
+    if disable is None:
+        return callback
+    return disable(callback)
+
+
 # ── trace / profile hooks ────────────────────────────────────
 
 def install_trace_hooks(disable_for):
-    """Wrap ``sys.settrace``, ``sys.setprofile``, and ``threading.settrace``.
+    """Wrap trace/profile hook installers.
 
     Trace and profile hooks fire on every Python function call.  If
     the proxy gates are active, they would trigger on the hook itself
     and cause infinite recursion.  This function wraps the ``set*``
-    APIs so that any installed hook runs with both gates disabled.
+    APIs so that any installed hook runs with both gates disabled and
+    outside Retrace's coordinate accounting.
 
     The wrapping is recursive: if a trace function returns another
     callable (as ``sys.settrace`` callbacks do), the returned callable
@@ -57,12 +72,13 @@ def install_trace_hooks(disable_for):
     Returns
     -------
     callable
-        An uninstall function that restores the original ``settrace``,
-        ``setprofile``, and ``threading.settrace``.
+        An uninstall function that restores the original trace/profile
+        installers.
     """
     orig_settrace = sys.settrace
     orig_setprofile = sys.setprofile
     orig_threading_settrace = threading.settrace
+    orig_threading_setprofile = threading.setprofile
     orig_trace = sys.gettrace()
     orig_profile = sys.getprofile()
 
@@ -70,14 +86,15 @@ def install_trace_hooks(disable_for):
         """Wrap *func* (and its return value, recursively) with disable_for."""
         if not callable(func):
             return func
-        disabled = disable_for(func)
+        disabled = disable_for(_disable_retrace_callback(func))
         def wrapped(*args, **kwargs):
             return recursive_disable(disabled(*args, **kwargs))
-        return wrapped
+        return _disable_retrace_callback(wrapped)
 
     sys.settrace = functional.sequence(recursive_disable, sys.settrace)
     sys.setprofile = functional.sequence(recursive_disable, sys.setprofile)
     threading.settrace = functional.sequence(recursive_disable, threading.settrace)
+    threading.setprofile = functional.sequence(recursive_disable, threading.setprofile)
 
     # Re-apply current hooks so they're wrapped immediately.
     sys.settrace(sys.gettrace())
@@ -87,6 +104,7 @@ def install_trace_hooks(disable_for):
         sys.settrace = orig_settrace
         sys.setprofile = orig_setprofile
         threading.settrace = orig_threading_settrace
+        threading.setprofile = orig_threading_setprofile
         sys.settrace(orig_trace)
         sys.setprofile(orig_profile)
 

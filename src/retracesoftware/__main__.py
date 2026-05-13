@@ -2,28 +2,57 @@ import sys
 import os
 import argparse
 import json
-import retracesoftware.functional as functional
-import retracesoftware.utils as utils
-import retracesoftware.cursor as cursor
+import builtins
+import runpy
+import _thread
+from dataclasses import dataclass
 from pathlib import Path
-import gc
 import atexit
-from contextlib import contextmanager, nullcontext
+from contextlib import ExitStack
 
-from retracesoftware.threadid import ThreadId
+
+def _require_retrace_python():
+    try:
+        import retrace
+    except ImportError:
+        print(
+            "retracesoftware requires retrace-python: retrace module not found",
+            file=sys.stderr,
+        )
+        raise SystemExit(1)
+
+    required = (
+        "callbacks",
+        "call_at",
+        "coordinates",
+        "thread_delta",
+    )
+    missing = [name for name in required if not hasattr(retrace, name)]
+    if missing:
+        print(
+            "retracesoftware requires retrace-python runtime: "
+            f"retrace missing {', '.join(missing)}; running {sys.executable}",
+            file=sys.stderr,
+        )
+        raise SystemExit(1)
+
+
+_require_retrace_python()
+
+import retracesoftware.utils as utils
 
 from retracesoftware.proxy.tape import TapeReader
-from retracesoftware.exceptions import VersionMismatchError
+from retracesoftware.exceptions import RecordingNotFoundError, VersionMismatchError
 from retracesoftware.proxy.io import recorder, replayer
 from retracesoftware.stream.reader import ExpectedBindMarker
-from retracesoftware.run import run_python_command
+from retracesoftware.run import run_python_command, wait_for_non_daemon_threads
 from retracesoftware.tape import (
     checksums,
     create_tape_writer,
     normalize_recording_path,
     open_tape_reader,
 )
-from retracesoftware.install import install_and_run, install_retrace, patch_fork_for_replay
+from retracesoftware.install import install_retrace, patch_fork_for_replay
 
 def diff_dicts(recorded, current, path=""):
     """Recursively diff two dicts, returning list of differences."""
@@ -46,9 +75,6 @@ def diff_dicts(recorded, current, path=""):
                 diffs.append(f"      current:  {current[key][:16]}..." if isinstance(current[key], str) and len(current[key]) > 16 else f"      current:  {current[key]}")
     
     return diffs
-
-thread_id = ThreadId()
-
 
 class _ReplayStartupBinding:
     __slots__ = ()
@@ -82,7 +108,6 @@ def _bind_record_runtime(system, tape_writer):
         tape_writer,
         getattr(tape_writer, "_output", None),
         getattr(tape_writer, "_queue", None),
-        getattr(tape_writer, "_heartbeat_lock", None),
         getattr(getattr(tape_writer, "_output", None), "_stream", None),
     ):
         if obj is not None and id(obj) not in seen:
@@ -115,38 +140,156 @@ def _consume_replay_startup_bindings(system):
     return sentinels
 
 
-def _restore_replay_sys_path(header):
-    recorded_sys_path = header.get("sys_path")
-    if not isinstance(recorded_sys_path, list):
-        raise ValueError("recording header is missing sys_path")
-    sys.path[:] = recorded_sys_path
+@dataclass(frozen=True)
+class Runner:
+    argv: list[str]
+    system: object
+    options: argparse.Namespace
+    env: dict[str, str] | None = None
+    cwd: str | None = None
+    sys_path: list[str] | None = None
+
+    def __call__(self):
+        uninstall = _setup_runner(self)
+        try:
+            return _run_target(self)
+        finally:
+            _finish_runner(self, uninstall)
 
 
-@contextmanager
-def _cli_module_overrides():
-    yield
+def _setup_runner(runner):
+    if runner.env is not None:
+        os.environ.clear()
+        os.environ.update(runner.env)
+    if runner.cwd is not None:
+        os.chdir(runner.cwd)
+    if runner.sys_path is not None:
+        sys.path[:] = runner.sys_path
 
-def record(options, args):
-    options.recording = normalize_recording_path(options.recording, args)
+    def runpy_exec(source, globals=None, locals=None):
+        with runner.system.gate.context("internal"):
+            return builtins.exec(source, globals, locals)
 
-    recording_disabled = (options.recording == 'disable')
-    
+    utils.update(
+        runpy,
+        "_run_code",
+        utils.wrap_func_with_overrides,
+        exec=runpy_exec,
+    )
+
+    uninstall = None
+    try:
+        strict_bind = None
+        if runner.options.mode == "replay":
+            strict_bind = runner.system.bind
+
+            def bootstrap_bind(obj):
+                try:
+                    return strict_bind(obj)
+                except ExpectedBindMarker:
+                    return None
+
+            runner.system.bind = bootstrap_bind
+
+        try:
+            uninstall = install_retrace(
+                system=runner.system,
+                monitor_level=getattr(runner.options, "monitor", 0),
+                retrace_file_patterns=getattr(
+                    runner.options,
+                    "retrace_file_patterns",
+                    None,
+                ),
+                verbose=runner.options.verbose,
+                retrace_shutdown=runner.options.trace_shutdown,
+            )
+        finally:
+            if strict_bind is not None:
+                runner.system.bind = strict_bind
+
+        if runner.options.mode == "replay":
+            fork_uninstall = patch_fork_for_replay(runner.system.disable_for)
+            uninstall = utils.runall(fork_uninstall, uninstall)
+            runner.system._startup_bindings = _consume_replay_startup_bindings(
+                runner.system
+            )
+
+        atexit.register(uninstall)
+        return uninstall
+    except BaseException:
+        if uninstall is not None:
+            uninstall()
+        raise
+
+
+def _run_target(runner):
+    with runner.system.enable():
+        return run_python_command(runner.argv)
+
+
+def _finish_runner(runner, uninstall):
+    if uninstall is not None:
+        runner.system.disable_for(wait_for_non_daemon_threads)()
+        if not runner.options.trace_shutdown:
+            atexit.unregister(uninstall)
+            close_recording = getattr(runner.options, "close_recording", utils.noop)
+            try:
+                close_recording()
+            finally:
+                uninstall()
+    elif not getattr(runner.options, "trace_shutdown", False):
+        close_recording = getattr(runner.options, "close_recording", utils.noop)
+        close_recording()
+
+    controller = getattr(runner.options, "controller", None)
+    resources = getattr(runner.options, "resources", None)
+    try:
+        if controller is not None:
+            controller.on_replay_finished()
+    finally:
+        if resources is not None:
+            resources.close()
+
+
+def mode(options=None, argv=None):
+    if options is not None:
+        return options.mode
+
+    argv = list(sys.argv[1:] if argv is None else argv)
+    if argv[:1] and argv[0] in ("install", "uninstall"):
+        return argv[0]
+    if "--" in argv:
+        return "record"
+    return "replay"
+
+
+def check_replay_header(header):
+    recorded_checksums = header['checksums']
+    current_checksums = checksums()
+    if recorded_checksums != current_checksums:
+        if os.environ.get('RETRACE_SKIP_CHECKSUMS'):
+            print("WARNING: checksum mismatch ignored (RETRACE_SKIP_CHECKSUMS set)", file=sys.stderr)
+        else:
+            diffs = diff_dicts(recorded_checksums, current_checksums)
+            diff_str = "\n".join(diffs) if diffs else "(no differences found in structure)"
+            raise VersionMismatchError(f"Checksums for Retrace do not match:\n{diff_str}")
+
+    if header['python_version'] != sys.version:
+        raise VersionMismatchError("Python version does not match, cannot run replay with different version of Python to record")
+
+
+def create_record_runner(options):
+    argv = list(options.rest[1:])
+    options.recording = normalize_recording_path(options.recording, argv)
+    recording_disabled = options.recording == 'disable'
+
     if options.verbose:
         if recording_disabled:
             print("Retrace enabled, recording DISABLED (performance testing mode)", file=sys.stderr)
         else:
             print(f"Retrace enabled, recording to {options.recording}", file=sys.stderr)
 
-    flush_interval = getattr(options, "flush_interval", None)
-    options.flush_interval = 0
-    try:
-        tape_writer = create_tape_writer(options, args, thread_getter=thread_id.id.get)
-    finally:
-        options.flush_interval = flush_interval
-    heartbeat_lock = getattr(tape_writer, "_heartbeat_lock", None)
-    if heartbeat_lock is not None:
-        with heartbeat_lock:
-            tape_writer._heartbeat_enabled = False
+    tape_writer = create_tape_writer(options, argv, thread_getter=_thread.get_ident)
     writer_closed = False
 
     def close_tape_writer():
@@ -156,9 +299,10 @@ def record(options, args):
         writer_closed = True
         tape_writer.__exit__(None, None, None)
 
+    options.close_recording = close_tape_writer
     if options.trace_shutdown:
-        # Run writer shutdown after install_and_run()'s atexit uninstall so
-        # traced shutdown events still make it to disk before the queue closes.
+        # Writer shutdown runs after atexit uninstall so traced shutdown
+        # events reach disk before the queue closes.
         atexit.register(close_tape_writer)
 
     try:
@@ -166,72 +310,44 @@ def record(options, args):
             writer=tape_writer,
             debug=options.stacktraces,
             stacktraces=options.stacktraces,
-            gc_collect_multiplier=getattr(options, "gc_collect_multiplier", 0),
         )
         _bind_record_runtime(system, tape_writer)
+        if hasattr(tape_writer, "enable_heartbeat"):
+            def heartbeat_payload():
+                with system.disable():
+                    return tape_writer.heartbeat_payload()
 
-        with _cli_module_overrides():
-            install_and_run(
-                system=system,
-                options=options,
-                function=run_python_command,
-                args=(args,),
-                post_install=None if options.trace_shutdown else close_tape_writer,
-            )
-    finally:
-        if not options.trace_shutdown:
-            close_tape_writer()
+            flush_interval = getattr(options, "flush_interval", None)
+            tape_writer.enable_heartbeat(flush_interval, heartbeat_payload)
+    except BaseException:
+        close_tape_writer()
+        raise
 
-def replay(args):
-    if getattr(args, 'list_pids', False):
-        from retracesoftware import stream
+    return Runner(argv=argv, system=system, options=options)
 
-        if args.recording is None:
-            raise RecordingNotFoundError("Recording path is required for --list_pids")
 
-        path = Path(args.recording)
-        format_hint = getattr(args, "format", None)
-        is_unframed = format_hint == "unframed_binary"
-        if format_hint is None:
-            is_unframed = stream.detect_raw_trace(path)
+def create_replay_runner(options):
+    resources = ExitStack()
+    try:
+        header, reader = resources.enter_context(
+            open_tape_reader(options)
+        )
+        recorded_sys_path = header.get("sys_path")
+        if not isinstance(recorded_sys_path, list):
+            raise ValueError("recording header is missing sys_path")
 
-        if is_unframed:
-            info, _ = stream.read_process_info(path, raw=True)
-            print(json.dumps(info, separators=(",", ":")))
-        else:
-            for pid in sorted(stream.list_pids(path)):
-                print(pid)
-        return
+        check_replay_header(header)
+        options.resources = resources
+        options.monitor = header.get('monitor', 0)
+        options.trace_shutdown = header['trace_shutdown']
 
-    chunk_ms = getattr(args, 'chunk_ms', None)
-    control_socket_path = getattr(args, 'control_socket', None)
-    use_stdio = getattr(args, 'stdio', False)
-
-    with open_tape_reader(args, thread_id = thread_id) as (header, reader):
+        chunk_ms = getattr(options, 'chunk_ms', None)
         if chunk_ms is not None:
             from retracesoftware.search import install_timeslice_search
             install_timeslice_search(
                 chunk_ms=chunk_ms,
                 get_offset=lambda: reader.messages_read,
             )
-
-        recorded_checksums = header['checksums']
-        current_checksums = checksums()
-        if recorded_checksums != current_checksums:
-            if os.environ.get('RETRACE_SKIP_CHECKSUMS'):
-                print("WARNING: checksum mismatch ignored (RETRACE_SKIP_CHECKSUMS set)", file=sys.stderr)
-            else:
-                diffs = diff_dicts(recorded_checksums, current_checksums)
-                diff_str = "\n".join(diffs) if diffs else "(no differences found in structure)"
-                raise VersionMismatchError(f"Checksums for Retrace do not match:\n{diff_str}")
-
-        if header['python_version'] != sys.version:
-            raise VersionMismatchError("Python version does not match, cannot run replay with different version of Python to record")
-
-        # User code must see exactly the recorded environment, including key order.
-        os.environ.clear()
-        os.environ.update(header['env'])
-        _restore_replay_sys_path(header)
 
         controller = None
         controller_ref = [None]
@@ -262,16 +378,9 @@ def replay(args):
         if hasattr(reader, "stub_factory"):
             reader.stub_factory = system.disable_for(reader.stub_factory)
 
-        monitor_level = header.get('monitor', 0)
-        replay_options = argparse.Namespace(
-            **vars(args),
-            monitor=monitor_level,
-            trace_shutdown=header['trace_shutdown'],
-        )
-
-        if control_socket_path or use_stdio:
+        if getattr(options, 'control_socket', None) or getattr(options, 'stdio', False):
             from retracesoftware.control_runtime import Controller, UnixControlSocket, StdioControlSocket
-            if use_stdio:
+            if getattr(options, 'stdio', False):
                 import io
                 _real_os_write = os.write
                 _proto_fd = os.dup(sys.stdout.fileno())
@@ -289,7 +398,7 @@ def replay(args):
                 _stdin_buf = io.StringIO(sys.stdin.read())
                 ctrl_sock = StdioControlSocket(reader=_stdin_buf, writer=_RawFdWriter())
             else:
-                ctrl_sock = UnixControlSocket(control_socket_path)
+                ctrl_sock = UnixControlSocket(options.control_socket)
 
             def _before_fork():
                 return reader._tape_reader.file_offset()
@@ -302,54 +411,42 @@ def replay(args):
                 on_before_fork=_before_fork,
                 on_after_fork=_after_fork,
                 disable_for=system.disable_for,
-                get_thread_id=system.thread_id,
             )
             controller_ref[0] = controller
 
-        try:
-            with _cli_module_overrides():
-                strict_bind = system.bind
+        options.controller = controller
+        return Runner(
+            argv=list(header["argv"]),
+            env=dict(header["env"]),
+            cwd=header.get("cwd"),
+            sys_path=list(recorded_sys_path),
+            system=system,
+            options=options,
+        )
+    except BaseException:
+        resources.close()
+        raise
 
-                def bootstrap_bind(obj):
-                    try:
-                        return strict_bind(obj)
-                    except ExpectedBindMarker:
-                        return None
 
-                system.bind = bootstrap_bind
-                try:
-                    uninstall = install_retrace(
-                        system=system,
-                        monitor_level=getattr(replay_options, "monitor", 0),
-                        retrace_file_patterns=getattr(replay_options, "retrace_file_patterns", None),
-                        verbose=replay_options.verbose,
-                        retrace_shutdown=replay_options.trace_shutdown,
-                    )
-                finally:
-                    system.bind = strict_bind
+def list_pids(args):
+    from retracesoftware import stream
 
-                uninstall = utils.runall(
-                    patch_fork_for_replay(system.disable_for),
-                    uninstall,
-                )
+    if args.recording is None:
+        raise RecordingNotFoundError("Recording path is required for --list_pids")
 
-                system._startup_bindings = _consume_replay_startup_bindings(system)
+    path = Path(args.recording)
+    format_hint = getattr(args, "format", None)
+    is_unframed = format_hint == "unframed_binary"
+    if format_hint is None:
+        is_unframed = stream.detect_raw_trace(path)
 
-                replay_cursor_context = (
-                    cursor._get_shared_cc()() if controller is not None else nullcontext()
-                )
-                with replay_cursor_context:
-                    if replay_options.trace_shutdown:
-                        atexit.register(uninstall)
-                        system.run(run_python_command, header["argv"])
-                    else:
-                        try:
-                            system.run(run_python_command, header["argv"])
-                        finally:
-                            uninstall()
-        finally:
-            if controller:
-                controller.on_replay_finished()
+    if is_unframed:
+        info, _ = stream.read_process_info(path, raw=True)
+        print(json.dumps(info, separators=(",", ":")))
+    else:
+        for pid in sorted(stream.list_pids(path)):
+            print(pid)
+
 
 def pth_source():
     return Path(__file__).parent / 'retracesoftware_autoenable.pth'
@@ -383,33 +480,14 @@ def cmd_uninstall(args):
     else:
         print(f'Nothing to remove: {target} does not exist')
 
-def main():
-    # Check for "install" or "uninstall" subcommands first
-    if len(sys.argv) >= 2 and sys.argv[1] in ('install', 'uninstall'):
-        parser = argparse.ArgumentParser(
-            prog="python -m retracesoftware",
-            description="Retrace record/replay system"
-        )
-        sub = parser.add_subparsers(dest='command')
-        sub.add_parser('install', help='Install .pth file for RETRACE=1 auto-activation')
-        sub.add_parser('uninstall', help='Remove .pth file to disable auto-activation')
-        
-        args = parser.parse_args()
-        if args.command == 'install':
-            cmd_install(args)
-        elif args.command == 'uninstall':
-            cmd_uninstall(args)
-        return
-
-    # Otherwise: record/replay mode
+def _run_parser():
     parser = argparse.ArgumentParser(
         prog="python -m retracesoftware",
         description="Run a Python module with debugging, logging, etc."
     )
-
     parser.add_argument(
-        '--verbose', 
-        action='store_true', 
+        '--verbose',
+        action='store_true',
         help='Enable verbose output'
     )
 
@@ -419,123 +497,163 @@ def main():
         default = None,
         help = 'Trace file path (default: {script}.retrace)'
     )
+    return parser
 
-    if '--' in sys.argv:
-        parser.add_argument(
-            '--stacktraces', 
-            action='store_true', 
-            help='Capture stacktrace for every event'
-        )
 
-        parser.add_argument(
-            '--trace_shutdown',
-            action='store_true', 
-            help='Whether to trace system shutdown and cleanup hooks'
-        )
+def _record_parser():
+    parser = _run_parser()
+    parser.add_argument(
+        '--stacktraces',
+        action='store_true',
+        help='Capture stacktrace for every event'
+    )
 
-        parser.add_argument(
-            '--trace_inputs',
-            action='store_true',
-            help='Whether to write call parameters, used for debugging'
-        )
+    parser.add_argument(
+        '--trace_shutdown',
+        action='store_true',
+        help='Whether to trace system shutdown and cleanup hooks'
+    )
 
-        parser.add_argument(
-            '--quit_on_error',
-            action='store_true',
-            help='Terminate on serialization errors instead of silently dropping them'
-        )
+    parser.add_argument(
+        '--trace_inputs',
+        action='store_true',
+        help='Whether to write call parameters, used for debugging'
+    )
 
-        parser.add_argument(
-            '--inflight_limit', type=int, default=128 * 1024 * 1024,
-            help='Maximum bytes in-flight between writer and persister (default: 128MB)')
+    parser.add_argument(
+        '--quit_on_error',
+        action='store_true',
+        help='Terminate on serialization errors instead of silently dropping them'
+    )
 
-        parser.add_argument(
-            '--queue_capacity', type=int, default=65536,
-            help='Forward SPSC queue capacity (default: 65536)')
+    parser.add_argument(
+        '--inflight_limit', type=int, default=128 * 1024 * 1024,
+        help='Maximum bytes in-flight between writer and persister (default: 128MB)')
 
-        parser.add_argument(
-            '--consumer_wait_timeout_ms', type=int, default=10,
-            help='Consumer wait timeout in milliseconds when the queue is below the notify threshold (default: 10)')
+    parser.add_argument(
+        '--queue_capacity', type=int, default=65536,
+        help='Forward SPSC queue capacity (default: 65536)')
 
-        parser.add_argument(
-            '--flush_interval', type=float, default=0.1,
-            help='Periodic flush interval in seconds (default: 0.1)')
+    parser.add_argument(
+        '--consumer_wait_timeout_ms', type=int, default=10,
+        help='Consumer wait timeout in milliseconds when the queue is below the notify threshold (default: 10)')
 
-        parser.add_argument(
-            '--monitor', type=int, default=0,
-            help='Monitoring level: 0=off (default), 1=PY calls/returns, 2=+C calls, 3=+LINE')
+    parser.add_argument(
+        '--flush_interval', type=float, default=0.1,
+        help='Periodic flush interval in seconds (default: 0.1)')
 
-        parser.add_argument(
-            '--gc_collect_multiplier',
-            type=int,
-            default=0,
-            help='Trigger replayable GC collection at intercepted safe points; 0 disables it')
+    parser.add_argument(
+        '--monitor', type=int, default=0,
+        help='Monitoring level: 0=off (default), 1=PY calls/returns, 2=+C calls, 3=+LINE')
 
-        parser.add_argument(
-            '--retrace_file_patterns', type=str, default=None,
-            help='Path to file with additional regex patterns for path-based retrace filtering')
+    parser.add_argument(
+        '--retrace_file_patterns', type=str, default=None,
+        help='Path to file with additional regex patterns for path-based retrace filtering')
 
-        parser.add_argument(
-            '--format', choices=('binary', 'unframed_binary', 'json'), default='binary',
-            help='Recording backend format (default: binary)')
+    parser.add_argument(
+        '--format', choices=('binary', 'unframed_binary', 'json'), default='binary',
+        help='Recording backend format (default: binary)')
 
-        parser.add_argument(
-            '--replay_bin', type=str, default=None,
-            help='Path to replay binary for trace file shebang (auto-detected if omitted)')
+    parser.add_argument(
+        '--replay_bin', type=str, default=None,
+        help='Path to replay binary for trace file shebang (auto-detected if omitted)')
 
-        parser.add_argument('rest', nargs = argparse.REMAINDER, help='target application and arguments')
+    parser.add_argument('rest', nargs = argparse.REMAINDER, help='target application and arguments')
+    return parser
 
-        args = parser.parse_args()
 
-        record(args, args.rest[1:])
+def _replay_parser():
+    parser = _run_parser()
+    parser.add_argument(
+        '--skip_weakref_callbacks',
+        action='store_true',
+        help = 'whether to disable retrace in weakref callbacks on replay'
+    )
 
-    else:
+    parser.add_argument(
+        '--read_timeout',
+        type = int,
+        default = 1000,
+        help = 'timeout in milliseconds for incomplete read of element to timeout'
+    )
 
-        parser.add_argument(
-            '--skip_weakref_callbacks',
-            action='store_true',
-            help = 'whether to disable retrace in weakref callbacks on replay'
-        )
+    parser.add_argument(
+        '--retrace_file_patterns', type=str, default=None,
+        help='Path to file with additional regex patterns for path-based retrace filtering')
 
-        parser.add_argument(
-            '--read_timeout',
-            type = int,
-            default = 1000,
-            help = 'timeout in milliseconds for incomplete read of element to timeout'
-        )
+    parser.add_argument(
+        '--control_socket',
+        type=str,
+        default=None,
+        help='Connect to Go replay control socket at this path')
 
-        parser.add_argument(
-            '--retrace_file_patterns', type=str, default=None,
-            help='Path to file with additional regex patterns for path-based retrace filtering')
+    parser.add_argument(
+        '--stdio',
+        action='store_true',
+        help='Read control commands from stdin, write responses to stdout')
 
-        parser.add_argument(
-            '--control_socket',
-            type=str,
-            default=None,
-            help='Connect to Go replay control socket at this path')
+    parser.add_argument(
+        '--chunk_ms',
+        type=float,
+        default=None,
+        help='Search for replay chunk boundaries every N milliseconds of execution time')
 
-        parser.add_argument(
-            '--stdio',
-            action='store_true',
-            help='Read control commands from stdin, write responses to stdout')
+    parser.add_argument(
+        '--list_pids',
+        action='store_true',
+        help='Print PIDs for framed traces, or the process preamble for unframed traces, then exit')
 
-        parser.add_argument(
-            '--chunk_ms',
-            type=float,
-            default=None,
-            help='Search for replay chunk boundaries every N milliseconds of execution time')
+    parser.add_argument(
+        '--format', choices=('binary', 'unframed_binary', 'json'), default=None,
+        help='Optional recording format hint for replay input')
+    return parser
 
-        parser.add_argument(
-            '--list_pids',
-            action='store_true',
-            help='Print PIDs for framed traces, or the process preamble for unframed traces, then exit')
 
-        parser.add_argument(
-            '--format', choices=('binary', 'unframed_binary', 'json'), default=None,
-            help='Optional recording format hint for replay input')
+def _command_parser():
+    parser = argparse.ArgumentParser(
+        prog="python -m retracesoftware",
+        description="Retrace record/replay system"
+    )
+    sub = parser.add_subparsers(dest='command')
+    sub.add_parser('install', help='Install .pth file for RETRACE=1 auto-activation')
+    sub.add_parser('uninstall', help='Remove .pth file to disable auto-activation')
+    return parser
 
-        args = parser.parse_args()
-        replay(args)
+
+def create_options(argv=None):
+    argv = list(sys.argv[1:] if argv is None else argv)
+    target_mode = mode(argv=argv)
+
+    if target_mode in ("install", "uninstall"):
+        options = _command_parser().parse_args(argv)
+        options.mode = options.command
+        return options
+
+    if target_mode == "record":
+        options = _record_parser().parse_args(argv)
+        options.mode = target_mode
+        return options
+
+    options = _replay_parser().parse_args(argv)
+    options.mode = "list_pids" if getattr(options, "list_pids", False) else "replay"
+    return options
+
+
+def create_runner(argv=None):
+    options = create_options(argv)
+    target_mode = mode(options)
+    if target_mode == "install":
+        return lambda: cmd_install(options)
+    if target_mode == "uninstall":
+        return lambda: cmd_uninstall(options)
+    if target_mode == "list_pids":
+        return lambda: list_pids(options)
+    if target_mode == "record":
+        return create_record_runner(options)
+    if target_mode == "replay":
+        return create_replay_runner(options)
+    raise ValueError(f"unknown mode: {target_mode!r}")
+
 
 if __name__ == "__main__":
-    main()
+    create_runner()()

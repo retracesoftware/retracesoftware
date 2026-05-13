@@ -22,11 +22,89 @@ if __name__ == "__main__":
 else:
     import os
 
+    _RETRACE_PYTHON_REEXECED = "RETRACE_PYTHON_REEXECED"
+
     def _is_running_retrace():
         import sys
         return (len(sys.orig_argv) >= 3
                 and sys.orig_argv[1] == '-m'
                 and sys.orig_argv[2].startswith('retracesoftware'))
+
+    def _has_retrace():
+        try:
+            import retrace  # noqa: F401
+        except ImportError:
+            return False
+        return True
+
+    def _python_version():
+        import sys
+        return ".".join(str(part) for part in sys.version_info[:3])
+
+    def _python_home():
+        import sys
+        prefix = getattr(sys, "base_prefix", sys.prefix)
+        exec_prefix = getattr(sys, "base_exec_prefix", sys.exec_prefix)
+        if exec_prefix != prefix:
+            return os.pathsep.join((prefix, exec_prefix))
+        return prefix
+
+    def _python_path():
+        import sys
+        paths = []
+        for path in sys.path:
+            if path not in paths:
+                paths.append(path)
+        return os.pathsep.join(paths)
+
+    def _patched_python():
+        import sys
+        try:
+            import retracesoftware_cpython
+        except ImportError as exc:
+            print(
+                "retracesoftware requires retracesoftware-cpython to auto-enable retrace-python",
+                file=sys.stderr,
+            )
+            raise SystemExit(1) from exc
+
+        expected = _python_version()
+        actual = getattr(retracesoftware_cpython, "__cpython_version__", None)
+        if actual != expected:
+            print(
+                "retracesoftware-cpython does not match this Python: "
+                f"expected {expected}, got {actual or 'unknown'}",
+                file=sys.stderr,
+            )
+            raise SystemExit(1)
+
+        executable = retracesoftware_cpython.executable()
+        if not os.path.isfile(executable):
+            print(f"retracesoftware-cpython executable not found: {executable}", file=sys.stderr)
+            raise SystemExit(1)
+        return executable
+
+    def _retrace_env():
+        import sys
+        env = os.environ.copy()
+        env[_RETRACE_PYTHON_REEXECED] = "1"
+        env["RETRACE_ORIGINAL_PYTHON"] = sys.executable
+        env["PYTHONHOME"] = _python_home()
+        env["PYTHONPATH"] = _python_path()
+        return env
+
+    def _exec_retrace_python(argv):
+        import sys
+        if _has_retrace():
+            executable = sys.executable
+            env = os.environ.copy()
+        else:
+            if os.environ.get(_RETRACE_PYTHON_REEXECED):
+                print("patched retrace-python did not load retrace", file=sys.stderr)
+                raise SystemExit(1)
+            executable = _patched_python()
+            env = _retrace_env()
+        os.execvpe(executable, [executable, *argv[1:]], env)
 
     def _script_stem():
         """Derive the base script name (no extension) from sys.orig_argv."""
@@ -98,4 +176,4 @@ else:
                 new_argv.extend(config_to_argv(config))
                 new_argv.append('--')
                 new_argv.extend(sys.orig_argv[1:])
-                os.execv(sys.executable, new_argv)
+                _exec_retrace_python(new_argv)

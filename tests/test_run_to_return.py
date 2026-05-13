@@ -1,22 +1,18 @@
 """Tests for the run_to_return control protocol primitive.
 
-Verifies that Controller._install_run_to_return correctly arms
-utils.watch(on_return=...) and that the resulting cursor_snapshot
-is sent back through the control event loop.
+The current control protocol targets retrace-python coordinate cursors.  These
+tests keep the old call-counter API out of the runtime path and exercise the
+same public cursor shape used by replay.
 """
-import sys
+
 import _thread
+import threading
 from collections import deque
 
 import pytest
+import retrace
 
-import retracesoftware.utils as utils
-from retracesoftware.control_runtime import Controller
-
-requires_311 = pytest.mark.skipif(
-    sys.version_info < (3, 11),
-    reason="CallCounter hooks require Python 3.11+",
-)
+from retracesoftware.control_runtime import Controller, RunToReturn, control_event_loop
 
 
 class MockControlSocket:
@@ -38,164 +34,144 @@ class MockControlSocket:
         pass
 
 
-def _make_run_to_return_request(thread_id, function_counts):
+def _make_run_to_return_request(cursor):
     return {
-        "request_id": "rtr-1",
+        "id": "rtr-1",
         "command": "run_to_return",
-        "params": {
-            "thread_id": thread_id,
-            "function_counts": list(function_counts),
-        },
+        "params": {"cursor": cursor},
     }
 
 
-@pytest.fixture(autouse=True)
-def _clean_call_counter():
-    yield
+def _busy_loop(iterations=1000):
+    value = 0
+    for index in range(iterations):
+        value += index
+        value ^= index
+        value += 1
+    return value
+
+
+def _stop_reasons(responses):
+    return [
+        response["payload"]["reason"]
+        for response in responses
+        if response.get("kind") == "stop"
+    ]
+
+
+def _cursor_events(responses):
+    return [
+        response["payload"]["cursor"]
+        for response in responses
+        if response.get("kind") == "event" and response.get("event") == "cursor"
+    ]
+
+
+def _run_worker_to_return(delta, workload):
+    ready = threading.Event()
+    go = threading.Event()
+    errors = []
+    idents = {}
+
+    def worker():
+        try:
+            idents["target"] = _thread.get_ident()
+            ready.set()
+            assert go.wait(5)
+            workload()
+        except BaseException as exc:
+            errors.append(exc)
+
+    thread = threading.Thread(target=worker)
+    thread.start()
+    assert ready.wait(5)
+
+    target_id = idents["target"]
+    base = tuple(retrace.coordinates(target_id))
+    cursor = {
+        "thread_id": target_id,
+        "coordinates": list((*base[:-1], base[-1] + delta)),
+    }
+    socket = MockControlSocket([_make_run_to_return_request(cursor)])
+    Controller(control_socket=socket)
+
     try:
-        utils.uninstall_call_counter()
-    except Exception:
-        pass
+        go.set()
+        thread.join(timeout=5)
+        assert not thread.is_alive()
+        assert not errors
+        return socket.responses
+    finally:
+        retrace.call_at(None)
 
 
-@requires_311
-class TestRunToReturn:
-    def test_basic_run_to_return_fires(self):
-        """Controller._install_run_to_return should fire on_return and
-        send a stop message with a valid cursor."""
-        tid = _thread.get_ident()
-        cc = utils.CallCounter()
+def _drive_until_return(workload):
+    last_responses = None
+    for delta in range(1, 64):
+        responses = _run_worker_to_return(delta, workload)
+        last_responses = responses
+        if _stop_reasons(responses) == ["return"]:
+            return responses
+    pytest.fail(f"could not find reachable run_to_return coordinate: {last_responses}")
 
-        def child():
-            pass
 
-        def target_fn(probe):
-            probe()
-            child()
-            child()
+def test_event_loop_run_to_return_uses_coordinate_cursor():
+    cursor = {"thread_id": 123, "coordinates": [7, 11]}
+    socket = MockControlSocket([_make_run_to_return_request(cursor)])
+    loop = control_event_loop(lambda _: None, socket, get_message_index=lambda: 42)
 
-        entries = []
+    intent = next(loop)
+    assert isinstance(intent, RunToReturn)
+    assert intent.cursor == cursor
 
-        def capture_target():
-            entries.append(utils.current_call_counts())
+    hit_cursor = {"thread_id": 123, "coordinates": [7, 11], "f_lasti": 4}
+    assert isinstance(loop.send(hit_cursor), RunToReturn)
 
-        def driver(probe):
-            target_fn(probe)
+    with pytest.raises(StopIteration):
+        loop.send("return")
 
-        with cc:
-            driver(cc.disable_for(capture_target))
-        assert len(entries) == 1
-        target = entries[0]
+    assert socket.responses == [
+        {
+            "id": "rtr-1",
+            "kind": "event",
+            "event": "cursor",
+            "payload": {"cursor": hit_cursor, "message_index": 42},
+        },
+        {
+            "kind": "stop",
+            "payload": {
+                "reason": "return",
+                "message_index": 42,
+                "cursor": hit_cursor,
+                "thread_cursors": {},
+            },
+        },
+    ]
 
-        sock = MockControlSocket([
-            _make_run_to_return_request(tid, target),
-        ])
 
-        with cc:
-            cc.disable_for(lambda: Controller(control_socket=sock))()
-            driver(cc.disable_for(lambda: None))
+def test_controller_run_to_return_fires_for_worker_coordinate():
+    responses = _drive_until_return(lambda: _busy_loop())
 
-        # Verify stop message was written
-        stop_msgs = [r for r in sock.responses if r.get("kind") == "stop"]
-        assert len(stop_msgs) == 1, (
-            f"Expected exactly one stop message; got responses={sock.responses}"
-        )
-        payload = stop_msgs[0]["payload"]
-        assert payload["reason"] == "return"
-        cursor = payload["cursor"]
-        assert "thread_id" in cursor
-        assert "function_counts" in cursor
-        assert cursor["thread_id"] == tid
-        fc = cursor["function_counts"]
-        assert len(fc) == len(target), (
-            f"on_return fires pre-pop, cursor depth should match target: "
-            f"fc={fc} target={target}"
-        )
+    events = _cursor_events(responses)
+    assert len(events) == 1
+    assert "coordinates" in events[0]
+    assert "function_counts" not in events[0]
+    assert _stop_reasons(responses) == ["return"]
 
-    def test_run_to_return_with_subcalls(self):
-        """on_return must fire even when the target function calls subcalls
-        (which change the last element of function_counts)."""
-        tid = _thread.get_ident()
-        cc = utils.CallCounter()
 
-        def deep_child():
-            pass
+def test_controller_run_to_return_survives_child_calls_before_hit():
+    def child():
+        _busy_loop(20)
 
-        def mid_child():
-            deep_child()
+    def workload():
+        child()
+        _busy_loop()
+        child()
 
-        entries = []
+    responses = _drive_until_return(workload)
 
-        def capture():
-            entries.append(utils.current_call_counts())
-
-        def target_fn(probe):
-            probe()
-            mid_child()
-            deep_child()
-            mid_child()
-
-        with cc:
-            target_fn(cc.disable_for(capture))
-        target = entries[0]
-
-        sock = MockControlSocket([
-            _make_run_to_return_request(tid, target),
-        ])
-
-        with cc:
-            cc.disable_for(lambda: Controller(control_socket=sock))()
-            target_fn(cc.disable_for(lambda: None))
-
-        stop_msgs = [r for r in sock.responses if r.get("kind") == "stop"]
-        assert len(stop_msgs) == 1, (
-            f"Expected one stop message; got {sock.responses}"
-        )
-        cursor = stop_msgs[0]["payload"]["cursor"]
-        assert len(cursor["function_counts"]) == len(target)
-
-    def test_run_to_return_deeply_nested(self):
-        """Verify run_to_return for a function several levels deep."""
-        tid = _thread.get_ident()
-        cc = utils.CallCounter()
-
-        def leaf():
-            pass
-
-        entries = []
-
-        def capture_level3():
-            entries.append(utils.current_call_counts())
-
-        def level3(probe):
-            probe()
-            leaf()
-
-        def level2(probe):
-            level3(probe)
-
-        def level1(probe):
-            level2(probe)
-
-        def driver(probe):
-            level1(probe)
-
-        with cc:
-            driver(cc.disable_for(capture_level3))
-        target = entries[0]
-        assert len(target) >= 3
-
-        sock = MockControlSocket([
-            _make_run_to_return_request(tid, target),
-        ])
-
-        with cc:
-            cc.disable_for(lambda: Controller(control_socket=sock))()
-            driver(cc.disable_for(lambda: None))
-
-        stop_msgs = [r for r in sock.responses if r.get("kind") == "stop"]
-        assert len(stop_msgs) == 1, (
-            f"Expected one stop message; got {sock.responses}"
-        )
-        cursor = stop_msgs[0]["payload"]["cursor"]
-        assert len(cursor["function_counts"]) == len(target)
+    events = _cursor_events(responses)
+    assert len(events) == 1
+    assert events[0]["thread_id"] != 0
+    assert len(events[0]["coordinates"]) >= 2
+    assert _stop_reasons(responses) == ["return"]

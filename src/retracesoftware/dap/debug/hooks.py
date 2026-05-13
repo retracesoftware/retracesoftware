@@ -24,6 +24,18 @@ _TOOL_ID = sys.monitoring.DEBUGGER_ID if _has_monitoring else 0
 THREAD_ID = 1
 
 
+def _disable_retrace_callback(callback: Callable) -> Callable:
+    try:
+        import retrace
+    except ImportError:
+        return callback
+
+    disable = getattr(retrace, "disable", None) or getattr(retrace, "exclude", None)
+    if disable is None:
+        return callback
+    return disable(callback)
+
+
 class DebugHooks:
     """Installs debugger hooks and manages pause/resume/stepping state.
 
@@ -95,13 +107,13 @@ class DebugHooks:
         )
         sys.monitoring.register_callback(
             _TOOL_ID, sys.monitoring.events.LINE,
-            self._disable_for(self._on_line))
+            self._disable_for(_disable_retrace_callback(self._on_line)))
         sys.monitoring.register_callback(
             _TOOL_ID, sys.monitoring.events.PY_RETURN,
-            self._disable_for(self._on_return))
+            self._disable_for(_disable_retrace_callback(self._on_return)))
         sys.monitoring.register_callback(
             _TOOL_ID, sys.monitoring.events.RAISE,
-            self._disable_for(self._on_raise))
+            self._disable_for(_disable_retrace_callback(self._on_raise)))
 
     def _uninstall_monitoring(self) -> None:
         try:
@@ -153,11 +165,11 @@ class DebugHooks:
         sys.settrace(self._wrap_trace(self._trace_dispatch))
 
     def _wrap_trace(self, func: Callable) -> Callable:
-        disabled = self._disable_for(func)
+        disabled = self._disable_for(_disable_retrace_callback(func))
         def wrapped(*args, **kwargs):
             result = disabled(*args, **kwargs)
             return self._wrap_trace(result) if callable(result) else result
-        return wrapped
+        return _disable_retrace_callback(wrapped)
 
     def _uninstall_settrace(self) -> None:
         sys.settrace(self._orig_trace)

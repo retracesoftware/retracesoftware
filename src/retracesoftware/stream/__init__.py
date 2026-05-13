@@ -12,7 +12,6 @@ import pickle
 import resource
 import threading
 import time
-import weakref
 import sys
 from types import ModuleType
 from typing import Any
@@ -612,24 +611,6 @@ class ObjectWriter:
 # High-level API (convenience wrappers around C++ extension)
 # ---------------------------------------------------------------------------
 
-def call_periodically(interval, func):
-    if interval is None or interval <= 0:
-        return
-
-    ref = weakref.ref(func)
-    sleep = time.sleep
-
-    def run():
-        while True:
-            obj = ref()
-            if obj is None:
-                break
-            obj()
-            del obj          # release strong ref before sleeping
-            sleep(interval)
-
-    threading.Thread(target=run, args=(), name="Retrace flush tracefile", daemon=True).start()
-
 def get_path_info():
     """Get current path info for recording in settings.json."""
     try:
@@ -809,9 +790,8 @@ class writer(_backend_mod.ObjectWriter):
 
     def __init__(self, path=None, thread=None, output=None, queue=None,
                  format="binary",
-                 flush_interval=0.1,
+                 flush_interval=None,
                  verbose=False,
-                 disable_retrace=None,
                  preamble=None,
                  push_fail_callback=None,
                  on_consumer_error=None,
@@ -892,9 +872,7 @@ class writer(_backend_mod.ObjectWriter):
             self._queue.on_target_error = on_consumer_error
 
         self._output = output
-        self._disable_retrace = disable_retrace
         self._heartbeat_enabled = True
-        self._heartbeat_lock = threading.Lock()
 
         kwargs = dict(verbose=verbose)
         if quit_on_error:
@@ -911,7 +889,7 @@ class writer(_backend_mod.ObjectWriter):
         except ImportError:
             pass
 
-        call_periodically(interval=flush_interval, func=self.heartbeat)
+        self.enable_heartbeat(flush_interval)
 
         if self._fw is not None and path is not None and hasattr(os, 'register_at_fork'):
             os.register_at_fork(
@@ -923,19 +901,18 @@ class writer(_backend_mod.ObjectWriter):
     def __enter__(self): return self
 
     def __exit__(self, *args):
-        with self._heartbeat_lock:
-            self._heartbeat_enabled = False
-            self.flush()
-            self.disable()
-            if hasattr(self, '_queue') and self._queue and hasattr(self._queue, 'close'):
-                self._queue.close()
-            if hasattr(self, '_fw') and self._fw and hasattr(self._fw, 'close'):
-                self._fw.close()
-            if self._close_output and hasattr(self, '_output') and self._output and hasattr(self._output, 'close'):
-                self._output.close()
-            self._output = None
-            self._queue = None
-            self._fw = None
+        self._heartbeat_enabled = False
+        self.flush()
+        self.disable()
+        if hasattr(self, '_queue') and self._queue and hasattr(self._queue, 'close'):
+            self._queue.close()
+        if hasattr(self, '_fw') and self._fw and hasattr(self._fw, 'close'):
+            self._fw.close()
+        if self._close_output and hasattr(self, '_output') and self._output and hasattr(self._output, 'close'):
+            self._output.close()
+        self._output = None
+        self._queue = None
+        self._fw = None
 
     def serialize(self, obj):
         serializer = self.type_serializer.get(type(obj))
@@ -944,25 +921,36 @@ class writer(_backend_mod.ObjectWriter):
 
         return pickle.dumps(obj)
 
+    def heartbeat_payload(self):
+        if not getattr(self, "_heartbeat_enabled", False):
+            return None
+        queue = getattr(self, "_queue", None)
+        if queue is None:
+            return None
+        # Heartbeats are best-effort diagnostics; skip them while the
+        # writer is already under load to avoid competing with the main
+        # producer thread during backpressure.
+        if getattr(queue, "inflight_bytes", 0) > 0:
+            return None
+        return {
+            'ts': time.time(),
+            'inflight': queue.inflight_bytes,
+            'messages': self.messages_written,
+            'rss': resource.getrusage(resource.RUSAGE_SELF).ru_maxrss,
+            'threads': threading.active_count(),
+        }
+
+    def enable_heartbeat(self, interval, callback=None):
+        output = getattr(self, "_output", None)
+        if hasattr(output, "set_heartbeat"):
+            output.set_heartbeat(
+                (callback or self.heartbeat_payload) if interval is not None and interval > 0 else None,
+                0.0 if interval is None else float(interval),
+            )
+
     def heartbeat(self):
-        with self._heartbeat_lock:
-            if not getattr(self, "_heartbeat_enabled", False):
-                return
-            queue = getattr(self, "_queue", None)
-            if queue is None:
-                return
-            # Heartbeats are best-effort diagnostics; skip them while the
-            # writer is already under load to avoid competing with the main
-            # producer thread during backpressure.
-            if getattr(queue, "inflight_bytes", 0) > 0:
-                return
-            payload = {
-                'ts': time.time(),
-                'inflight': queue.inflight_bytes,
-                'messages': self.messages_written,
-                'rss': resource.getrusage(resource.RUSAGE_SELF).ru_maxrss,
-                'threads': threading.active_count(),
-            }
+        payload = self.heartbeat_payload()
+        if payload is not None:
             super().heartbeat(payload)
 
     # -- Fork safety ----------------------------------------------------------
@@ -994,9 +982,8 @@ class writer(_backend_mod.ObjectWriter):
 
     def _after_fork_child(self):
         if not getattr(self, "_pid_framed", False):
-            with self._heartbeat_lock:
-                self._heartbeat_enabled = False
-                self.disable()
+            self._heartbeat_enabled = False
+            self.disable()
             return
 
         if self._fw:

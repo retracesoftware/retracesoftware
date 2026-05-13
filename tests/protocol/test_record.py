@@ -69,8 +69,8 @@ def test_stream_writer_uses_private_intern_fallback():
     raw_writer = PrivateInternWriter()
     writer = stream_writer(raw_writer)
 
-    writer.intern("CALL")
+    writer.intern("TOKEN")
 
     assert raw_writer.calls == [
-        ("_intern", ("CALL",)),
+        ("_intern", ("TOKEN",)),
     ]

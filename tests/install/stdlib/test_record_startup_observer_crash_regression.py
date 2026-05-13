@@ -19,6 +19,8 @@ import sys
 
 import pytest
 
+from tests.helpers import PYTHON
+
 
 @pytest.mark.skipif(
     sys.version_info < (3, 12),
@@ -34,7 +36,7 @@ def test_record_startup_does_not_crash_utils_observer_init(tmp_path: Path):
 
     proc = subprocess.run(
         [
-            sys.executable,
+            PYTHON,
             "-m",
             "retracesoftware",
             "--recording",
@@ -60,7 +62,7 @@ def test_record_startup_does_not_crash_utils_observer_init(tmp_path: Path):
     # Control check: with stacktrace callback enabled the same path is healthy.
     control = subprocess.run(
         [
-            sys.executable,
+            PYTHON,
             "-m",
             "retracesoftware",
             "--recording",

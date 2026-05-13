@@ -344,34 +344,6 @@ static PyObject * create_stub_object(PyObject * module, PyObject * obj) {
     return cls->tp_alloc(cls, 0);
 }
 
-static PyObject * is_identity_hash(PyObject * module, PyObject * obj) {
-    if (!PyType_Check(obj)) {
-        PyErr_SetString(PyExc_TypeError, "is_identity_hash takes a type as a parameter");
-        return nullptr;
-    }
-    PyTypeObject * cls = reinterpret_cast<PyTypeObject *>(obj);
-
-    return PyBool_FromLong(cls->tp_hash == (hashfunc)_Py_HashPointer);
-}
-
-static PyObject * patch_hash(PyObject * module, PyObject * args, PyObject * kwargs) {
-
-    PyTypeObject * cls;
-    PyObject * func;
-    static const char *kwlist[] = {"cls", "hashfunc", NULL};  // List of keyword
-
-    if (!PyArg_ParseTupleAndKeywords(args, kwargs, "O!O", (char **)kwlist, &PyType_Type, &cls, &func)) {
-        return nullptr;
-    }
-
-    if (cls->tp_hash != (hashfunc)_Py_HashPointer) {
-        PyErr_Format(PyExc_TypeError, "Not patching hash for class: %S as it does not have identity hash", cls);
-        return nullptr;
-    }
-    retracesoftware::patch_hash(cls, func);
-    Py_RETURN_NONE;
-}
-
 static PyObject * is_wrapped(PyObject * module, PyObject * obj) {
     return PyBool_FromLong(PyObject_TypeCheck(obj, &retracesoftware::Wrapped_Type));
 }
@@ -529,18 +501,6 @@ static PyObject * intercept_dict_set(PyObject * module, PyObject * args, PyObjec
 //     Py_RETURN_NONE;
 // }
 
-// static PyObject * generation_to_collect(PyObject * module, PyObject * multiplier) {
-//     long m = PyLong_AsLong(multiplier);
-
-//     if (m == -1 && PyErr_Occurred()) {
-//         return nullptr;
-//     }
-
-//     int gen = retracesoftware::generation_to_collect(m);
-
-//     return gen == -1 ? Py_NewRef(Py_None) : PyLong_FromLong(gen);
-// }
-
 // gilwatch — activates the preloaded mutex interposer for GIL switch detection.
 // Defined in gilwatch_activate.c (needs Py_BUILD_CORE for _PyRuntime access).
 extern "C" pthread_mutex_t * gilwatch_get_gil_mutex(void);
@@ -611,7 +571,6 @@ static PyObject * gilwatch_activate(PyObject * self, PyObject * callback) {
 }
 
 static PyMethodDef module_methods[] = {
-    // {"generation_to_collect", (PyCFunction)generation_to_collect, METH_O, "TODO"},
     // {"is_entry_frame", (PyCFunction)print_stack_trace, METH_NOARGS, "TODO"},
     // {"print_c_stack_trace", (PyCFunction)print_stack_trace, METH_NOARGS, "TODO"},
     {"intercept_dict_set", (PyCFunction)intercept_dict_set, METH_VARARGS | METH_KEYWORDS, "TODO"},
@@ -621,8 +580,6 @@ static PyMethodDef module_methods[] = {
     {"intercept_frame_eval", (PyCFunction)intercept_frame_eval, METH_O, "TODO"},
     {"intercept__new__", (PyCFunction)intercept__new__, METH_VARARGS | METH_KEYWORDS, "TODO"},
     {"extend_type", extend_type, METH_O, "TODO"},
-    {"patch_hash", (PyCFunction)patch_hash, METH_VARARGS | METH_KEYWORDS, "Tests if the given type has an identity hash"},
-    {"is_identity_hash", is_identity_hash, METH_O, "Tests if the given type has an identity hash"},
     {"start_new_thread_wrapper", (PyCFunction)retracesoftware::start_new_thread_wrapper, METH_FASTCALL,
      "start_new_thread_wrapper(original, middleware, fn, args[, kwargs])"},
     {"is_method_descriptor", is_method_descriptor, METH_O, "Returns if the object is a method descriptor"},
@@ -789,8 +746,6 @@ PyMODINIT_FUNC CONCAT(PyInit_, MODULE_NAME)(void) {
         &retracesoftware::StripTraceback_Type,
         &retracesoftware::Observer_Type,
         &retracesoftware::PerThread_Type,
-        &retracesoftware::CollectPred_Type,
-        &retracesoftware::Collector_Type,
         &retracesoftware::RunAll_Type,
         &retracesoftware::StackFactory_Type,
         &retracesoftware::Stack_Type,

@@ -20,13 +20,19 @@ from typing import Any, Callable, Generator, Optional, Protocol, TextIO
 
 import retracesoftware.functional as functional
 import retracesoftware.utils as utils
-import retracesoftware.cursor as cursor
+import retrace
 from retracesoftware.utils.breakpoint import BreakpointSpec, install_breakpoint, install_function_breakpoint, _acquire_tool_id
 
 _real_fork = os.fork
 _RETRACE_PACKAGE_DIR = os.path.dirname(os.path.realpath(__file__))
 _HAS_MONITORING = hasattr(sys, "monitoring")
 _TRACE_UNSET = object()
+
+
+def _disable_retrace_callback(callback):
+    disable = getattr(retrace, "disable", None) or retrace.exclude
+    return disable(callback)
+
 
 @dataclass
 class StopAtBreakpoint:
@@ -38,8 +44,7 @@ class StopAtCursor:
 
 @dataclass
 class RunToReturn:
-    function_counts: tuple[int, ...]
-    max_call_counter: int | None = None
+    cursor: dict[str, Any]
 
 @dataclass
 class NextInstruction:
@@ -268,10 +273,41 @@ def _parse_request_fields(request: Any) -> tuple[str, str, dict[str, Any]]:
 def _parse_cursor_param(params: dict[str, Any], request_id: str) -> dict[str, Any]:
     raw_cursor = params.get("cursor")
     if not isinstance(raw_cursor, dict):
-        raise ParseRequestError(request_id, "invalid_params", "cursor must be a dict with function_counts")
-    if "function_counts" not in raw_cursor:
-        raise ParseRequestError(request_id, "invalid_params", "cursor requires function_counts")
+        raise ParseRequestError(request_id, "invalid_params", "cursor must be a dict with coordinates")
+    if "coordinates" not in raw_cursor:
+        raise ParseRequestError(request_id, "invalid_params", "cursor requires coordinates")
     return raw_cursor
+
+
+def _cursor_coordinates(cursor_dict: dict[str, Any]) -> tuple[int, ...]:
+    raw = cursor_dict.get("coordinates")
+    if not isinstance(raw, (list, tuple)):
+        raise ValueError("cursor coordinates must be a list")
+    return tuple(int(item) for item in raw)
+
+
+def _coordinate_snapshot(
+    *,
+    thread_id: Optional[int] = None,
+    frame=None,
+    code: Optional[CodeType] = None,
+    f_lasti: Optional[int] = None,
+) -> dict[str, Any]:
+    if thread_id is None:
+        thread_id = _thread.get_ident()
+    snapshot: dict[str, Any] = {
+        "thread_id": thread_id,
+        "coordinates": list(retrace.coordinates(thread_id)),
+    }
+    if frame is not None:
+        snapshot["f_lasti"] = frame.f_lasti
+        snapshot["lineno"] = FrameInspector._frame_lineno(frame)
+        return snapshot
+    if f_lasti is not None:
+        snapshot["f_lasti"] = f_lasti
+        if code is not None:
+            snapshot["lineno"] = Controller._lineno_from_code(code, f_lasti)
+    return snapshot
 
 
 def _write_ok(write_response: Callable[[dict[str, Any]], None], request_id: str, payload: dict[str, Any]) -> None:
@@ -367,8 +403,8 @@ def _build_instruction_info(code: CodeType) -> tuple[list[int], list[int]]:
                 entry_points.add(i * 2)
 
     # Mark instructions following CALL-family opcodes as entry points.
-    # After a child call returns, FunctionCounts has changed, so the
-    # fast path must not scan backward across that boundary.
+    # After a child call returns, the visible coordinate stack has changed,
+    # so the fast path must not scan backward across that boundary.
     call_opcodes = frozenset(
         opcode.opmap[n]
         for n in ("CALL", "CALL_FUNCTION_EX")
@@ -495,19 +531,8 @@ def control_event_loop(
                     continue
 
                 elif command == "run_to_return":
-                    raw_fc = params.get("function_counts")
-                    if not isinstance(raw_fc, (list, tuple)) or not raw_fc:
-                        raise ParseRequestError(
-                            request_id, "invalid_params",
-                            "run_to_return requires non-empty function_counts",
-                        )
-                    max_cc = params.get("max_call_counter")
-                    if max_cc is not None and (not isinstance(max_cc, int) or max_cc < 0):
-                        raise ParseRequestError(
-                            request_id, "invalid_params",
-                            "max_call_counter must be a non-negative integer",
-                        )
-                    intent = RunToReturn(function_counts=tuple(raw_fc), max_call_counter=max_cc)
+                    target = _parse_cursor_param(params, request_id)
+                    intent = RunToReturn(cursor=target)
                     frame = None
                     last_cursor: dict[str, Any] = {}
                     while True:
@@ -571,14 +596,9 @@ def control_event_loop(
                             request_id, "invalid_params", "fork requires socket_path"
                         )
 
-                    _raw_cc = cursor._get_shared_raw_cc()
-
                     saved = on_before_fork() if on_before_fork else None
 
                     child_pid = _real_fork()
-
-                    if child_pid == 0:
-                        _raw_cc().discard_watches()
 
                     if on_after_fork:
                         on_after_fork(saved)
@@ -718,38 +738,25 @@ class TraceInstructionMonitor:
 
 
 def register_cursor_callback(cursor_dict, callback, on_missed=None):
-    cursor.install_call_counter()
-    target_f_lasti = cursor_dict.get("f_lasti")
-    counts = tuple(cursor_dict["function_counts"])
+    thread_id = cursor_dict.get("thread_id")
+    coordinates = _cursor_coordinates(cursor_dict)
 
-    if target_f_lasti is None:
-        cursor.watch(counts, on_start=callback, on_missed=on_missed)
-        return
+    def _on_hit():
+        callback(_find_user_frame())
 
-    if not _HAS_MONITORING:
-        cursor.watch(counts, on_start=callback, on_missed=on_missed)
-        return
+    def _on_overshoot():
+        if on_missed is not None:
+            on_missed()
 
-    os_tid = _thread.get_ident()
-    tool_id = _acquire_tool_id("retrace_cursor_advance")
-    E = sys.monitoring.events
-    monitor = utils.InstructionMonitor(tool_id)
-
-    def _on_instruction(code, offset):
-        if _thread.get_ident() != os_tid:
-            return
-        if tuple(cursor.current_call_counts()) != counts:
-            return
-        if offset != target_f_lasti:
-            return
-        monitor.close()
-        callback(_find_frame_for_code(code))
-
-    sys.monitoring.register_callback(
-        tool_id, E.INSTRUCTION,
-        cursor.call_counter_disable_for(_on_instruction),
-    )
-    sys.monitoring.set_events(tool_id, E.INSTRUCTION)
+    try:
+        retrace.call_at(
+            thread_id,
+            coordinates,
+            _disable_retrace_callback(_on_hit),
+            _disable_retrace_callback(_on_overshoot),
+        )
+    except ValueError:
+        _on_overshoot()
 
 def _find_frame_for_code(code: CodeType):
     frame = sys._getframe(1)
@@ -788,11 +795,18 @@ class Controller:
         get_thread_id: Optional[Callable[[], Any]] = None,
     ):
         self._get_thread_id = get_thread_id or _thread.get_ident
-        self._disable_for = functional.sequence(cursor.call_counter_disable_for, disable_for)
+        if disable_for is None:
+            self._disable_for = _disable_retrace_callback
+        else:
+            self._disable_for = functional.sequence(
+                _disable_retrace_callback,
+                disable_for,
+            )
         self._control_socket = control_socket
         self._in_control_log = False
         self._monitor = None
         self._trace_monitor = None
+        self._resume_callback_restore = None
         self._current_breakpoint = None
         self._backstop = None
         self._message_index = 0
@@ -836,12 +850,7 @@ class Controller:
             self._event_loop_lock.release()
 
     def _cursor_dict(self, snapshot: Optional[dict] = None) -> dict[str, Any]:
-        """Build a cursor dict using the configured thread_id source.
-
-        If *snapshot* is given (e.g. from ``cursor_snapshot().to_dict()``),
-        overwrite its ``thread_id`` with the stable one.  Otherwise build
-        a fresh cursor from current call counts.
-        """
+        """Build a coordinate cursor dict using the configured thread id."""
         if snapshot is not None:
             snapshot["thread_id"] = self._get_thread_id()
             if "lineno" not in snapshot:
@@ -854,11 +863,7 @@ class Controller:
                 if code is not None and f_lasti is not None:
                     snapshot["lineno"] = self._lineno_from_code(code, f_lasti)
             return snapshot
-        return {
-            "thread_id": self._get_thread_id(),
-            "function_counts": list(cursor.current_call_counts()),
-            "f_lasti": None,
-        }
+        return _coordinate_snapshot(thread_id=self._get_thread_id())
 
     def _set_backstop(self, message_index: int):
         self._backstop = message_index
@@ -868,12 +873,10 @@ class Controller:
             return FrameInspector(self._stopped_frame)
         return None
 
-    def _stopped_cursor_snapshot(self) -> dict[str, Any]:
-        snapshot = cursor.cursor_snapshot().to_dict()
+    def _stopped_coordinate_snapshot(self) -> dict[str, Any]:
         if self._stopped_frame is not None:
-            snapshot["f_lasti"] = self._stopped_frame.f_lasti
-            snapshot["lineno"] = FrameInspector._frame_lineno(self._stopped_frame)
-        return self._cursor_dict(snapshot)
+            return self._cursor_dict(_coordinate_snapshot(frame=self._stopped_frame))
+        return self._cursor_dict()
 
     def on_new_message(self, message):
         self._message_index += 1
@@ -882,7 +885,7 @@ class Controller:
         if self._backstop is not None and self._message_index >= self._backstop:
             err = BackstopHitError(
                 message_index=self._message_index,
-                cursor=self._cursor_dict(cursor.cursor_snapshot().to_dict()),
+                cursor=self._cursor_dict(),
             )
             self._event_loop_lock.acquire()
             try:
@@ -937,15 +940,13 @@ class Controller:
             raise RuntimeError(f"unexpected intent: {intent}")
 
     def _install_run_to_return(self, intent: RunToReturn):
-        counters = intent.function_counts
-        cursor.install_call_counter()
-
-        def _on_return():
+        def _on_return(frame=None):
             self._event_loop_lock.acquire()
             try:
                 if self._done:
                     return
-                snapshot = self._cursor_dict(cursor.cursor_snapshot().to_dict())
+                self._stopped_frame = frame
+                snapshot = self._stopped_coordinate_snapshot()
                 try:
                     self.event_loop.send(snapshot)
                     intent2 = self.event_loop.send("return")
@@ -958,17 +959,11 @@ class Controller:
         def _on_missed():
             self._send_reason("overshoot")
 
-        cursor.watch(counters,
-                     on_return=self._disable_for(_on_return),
-                     on_missed=self._disable_for(_on_missed))
-
-        if intent.max_call_counter is not None:
-            limit_counters = counters + (intent.max_call_counter,)
-
-            def _on_limit():
-                self._send_reason("call_counter")
-
-            cursor.watch(limit_counters, on_start=self._disable_for(_on_limit))
+        register_cursor_callback(
+            intent.cursor,
+            self._disable_for(_on_return),
+            on_missed=self._disable_for(_on_missed),
+        )
 
     def _install_next_instruction(self):
         if self._trace_monitor is not None:
@@ -1057,12 +1052,11 @@ class Controller:
             self._trace_monitor = None
             self._last_code = code
             self._stopped_frame = _find_frame_for_code(code) or _find_user_frame()
-            cursor_dict = {
-                "thread_id": self._get_thread_id(),
-                "function_counts": list(cursor.current_call_counts()),
-                "f_lasti": offset,
-                "lineno": self._lineno_from_code(code, offset),
-            }
+            cursor_dict = _coordinate_snapshot(
+                thread_id=self._get_thread_id(),
+                code=code,
+                f_lasti=offset,
+            )
             self._send_and_handle_locked(cursor_dict)
 
         sys.monitoring.register_callback(
@@ -1071,14 +1065,20 @@ class Controller:
         sys.monitoring.set_events(tool_id, E.INSTRUCTION)
 
     def _install_wait_for_thread_change(self):
+        old_callback = retrace.callbacks.thread_resume
+        self._resume_callback_restore = old_callback
+
         def on_switch():
-            cursor.set_on_thread_switch(None)
+            retrace.callbacks.thread_resume = old_callback
+            self._resume_callback_restore = None
+            if old_callback is not None:
+                old_callback()
             self._event_loop_lock.acquire()
             try:
                 if self._done:
                     return
                 self._stopped_frame = _find_user_frame()
-                cursor_dict = self._cursor_dict(cursor.cursor_snapshot().to_dict())
+                cursor_dict = self._stopped_coordinate_snapshot()
                 try:
                     next_intent = self.event_loop.send(cursor_dict)
                     self._handle_intent(next_intent)
@@ -1087,7 +1087,7 @@ class Controller:
             finally:
                 self._event_loop_lock.release()
 
-        cursor.set_on_thread_switch(self._disable_for(on_switch))
+        retrace.callbacks.thread_resume = self._disable_for(on_switch)
 
     def _get_instruction_info(self) -> tuple[list[int], list[int]] | None:
         code = None
@@ -1109,12 +1109,11 @@ class Controller:
 
     def _on_instruction_hit(self, code, offset):
         self._last_code = code
-        cursor_dict = {
-            "thread_id": self._get_thread_id(),
-            "function_counts": list(cursor.current_call_counts()),
-            "f_lasti": offset,
-            "lineno": self._lineno_from_code(code, offset),
-        }
+        cursor_dict = _coordinate_snapshot(
+            thread_id=self._get_thread_id(),
+            code=code,
+            f_lasti=offset,
+        )
         self._send_and_handle_locked(cursor_dict)
 
     def _on_trace_complete(self):
@@ -1145,7 +1144,7 @@ class Controller:
                 return
             self._stopped_frame = _find_user_frame()
             try:
-                intent = self.event_loop.send(self._stopped_cursor_snapshot())
+                intent = self.event_loop.send(self._stopped_coordinate_snapshot())
                 self._handle_intent(intent)
             except StopIteration:
                 self._cleanup()
@@ -1159,7 +1158,7 @@ class Controller:
                 return
             self._stopped_frame = frame if frame is not None else _find_user_frame()
             try:
-                intent = self.event_loop.send(self._stopped_cursor_snapshot())
+                intent = self.event_loop.send(self._stopped_coordinate_snapshot())
                 self._handle_intent(intent)
             except StopIteration:
                 self._cleanup()
@@ -1175,5 +1174,7 @@ class Controller:
         if self._trace_monitor is not None:
             self._trace_monitor.close()
             self._trace_monitor = None
-        cursor.set_on_thread_switch(None)
+        if self._resume_callback_restore is not None:
+            retrace.callbacks.thread_resume = self._resume_callback_restore
+            self._resume_callback_restore = None
         self._stopped_frame = None

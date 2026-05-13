@@ -4,7 +4,6 @@ Records a trivial script to disk, then replays from disk.
 Verifies exit codes match and stdout is identical.
 """
 import os
-import sys
 import tempfile
 import shutil
 import subprocess
@@ -13,10 +12,7 @@ from pathlib import Path
 import pytest
 
 from run_record_replay import record_then_replay
-from helpers import run_record, run_replay
-
-PYTHON = sys.executable
-TIMEOUT = 30
+from tests.helpers import PYTHON, TIMEOUT, run_record, run_replay
 
 HELLO_SCRIPT = """\
 import time

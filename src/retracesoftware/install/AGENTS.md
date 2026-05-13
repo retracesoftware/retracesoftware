@@ -22,8 +22,6 @@ Many bugs that look like proxy or replay bugs are actually install-layer bugs.
   Trace/profile hook wrapping and weakref callback wrapping.
 - `monitoring.py`
   `sys.monitoring`-based divergence checkpoints on Python 3.12+.
-- `startthread.py`
-  Wraps `_thread.start_new_thread` so new threads inherit retrace behavior.
 - `pathpredicate.py`
   Decides which file/path calls should be retraced versus passthrough.
 
@@ -34,8 +32,8 @@ Many bugs that look like proxy or replay bugs are actually install-layer bugs.
 - `install_retrace()` installs the process-global runtime, and
   `install_and_run()` executes user code inside the active record/replay
   context.
-- Thread ids are hierarchical tuples built through thread middleware; changes
-  to startup/wrapping can break replay routing even if the program still runs.
+- Thread ids come from retrace-python `_thread.get_ident()`; retracesoftware
+  does not patch native thread startup or assign Python-side ids.
 - Module patching is driven by `src/retracesoftware/modules/*.toml`.
 - Import-time behavior matters: gates are intentionally disabled during heavy
   import machinery and re-enabled around module execution and later patching.
@@ -59,8 +57,6 @@ Many bugs that look like proxy or replay bugs are actually install-layer bugs.
 
 - Import hooks: incorrect wrapping can cause recursion, missed patching, or
   proxying overhead in import paths.
-- Thread startup wrapping: wrong behavior here breaks deterministic thread ids
-  and replay ordering.
 - Callback binding activation/deactivation: wrong timing here can make one
   replay lane go green while another lane silently moves up into AnyIO,
   Starlette, FastAPI, or child-thread replay.
@@ -90,9 +86,8 @@ Many bugs that look like proxy or replay bugs are actually install-layer bugs.
 - Prefer fixing interception coverage in `modules/*.toml` or `patcher.py`
   before changing deeper runtime semantics.
 - Be explicit about lifecycle: install, patch, run, uninstall.
-- `install_retrace()` / `install_and_run()` own thread-id initialization, hook
-  installation, module patching order, and teardown order. Treat them as the
-  lifecycle coordinators.
+- `install_retrace()` / `install_and_run()` own hook installation, module
+  patching order, and teardown order. Treat them as the lifecycle coordinators.
 - Any hook that can recurse into Python execution must be reviewed for gate
   bypass and re-entrancy behavior.
 - Treat `InstallSession`, callback normalization, and wrapped-attr registration
@@ -132,7 +127,6 @@ Many bugs that look like proxy or replay bugs are actually install-layer bugs.
 - `src/retracesoftware/install/importhook.py`
 - `src/retracesoftware/install/hooks.py`
 - `src/retracesoftware/install/monitoring.py`
-- `src/retracesoftware/install/startthread.py`
 - `src/retracesoftware/install/pathpredicate.py`
 - `src/retracesoftware/autoenable.py`
 - `src/retracesoftware/retracesoftware_autoenable.pth`

@@ -10,8 +10,8 @@ normal Python failures.
 - `cpp/stream/`
   Trace transport, queueing, writer/reader pipeline, wire-format-sensitive code.
 - `cpp/utils/`
-  CPython internals, gates, wrappers, demux, thread state, hash patching,
-  traceback stripping, and low-level helpers used across the runtime.
+  CPython internals, gates, wrappers, demux, thread state, traceback stripping,
+  and low-level helpers used across the runtime.
 - `cpp/cursor/`
   Cursor and call-count tracking for replay/debugger navigation.
 - `cpp/functional/`

@@ -3,6 +3,14 @@ import os
 from pathlib import Path
 import sys
 
+_REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(_REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT))
+
+from tests.helpers import ensure_pytest_runs_under_retrace_python
+
+ensure_pytest_runs_under_retrace_python()
+
 os.environ["RETRACE_DEBUG"] = "1"
 
 import shutil
@@ -10,12 +18,8 @@ import tempfile
 
 import pytest
 
-_REPO_ROOT = Path(__file__).resolve().parents[1]
 _BUILD_TAG = f"cp{sys.version_info.major}{sys.version_info.minor}{getattr(sys, 'abiflags', '')}"
 _LOCAL_BUILD_DIR = _REPO_ROOT / "build" / _BUILD_TAG
-
-if str(_REPO_ROOT) not in sys.path:
-    sys.path.insert(0, str(_REPO_ROOT))
 
 from tests.helpers import run_record, run_replay  # noqa: F401 — re-exported for fixtures
 

@@ -14,6 +14,8 @@ from pathlib import Path
 import subprocess
 import sys
 
+from tests.helpers import PYTHON
+
 
 def _run(
     cmd: list[str],
@@ -169,7 +171,7 @@ def _record(
 ) -> subprocess.CompletedProcess[str]:
     return _run(
         [
-            sys.executable,
+            PYTHON,
             "-m",
             "retracesoftware",
             "--recording",
@@ -204,7 +206,7 @@ def _list_pids(
 ) -> subprocess.CompletedProcess[str]:
     return _run(
         [
-            sys.executable,
+            PYTHON,
             "-m",
             "retracesoftware",
             "--recording",

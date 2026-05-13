@@ -1,11 +1,11 @@
 import json
 import os
 import subprocess
-import sys
 import textwrap
 
 import pytest
 from retracesoftware.install import stream_writer
+from tests.helpers import PYTHON
 
 
 pytest.importorskip("requests")
@@ -48,7 +48,7 @@ def test_requests_get_record_only_exits_without_cleanup_traceback(tmp_path):
 
     trace_path = tmp_path / "trace.retrace"
     proc = subprocess.run(
-        [sys.executable, "-m", "retracesoftware", "--recording", str(trace_path), "--", str(script)],
+        [PYTHON, "-m", "retracesoftware", "--recording", str(trace_path), "--", str(script)],
         capture_output=True,
         text=True,
         timeout=60,
@@ -72,7 +72,7 @@ def test_cli_record_supports_json_format(tmp_path):
     trace_path = tmp_path / "trace.jsonl"
     proc = subprocess.run(
         [
-            sys.executable,
+            PYTHON,
             "-m",
             "retracesoftware",
             "--recording",

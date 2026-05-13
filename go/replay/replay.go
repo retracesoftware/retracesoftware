@@ -258,11 +258,11 @@ func (r *Replay) RunToCursor(ctx context.Context, cursor RawCursor) (ControlStop
 		return result, r.wrapErr(fmt.Errorf("run_to_cursor stopped with %s", result.Reason))
 	}
 	r.location = Location{
-		ThreadID:       result.Cursor.ThreadID,
-		FunctionCounts: result.Cursor.FunctionCounts,
-		FLasti:         result.Cursor.FLasti,
-		Lineno:         result.Cursor.Lineno,
-		MessageIndex:   result.MessageIndex,
+		ThreadID:     result.Cursor.ThreadID,
+		Coordinates:  result.Cursor.Coordinates,
+		FLasti:       result.Cursor.FLasti,
+		Lineno:       result.Cursor.Lineno,
+		MessageIndex: result.MessageIndex,
 	}
 	return result, nil
 }
@@ -277,14 +277,10 @@ func (r *Replay) SetBackstop(ctx context.Context, messageIndex int) error {
 
 // RunToReturn sends a run_to_return command and collects the streamed
 // cursor events as Locations. It returns the collected locations and the
-// final stop result (reason is "return", "backstop", or
-// "call_counter_limit").
-func (r *Replay) RunToReturn(ctx context.Context, maxCallCounter *int) ([]Location, ControlStopResult, error) {
+// final stop result (reason is "return" or "backstop").
+func (r *Replay) RunToReturn(ctx context.Context) ([]Location, ControlStopResult, error) {
 	params := map[string]any{
-		"function_counts": r.location.FunctionCounts,
-	}
-	if maxCallCounter != nil {
-		params["max_call_counter"] = *maxCallCounter
+		"cursor": r.location.RawCursor().ToMap(),
 	}
 	if _, err := r.client.SendCommand("run_to_return", params); err != nil {
 		return nil, ControlStopResult{}, r.wrapErr(fmt.Errorf("run_to_return: %w", err))
@@ -316,8 +312,8 @@ func (r *Replay) RunToReturn(ctx context.Context, maxCallCounter *int) ([]Locati
 				case <-time.After(100 * time.Millisecond):
 				}
 			}
-			log.Printf("run_to_return: read error: %v, exitErr: %v, process: %s, fc=%v",
-				err, exitErr, alive, r.location.FunctionCounts)
+			log.Printf("run_to_return: read error: %v, exitErr: %v, process: %s, coords=%v",
+				err, exitErr, alive, r.location.Coordinates)
 			if exitErr != nil {
 				return locations, ControlStopResult{}, exitErr
 			}
@@ -336,11 +332,11 @@ func (r *Replay) RunToReturn(ctx context.Context, maxCallCounter *int) ([]Locati
 		if msg.Kind == "stop" {
 			stop := parseStopResult(msg.Payload)
 			r.location = Location{
-				ThreadID:       stop.Cursor.ThreadID,
-				FunctionCounts: stop.Cursor.FunctionCounts,
-				FLasti:         stop.Cursor.FLasti,
-				Lineno:         stop.Cursor.Lineno,
-				MessageIndex:   stop.MessageIndex,
+				ThreadID:     stop.Cursor.ThreadID,
+				Coordinates:  stop.Cursor.Coordinates,
+				FLasti:       stop.Cursor.FLasti,
+				Lineno:       stop.Cursor.Lineno,
+				MessageIndex: stop.MessageIndex,
 			}
 			return locations, stop, nil
 		}
@@ -377,11 +373,11 @@ func (r *Replay) NextInstruction(ctx context.Context) (Location, error) {
 		if msg.Kind == "stop" {
 			stop := parseStopResult(msg.Payload)
 			loc := Location{
-				ThreadID:       stop.Cursor.ThreadID,
-				FunctionCounts: stop.Cursor.FunctionCounts,
-				FLasti:         stop.Cursor.FLasti,
-				Lineno:         stop.Cursor.Lineno,
-				MessageIndex:   stop.MessageIndex,
+				ThreadID:     stop.Cursor.ThreadID,
+				Coordinates:  stop.Cursor.Coordinates,
+				FLasti:       stop.Cursor.FLasti,
+				Lineno:       stop.Cursor.Lineno,
+				MessageIndex: stop.MessageIndex,
 			}
 			r.location = loc
 			return loc, nil

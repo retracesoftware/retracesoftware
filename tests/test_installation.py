@@ -273,28 +273,21 @@ def test_type_attribute_proxy_preserves_method_binding_and_uninstalls():
     assert Example.__dict__["ping"] is original
 
 
-def test_type_attribute_mixed_directives_all_apply_and_uninstall():
+def test_type_attribute_wrap_directive_applies_and_uninstalls():
     system = _system()
-    calls = []
-    system.sync = lambda: calls.append("sync")
 
     class Example:
-        def wake(self):
-            calls.append("wake")
-
         def close(self):
             return "close"
 
-    original_wake = Example.__dict__["wake"]
     original_close = Example.__dict__["close"]
-    namespace = {"__name__": "test_type_attribute_mixed", "Example": Example}
+    namespace = {"__name__": "test_type_attribute_wrap", "Example": Example}
 
     undo = patch(
         namespace,
         {
             "type_attributes": {
                 "Example": {
-                    "sync": ["wake"],
                     "wrap": {
                         "close": "tests.test_installation._wrap_marker",
                     },
@@ -306,13 +299,10 @@ def test_type_attribute_mixed_directives_all_apply_and_uninstall():
 
     try:
         example = Example()
-        system.gate.apply_with("internal", example.wake)()
-        assert calls == ["sync", "wake"]
         assert example.close() == ("wrapped", "close")
     finally:
         undo()
 
-    assert Example.__dict__["wake"] is original_wake
     assert Example.__dict__["close"] is original_close
 
 

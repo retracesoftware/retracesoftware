@@ -18,6 +18,8 @@ from pathlib import Path
 
 import pytest
 
+from tests.helpers import PYTHON
+
 
 pytest.importorskip("grpc_tools.protoc")
 
@@ -81,7 +83,7 @@ def test_record_grpc_tools_protoc_child_process_does_not_fail(tmp_path: Path):
 
     proc = subprocess.run(
         [
-            sys.executable,
+            PYTHON,
             "-m",
             "retracesoftware",
             "--recording",

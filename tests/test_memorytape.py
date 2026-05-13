@@ -12,9 +12,9 @@ def test_memory_tape_write_is_just_a_flat_append_surface():
 
     assert isinstance(writer, TapeWriter)
 
-    writer.write("CALL", "fn", (1, 2), {"scale": 3})
+    writer.write("TOKEN", "fn", (1, 2), {"scale": 3})
 
-    assert tape.tape == ["CALL", "fn", (1, 2), {"scale": 3}]
+    assert tape.tape == ["TOKEN", "fn", (1, 2), {"scale": 3}]
 
 
 def test_memory_tape_bind_and_read_round_trip_nested_bound_values():
@@ -60,7 +60,7 @@ def test_memory_tape_uses_tape_local_binding_indices_not_global_binder_handles()
 
 
 def test_memory_tape_reader_bind_requires_binding_create_marker():
-    tape = MemoryTape(["CALL"])
+    tape = MemoryTape(["TOKEN"])
     reader = tape.reader()
 
     with pytest.raises(RuntimeError, match="expected bind marker"):

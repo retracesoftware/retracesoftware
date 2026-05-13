@@ -17,6 +17,8 @@ import textwrap
 
 import pytest
 
+from tests.helpers import PYTHON
+
 
 _ROOT = Path(__file__).resolve().parents[3]
 _ATTEMPTS = 10
@@ -138,7 +140,7 @@ def test_appnope_pidfile_replay_does_not_read_past_trace_at_finalize(
 
         record = subprocess.run(
             [
-                sys.executable,
+                PYTHON,
                 "-m",
                 "retracesoftware",
                 "--recording",
@@ -175,7 +177,7 @@ def test_appnope_pidfile_replay_does_not_read_past_trace_at_finalize(
 
         list_pids = subprocess.run(
             [
-                sys.executable,
+                PYTHON,
                 "-m",
                 "retracesoftware",
                 "--recording",

@@ -28,6 +28,18 @@ def _get_shared_raw_cc():
     return _shared_raw_cc
 
 
+def _disable_retrace_callback(callback):
+    try:
+        import retrace
+    except ImportError:
+        return callback
+
+    disable = getattr(retrace, "disable", None) or getattr(retrace, "exclude", None)
+    if disable is None:
+        return callback
+    return disable(callback)
+
+
 _cc_tool_id = None
 
 
@@ -277,7 +289,7 @@ def _yield_at_cursor_impl(thread_id, counters, f_lasti, callback):
 
         sys.monitoring.register_callback(
             tool_id, sys.monitoring.events.INSTRUCTION,
-            raw_cc.disable_for(_on_instruction),
+            raw_cc.disable_for(_disable_retrace_callback(_on_instruction)),
         )
         sys.monitoring.set_local_events(
             tool_id, code, sys.monitoring.events.INSTRUCTION,

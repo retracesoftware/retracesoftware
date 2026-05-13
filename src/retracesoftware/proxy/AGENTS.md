@@ -16,41 +16,36 @@ re-derive the contract from this file.
 
 1. **Replay never calls the live external callable, when retrace is enabled.**
    Replay reads the recorded `RESULT` or `ERROR` from the message stream and
-   returns or raises the recorded outcome. The only materialized-real-object
-   exception is when retrace is already disabled and replay needs a local
-   runtime object such as a module lock. If a fix appears to require running
+   returns or raises the recorded outcome. If a fix appears to require running
    real external code during normal replay, the diagnosis is wrong.
    See `DESIGN.md` -> "Allocation And Materialization".
-2. **Materialized objects are only for disabled-context runtime needs**, not
-   general external-object reconstruction.
-   See `DESIGN.md` -> "Allocation And Materialization".
-3. **Control-plane work must bypass the gates** via `disable_for()`. Recording
-   debugger, monitoring, or replay plumbing into the trace causes silent
-   desynchronization.
-   See `DESIGN.md` -> "`disable_for()`".
-4. **Message order is contract.** Do not introduce, drop, reorder, or coalesce
-   `CALL`, `CALLBACK`, `RESULT`, `ERROR`, `CHECKPOINT`, bind open/close, or
+2. **Control-plane work must bypass the gates** via `disable()` or
+   `disable_for()`. Recording debugger, monitoring, or replay plumbing into
+   the trace causes silent desynchronization.
+   See `DESIGN.md` -> "`disable()` / `disable_for()`".
+3. **Message order is contract.** Do not introduce, drop, reorder, or coalesce
+   `CALLBACK`, `RESULT`, `ERROR`, `CHECKPOINT`, bind open/close, or
    `THREAD_SWITCH` events. Replay alignment is a hard invariant.
    See `DESIGN.md` -> "Record Versus Replay" and "Important Invariants".
-5. **Prefer the narrowest fix in the responsible handler.** If a single diff
+4. **Prefer the narrowest fix in the responsible handler.** If a single diff
    touches more than one of `system.py`, `gateway.py`, `patchtype.py`,
    `io.py`, or `proxytype.py`, stop and re-read `DESIGN.md` before continuing.
    See `DESIGN.md` -> "Main Pieces".
-6. **Do not add backwards-compatibility shims** for old trace formats,
+5. **Do not add backwards-compatibility shims** for old trace formats,
    message tags, or removed APIs. If a recording no longer matches the
    current code, regenerate the recording. Do not pattern new code after
    anything you find under `proxy/` that is not listed in "Live Files" below.
-7. **Prioritize simplicity above all else.** When two correct designs
+6. **Prioritize simplicity above all else.** When two correct designs
    exist, pick the smaller one. Do not add abstractions, indirection, or
    "extensibility hooks" without a concrete consumer that needs them.
    Deletion is preferred over generalization.
-8. **Tracing is observational; it must never alter thread scheduling.**
+7. **Tracing is observational; it must never alter thread scheduling.**
    See `DESIGN.md` -> "Threads" -> "Cross-thread synchronization".
    Smallest reproducer:
    `tests/install/stdlib/test_threading_lock_replay_regression.py`.
    If it fails, the portal/web replay regressions in the Proxy Kernel
    Sentinel Bundle are likely downstream.
-9. **Fix divergence causes, not exposed symptoms.** The mandatory replay
+8. **Fix divergence causes, not exposed symptoms.** The mandatory replay
    debugging loop is:
    1. Find the fundamental record/replay divergence.
    2. Build the smallest failing regression that reproduces that divergence.
@@ -118,10 +113,10 @@ notes.
 
 | File | One-line role | Authoritative section |
 |---|---|---|
-| `system.py` | Owns `System`, the phase gate thread-local, gateway factories, `run()`, `disable_for`, `wrap_start_new_thread`, `patch`, `patch_function`. | `DESIGN.md` -> "Main Pieces", "Threads" |
+| `system.py` | Owns `System`, the phase gate thread-local, gateway factories, `run()`, `disable`, `disable_for`, `patch`, `patch_function`. | `DESIGN.md` -> "Main Pieces", "Threads" |
 | `gateway.py` | Pure factories: `ext_gateway`, `int_gateway`, `ext_replay_gateway`, `int_replay_gateway`, plus `ext_runner`, `int_runner`, `unproxy_ext`, `unproxy_int`. Zero proxy-internal deps. | `DESIGN.md` -> "How The Two Gateways Interact" |
 | `patchtype.py` | In-place type-patching: `patch_type`, `unpatch_type`, subclass walk, alloc-hook installation, `__init_subclass__` rewriting. | `DESIGN.md` -> "Object Categories At The Boundary" -> "Patched objects and patched types" |
-| `io.py` | `recorder()` / `replayer()` builders. Hosts `_RawTapeSource`, `_ReplayBindingState`, `_ThreadDemuxSource`, `_IoMessageSource`, replay-time bind parsing, and disabled-context real-object support. | `DESIGN.md` -> "Record Versus Replay" and "Allocation And Materialization" |
+| `io.py` / `messagestream.py` | `recorder()` / `replayer()` builders plus replay message parsing, binding resolution, scheduler ordering, and disabled-context real-object support. | `DESIGN.md` -> "Record Versus Replay" and "Allocation And Materialization" |
 | `tape.py` (proxy) | `Tape` / `TapeReader` / `TapeWriter` `Protocol` declarations only (~40 lines). | n/a — interface declarations |
 | `proxytype.py` | `DynamicProxy`, `superdict`, `dynamic_proxytype`, `dynamic_int_proxytype`. Reached via `system.py` and `patchtype.py`. | `DESIGN.md` -> "Internal Retrace: Using The Boundary On Ourselves" -> "Proxy generation through retrace" |
 | `typeutils.py` | `WithoutFlags`, `modify`. Used by `patchtype.py` and `install/patcher.py`. | n/a — utility |
@@ -139,8 +134,8 @@ Top-level files reached from `__main__.py`:
 These files exist on disk but have **zero importers** in `src/` or `tests/`.
 Scheduled for cleanup; do not extend them.
 
-- `_binding_checkpoint.py`, `_system_patching.py`, `_system_threading.py`,
-  `globalref.py`, `proxyfactory.py`, `serializer.py`, `startthread.py`.
+- `_binding_checkpoint.py`, `_system_patching.py`, `globalref.py`,
+  `proxyfactory.py`, `serializer.py`.
 - `protocol.py` — Protocol/ABC declarations only; referenced from `docs/`,
   not from runtime code.
 - `contexts.py` — re-introduced in `057ce2b` but **currently unimportable**:
@@ -163,12 +158,9 @@ enough that AI agents need them visible.
   uses `system.is_bound.add(obj)` for tape/recorder plumbing that must
   never appear on the wire — confusing the two is a determinism bug.
 - **`disable_for(fn)` returns a `disabled_callable` instance**, not just a
-  closure with a stamp. Thread startup detects it via
-  `isinstance(target, disabled_callable)` (see `_is_disabled_thread_target`)
-  and skips `Thread.start()`'s `_started.wait()` and similar bootstrap. Do
-  not unwrap the `disabled_callable` before passing it to
-  `Thread(target=...)`. `disabled_callable` subclasses `wrapped_callable`,
-  so the same non-binding behavior applies.
+  closure with a stamp. It clears the gate while `fn` is called.
+  `disabled_callable` subclasses `wrapped_callable`, so the same non-binding
+  behavior applies.
 - **`patch_function()` returns a `wrapped_callable`** so module-level wrapped
   functions don't bind as methods when accessed through a class.
 - **`patch_type` is idempotent within the same `System`.** If the class is
@@ -176,7 +168,7 @@ enough that AI agents need them visible.
   via subclass walk and a later config names the subclass directly), the
   second call returns `cls` immediately. Cross-`System` re-patching still
   raises. Sentinel:
-  `tests/proxy/test_replay_materialize.py::test_patch_type_is_idempotent_for_subtypes_patched_through_base`.
+  `tests/proxy/test_proxy_runtime.py::test_patch_type_is_idempotent_for_subtypes_patched_through_base`.
 - **`io.replayer()` swaps `system.ext_gateway_factory` to
   `functional.partial(ext_replay_gateway, ext_execute)` and
   `system.int_gateway_factory` to `int_replay_gateway`** before user code
@@ -194,9 +186,12 @@ enough that AI agents need them visible.
   re-bind it. Sentinels:
   `tests/proxy/test_system_io_tape.py::test_replayer_skips_standalone_callback_result_before_next_call`,
   `tests/proxy/test_system_io_tape.py::test_replayer_skips_stub_callback_before_async_new_patched_bind`.
-- **`io.py` `_ThreadDemuxSource` re-raises `KeyboardInterrupt` and
-  `SystemExit` cleanly** instead of swallowing them as desync. Keep this
-  contract; it is how Ctrl-C escapes a recording.
+- **`io.py` scheduler stream owns replay thread ordering.** It is a peekable
+  global stream that consumes or defers `THREAD_START`, applies `THREAD_YIELD`
+  cursor deltas to the current scheduled thread, arms `retrace.call_at(...)`
+  from yielded cursors, and parks with `ThreadHandoff.to(...)` only for
+  `THREAD_RESUME` targets that have yielded a cursor. Do not reintroduce
+  per-thread replay queues here.
 
 ## Debugging Retrace + Stacktraces
 
@@ -218,8 +213,8 @@ A retrace stacktrace tells you three things at once:
 1. **Which gateway and phase produced the event** — was the system in
    `internal` (running user/library Python) or `external` (running real
    nondeterministic code) when this happened?
-2. **Which boundary message was being emitted or consumed** — `CALL`,
-   `CALLBACK`, `RESULT`, `ERROR`, `CHECKPOINT`, `NEW_BINDING`,
+2. **Which boundary message was being emitted or consumed** — `CALLBACK`,
+   `RESULT`, `ERROR`, `CHECKPOINT`, `NEW_BINDING`,
    `BINDING_DELETE`, `THREAD_SWITCH`, `STACKTRACE`.
 3. **Where in the wire stream the failure occurred** — sequence number plus
    thread id, which lets you find the matching record-side event.
@@ -276,10 +271,10 @@ patterns:
 - `BINDING_DELETE` is record telling replay it can drop a handle
   (weakref-style cleanup). Misalignment here usually means GC ordering
   diverged between record and replay.
-- `CALL` -> (zero or more `CALLBACK` / `CALLBACK_RESULT`) -> `RESULT` or
-  `ERROR` is the canonical external-call envelope. Anything that breaks
-  this nesting on replay is a desync.
-- `THREAD_SWITCH` with a logical thread id changes which per-thread
+- zero or more `CALLBACK` / `CALLBACK_RESULT` pairs may appear before the
+  next `RESULT` or `ERROR`. Anything that breaks this nesting on replay is a
+  desync.
+- `THREAD_SWITCH` with a stable `_thread.get_ident()` id changes which per-thread
   message buffer the next event belongs to. If a thread emits its first
   outbound call without a prior `THREAD_SWITCH` to its id, the thread
   routing is wrong.
@@ -299,12 +294,12 @@ patterns:
   and replay disagree about how many messages a thread should consume,
   often because of a missing or misrouted `THREAD_SWITCH`, or because a
   callback envelope was emitted but is being expected as an outbound
-  call (or vice versa). Check `_ThreadDemuxSource` per-thread buffers.
+  call (or vice versa). Check `SchedulerStream` cursor arming and
+  global stream position.
 - **`Could not read N bytes from tracefile with timeout`** — same
-  underlying cause as the previous point: a thread is blocked waiting
-  for messages on a per-thread queue that has nothing for it. The
-  thread mentioned in the traceback is the one whose expectations are
-  wrong.
+  underlying cause as the previous point: replay is blocked waiting for
+  the global stream to reach the event a thread expects. The thread mentioned
+  in the traceback is the one whose expectations are wrong.
 - **Replay diverges silently and only later crashes with an unrelated
   Python exception** — message alignment broke much earlier; the visible
   crash is downstream. `--stacktraces` mode + `--monitor` mode help
@@ -353,7 +348,7 @@ that touches one of these areas as requiring sentinel-test re-runs.
 - Changes to wrapping, unwrapping, walker logic, stub refs, or
   materialization without tests for nested structures and callback
   paths.
-- Changes to when `CALL` messages are emitted or consumed.
+- Changes to when `RESULT` / `ERROR` messages are emitted or consumed.
 - Callback exceptions: changes that swallow, rewrap, or reroute callback
   exceptions can break replay parity.
 
@@ -365,11 +360,11 @@ patch done.
 
 | If you change... | Re-run |
 |---|---|
-| `system.py` (`run`, `wrap_start_new_thread`, `disable_for`, `bind`, `patch_function`, `wrap_async`, `disabled_callable`/`wrapped_callable`) | `tests/proxy/test_system_io_tape.py`, `tests/install/stdlib/test_threading_lock_replay_regression.py`, `tests/install/external/test_anyio_from_thread_replay_dispatcher_regression.py`, `tests/test_record_replay.py::test_record_then_replay_asyncio_run_coroutine_threadsafe` |
-| `gateway.py` (any factory, `ext_runner`/`int_runner`, `unproxy_*`, passthrough predicates) | `tests/proxy/test_system_io_tape.py`, `tests/proxy/test_replay_materialize.py`, `tests/test_main_memory_tape.py` |
-| `patchtype.py` (subclass walk, `__init_subclass__`, alloc hook, idempotency) | `tests/install/test_hash_patching.py`, `tests/proxy/test_replay_materialize.py::test_patch_type_is_idempotent_for_subtypes_patched_through_base` |
-| `io.py` replay parsing, `_ReplayBindingState`, `_ThreadDemuxSource`, `equal()` markers, `bind_replay_object`, `consume_callback_completion`, disabled-context materialization/unbound external support | `tests/proxy/test_system_io_tape.py`, `tests/proxy/test_replay_materialize.py`, `tests/install/stdlib/test_threading_lock_replay_regression.py` |
-| `proxytype.py` / `stubfactory.py` (type construction, stub generation) | `tests/proxy/test_replay_materialize.py`, `tests/proxy/test_system_io_tape.py` |
+| `system.py` (`run`, `disable`, `disable_for`, `bind`, `patch_function`, `wrap_async`, `disabled_callable`/`wrapped_callable`) | `tests/proxy/test_system_io_tape.py`, `tests/install/stdlib/test_threading_lock_replay_regression.py`, `tests/install/external/test_anyio_from_thread_replay_dispatcher_regression.py`, `tests/test_record_replay.py::test_record_then_replay_asyncio_run_coroutine_threadsafe` |
+| `gateway.py` (any factory, `ext_runner`/`int_runner`, `unproxy_*`, passthrough predicates) | `tests/proxy/test_system_io_tape.py`, `tests/proxy/test_proxy_runtime.py`, `tests/test_main_memory_tape.py` |
+| `patchtype.py` (subclass walk, `__init_subclass__`, alloc hook, idempotency) | `tests/install/test_hash_patching.py`, `tests/proxy/test_proxy_runtime.py::test_patch_type_is_idempotent_for_subtypes_patched_through_base` |
+| `io.py` / `messagestream.py` replay parsing, scheduler/binding streams, `equal()` markers, `bind_replay_object`, `consume_callback_completion`, disabled-context live-call bypass | `tests/proxy/test_system_io_tape.py`, `tests/proxy/test_proxy_runtime.py`, `tests/install/stdlib/test_threading_lock_replay_regression.py` |
+| `proxytype.py` / `stubfactory.py` (type construction, stub generation) | `tests/proxy/test_proxy_runtime.py`, `tests/proxy/test_system_io_tape.py` |
 | Monitoring or compatibility replay-reader behavior | `tests/proxy/test_monitoring.py`, plus inspect `src/retracesoftware/protocol/replay.py` |
 | Anything that affects exception-in-callback round-tripping | `tests/proxy/test_system_io_tape.py`, `tests/test_record_replay.py` |
 
@@ -402,7 +397,7 @@ Active proxy unit tests:
 
 - `tests/proxy/test_io_memory_tape.py`
 - `tests/proxy/test_monitoring.py`
-- `tests/proxy/test_replay_materialize.py`
+- `tests/proxy/test_proxy_runtime.py`
 - `tests/proxy/test_system_io_tape.py`
 
 Adjacent tests touching this layer:

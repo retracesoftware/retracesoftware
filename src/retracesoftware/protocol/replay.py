@@ -19,7 +19,6 @@ from .messages import (
     ThreadSwitchMessage,
 )
 from .normalize import normalize as normalize_checkpoint_value
-from .record import CALL
 
 
 _PACKAGE_ROOT = os.path.normcase(
@@ -321,12 +320,6 @@ class ReplayReader:
         self._pending_async_new_patched.append((signature, materialized))
         return materialized
 
-    def _is_call_checkpoint_value(self, value):
-        return (
-            isinstance(value, dict)
-            and set(value.keys()) == {"function", "args", "kwargs"}
-        )
-
     def _deserialize_result(self, value):
         def transform(item):
             if self._pending_async_new_patched and item is self._pending_async_new_patched[0][1]:
@@ -342,43 +335,6 @@ class ReplayReader:
             return item
 
         return functional.walker(transform)(value)
-
-    def _advance_until(self, marker):
-        while True:
-            msg = self._next_message(self.source)
-            self._note_debug(f"advance_to_{marker}", msg)
-            if msg == marker:
-                return
-            if isinstance(msg, StacktraceMessage):
-                self.handle_stacktrace(msg, context=f"advance_to_{marker}")
-                continue
-            if isinstance(msg, MonitorMessage):
-                if self._monitor_enabled:
-                    from retracesoftware.install import ReplayDivergence
-
-                    raise ReplayDivergence(
-                        f"unexpected MONITOR({msg.value!r}) during sync "
-                        f"— recording had function calls that replay did not"
-                    )
-                continue
-            if isinstance(msg, AsyncNewPatchedMessage):
-                self._remember_async_new_patched(msg.value)
-                continue
-            from retracesoftware.install import ReplayDivergence
-
-            raise ReplayDivergence(
-                f"unexpected {self._format_debug_msg(msg)} while advancing to "
-                f"{marker}{self._debug_suffix()}"
-            )
-
-    def sync(self):
-        self._advance_until("SYNC")
-
-    def write_call(self, *args, **kwargs):
-        self._advance_until(CALL)
-
-    def on_call(self, *args, **kwargs):
-        return self.write_call(*args, **kwargs)
 
     def async_call(self, fn, *args, **kwargs):
         if os.getenv("RETRACE_DEBUG_CALLBACK_FLOW") == "1":
@@ -419,58 +375,6 @@ class ReplayReader:
                 )
             pass
 
-    def _read_sync_call_result(self):
-        last_checkpoint = None
-
-        while True:
-            msg = self._next_message(self.source)
-            self._note_debug("read_sync_call_result", msg)
-
-            if isinstance(msg, CheckpointMessage):
-                last_checkpoint = msg.value
-                continue
-            if isinstance(msg, ErrorMessage):
-                if self._is_call_checkpoint_value(last_checkpoint):
-                    last_checkpoint = None
-                    continue
-                raise msg.error
-            if isinstance(msg, ResultMessage):
-                if self._is_call_checkpoint_value(last_checkpoint):
-                    last_checkpoint = None
-                    continue
-                value = self._deserialize_result(msg.result)
-                self._pending_async_new_patched.clear()
-                return value
-            if msg == CALL:
-                continue
-            if isinstance(msg, MonitorMessage):
-                if self._monitor_enabled:
-                    from retracesoftware.install import ReplayDivergence
-
-                    raise ReplayDivergence(
-                        f"unexpected MONITOR({msg.value!r}) in sync call stream"
-                    )
-                continue
-            if isinstance(msg, StacktraceMessage):
-                self.handle_stacktrace(msg, context="skip_sync_call_result")
-                continue
-            if isinstance(msg, AsyncNewPatchedMessage):
-                self._remember_async_new_patched(msg.value)
-                continue
-            if isinstance(msg, CallMessage):
-                self.async_call(
-                    self._deserialize_result(msg.fn),
-                    *self._deserialize_result(msg.args),
-                    **self._deserialize_result(msg.kwargs),
-                )
-                continue
-            if msg == "SYNC":
-                continue
-
-            raise ValueError(
-                f"unexpected message while reading sync call result: {msg}{self._debug_suffix()}"
-            )
-
     @utils.striptraceback
     def read_result(self):
         while True:
@@ -502,10 +406,6 @@ class ReplayReader:
                     *self._deserialize_result(msg.args),
                     **self._deserialize_result(msg.kwargs))
             elif isinstance(msg, CheckpointMessage):
-                continue
-            elif msg == CALL:
-                return self._read_sync_call_result()
-            elif msg == "SYNC":
                 continue
             else:
                 raise ValueError(f"unexpected message: {msg}{self._debug_suffix()}")
@@ -541,8 +441,6 @@ class ReplayReader:
                 continue
             if isinstance(msg, (CallMessage, ResultMessage, ErrorMessage)):
                 continue
-            if msg in ("SYNC", CALL):
-                continue
 
     def monitor_checkpoint(self, value):
         msg = self._next_message(self.source)
@@ -566,7 +464,6 @@ __all__ = [
     "AsyncNewPatchedMessage",
     "CallMessage",
     "CheckpointMessage",
-    "CALL",
     "ErrorMessage",
     "HandleMessage",
     "MonitorMessage",

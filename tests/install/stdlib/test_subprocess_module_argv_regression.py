@@ -27,6 +27,7 @@ import subprocess
 import sys
 
 from retracesoftware.run import run_python_command
+from tests.helpers import PYTHON
 
 
 def test_run_python_command_c_preserves_command_argv_shape(capsys):
@@ -97,7 +98,7 @@ def test_record_child_python_m_preserves_module_argv_shape(tmp_path: Path):
 
     proc = subprocess.run(
         [
-            sys.executable,
+            PYTHON,
             "-m",
             "retracesoftware",
             "--recording",
@@ -140,7 +141,7 @@ def test_record_replay_python_c_command_preserves_argv_shape(tmp_path: Path):
 
     record = subprocess.run(
         [
-            sys.executable,
+            PYTHON,
             "-m",
             "retracesoftware",
             "--recording",
@@ -165,7 +166,7 @@ def test_record_replay_python_c_command_preserves_argv_shape(tmp_path: Path):
 
     replay = subprocess.run(
         [
-            sys.executable,
+            PYTHON,
             "-m",
             "retracesoftware",
             "--recording",

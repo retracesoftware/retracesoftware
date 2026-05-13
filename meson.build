@@ -69,16 +69,15 @@ py.install_sources(
   _py_root / 'proxy/__init__.py',
   _py_root / 'proxy/_binding_checkpoint.py',
   _py_root / 'proxy/_system_patching.py',
-  _py_root / 'proxy/_system_threading.py',
   _py_root / 'proxy/gateway.py',
   _py_root / 'proxy/globalref.py',
   _py_root / 'proxy/io.py',
+  _py_root / 'proxy/messagestream.py',
   _py_root / 'proxy/patchtype.py',
   _py_root / 'proxy/protocol.py',
   _py_root / 'proxy/proxyfactory.py',
   _py_root / 'proxy/proxytype.py',
   _py_root / 'proxy/serializer.py',
-  _py_root / 'proxy/startthread.py',
   _py_root / 'proxy/stubfactory.py',
   _py_root / 'proxy/system.py',
   _py_root / 'proxy/tape.py',
@@ -101,7 +100,6 @@ py.install_sources(
   _py_root / 'install/pathpredicate.py',
   _py_root / 'install/replace.py',
   _py_root / 'install/session.py',
-  _py_root / 'install/startthread.py',
   subdir: 'retracesoftware/install',
 )
 
@@ -151,12 +149,6 @@ py.install_sources(
   _py_root / 'testing/__init__.py',
   _py_root / 'testing/memorytape.py',
   subdir: 'retracesoftware/testing',
-)
-
-# threadid
-py.install_sources(
-  _py_root / 'threadid/__init__.py',
-  subdir: 'retracesoftware/threadid',
 )
 
 # replay (Python wrapper)

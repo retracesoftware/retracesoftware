@@ -44,7 +44,7 @@ func locationLess(a, b Location) bool {
 	if a.MessageIndex != b.MessageIndex {
 		return a.MessageIndex < b.MessageIndex
 	}
-	if cmp := a.FunctionCounts.Compare(b.FunctionCounts); cmp != 0 {
+	if cmp := a.Coordinates.Compare(b.Coordinates); cmp != 0 {
 		return cmp < 0
 	}
 	if a.FLasti != nil && b.FLasti != nil && *a.FLasti != *b.FLasti {

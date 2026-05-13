@@ -13,40 +13,15 @@ immutable = ["Enum"]
 immutable = ["stat_result", "terminal_size", "statvfs_result"]
 
 [types]
-patch_hash = ["FunctionType"]
 immutable = ["TracebackType", "ModuleType"]
 
 [builtins]
-patch_hash = ["object"]
 disable = ["print"]
 immutable = ["BaseException", "memoryview", "int", "float", "complex", "str", "bytes", "bool", "bytearray",
             "type", "slice"]
 
-[_thread]
-proxy = ["allocate", "RLock"]
-ext_proxy_result = ["allocate_lock"]
-replay_materialize = ["RLock"]
-
-[_queue.type_attributes.SimpleQueue]
-
-[_queue.type_attributes.SimpleQueue.sync_unless]
-put = "retracesoftware.install.edgecases.concurrent_futures_threadpool_shutdown_sentinel"
-put_nowait = "retracesoftware.install.edgecases.concurrent_futures_threadpool_shutdown_sentinel"
-
-[threading]
-bind = ["_active_limbo_lock"]
-replay_materialize = ["Lock", "RLock"]
-
-[threading.type_attributes.Semaphore]
-proxy = ["acquire", "release"]
-
-[threading.type_attributes.Condition]
-disable = ["wait", "__enter__", "__exit__"]
-sync_disable = ["notify", "notify_all"]
-
-[threading.type_attributes.Event]
-disable = ["wait", "clear"]
-sync_disable = ["set"]
+[threading.type_attributes.Thread]
+disable = ["start"]
 
 [logging]
 bind = ["_lock"]
@@ -65,7 +40,6 @@ disable = [
 ]
 
 ["asyncio.base_events".type_attributes.BaseEventLoop]
-sync = ["call_soon_threadsafe"]
 wrap = { shutdown_asyncgens = "retracesoftware.install.edgecases.collect_before" }
 
 [_datetime]
@@ -316,9 +290,6 @@ recvmsg_into = "retracesoftware.install.edgecases.recvmsg_into"
 
 [select]
 proxy = ["kevent", "kqueue", "poll", "epoll", "select"]
-
-[socketserver.type_attributes.BaseServer]
-sync_disable = ["shutdown"]
 
 [_ssl]
 proxy = ["_SSLSocket", "MemoryBIO", "_SSLContext"]

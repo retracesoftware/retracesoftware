@@ -98,14 +98,14 @@ The current design is centered on a single phase thread-local:
 
 `System` stores that phase in:
 
-- `gate = utils.ThreadLocal(None)`
+- `gate = utils.ThreadLocal("internal")`
 
 Everything else is built around that value:
 
-- `System.enabled()` checks whether retrace is active.
+- `System.enabled()` checks whether retrace is active on this thread.
 - `System.location` reports the current phase.
-- `disable_for()` temporarily clears the phase so control-plane work does not
-  retrace itself.
+- `disable()` / `disable_for()` temporarily clear the phase so control-plane
+  work does not retrace itself.
 - `_on_alloc` uses the phase to decide whether a newly allocated object should
   be bound, reported as an async allocation, or ignored.
 
@@ -134,8 +134,8 @@ flowchart TD
     internal -- "patched function, patched base method, ExternalWrapped method" --> ext_gate{"ext_gateway<br/>phase == internal?"}
     ext_gate -- "no" --> ext_fallback["fallback passthrough<br/>disabled or already external"]
     ext_gate -- "yes" --> ext_pipeline["external gateway pipeline"]
-    ext_pipeline -- "record" --> record_live["CALL hook<br/>run live target under external<br/>RESULT/ERROR hook"]
-    ext_pipeline -- "replay" --> replay_tape["CALL/checkpoint hook<br/>read recorded RESULT/ERROR under external<br/>do not call live target"]
+    ext_pipeline -- "record" --> record_live["optional checkpoint hook<br/>run live target under external<br/>RESULT/ERROR hook"]
+    ext_pipeline -- "replay" --> replay_tape["optional checkpoint hook<br/>read recorded RESULT/ERROR under external<br/>do not call live target"]
     record_live --> internal
     replay_tape --> internal
 
@@ -232,7 +232,7 @@ right envelope:
 
 | Gateway | `on_call` source | result/error source | Record messages |
 | --- | --- | --- | --- |
-| external gateway (`internal` -> `external`) | `secondary_hooks.on_call` | `primary_hooks.on_result` / `primary_hooks.on_error` | `CALL`, then `RESULT` / `ERROR` |
+| external gateway (`internal` -> `external`) | optional debug/stacktrace hook | `primary_hooks.on_result` / `primary_hooks.on_error` | `RESULT` / `ERROR` |
 | internal gateway (`external` -> `internal`) | `primary_hooks.on_call` | `secondary_hooks.on_result` / `secondary_hooks.on_error` | `CALLBACK`, then `CALLBACK_RESULT` / `CALLBACK_ERROR` |
 
 Replay uses the same wiring but swaps the hook bodies for message consumption,
@@ -254,7 +254,7 @@ happened.
 
 - binder-backed `on_bind` behavior that emits `NEW_BINDING`
 - lifecycle hooks like `ON_START`
-- outer-call hooks for `CALL`, `RESULT`, `ERROR`, `CHECKPOINT`, and optional
+- outer-call hooks for `RESULT`, `ERROR`, `CHECKPOINT`, and optional
   `STACKTRACE`
 - callback hooks for `CALLBACK`, `CALLBACK_RESULT`, and `CALLBACK_ERROR`
 
@@ -265,9 +265,8 @@ The important split is:
 
 So a recorded external operation may write a sequence like:
 
-1. `CALL`
-2. zero or more nested `CALLBACK` / `CALLBACK_RESULT` pairs
-3. `RESULT` or `ERROR`
+1. zero or more nested `CALLBACK` / `CALLBACK_RESULT` pairs
+2. `RESULT` or `ERROR`
 
 Record mode is therefore the mode that executes live nondeterministic behavior
 and turns it into an ordered message stream.
@@ -305,11 +304,13 @@ Concrete expectations:
   The native monitor compares CPython thread-state ids rather than raw
   `PyThreadState *` addresses, because short-lived threads may reuse the same
   memory address while still representing distinct logical execution routes.
-- on retrace-python, record also installs `_retrace` eval-loop scheduling
-  callbacks while retraced code is active: yield callbacks write
-  `THREAD_YIELD, <coordinate-delta>` and resume callbacks write
-  `THREAD_RESUME, <logical-thread-id>`. These tags are scheduling telemetry;
-  normal protocol writes still use the writer-bound switch monitor for routing.
+- on retrace-python, record also installs public `retrace` eval-loop scheduling
+	  callbacks while retraced code is active: start callbacks write
+	  `THREAD_START, <stable _thread.get_ident()>`, yield callbacks write
+	  `THREAD_YIELD, <coordinate-delta>`, and resume callbacks write
+	  `THREAD_RESUME, <stable _thread.get_ident()>`. These tags are scheduling
+	  telemetry; normal protocol writes still use the writer-bound switch monitor
+	  for routing.
 - protocol writers are called directly; do not add a Python lock/batching
   adapter around the native stream writer, and do not wrap the hot writer in
   `disable_for()` unless the writer itself is control-plane Python that must be
@@ -329,14 +330,14 @@ it consumes the message stream that record produced.
 
 `io.replayer()` builds a layered replay source:
 
-1. `_RawTapeSource`
-2. `_ThreadDemuxSource`
-3. `_ReplayBindingState`
-4. `_IoMessageSource`
+1. `MessageStream`
+2. `BindingStream`
+3. `SchedulerStream`
+4. `PeekableStream`
 
 That stack gives replay three things at once:
 
-- per-thread message ordering
+- global message ordering plus cursor-armed scheduler checkpoints
 - handle resolution for bound objects
 - decoded message objects like `ResultMessage` and `CallbackMessage`
 
@@ -701,7 +702,7 @@ ext_proxy_result = ["make_handle"]
 
 - record and replay both call the real function in the caller's current
   Retrace phase
-- the function call itself is not recorded as an external `CALL`/`RESULT`
+- the function call itself is not recorded as an external `RESULT`/`ERROR`
 - the returned object is passed through the same proxy/binding machinery used
   for external results
 - later operations on the returned object use the normal boundary rules for
@@ -764,7 +765,6 @@ There are two main patterns.
 This is used in `io.py` for helpers like:
 
 - `utils.create_stub_object`
-- `gc.collect`
 
 The point is not "make these helpers external". The point is: when these helpers
 participate in the observable boundary protocol, run them through the same
@@ -795,29 +795,30 @@ boundary protocol.
 This is the main example of "using Retrace internally to retrace Retrace's own
 helper work" in a controlled way.
 
-## `disable_for()`
+## `disable()` / `disable_for()`
 
-`disable_for()` is the opposite mechanism. It temporarily clears the phase gate
-so internal control-plane work does not retrace itself.
+New threads default to the internal phase. `disable()` is the explicit
+thread-local opt-out for control-plane bodies. `disable_for()` is the callable
+wrapper form of the same operation.
 
 Typical uses include:
 
 - stacktrace bookkeeping
 - unexpected-message handling
 - desync reporting
-- thread bootstrap waits for disabled/internal helper threads
+- control-plane waits and helper bookkeeping
 - other protocol plumbing that must stay invisible to replay
 
 The safe mental model is:
 
 - if a helper creates observable boundary artifacts that replay must reproduce,
   route it through the internal gateway
-- if a helper is only control-plane bookkeeping, run it under `disable_for()`
+- if a helper is only control-plane bookkeeping, run it under `disable()` or
+  wrap it with `disable_for()`
 
-Disabled callables are marked, not just wrapped. Thread startup checks that
-marker before installing normal application-thread retrace state, so Retrace's
-own disabled helper work stays outside the boundary even when it is used as a
-thread target.
+Disabled callables clear the gate only while they are called. Thread startup is
+not intercepted, so long-lived control-plane thread bodies should use
+`with system.disable():` around their body.
 
 ## Threads
 
@@ -827,41 +828,19 @@ can call patched external functions on behalf of that Python.
 
 ### Thread propagation
 
-- `System` assigns stable logical thread ids. These are not OS thread ids.
-- `wrap_start_new_thread()` propagates retrace state into child threads.
+- retrace-python makes `_thread.get_ident()` stable across record and replay.
+- new threads default to the internal phase.
 - Child threads that run application/library code must start in the internal
-  phase with the assigned logical thread id.
-- The logical thread id is assigned before the child runs user/library code;
-  otherwise the first child-thread boundary message can be recorded against the
-  wrong thread route.
+  phase before their first boundary call.
 - A child application thread must not begin as disabled passthrough, or its
   first outbound external call can escape recording and replay will diverge.
-- CPython/bootstrap synchronization around thread creation is not application
-  work. Changes here must not perturb `threading.Thread.start()`,
-  `_started.wait()`, or similar runtime plumbing.
-
-For the high-level `threading.Thread` API, the parent `Thread.start()` call is
-the identity-assignment point, but not the retraced execution boundary. When
-`Thread.start()` is called while retrace is enabled, Retrace allocates the
-child's logical thread id in the parent, installs a per-instance `run()`
-trampoline on that `Thread`, and then calls the real `Thread.start()` with the
-phase disabled. CPython's `_active_limbo_lock`, `_started.wait()`, and
-`_bootstrap_inner()` readiness handshake therefore remain live runtime
-bookkeeping and do not emit application trace events. When the child reaches
-`Thread.run()`, the trampoline sets the stable logical thread id, performs the
-recorded/replayed `SYNC`, emits the normal thread `ON_START`, and runs the
-user target or subclass `run()` body in the internal phase. `Thread.start()`
-waits on a disabled Retrace-owned barrier until that child `SYNC` has happened,
-so callers keep the important "child is registered with replay before start
-returns" ordering without recording CPython's private `_started` condition
-traffic. The lifecycle `ON_START` marker remains part of normal child execution;
-it may occur after the parent has resumed when recorded application scheduling
-requires that ordering.
-
-The lower-level `_thread.start_new_thread()` API has no `Thread` object or
-`run()` hook, so it keeps the direct child wrapper path: the wrapper assigns the
-logical thread id and enters the internal phase at the start of the supplied
-callable.
+- Retrace Software does not patch `_thread.start_new_thread` or
+  `threading._start_new_thread`.
+- `threading.Thread.start` is a disabled module-config method so CPython's
+  bootstrap bookkeeping does not perturb the parent cursor before native thread
+  creation. It must not wrap the target or assign ids.
+- CPython/bootstrap synchronization around thread creation is live runtime
+  bookkeeping. Do not add Python-side startup trampolines for it.
 
 Control-plane threads are different: debugger/replay infrastructure I/O may
 need to bypass retrace entirely. Do not fix an application-thread miss by making
@@ -904,11 +883,27 @@ Record writes one unified stream. To make that stream replayable:
 
 - recorder mode writes `THREAD_SWITCH` before messages from a different logical
   thread
-- on retrace-python, recorder mode may also write `THREAD_YIELD` coordinate
-  deltas and `THREAD_RESUME` logical thread ids around eval-loop handoffs
-- replay mode uses `_ThreadDemuxSource` to route the unified stream back to the
-  logical thread that is currently asking for data
-- `_ReplayBindingState` must buffer lookahead per logical thread, not globally
+- on retrace-python, recorder mode may also write `THREAD_START`,
+  `THREAD_YIELD`, and `THREAD_RESUME` records around eval-loop handoffs; start
+  names a newly started thread before it has a cursor, yield stores the current
+  scheduled thread's cursor delta, and resume names a previously started thread
+  to run
+- GC uses the same scheduler shape: `gc.callbacks` start writes
+  `THREAD_YIELD` plus a synthesized `CALLBACK(gc.collect, generation)`, and
+  GC stop writes the callback completion plus `THREAD_RESUME`
+- Python signal handlers use the same shape: delivery writes `THREAD_YIELD`,
+  a synthesized `CALLBACK(handler, signum, None)`, callback completion, and
+  `THREAD_RESUME`
+- replay mode uses `SchedulerStream` as a peekable global stream; it
+  consumes `THREAD_START` from the matching child start callback or defers a
+  future start for that child to claim later, applies each `THREAD_YIELD` delta
+  to the current scheduled thread, arms `retrace.call_at(...)` at yielded
+  cursors, and only parks with `ThreadHandoff.to(...)` when `THREAD_RESUME`
+  names a thread that has yielded a cursor
+- when replay hits a yielded cursor, it drains any immediately following
+  callback envelope before consuming the resume marker
+- `BindingStream` buffers lookahead globally; thread ordering is owned by
+  scheduler checkpoints, not by per-thread message queues
 
 The invariant is not merely "the same messages eventually occur". It is "each
 logical thread observes the same message sequence in the same order". One
@@ -958,27 +953,18 @@ library-specific patch that only causes the current dockertest to pass. The
 right fix makes the branch that controls thread creation, wakeup, or parking
 deterministic across record and replay.
 
-Thread-pool sizing decisions are synchronization too. For example,
-`ThreadPoolExecutor._adjust_thread_count()` branches on
-`threading.Semaphore.acquire(timeout=0)`. If record observes "no idle worker"
-and replay observes "idle worker available", record may contain messages for a
-logical worker thread that replay never starts. Semaphore acquire/release calls
-therefore belong at the boundary when they decide worker availability.
+Thread-pool sizing decisions are synchronization too. With retrace-python
+cursor scheduling, lock, condition, event, and semaphore internals should stay
+live rather than being traced as result-producing external calls. The scheduler
+controls which Python thread can reach the next recorded cursor; tracing private
+lock operations exposes partial internal waits and can perturb thread ids,
+cursor coordinates, and debug checkpoint ordering.
 
-Some synchronization primitives are better modeled as live synchronization
-edges than as result-producing external calls. `threading.Condition` waits and
-context-manager plumbing run disabled, while notify operations emit `SYNC` and
-then run disabled. `threading.Event.wait/clear` also run disabled, and
-`Event.set` emits `SYNC` before running disabled. These Python implementations
-are built out of locks/RLocks; tracing their private lock operations exposes
-partial internal waits and can perturb debug checkpoint ordering across
-threads.
-
-Debug checkpoints normalize synchronization receiver objects such as
-`_thread.lock`, `_thread.RLock`, `threading.Condition`, and
-`threading.Event`. Checkpoints are there to catch replay drift, not to require
-the record and replay runtimes to expose the exact same private lock helper
-method while they are still following the same logical synchronization edge.
+Non-blocking synchronization operations that return a branch-controlling value
+still need a narrow boundary when they are proven to diverge. For example,
+`ThreadPoolExecutor._adjust_thread_count()` can branch on
+`threading.Semaphore.acquire(timeout=0)`. That should be handled as a specific
+try-lock result boundary, not by proxying every lock acquire/release.
 
 Known examples of this gap are an anyio blocking portal
 (`tests/install/external/test_anyio_from_thread_replay_dispatcher_regression.py`)
@@ -987,14 +973,10 @@ and the stdlib `asyncio.run_coroutine_threadsafe` scenario in
 
 ## Hash Determinism
 
-`System.install()` also installs deterministic hash patching. The proxy layer
-cannot allow default memory-address-based object hashes to leak into
-replay-sensitive ordering, because set iteration and other hash-dependent
-behavior can otherwise differ between record and replay.
-
-Hash patching is phase-aware through the same gate dispatch model as the rest of
-the proxy kernel. Changes to `System.install()`, phase dispatch, or the
-disabled/internal/external split must preserve that hash determinism contract.
+Memory-address-based hash determinism is owned by retrace-python. The proxy
+layer must not patch `object.__hash__`, `FunctionType.__hash__`, or other hash
+slots during install; if hash ordering drifts, fix the patched interpreter
+rather than adding retracesoftware-local hash patching.
 
 ## Important Invariants
 
@@ -1013,8 +995,8 @@ disabled/internal/external split must preserve that hash determinism contract.
 - Local-only runtime binding uses `System.is_bound.add()` and must not emit or
   consume protocol binding markers.
 - Replay live execution is limited to explicit local-runtime factories
-  (`ext_proxy_result`) or the disabled-context materialized replay exception, and
-  must still consume and compare the recorded stream where one exists.
+  (`ext_proxy_result`) and must still consume and compare the recorded stream
+  where one exists.
 - If replay consumes a different message sequence than record produced,
   everything after that point is suspect.
 
@@ -1049,10 +1031,6 @@ The main TOML directives map to proxy behavior like this:
   Replace named callables with `system.disable_for(...)` wrappers.
 - `wrap`
   Apply an explicit wrapper factory before/around proxy behavior.
-- `replay_materialize`
-  Register callables for the narrow disabled-retrace case where replay needs a
-  real local object, such as a module lock. Do not use this for ordinary
-  external resources.
 - `stub_for_replay`
   Replay-only native-type substitution for opaque external handle types. The
   generated stub type preserves shape for proxy generation and type syntax, but
@@ -1062,16 +1040,6 @@ The main TOML directives map to proxy behavior like this:
 - `pathparam`
   Route filesystem-like calls through proxying only when the configured path
   predicate says the path belongs in the recording.
-- `sync`
-  Emit a synchronization marker before calling the target normally.
-- `sync_disable`
-  Emit a synchronization marker before calling the target with retrace disabled.
-  Use this for synchronization primitives whose implementation is itself built
-  out of patched locks/conditions; the boundary event is the wake or wait, not
-  the primitive's internal bookkeeping.
-- `patch_hash`
-  Participates in deterministic hash behavior installed by `System.install()`.
-
 If new nondeterministic library behavior can be described by one of these
 directives, prefer that narrow module-config fix over changing gateway or kernel
 semantics.
@@ -1101,29 +1069,30 @@ regressions.
 
 | Scenario | Example shape | Main paths exercised | What to assert | Relevant tests |
 | --- | --- | --- | --- | --- |
-| Simple proxied function call | `time.time()` | External gateway, record `CALL`/`RESULT`, replay result consumption | Record runs the live call once; replay returns the recorded value without touching the live clock | [`test_system_io_round_trips_simple_patched_function_with_tape`](../../../tests/proxy/test_system_io_tape.py), [`test_install_and_run_round_trips_time_proxy_with_memory_tape`](../../../tests/test_main_memory_tape.py) |
+| Simple proxied function call | `time.time()` | External gateway, record `RESULT`, replay result consumption | Record runs the live call once; replay returns the recorded value without touching the live clock | [`test_system_io_round_trips_simple_patched_function_with_tape`](../../../tests/proxy/test_system_io_tape.py), [`test_install_and_run_round_trips_time_proxy_with_memory_tape`](../../../tests/test_main_memory_tape.py) |
 | Simple proxied function error | `os.chdir("/definitely/missing")` | External gateway, error serialization, replay `ERROR` path | Record writes the failure; replay raises the same semantic error without making the live syscall | [`test_system_io_round_trips_simple_patched_function_error_with_memory_tape`](../../../tests/proxy/test_system_io_tape.py), [`test_install_and_run_round_trips_os_chdir_error_with_memory_tape`](../../../tests/test_main_memory_tape.py) |
-| Patched type method call | `lock.acquire(False)` or `socket.recv()` on a patched object | Patched method rewrite, external gateway, wrapped receiver/args | Patched methods route through the boundary and preserve the expected wrapped receiver behavior | [`test_install_and_run_round_trips_allocate_lock_with_memory_tape`](../../../tests/test_main_memory_tape.py) |
+| Patched type method call | `socket.recv()` on a patched object | Patched method rewrite, external gateway, wrapped receiver/args | Patched methods route through the boundary and preserve the expected wrapped receiver behavior | [`test_system_io_round_trips_external_result_proxy_hydration_with_memory_tape`](../../../tests/proxy/test_system_io_tape.py) |
 | Patched type method returning another external object | `socket.makefile()` or similar | External result proxying, binding, replay-side hydration | Record writes proxy metadata/bindings; replay reconstructs a usable external proxy rather than leaking raw metadata | [`test_system_io_round_trips_external_result_proxy_hydration_with_memory_tape`](../../../tests/proxy/test_system_io_tape.py) |
 | External code calling back into Python | `sorted(items, key=callback)` or `executor.submit(fn)` style callback | Internal gateway, callback hooks, callback result/error recording | The Python callback body executes live on both record and replay, and callback events stay aligned | [`test_system_io_round_trips_simple_override_callback_with_tape`](../../../tests/proxy/test_system_io_tape.py), [`test_system_io_records_and_rebinds_callback_receiver_with_tape`](../../../tests/proxy/test_system_io_tape.py) |
-| Standalone callback envelope before next call or bind | Protocol callback work is emitted before the next external `CALL` or patched-object bind | Replay callback consumption, message lookahead | Replay executes callback envelopes before matching the next outbound call; for async patched-object binding, replay skips the stub-helper envelope and binds the live object to the recorded marker | [`test_replayer_skips_standalone_callback_result_before_next_call`](../../../tests/proxy/test_system_io_tape.py), [`test_replayer_skips_stub_callback_before_async_new_patched_bind`](../../../tests/proxy/test_system_io_tape.py) |
+| Standalone callback envelope before next result or bind | Protocol callback work is emitted before the next external `RESULT` / `ERROR` or patched-object bind | Replay callback consumption, message lookahead | Replay executes callback envelopes before consuming the next outbound result; for async patched-object binding, replay skips the stub-helper envelope and binds the live object to the recorded marker | [`test_replayer_skips_standalone_callback_result_before_next_call`](../../../tests/proxy/test_system_io_tape.py), [`test_replayer_skips_stub_callback_before_async_new_patched_bind`](../../../tests/proxy/test_system_io_tape.py) |
+| Async GC interruption | `gc.callbacks` reports collection start/stop while retraced code is active | Scheduler yield/resume, synthesized callback envelope, replay yield callback drain | Record writes `THREAD_YIELD`, `CALLBACK(gc.collect, generation)`, callback completion, and `THREAD_RESUME`; replay runs the callback at the yielded cursor before resuming | [`test_recorder_gc_callback_writes_async_callback_envelope`](../../../tests/proxy/test_system_io_tape.py), [`test_replay_scheduler_runs_yield_callback_before_resume`](../../../tests/proxy/test_system_io_tape.py) |
+| Async signal delivery | A registered Python signal handler runs while retraced code is active | Signal handler wrapper, scheduler yield/resume, synthesized callback envelope | Record writes `THREAD_YIELD`, `CALLBACK(handler, signum, None)`, callback completion, and `THREAD_RESUME`; replay delivers the handler from the stream rather than waiting for a live OS signal | [`test_recorder_signal_handler_writes_async_callback_envelope`](../../../tests/proxy/test_system_io_tape.py) |
 | Internal patched-object allocation after callback envelope | A patched object is allocated after helper/callback traffic | `System._on_alloc`, replay bind alignment, allocation-hook exception safety | Replay drains allowed envelope messages, binds the live object to the recorded handle, and does not let `ExpectedBindMarker` escape through native allocation | [`test_replayer_runs_callback_before_internal_patched_alloc_bind`](../../../tests/proxy/test_system_io_tape.py) |
 | Native constructor that performs external work | `grpc.server(...)` calls Cython `cygrpc.CompletionQueue(...)` / `cygrpc.Server(...)` | `stub_for_replay`, async patched-object binding | Record may run the native constructor, but replay uses a recorded/stubbed object and does not live-run native constructor code | [`test_replay_grpc_server_construction_does_not_segfault`](../../../tests/install/external/test_grpc_server_replay_regression.py) |
-| Live local factory with ext-proxied result | A lock-like factory returns a runtime object | `ext_proxy_result`, phase-preserving live factory call, returned-object ext-proxying | Record and replay both call the real factory without changing the current phase, the factory call is not a `CALL`/`RESULT`, and the returned proxy shell is not itself bound | [`test_ext_proxy_result_live_runs_factory_and_wraps_returned_object`](../../../tests/proxy/test_system_io_tape.py) |
+| Live local factory with ext-proxied result | A local factory returns a runtime object | `ext_proxy_result`, phase-preserving live factory call, returned-object ext-proxying | Record and replay both call the real factory without changing the current phase, the factory call is not recorded as `RESULT`/`ERROR`, and the returned proxy shell is not itself bound | [`test_ext_proxy_result_live_runs_factory_and_wraps_returned_object`](../../../tests/proxy/test_system_io_tape.py) |
 | Callback makes another outbound external call | Callback body calls `time.time()` | Internal gateway re-entry back into external gateway | Nested callback-originated external calls preserve ordering and do not bypass retrace | [`test_system_io_round_trips_nested_callback_external_call_with_memory_tape`](../../../tests/proxy/test_system_io_tape.py) |
 | Immutable passthrough value crossing the boundary | `time.sleep(0)` / small ints / strings / bytes | Passthrough predicates, no unnecessary proxying | Immutable values stay unproxied and behavior matches normal Python on both record and replay | [`test_system_io_round_trips_simple_patched_function_with_tape`](../../../tests/proxy/test_system_io_tape.py) |
 | Internal Python object exposed to external code | Python file-like / callback / user object passed into patched library code | `int_proxy`, `InternalWrapped`, external-to-internal callback path | External code sees a stable wrapper and later calls route back into Python through the internal gateway | [`test_system_io_replays_dynamic_internal_proxy_callback_side_effect_with_memory_tape`](../../../tests/proxy/test_system_io_tape.py) |
 | External object passed back into internal code | Return a socket/lock/file object, store it, call methods later | `ext_proxy`, `ExternalWrapped`, binding identity preservation | Multiple later uses refer to the same logical recorded object and replay preserves handle identity | [`test_system_io_round_trips_external_result_proxy_hydration_with_memory_tape`](../../../tests/proxy/test_system_io_tape.py), [`test_system_io_records_and_rebinds_callback_receiver_with_tape`](../../../tests/proxy/test_system_io_tape.py) |
-| Overlapping type-family config | Config names both a patched base type and one of its subclasses | `patch_type()`, subclass patching, binding order | Same-system patching is idempotent and does not wrap or bind the subclass twice | [`test_patch_type_is_idempotent_for_subtypes_patched_through_base`](../../../tests/proxy/test_replay_materialize.py) |
+| Overlapping type-family config | Config names both a patched base type and one of its subclasses | `patch_type()`, subclass patching, binding order | Same-system patching is idempotent and does not wrap or bind the subclass twice | [`test_patch_type_is_idempotent_for_subtypes_patched_through_base`](../../../tests/proxy/test_proxy_runtime.py) |
 | Pre-existing patched singleton | `random._inst` used through module-level `random.uniform()` | Module config `bind`, patched instance identity | Existing singleton objects of patched types are bound explicitly so replay sees the same logical object | [`test_replay_anyio_task_group_with_random_delays_does_not_diverge`](../../../tests/install/external/test_anyio_task_group_random_replay_regression.py), [`test_random_choice_replay_equals_record`](../../../tests/install/stdlib/test_random.py) |
 | Generated external proxy type creation | First encounter of a new external type/spec | `_ext_proxytype_from_spec`, internal retrace of helper work, binding of type + `ProxyRef` | Proxy-type generation is itself captured so replay recreates the same proxy class identity at the right point | [`test_system_io_records_callback_for_new_ext_proxy_type_with_memory_tape`](../../../tests/proxy/test_system_io_tape.py) |
 | Replay hydration of `ProxyRef` results | Replay returns a bound proxy-producing handle | `_ReplayBindingState`, binding resolution, `ProxyRef` hydration | Replay deserialization turns the recorded `ProxyRef` into a live proxy shell before user code observes it | [`test_replay_binding_state_hydrates_proxy_ref_bindings`](../../../tests/proxy/test_system_io_tape.py), [`test_system_io_round_trips_external_result_proxy_hydration_with_memory_tape`](../../../tests/proxy/test_system_io_tape.py) |
-| Materialized replay escape hatch | Call a configured lock materialization target while retrace is disabled on replay | `replay_materialize`, `disable_for()`, unbound lock/RLock handling | The unusual disabled replay call materializes the expected object without consuming the next unrelated recorded result | [`test_replay_materialize_disabled_call_does_not_consume_next_recorded_result`](../../../tests/proxy/test_replay_materialize.py) |
-| Control-plane work excluded from retrace | Desync reporting, monitoring, stacktrace bookkeeping | `disable_for()`, gate-cleared execution | Helper plumbing does not generate extra boundary traffic or perturb replay alignment | [`test_replay_materialize_disabled_call_does_not_consume_next_recorded_result`](../../../tests/proxy/test_replay_materialize.py) |
+| Control-plane work excluded from retrace | Desync reporting, monitoring, stacktrace bookkeeping | `disable_for()`, gate-cleared execution | Helper plumbing does not generate extra boundary traffic or perturb replay alignment | [`test_replayer_skips_standalone_callback_result_before_next_call`](../../../tests/proxy/test_system_io_tape.py) |
 | Record writer call surface | CLI recording writes protocol values through `stream.writer(*values)` | Native `ObjectWriter.__call__`, writer batching/locking, disabled writer callable shape | Multi-value protocol writes use the native writer directly, disabled recording accepts direct calls, and no Python tape-writer adapter is needed | [`test_multiple_writes_single_call`](../../../tests/stream/test_stream_smoke.py), [`test_create_tape_writer_disable_discards_protocol_writes`](../../../tests/test_tape_disabled.py) |
-| Threaded external activity | Child thread performs proxied calls | `wrap_start_new_thread()`, logical thread ids, `THREAD_SWITCH`, replay demux | Record and replay preserve per-thread message order and deliver results to the right logical thread | [`test_replayer_consumes_protocol_result_after_thread_switch`](../../../tests/proxy/test_system_io_tape.py), [`test_install_and_run_replays_flask_request_from_unretraced_client_thread_with_memory_tape`](../../../tests/test_main_memory_tape.py) |
-| Cross-thread synchronization under debug checkpoints | Main thread schedules work into an event-loop/portal thread and waits on a `Future`/`Condition` while `--stacktraces` is enabled | Debug `CHECKPOINT` payloads, patched lock/RLock methods, thread propagation, `THREAD_SWITCH` ordering | Debug/checkpoint tracing must not change lock wakeups, condition notifications, or event-loop thread progress during record or replay | [`test_replay_anyio_blocking_portal_does_not_diverge`](../../../tests/install/external/test_anyio_from_thread_replay_dispatcher_regression.py), [`test_record_then_replay_asyncio_run_coroutine_threadsafe`](../../../tests/test_record_replay.py) |
-| Binding cleanup | External object lifetime ends after recorded use | Bind open/close flow, replay binding deletion | Replay drops dead bindings at the right time and does not leak stale handle lookups into later operations | [`test_replay_binding_state_consumes_trailing_binding_deletes`](../../../tests/proxy/test_system_io_tape.py), [`test_raw_tape_source_consumes_binding_delete_before_thread_demux`](../../../tests/proxy/test_system_io_tape.py) |
+| Threaded external activity | Child thread performs proxied calls | Stable `_thread.get_ident()` ids, default internal gate, `THREAD_SWITCH`, replay scheduler | Record and replay preserve message order and deliver results to the right thread | [`test_replayer_consumes_protocol_result_after_thread_switch`](../../../tests/proxy/test_system_io_tape.py), [`test_install_and_run_replays_flask_request_from_unretraced_client_thread_with_memory_tape`](../../../tests/test_main_memory_tape.py) |
+| Cross-thread synchronization under debug checkpoints | Main thread schedules work into an event-loop/portal thread and waits on a `Future`/`Condition` while `--stacktraces` is enabled | Debug `CHECKPOINT` payloads, thread propagation, `THREAD_SWITCH` ordering, replay scheduler checkpoints | Debug/checkpoint tracing must not change lock wakeups, condition notifications, or event-loop thread progress during record or replay | [`test_replay_anyio_blocking_portal_does_not_diverge`](../../../tests/install/external/test_anyio_from_thread_replay_dispatcher_regression.py), [`test_record_then_replay_asyncio_run_coroutine_threadsafe`](../../../tests/test_record_replay.py) |
+| Binding cleanup | External object lifetime ends after recorded use | Bind open/close flow, replay binding deletion | Replay drops dead bindings at the right time and does not leak stale handle lookups into later operations | [`test_replay_binding_state_consumes_trailing_binding_deletes`](../../../tests/proxy/test_system_io_tape.py), [`test_raw_tape_source_consumes_binding_delete_before_replay_scheduler`](../../../tests/proxy/test_system_io_tape.py) |
 
 Taken together, this matrix covers the main boundary directions:
 internal -> external calls, external -> internal callbacks, record-only live

@@ -2,7 +2,7 @@ import pytest
 import retracesoftware.utils as utils
 
 from retracesoftware.install import ReplayDivergence
-from retracesoftware.protocol import CALL, StacktraceMessage
+from retracesoftware.protocol import StacktraceMessage
 from retracesoftware.protocol.normalize import normalize as normalize_checkpoint_value
 from retracesoftware.protocol.replay import ReplayReader, StacktraceFactory, next_message
 from retracesoftware.testing.memorytape import MemoryWriter
@@ -63,35 +63,6 @@ def test_read_result_continues_after_raising_async_call():
     assert events == ["called"]
 
 
-def test_write_call_accepts_call_marker():
-    tape = iter([CALL])
-
-    reader = ReplayReader(lambda: next(tape), bind=utils.noop)
-
-    reader.write_call()
-
-
-def test_write_call_validates_matching_stacktrace():
-    delta = (
-        0,
-        (
-            (
-                ("/tmp/app.py", 10),
-                ("/tmp/library.py", 20),
-            ),
-        ),
-    )
-    tape = iter(["STACKTRACE", delta[0], delta[1], CALL])
-
-    reader = ReplayReader(
-        lambda: next(tape),
-        bind=utils.noop,
-        stacktrace_factory=FakeStackFactory(delta),
-    )
-
-    reader.write_call()
-
-
 def test_next_message_materializes_full_stacktrace_message():
     delta = (
         0,
@@ -123,40 +94,6 @@ def test_next_message_attaches_thread_id_to_result_message():
 
     assert msg.result == 42
     assert msg.thread_id == ("main", 1)
-
-
-def test_write_call_raises_on_stacktrace_divergence():
-    recorded_delta = (
-        0,
-        (
-            (
-                ("/tmp/app.py", 10),
-                ("/tmp/library.py", 20),
-            ),
-        ),
-    )
-    replay_delta = (
-        0,
-        (
-            (
-                ("/tmp/app.py", 10),
-                ("/tmp/other.py", 99),
-            ),
-        ),
-    )
-    tape = iter([
-        StacktraceFactory().materialize(*recorded_delta),
-        CALL,
-    ])
-
-    reader = ReplayReader(
-        lambda: next(tape),
-        bind=utils.noop,
-        stacktrace_factory=FakeStackFactory(replay_delta),
-    )
-
-    with pytest.raises(ReplayDivergence, match="stacktrace divergence"):
-        reader.write_call()
 
 
 def test_checkpoint_normalizes_values_symmetrically():
@@ -200,24 +137,3 @@ def test_memory_writer_handle_message_records_thread_id():
     writer.handle("STACKTRACE")("payload")
 
     assert writer.tape[0].thread_id == ("worker",)
-
-
-def test_read_result_skips_nested_sync_call_frames():
-    tape = iter([
-        CALL,
-        "CHECKPOINT",
-        True,
-        CALL,
-        "CHECKPOINT",
-        {"function": "recv", "args": (), "kwargs": {}},
-        "RESULT",
-        b"GET /health HTTP/1.1\r\nHost: localhost\r\n\r\n",
-        "CHECKPOINT",
-        b"GET /health HTTP/1.1\r\nHost: localhost\r\n\r\n",
-        "RESULT",
-        b"GET /health HTTP/1.1\r\n",
-    ])
-
-    reader = ReplayReader(lambda: next(tape), bind=utils.noop)
-
-    assert reader.read_result() == b"GET /health HTTP/1.1\r\n"

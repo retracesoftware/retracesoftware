@@ -7,7 +7,6 @@ _utils_sources = files(
   'fastset.cpp',
   'frameeval.cpp',
   'gate.cpp',
-  'gccollectpred.cpp',
   'iddict.cpp',
   'idset.cpp',
   'instancecheck.cpp',
@@ -19,7 +18,6 @@ _utils_sources = files(
   'newwrapper.cpp',
   'observer.cpp',
   'onalloc.cpp',
-  'patchhash.cpp',
   'perthread.cpp',
   'proxy.cpp',
   'reference.cpp',
@@ -38,7 +36,7 @@ _utils_sources = files(
   'weakset.cpp',
 )
 
-_utils_extra_c = files('generation.c', 'gilwatch_activate.c')
+_utils_extra_c = files('gilwatch_activate.c')
 _utils_includes = include_directories('.', '../common/include')
 _utils_cpp_args = host_machine.system() == 'windows' ? [] : ['-fvisibility=hidden']
 

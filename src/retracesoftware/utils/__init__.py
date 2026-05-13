@@ -41,7 +41,7 @@ _DEPRECATED = frozenset({
     "MemoryAddresses", "ThreadStatePredicate",
     "blocking_counter", "chain", "fastset", "has_generic_alloc",
     "has_generic_new", "hashseed", "id_dict", "idset", "instancecheck",
-    "intercept__new__", "intercept_dict_set", "is_identity_hash",
+    "intercept__new__", "intercept_dict_set",
     "is_immutable", "marker", "method_dispatch", "perthread", "reference",
     "return_none", "set_type", "start_new_thread_wrapper",
     "thread_switch_monitor", "unwrap_apply", "visitor",
@@ -247,20 +247,6 @@ def wrap_func_with_overrides(func, **overrides):
     )
 
 
-def patch_hashes(hashfunc, *types):
-    """Patch ``__hash__`` on each type in *types* for deterministic ordering.
-
-    Python's default ``__hash__`` is based on ``id()`` (memory address),
-    which varies between runs.  Sets iterate in hash order, so iteration
-    order becomes non-deterministic.  This replaces ``__hash__`` with
-    *hashfunc*, giving stable set/dict-key ordering for record/replay.
-
-    Call once during bootstrap, before any modules are loaded.
-    """
-    for cls in types:
-        _backend_mod.patch_hash(cls, hashfunc)
-
-
 def update(obj, name, f, *args, **kwargs):
     value = getattr(obj, name)
     setattr(obj, name, f(value, *args, **kwargs))
@@ -401,28 +387,6 @@ def on_gilswitch(callback):
     """
     _backend_mod.gilwatch_activate(callback)
 
-
-from retracesoftware.cursor import (
-    CallCounter,
-    Cursor,
-    callback_on_thread,
-    install_call_counter,
-    uninstall_call_counter,
-    current_call_counts,
-    call_counter_disable_for,
-    call_counter_frame_positions,
-    call_counter_position,
-    cursor_snapshot,
-    yield_at_call_counts,
-    yield_at_cursor,
-    watch,
-    install_cursor_hooks,
-    uninstall_cursor_hooks,
-    current_cursor,
-    cursor_frame_positions,
-    cursor_position,
-    cursor_disable_for,
-)
 
 from .trace import trace_function_instructions, TargetUnreachableError, InstructionMonitor
 

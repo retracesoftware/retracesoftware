@@ -79,20 +79,6 @@ def test_io_single_module_config_preserves_root_immutable_directive():
     assert cfg["immutable"] == ["BlockingIOError", "UnsupportedOperation"]
 
 
-def test_single_module_parser_accepts_replay_materialize(monkeypatch, tmp_path):
-    module_dir = tmp_path / "modules"
-    module_dir.mkdir()
-    (module_dir / "demo.toml").write_text(
-        'proxy = ["allocate_lock"]\nreplay_materialize = ["allocate_lock"]\n',
-        encoding="utf-8",
-    )
-    monkeypatch.setenv("RETRACE_MODULES_PATH", str(module_dir))
-
-    cfg = ModuleConfigResolver()
-
-    assert cfg["demo"]["replay_materialize"] == ["allocate_lock"]
-
-
 def test_module_directives_include_stub_for_replay():
     assert "stub_for_replay" in DIRECTIVE_KEYS
 
@@ -101,11 +87,10 @@ def test_module_directives_include_ext_proxy_result():
     assert "ext_proxy_result" in DIRECTIVE_KEYS
 
 
-def test_thread_allocate_lock_uses_ext_proxy_result():
-    cfg = ModuleConfigResolver()["_thread"]
-
-    assert "allocate_lock" in cfg["ext_proxy_result"]
-    assert "allocate_lock" not in cfg["proxy"]
+def test_thread_module_has_no_builtin_lock_config():
+    assert "_thread" not in ModuleConfigResolver()
+    assert "replay_materialize" not in DIRECTIVE_KEYS
+    assert "sync" not in DIRECTIVE_KEYS
 
 
 def test_install_import_hooks_disables_imports_without_unwrapping_args():

@@ -41,11 +41,11 @@ func (d *fakeDAPDebugger) Close() error { return nil }
 
 type failingSnapshotProvider struct{}
 
-func (f failingSnapshotProvider) ClosestBeforeCall(context.Context, uint64, FunctionCounts) (*Snapshot, error) {
+func (f failingSnapshotProvider) ClosestBeforeCall(context.Context, uint64, Coordinates) (*Snapshot, error) {
 	return nil, errors.New("snapshot unavailable in unit test")
 }
 
-func (f failingSnapshotProvider) ClosestBeforeReturn(context.Context, uint64, FunctionCounts) (*Snapshot, error) {
+func (f failingSnapshotProvider) ClosestBeforeReturn(context.Context, uint64, Coordinates) (*Snapshot, error) {
 	return nil, errors.New("snapshot unavailable in unit test")
 }
 
@@ -98,18 +98,18 @@ func TestContinueAdvancesWithinSameTraceMessage(t *testing.T) {
 		BreakpointID: 1,
 		Spec:         BreakpointSpec{File: "target.py", Line: 1},
 		Location: Location{
-			MessageIndex:   1483,
-			ThreadID:       1,
-			FunctionCounts: FunctionCounts{1, 1},
+			MessageIndex: 1483,
+			ThreadID:     1,
+			Coordinates:  Coordinates{1, 1},
 		},
 	}
 	second := BreakpointHit{
 		BreakpointID: 2,
 		Spec:         BreakpointSpec{File: "target.py", Line: 2},
 		Location: Location{
-			MessageIndex:   1483,
-			ThreadID:       1,
-			FunctionCounts: FunctionCounts{1, 2},
+			MessageIndex: 1483,
+			ThreadID:     1,
+			Coordinates:  Coordinates{1, 2},
 		},
 	}
 	debugger.Hits().Insert(first)

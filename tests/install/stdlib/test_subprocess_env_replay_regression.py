@@ -7,6 +7,8 @@ from pathlib import Path
 import subprocess
 import sys
 
+from tests.helpers import PYTHON
+
 
 _REPO_ROOT = Path(__file__).resolve().parents[3]
 
@@ -87,7 +89,7 @@ def test_replay_restores_recorded_environment_before_subprocess_env_copy(tmp_pat
 
     record = subprocess.run(
         [
-            sys.executable,
+            PYTHON,
             "-m",
             "retracesoftware",
             "--recording",
@@ -112,7 +114,7 @@ def test_replay_restores_recorded_environment_before_subprocess_env_copy(tmp_pat
 
     replay = subprocess.run(
         [
-            sys.executable,
+            PYTHON,
             "-m",
             "retracesoftware",
             "--recording",

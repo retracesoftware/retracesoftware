@@ -48,9 +48,10 @@ This layer should stay general-purpose and dependency-light.
 
 ## `utils`
 
-CPython helper code and native utilities. This layer contains low-level tools
-for type flags, gates, call counters, breakpoints, hashing, and other runtime
-mechanics used by higher layers.
+Low-level CPython introspection and native utilities. This layer contains
+type-flag manipulation (`WithFlags`, `WithoutFlags`), `StackFactory`,
+`InterceptDict`, gate primitives, call counters, breakpoint support, and other
+runtime mechanics used by higher layers. It depends only on `functional`.
 
 ## `stream`
 
@@ -77,8 +78,8 @@ keeps higher-level replay message shapes separate from low-level byte encoding.
 ## `install`
 
 Runtime wiring and patching. `install/` loads module TOML configs, patches
-already-loaded modules, installs import hooks, wraps thread-start paths, and
-connects concrete stream readers/writers to proxy systems.
+already-loaded modules, installs import hooks, handles pytest/autoenable
+wiring, and connects concrete stream readers/writers to proxy systems.
 
 This layer is where external library coverage becomes live Python behavior.
 
@@ -91,7 +92,6 @@ The package root owns orchestration:
   activation
 - `tape.py` for recording preambles, checksums, shebangs, and tape open helpers
 - `run.py` for running recorded Python scripts/modules
-- `threadid/` for stable top-level thread-id helpers
 
 This layer assembles record and replay but should avoid duplicating lower-layer
 proxy, stream, or install behavior.

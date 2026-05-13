@@ -63,11 +63,11 @@ func parseLocationFromPayload(payload map[string]any) Location {
 		msgIdx = uint64(mi)
 	}
 	return Location{
-		ThreadID:       rc.ThreadID,
-		FunctionCounts: rc.FunctionCounts,
-		FLasti:         rc.FLasti,
-		Lineno:         rc.Lineno,
-		MessageIndex:   msgIdx,
+		ThreadID:     rc.ThreadID,
+		Coordinates:  rc.Coordinates,
+		FLasti:       rc.FLasti,
+		Lineno:       rc.Lineno,
+		MessageIndex: msgIdx,
 	}
 }
 
@@ -81,9 +81,9 @@ func parseLocationFromJSON(line []byte) (Location, error) {
 		return Location{}, fmt.Errorf("invalid cursor JSON: %w", err)
 	}
 	return Location{
-		ThreadID:       raw.Cursor.ThreadID,
-		FunctionCounts: raw.Cursor.FunctionCounts,
-		FLasti:         raw.Cursor.FLasti,
+		ThreadID:    raw.Cursor.ThreadID,
+		Coordinates: raw.Cursor.Coordinates,
+		FLasti:      raw.Cursor.FLasti,
 	}, nil
 }
 

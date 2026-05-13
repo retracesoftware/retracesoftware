@@ -15,9 +15,10 @@ from __future__ import annotations
 import os
 from pathlib import Path
 import subprocess
-import sys
 
 import pytest
+
+from tests.helpers import PYTHON
 
 
 def test_flask_record_teardown_does_not_crash_background_writer(tmp_path: Path):
@@ -61,7 +62,7 @@ def test_flask_record_teardown_does_not_crash_background_writer(tmp_path: Path):
         recording = tmp_path / f"trace_{i}.retrace"
         proc = subprocess.run(
             [
-                sys.executable,
+                PYTHON,
                 "-m",
                 "retracesoftware",
                 "--recording",

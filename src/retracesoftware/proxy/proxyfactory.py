@@ -90,12 +90,6 @@ def wrap_method_descriptors(wrapper, prefix, base):
 
     return extended
 
-def sync_type(sync, base):
-    return wrap_method_descriptors(
-        wrapper = lambda desc: intercept(on_call = sync, function = desc),
-        prefix = 'retrace.synced',
-        base = base)
-
 class GCHook:
     def __init__(self, thread_state):
         self.thread_state = thread_state
@@ -150,7 +144,7 @@ class GCHook:
 #         elif phase == 'stop':
 #             self.gc_end()
     
-#     def __init__(self, thread_state, on_new_proxytype, sync, 
+#     def __init__(self, thread_state, on_new_proxytype,
 #                  debug, checkpoint, verbose,
 #                  ext_proxy, ext_handler, int_proxy, int_handler):
         
@@ -184,9 +178,6 @@ class GCHook:
 #         self.verbose = verbose
 
 #         self.on_new_proxytype = on_new_proxytype
-#         self._sync = sync
-#         self.thread_counter = self.sync_function(counter(1))
-
 #         # immutable_types = self.disable_for(immutable_types)
 
 #         gc.callbacks.append(self.gc_hook)
@@ -221,12 +212,6 @@ class GCHook:
 #             # threading.settrace(tracer)            
 #             # self.trace = lambda event, **kwargs: checkpoint({'type': 'trace', 'event': event} | kwargs)
 #             # self.enable_tracing()            
-
-#     def sync_type(self, base):
-#         return sync_type(sync = self.sync, base = base)
-
-#     def sync_function(self, function):
-#         return intercept(on_call = self._sync, function = function)
 
 #     def checkpoint(self, obj):
 #         pass
@@ -271,24 +256,6 @@ class GCHook:
 #             return self.ext_proxy(obj)
         
 #         # return self.ext_proxy(obj)
-    
-#     def start_new_thread(self, start_new_thread, function, *args):
-#         # synchronized, replay shoudl yeild correct number
-#         thread_id = self.thread_counter()
-
-#         def threadrunner(*args, **kwargs):
-#             self.set_thread_number(thread_id)
-#             with self.thread_state.select('internal'):
-#                 if self.tracing:
-#                     FrameTracer.install(self.thread_state.dispatch(noop, internal = self.checkpoint))
-                
-#                 return function(*args, **kwargs)
-
-#         return start_new_thread(threadrunner, *args)
-
-#     def wrap_start_new_thread(self, start_new_thread):
-#         wrapped = functools.partial(self.start_new_thread, start_new_thread)
-#         return self.thread_state.dispatch(start_new_thread, internal = wrapped)
     
 #     def checkpoint_ext_call(self, func, *args, **kwargs):
 #         self.checkpoint({'type': 

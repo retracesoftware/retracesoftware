@@ -10,7 +10,7 @@ A cursor has three fields:
 
 | Field | Type | Description |
 |---|---|---|
-| `thread_id` | varies | Identifies the thread (see below) |
+| `thread_id` | `int` | Stable retrace-python `_thread.get_ident()` value |
 | `function_counts` | `[]int` | Per-frame call counts from root to leaf |
 | `f_lasti` | `*int` (optional) | Bytecode offset in the leaf frame |
 
@@ -22,12 +22,9 @@ invocation of a specific function.
 
 ### Thread IDs
 
-`thread_id` is not necessarily a single integer. During live recording,
-it may be the OS thread ID (`uint64`), but in the replay engine it is a
-**stable thread ID** — a tuple of numbers that uniquely identifies a thread
-across replays regardless of OS-assigned IDs. The stable form ensures that
-cursors serialised from one replay can be used to navigate in another replay
-of the same trace without ID mismatches.
+`thread_id` is the stable `_thread.get_ident()` value supplied by
+retrace-python. Retrace no longer assigns Python-side hierarchical thread id
+tuples.
 
 ### Example
 
@@ -59,7 +56,7 @@ Execution events (simplified, assuming the module is the root frame):
 A cursor for "stopped at line 2 inside `foo()`" would be:
 
 ```
-thread_id: (0, 1)     # stable thread ID (tuple)
+thread_id: 12         # stable retrace-python thread ID
 function_counts: [1, 0]
 f_lasti: 2            # bytecode offset of STORE_FAST for a = 'bar'
 ```
@@ -164,7 +161,7 @@ parameter maps to the C++ `on_overshoot` slot.
 ```python
 @dataclass(frozen=True)
 class Cursor:
-    thread_id: int | tuple
+    thread_id: int
     function_counts: tuple
     f_lasti: int | None = None
 ```

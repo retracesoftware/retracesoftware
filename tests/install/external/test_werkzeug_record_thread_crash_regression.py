@@ -13,9 +13,10 @@ from __future__ import annotations
 import os
 from pathlib import Path
 import subprocess
-import sys
 
 import pytest
+
+from tests.helpers import PYTHON
 
 
 def test_werkzeug_record_teardown_does_not_crash(tmp_path: Path):
@@ -57,7 +58,7 @@ def test_werkzeug_record_teardown_does_not_crash(tmp_path: Path):
     recording = tmp_path / "trace.retrace"
     proc = subprocess.run(
         [
-            sys.executable,
+            PYTHON,
             "-m",
             "retracesoftware",
             "--recording",

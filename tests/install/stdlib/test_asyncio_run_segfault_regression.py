@@ -13,9 +13,10 @@ from __future__ import annotations
 import os
 from pathlib import Path
 import subprocess
-import sys
 
 import pytest
+
+from tests.helpers import PYTHON
 
 
 @pytest.mark.parametrize("config_name", ["release", "debug"])
@@ -48,7 +49,7 @@ def test_record_minimal_asyncio_run_does_not_segfault(tmp_path: Path, config_nam
 
     proc = subprocess.run(
         [
-            sys.executable,
+            PYTHON,
             "-m",
             "retracesoftware",
             "--recording",

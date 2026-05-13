@@ -52,19 +52,19 @@ func parseControlMessage(line []byte) (ControlMessage, error) {
 }
 
 // RawCursor is the protocol-level cursor representation: a dict with
-// thread_id, function_counts, and an optional f_lasti.
+// thread_id, coordinates, and an optional f_lasti.
 type RawCursor struct {
-	ThreadID       uint64         `json:"thread_id"`
-	FunctionCounts FunctionCounts `json:"function_counts"`
-	FLasti         *int           `json:"f_lasti,omitempty"`
-	Lineno         int            `json:"lineno,omitempty"`
+	ThreadID    uint64      `json:"thread_id"`
+	Coordinates Coordinates `json:"coordinates"`
+	FLasti      *int        `json:"f_lasti,omitempty"`
+	Lineno      int         `json:"lineno,omitempty"`
 }
 
 // ToMap converts RawCursor to map[string]any for embedding in protocol messages.
 func (rc RawCursor) ToMap() map[string]any {
 	m := map[string]any{
-		"thread_id":       rc.ThreadID,
-		"function_counts": rc.FunctionCounts,
+		"thread_id":   rc.ThreadID,
+		"coordinates": rc.Coordinates,
 	}
 	if rc.FLasti != nil {
 		m["f_lasti"] = *rc.FLasti
@@ -74,9 +74,9 @@ func (rc RawCursor) ToMap() map[string]any {
 
 // ControlStopResult holds the raw protocol data from a stop message.
 type ControlStopResult struct {
-	Reason        string                `json:"reason"`
-	MessageIndex  uint64                `json:"message_index"`
-	Cursor        RawCursor             `json:"cursor"`
+	Reason        string    `json:"reason"`
+	MessageIndex  uint64    `json:"message_index"`
+	Cursor        RawCursor `json:"cursor"`
 	ThreadCursors map[uint64]RawCursor
 }
 
@@ -89,11 +89,11 @@ func parseRawCursor(v any) RawCursor {
 	if tid, ok := m["thread_id"].(float64); ok {
 		rc.ThreadID = uint64(tid)
 	}
-	if raw, ok := m["function_counts"].([]any); ok {
-		rc.FunctionCounts = make(FunctionCounts, 0, len(raw))
+	if raw, ok := m["coordinates"].([]any); ok {
+		rc.Coordinates = make(Coordinates, 0, len(raw))
 		for _, item := range raw {
 			if n, ok := item.(float64); ok {
-				rc.FunctionCounts = append(rc.FunctionCounts, int(n))
+				rc.Coordinates = append(rc.Coordinates, int(n))
 			}
 		}
 	}

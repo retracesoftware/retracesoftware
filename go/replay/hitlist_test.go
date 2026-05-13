@@ -7,16 +7,16 @@ func TestHitListOrdersEqualMessageIndexByExecutionCursor(t *testing.T) {
 		BreakpointID: 1,
 		Spec:         BreakpointSpec{File: "main.py", Line: 9},
 		Location: Location{
-			MessageIndex:   1487,
-			FunctionCounts: FunctionCounts{1, 14, 1, 5, 5, 1, 1, 3, 0},
+			MessageIndex: 1487,
+			Coordinates:  Coordinates{1, 14, 1, 5, 5, 1, 1, 3},
 		},
 	}
 	serviceHit := BreakpointHit{
 		BreakpointID: 2,
 		Spec:         BreakpointSpec{File: "service.py", Line: 17},
 		Location: Location{
-			MessageIndex:   1487,
-			FunctionCounts: FunctionCounts{1, 14, 1, 5, 5, 1, 1, 3, 2, 2, 0},
+			MessageIndex: 1487,
+			Coordinates:  Coordinates{1, 14, 1, 5, 5, 1, 1, 3, 2, 2},
 		},
 	}
 
@@ -39,17 +39,17 @@ func TestHitListOrdersEqualCursorByFLasti(t *testing.T) {
 	first := BreakpointHit{
 		BreakpointID: 1,
 		Location: Location{
-			MessageIndex:   1487,
-			FunctionCounts: FunctionCounts{1, 2, 3},
-			FLasti:         &firstOffset,
+			MessageIndex: 1487,
+			Coordinates:  Coordinates{1, 2, 3, 4},
+			FLasti:       &firstOffset,
 		},
 	}
 	second := BreakpointHit{
 		BreakpointID: 2,
 		Location: Location{
-			MessageIndex:   1487,
-			FunctionCounts: FunctionCounts{1, 2, 3},
-			FLasti:         &secondOffset,
+			MessageIndex: 1487,
+			Coordinates:  Coordinates{1, 2, 3, 4},
+			FLasti:       &secondOffset,
 		},
 	}
 

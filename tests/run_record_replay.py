@@ -4,11 +4,11 @@ Each helper records a script, then replays from the trace,
 asserting exit codes and stdout match.
 """
 import os
-import sys
 import subprocess
 import threading
 
-PYTHON = sys.executable
+from tests.helpers import PYTHON
+
 TIMEOUT = 30
 
 

@@ -1,13 +1,11 @@
 import traceback
 import weakref
 from argparse import Namespace
-from contextlib import contextmanager
 from typing import NamedTuple
 
 from retracesoftware import functional
 from retracesoftware.protocol.messages import HandleMessage, ThreadSwitchMessage
 from retracesoftware.protocol.normalize import normalize as normalize_checkpoint_value
-from retracesoftware.protocol.record import CALL
 from retracesoftware.protocol.replay import ReplayReader, StacktraceFactory
 from retracesoftware.proxy.tape import TapeReader, TapeWriter
 from retracesoftware.stream import (
@@ -392,14 +390,6 @@ class MemoryWriter:
             }
         return value
 
-    def sync(self):
-        self._maybe_switch()
-        self.tape.append("SYNC")
-
-    def write_call(self, *args, **kwargs):
-        self._maybe_switch()
-        self.tape.append(CALL)
-
     def write_result(self, value):
         self._maybe_switch()
         self.tape.append("RESULT")
@@ -502,15 +492,6 @@ class MemoryReader:
 
     def _get_stream(self):
         return self._stream
-
-    def sync(self):
-        self._get_stream().sync()
-
-    def write_call(self, *args, **kwargs):
-        self._get_stream().write_call(*args, **kwargs)
-
-    def on_call(self, *args, **kwargs):
-        return self.write_call(*args, **kwargs)
 
     def read_result(self):
         return self._get_stream().read_result()
@@ -623,24 +604,6 @@ class _IOThreadAwareTapeReader:
             )
 
 
-@contextmanager
-def _thread_id_context(thread_ids):
-    import _thread
-    import threading
-
-    original_start_new_thread = _thread.start_new_thread
-    original_threading_start_new_thread = threading._start_new_thread
-    wrapped_start_new_thread = thread_ids.wrap_start_new_thread(original_start_new_thread)
-
-    _thread.start_new_thread = wrapped_start_new_thread
-    threading._start_new_thread = wrapped_start_new_thread
-    try:
-        yield
-    finally:
-        _thread.start_new_thread = original_start_new_thread
-        threading._start_new_thread = original_threading_start_new_thread
-
-
 def record_then_replay(
     function,
     *,
@@ -655,9 +618,9 @@ def record_then_replay(
     options=None,
     inject_system=False,
 ):
+    import _thread
     from retracesoftware.install import ReplayDivergence, install_retrace
     from retracesoftware.proxy.io import recorder, replayer
-    from retracesoftware.threadid import ThreadId
 
     kwargs = {} if kwargs is None else dict(kwargs)
     options = _default_install_options() if options is None else options
@@ -670,10 +633,9 @@ def record_then_replay(
             "record_then_replay expects tape to be None or expose a .tape list"
         )
 
-    record_thread_ids = ThreadId()
     writer = _IOThreadAwareTapeWriter(
         tape_storage,
-        thread=record_thread_ids.id.get,
+        thread=_thread.get_ident,
     )
     record_system = recorder(
         writer=writer.write,
@@ -688,22 +650,20 @@ def record_then_replay(
     else:
         def record_function():
             return function(*args, **kwargs)
-    with _thread_id_context(record_thread_ids):
-        uninstall_record = install_retrace(
-            system=record_system,
-            monitor_level=getattr(options, "monitor", 0),
-            retrace_file_patterns=getattr(options, "retrace_file_patterns", None),
-            verbose=options.verbose,
-            retrace_shutdown=options.trace_shutdown,
-        )
-        try:
-            recorded = record_system.run(record_function)
-        finally:
-            uninstall_record()
+    uninstall_record = install_retrace(
+        system=record_system,
+        monitor_level=getattr(options, "monitor", 0),
+        retrace_file_patterns=getattr(options, "retrace_file_patterns", None),
+        verbose=options.verbose,
+        retrace_shutdown=options.trace_shutdown,
+    )
+    try:
+        recorded = record_system.run(record_function)
+    finally:
+        uninstall_record()
     if after_record is not None:
         after_record()
 
-    replay_thread_ids = ThreadId()
     tape_reader = _IOThreadAwareTapeReader(tape_storage)
 
     def on_unexpected(key):
@@ -734,18 +694,17 @@ def record_then_replay(
     else:
         def replay_function():
             return function(*args, **kwargs)
-    with _thread_id_context(replay_thread_ids):
-        uninstall_replay = install_retrace(
-            system=replay_system,
-            monitor_level=getattr(options, "monitor", 0),
-            retrace_file_patterns=getattr(options, "retrace_file_patterns", None),
-            verbose=options.verbose,
-            retrace_shutdown=options.trace_shutdown,
-        )
-        try:
-            replayed = replay_system.run(replay_function)
-        finally:
-            uninstall_replay()
+    uninstall_replay = install_retrace(
+        system=replay_system,
+        monitor_level=getattr(options, "monitor", 0),
+        retrace_file_patterns=getattr(options, "retrace_file_patterns", None),
+        verbose=options.verbose,
+        retrace_shutdown=options.trace_shutdown,
+    )
+    try:
+        replayed = replay_system.run(replay_function)
+    finally:
+        uninstall_replay()
     if after_replay is not None:
         after_replay()
 

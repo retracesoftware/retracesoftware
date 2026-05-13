@@ -90,7 +90,7 @@ hard constraints, not as an encyclopedia.
   in the environment — bare `RETRACE=1` does nothing today, despite some
   stale `__main__.py install` help text), `cursor.py`, `control_runtime.py`,
   `search.py`, `exceptions.py`, `run.py`, and the `functional/`, `utils/`,
-  `testing/` (incl. `memorytape.py`), and `threadid/` packages. Treat
+  and `testing/` (incl. `memorytape.py`) packages. Treat
   these as shared infrastructure used by `install`, `proxy`, `protocol`,
   and `replay`; do not duplicate their helpers in those layers.
 - `tests/` and `dockertests/`
@@ -112,16 +112,10 @@ hard constraints, not as an encyclopedia.
 - Replay validates Retrace checksums and exact Python version before running.
   (`__main__.py` -> `tape.checksums()`; bypassed only with the
   `RETRACE_SKIP_CHECKSUMS` debug escape hatch.)
-- Replay schedules `gc.collect()` deterministically at intercepted safe
-  points so GC timing is part of the recording rather than the live
-  runtime's whim. The CLI flag is `--gc_collect_multiplier` and the
-  hook is `system.wrap_async(gc.collect)` in `proxy/io.py`. There is no
-  process-wide `gc.disable()`; the only short-lived `PyGC_Disable` lives
-  inside the C++ persister fallback (`cpp/stream/persister.cpp`) around
-  one serialize call.
-- Thread replay uses stable hierarchical thread-id tuples (built by
-  `src/retracesoftware/threadid/ThreadId`, instantiated in
-  `src/retracesoftware/__main__.py`) rather than live OS thread ids.
+- Do not add live GC-pressure heuristics to align record and replay. Async
+  interruptions such as GC and signals must be modeled as explicit recorded
+  suspend/resume events at cursor points.
+- Thread replay uses retrace-python's stable `_thread.get_ident()` values.
 
 ## High-Risk Invariants
 

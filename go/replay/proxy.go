@@ -456,7 +456,7 @@ func (p *Proxy) handleContinue(ctx context.Context, reverse bool) error {
 	p.navigatedFromHit = false
 	p.navHistory = nil
 	p.currentCursor = NewCursor(hit.Location, p.provider, nil)
-	snap, err := p.provider.ClosestBeforeCall(ctx, hit.Location.ThreadID, hit.Location.FunctionCounts)
+	snap, err := p.provider.ClosestBeforeCall(ctx, hit.Location.ThreadID, hit.Location.Coordinates)
 	if err != nil {
 		log.Printf("warning: failed to get snapshot: %v", err)
 	} else {
@@ -501,8 +501,8 @@ func (p *Proxy) handleCursorNav(ctx context.Context, reason string, nav func() (
 	}
 
 	loc := p.currentCursor.Location()
-	log.Printf("handleCursorNav: reason=%s msgIdx=%d flasti=%s fc=%v",
-		reason, loc.MessageIndex, flasti(loc.FLasti), loc.FunctionCounts)
+	log.Printf("handleCursorNav: reason=%s msgIdx=%d flasti=%s coords=%v",
+		reason, loc.MessageIndex, flasti(loc.FLasti), loc.Coordinates)
 
 	var previous *Cursor
 	if recordHistory {
@@ -513,8 +513,8 @@ func (p *Proxy) handleCursorNav(ctx context.Context, reason string, nav func() (
 		log.Printf("navigation failed (%s): %v, staying at current position", reason, err)
 	} else {
 		nl := next.Location()
-		log.Printf("handleCursorNav: advanced to msgIdx=%d flasti=%s fc=%v",
-			nl.MessageIndex, flasti(nl.FLasti), nl.FunctionCounts)
+		log.Printf("handleCursorNav: advanced to msgIdx=%d flasti=%s coords=%v",
+			nl.MessageIndex, flasti(nl.FLasti), nl.Coordinates)
 		if previous != nil && !previous.Location().Equal(nl) {
 			p.navHistory = append(p.navHistory, previous)
 		}

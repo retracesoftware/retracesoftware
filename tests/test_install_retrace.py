@@ -65,7 +65,7 @@ def test_install_retrace_uninstall_resets_patched_types():
     _new_socket()
 
 
-def test_install_retrace_uninstall_restores_thread_lock_aliases():
+def test_install_retrace_does_not_patch_thread_lock_aliases():
     tape = IOMemoryTape()
 
     original_thread_allocate_lock = _thread.allocate_lock
@@ -81,6 +81,7 @@ def test_install_retrace_uninstall_restores_thread_lock_aliases():
         verbose=False,
     )
     try:
+        assert _thread.allocate_lock is original_thread_allocate_lock
         assert threading.Lock is _thread.allocate_lock
         assert threading._allocate_lock is _thread.allocate_lock
     finally:
@@ -91,26 +92,6 @@ def test_install_retrace_uninstall_restores_thread_lock_aliases():
     assert threading._allocate_lock is original_threading_allocate_lock
     assert threading.Lock is _thread.allocate_lock
     assert threading._allocate_lock is _thread.allocate_lock
-
-    replay_reader = tape.reader()
-    replay_system = replayer(
-        next_object=replay_reader.read,
-        close=getattr(replay_reader, "close", None),
-        debug=False,
-        stacktraces=False,
-    )
-    _configure_system(replay_system)
-    uninstall_replay = install_retrace(
-        system=replay_system,
-        monitor_level=0,
-        retrace_shutdown=False,
-        verbose=False,
-    )
-    try:
-        assert threading.Lock is _thread.allocate_lock
-        assert threading._allocate_lock is _thread.allocate_lock
-    finally:
-        uninstall_replay()
 
     assert _thread.allocate_lock is original_thread_allocate_lock
     assert threading.Lock is original_threading_lock

@@ -23,6 +23,8 @@ import sys
 
 import pytest
 
+from tests.helpers import PYTHON
+
 _ROOT = Path(__file__).resolve().parents[3]
 
 
@@ -141,7 +143,7 @@ def test_debug_record_flask_with_only_bufferedreader_proxy_does_not_crash(
     env["RETRACE_MODULES_PATH"] = str(modules_dir)
 
     proc = subprocess.run(
-        [sys.executable, str(script)],
+        [PYTHON, str(script)],
         capture_output=True,
         text=True,
         timeout=60,

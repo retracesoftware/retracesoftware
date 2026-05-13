@@ -25,8 +25,6 @@ void dump_stack_trace(PyThreadState * tstate);
         } \
     }
 
-extern "C" int generation_to_collect(int multiplier);
-
 namespace retracesoftware {
 
     // extern PyTypeObject NullContext_Type;
@@ -80,8 +78,6 @@ namespace retracesoftware {
     extern PyTypeObject Patched_Type;
     extern PyTypeObject FastTypePredicate_Type;
     extern PyTypeObject DictIntercept_Type;
-    extern PyTypeObject CollectPred_Type;
-    extern PyTypeObject Collector_Type;
     extern PyTypeObject RunAll_Type;
     extern PyTypeObject StackFactory_Type;
     extern PyTypeObject Stack_Type;
@@ -172,8 +168,6 @@ namespace retracesoftware {
 
 
     PyObject * create_wrapped(PyTypeObject * cls, PyObject * target);
-
-    void patch_hash(PyTypeObject * cls, PyObject * hashfunc);
 
     // PyObject * StableSet_GetItem(PyObject * set, int index);
     // static inline vectorcallfunc extract_vectorcall(PyObject *callable)

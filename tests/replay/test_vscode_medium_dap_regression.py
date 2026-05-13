@@ -17,6 +17,7 @@ import sys
 import time
 
 import pytest
+from tests.helpers import PYTHON
 
 
 requires_312 = pytest.mark.skipif(
@@ -35,7 +36,7 @@ def test_medium_vscode_dap_keeps_breakpoints_across_source_files(tmp_path: Path)
 
     record = subprocess.run(
         [
-            sys.executable,
+            PYTHON,
             "-m",
             "retracesoftware",
             "--recording",

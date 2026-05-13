@@ -113,7 +113,7 @@ def run_python_command(argv):
 def run_with_retrace(system, argv, trace_shutdown = False):
 
     def runpy_exec(source, globals = None, locals = None):
-        with system.thread_state.select('internal'):
+        with system.gate.context('internal'):
             return builtins.exec(source, globals, locals)
     
     utils.update(runpy, "_run_code",
@@ -121,12 +121,13 @@ def run_with_retrace(system, argv, trace_shutdown = False):
                  exec = runpy_exec)
 
     try:
-        run_python_command(argv)
+        with system.enable():
+            return run_python_command(argv)
     finally:
         system.disable_for(wait_for_non_daemon_threads)()
         try:
             if trace_shutdown:
-                with system.thread_state.select('internal'):
+                with system.gate.context('internal'):
                     atexit._run_exitfuncs()
             else:
                 atexit._run_exitfuncs()

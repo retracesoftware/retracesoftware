@@ -4,7 +4,7 @@ import time
 
 import pytest
 
-from retracesoftware.__main__ import install_and_run
+from retracesoftware.install import install_and_run
 from retracesoftware.proxy.io import recorder, replayer
 from retracesoftware.testing.memorytape import IOMemoryTape, record_then_replay
 from tests.runner import retrace_test
@@ -165,7 +165,7 @@ def test_install_and_run_reads_socket_family_with_memory_tape():
     assert result == _socket.AF_INET
 
 
-def test_install_and_run_round_trips_allocate_lock_with_memory_tape():
+def test_install_and_run_leaves_allocate_lock_live_with_memory_tape():
     import _thread
 
     tape = IOMemoryTape()

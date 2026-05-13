@@ -1,11 +1,10 @@
 import os
 import sys
 import threading
+import _thread
 from dataclasses import dataclass
 from types import CodeType, FrameType
 from typing import Callable, Optional
-
-from . import install_call_counter, cursor_snapshot, call_counter_disable_for
 
 _HAS_MONITORING = hasattr(sys, "monitoring")
 
@@ -115,6 +114,23 @@ def _acquire_tool_id(name: str) -> int:
     raise RuntimeError("No free sys.monitoring tool IDs available")
 
 
+def _retrace():
+    import retrace
+
+    return retrace
+
+
+def _callback_wrapper(retrace, disable_for):
+    retrace_disabled = getattr(retrace, "disable", None) or retrace.exclude
+    if disable_for is None:
+        return retrace_disabled
+
+    def wrap(callback):
+        return disable_for(retrace_disabled(callback))
+
+    return wrap
+
+
 def _compile_breakpoint(spec: BreakpointSpec) -> Breakpoint:
     target_file = os.path.realpath(spec.file)
     target_basename = os.path.basename(target_file)
@@ -156,6 +172,18 @@ def _find_monitored_frame(code: CodeType) -> Optional[FrameType]:
     return None
 
 
+def _coordinate_snapshot(frame: Optional[FrameType] = None) -> dict:
+    retrace = _retrace()
+    snapshot = {
+        "thread_id": _thread.get_ident(),
+        "coordinates": list(retrace.coordinates()),
+    }
+    if frame is not None:
+        snapshot["f_lasti"] = frame.f_lasti
+        snapshot["lineno"] = frame.f_lineno
+    return snapshot
+
+
 def install_breakpoint(
     breakpoint: BreakpointSpec,
     callback: Callable[[dict], None],
@@ -168,13 +196,13 @@ def install_breakpoint(
     ``log``, when provided, is called with diagnostic strings that the
     caller can forward over the control socket.
     ``disable_for``, when provided, wraps monitoring callbacks so they
-    don't perturb call-count tracking.
+    don't perturb retrace-python coordinates.
     """
+    retrace = _retrace()
     _log = log or (lambda msg: None)
-    _wrap = disable_for or call_counter_disable_for
+    _wrap = _callback_wrapper(retrace, disable_for)
     _log(f"install_breakpoint: file={breakpoint.file!r} line={breakpoint.line}")
 
-    install_call_counter()
     compiled = _compile_breakpoint(breakpoint)
 
     if not _HAS_MONITORING:
@@ -185,7 +213,7 @@ def install_breakpoint(
             frame.f_trace_opcodes = True
             if event == "line" and compiled.frame_predicate(frame):
                 _log(f"LINE hit: {frame.f_code.co_filename}:{frame.f_lineno}")
-                callback(cursor_snapshot().to_dict())
+                callback(_coordinate_snapshot(frame))
             return True
 
         _log("hooks installed, using sys.settrace fallback")
@@ -207,7 +235,7 @@ def install_breakpoint(
         frame = _find_monitored_frame(code)
         if frame is not None and compiled.frame_predicate(frame):
             _log(f"LINE hit: {code.co_filename}:{line}")
-            callback(cursor_snapshot().to_dict())
+            callback(_coordinate_snapshot(frame))
         return None
 
     events = E.PY_START | E.LINE
@@ -231,8 +259,8 @@ def install_function_breakpoint(
 
     Returns a monitor handle with `.close()` for teardown.
     """
-    _wrap = disable_for or call_counter_disable_for
-    install_call_counter()
+    retrace = _retrace()
+    _wrap = _callback_wrapper(retrace, disable_for)
 
     if not _HAS_MONITORING:
         target_code = getattr(target, "__code__", None)
@@ -243,7 +271,7 @@ def install_function_breakpoint(
             if frame.f_code is not target_code:
                 return False
             if event == "call":
-                callback(cursor_snapshot().to_dict())
+                callback(_coordinate_snapshot(frame))
             return True
 
         return TraceBreakpointMonitor(on_trace, _wrap)
@@ -254,7 +282,7 @@ def install_function_breakpoint(
 
     def on_call(code, offset, callee, arg0):  # noqa: ARG001
         if callee is target:
-            callback(cursor_snapshot().to_dict())
+            callback(_coordinate_snapshot(_find_monitored_frame(code)))
         return None
 
     sys.monitoring.register_callback(tool_id, E.CALL, _wrap(on_call))

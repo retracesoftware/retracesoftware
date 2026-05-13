@@ -11,9 +11,8 @@ The recording is an ordered sequence of events:
     error       — exception raised by an external call
     checkpoint  — normalised value for divergence detection
 
-Additional hooks (bind, async_call, write_call, sync) let the writer
-track object identity, mark external call boundaries, and synchronise
-with the underlying transport.
+Additional hooks (bind and async_call) let the writer track object identity
+and internal callbacks.
 """
 from abc import ABC, abstractmethod
 from typing import Any, MutableMapping, Protocol, runtime_checkable
@@ -53,18 +52,6 @@ class AsyncCallWriterProtocol(Protocol):
 
 
 @runtime_checkable
-class SyncProtocol(Protocol):
-    def sync(self) -> None:
-        ...
-
-
-@runtime_checkable
-class CallStartProtocol(Protocol):
-    def write_call(self, *args, **kwargs) -> None:
-        ...
-
-
-@runtime_checkable
 class CheckpointProtocol(Protocol):
     def checkpoint(self, value: object) -> None:
         ...
@@ -93,7 +80,7 @@ class StubFactoryReaderProtocol(BindableProtocol, Protocol):
 
 
 @runtime_checkable
-class ReaderProtocol(BindableProtocol, SyncProtocol, CallStartProtocol, Protocol):
+class ReaderProtocol(BindableProtocol, Protocol):
     def read_result(self) -> object:
         ...
 
@@ -104,8 +91,6 @@ class WriterProtocol(
     AsyncNewPatchedWriterProtocol,
     ResultWriterProtocol,
     AsyncCallWriterProtocol,
-    CallStartProtocol,
-    SyncProtocol,
     TypeSerializerWriterProtocol,
     Protocol,
 ):
@@ -127,26 +112,6 @@ class Writer(ABC):
     @abstractmethod
     def async_call(self, *a, **kw):
         """Record an internal callback invocation (ext→int)."""
-
-    @abstractmethod
-    def sync(self):
-        """Write a synchronisation point for the current thread.
-
-        The tracefile is shared across many threads.  Before an
-        thread handoff or other explicit synchronisation step,
-        ``sync`` writes a small marker message so the reader can later
-        locate this thread's position in the stream.
-        """
-
-    @abstractmethod
-    def write_call(self, *args, **kwargs):
-        """Write the start marker for an external call.
-
-        ``System.record_context`` emits this immediately before an
-        external call executes so replay can align the subsequent
-        recorded result with the correct live call site. Implementations
-        should accept and ignore any observed call arguments.
-        """
 
     @abstractmethod
     def write_result(self, *a, **kw):
@@ -194,25 +159,6 @@ class Reader(ABC):
     @abstractmethod
     def bind(self, *a, **kw):
         """Notify that a patched object has entered the sandbox."""
-
-    @abstractmethod
-    def sync(self):
-        """Advance to the next synchronisation point for this thread.
-
-        During replay the tracefile contains interleaved messages from
-        many threads.  ``sync`` reads forward until it reaches the
-        marker that was written by the corresponding ``Writer.sync``.
-        """
-
-    @abstractmethod
-    def write_call(self, *args, **kwargs):
-        """Advance to the next external-call boundary marker.
-
-        During replay, ``write_call`` aligns the next
-        ``read_result`` with the corresponding live external call.
-        Implementations should accept and ignore any observed call
-        arguments.
-        """
 
     @abstractmethod
     def read_result(self):

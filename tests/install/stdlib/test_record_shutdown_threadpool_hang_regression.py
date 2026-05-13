@@ -21,6 +21,8 @@ from pathlib import Path
 import subprocess
 import sys
 
+from tests.helpers import PYTHON
+
 
 def test_record_does_not_hang_when_threadpool_cleanup_is_atexit(tmp_path: Path):
     script = tmp_path / "threadpool_hang_repro.py"
@@ -60,7 +62,7 @@ def test_record_does_not_hang_when_threadpool_cleanup_is_atexit(tmp_path: Path):
     try:
         proc = subprocess.run(
             [
-                sys.executable,
+                PYTHON,
                 "-m",
                 "retracesoftware",
                 "--recording",
@@ -88,44 +90,10 @@ def test_record_does_not_hang_when_threadpool_cleanup_is_atexit(tmp_path: Path):
     )
 
 
-def test_asyncio_shutdown_thread_stays_retraced_and_threadsafe_schedule_emits_sync():
-    """The shutdown thread stays retraced; cross-thread scheduling emits SYNC."""
+def test_install_retrace_does_not_patch_native_thread_start():
+    """Native thread startup is owned by retrace-python, not retracesoftware wrappers."""
 
-    import asyncio
-    import threading
-
-    from retracesoftware.install import install_retrace
-    from retracesoftware.proxy.io import recorder
-    from retracesoftware.proxy.system import _is_disabled_thread_target
-
-    tape = []
-
-    def writer(*values):
-        tape.extend(values)
-
-    system = recorder(writer=writer)
-    uninstall = install_retrace(system=system, retrace_shutdown=False)
-    try:
-        loop = asyncio.new_event_loop()
-        try:
-            target = loop._do_shutdown
-            underlying = getattr(target, "__func__", target)
-            assert not getattr(underlying, "__retrace_disabled_thread_target__", False)
-
-            thread = threading.Thread(target=target, args=(loop.create_future(),))
-            assert not _is_disabled_thread_target(thread._bootstrap)
-
-            system.run(loop.call_soon_threadsafe, lambda: None)
-            assert "SYNC" in tape
-        finally:
-            loop.close()
-    finally:
-        uninstall()
-
-
-def test_thread_start_child_user_body_emits_sync_without_bootstrap_lock_traffic():
-    """Thread.start() startup plumbing is disabled; the child user body syncs."""
-
+    import _thread
     import threading
 
     from retracesoftware.install import install_retrace
@@ -137,26 +105,18 @@ def test_thread_start_child_user_body_emits_sync_without_bootstrap_lock_traffic(
         tape.extend(values)
 
     system = recorder(writer=writer)
+    original_start_new_thread = _thread.start_new_thread
+    original_threading_start_new_thread = threading._start_new_thread
     uninstall = install_retrace(system=system, retrace_shutdown=False)
     try:
-        done = []
-
-        def target():
-            done.append(True)
-
-        thread = threading.Thread(target=target)
-        tape.clear()
-        system.run(thread.start)
-        thread.join(timeout=5)
-
-        assert done == [True]
-        assert tape == ["ON_START", "THREAD_SWITCH", 1, "SYNC", "ON_START"]
+        assert _thread.start_new_thread is original_start_new_thread
+        assert threading._start_new_thread is original_threading_start_new_thread
     finally:
         uninstall()
 
 
-def test_disabled_thread_target_start_stays_outside_retrace():
-    """Disabled thread targets must not be re-enabled by Thread.start wrapping."""
+def test_new_thread_defaults_to_internal_gate():
+    """Application threads start retrace-enabled without start interception."""
 
     import threading
 
@@ -176,21 +136,55 @@ def test_disabled_thread_target_start_stays_outside_retrace():
         def target():
             enabled_states.append(system.enabled())
 
-        thread = threading.Thread(
-            target=system.disable_for(target, unwrap_args=False),
-        )
+        thread = threading.Thread(target=target)
         tape.clear()
         system.run(thread.start)
-        thread.join(timeout=5)
+        with system.disable():
+            thread.join(timeout=5)
 
-        assert enabled_states == [False]
-        assert tape == ["ON_START"]
+        assert enabled_states == [True]
+        assert "ON_START" in tape
     finally:
         uninstall()
 
 
-def test_direct_start_new_thread_still_propagates_retrace_state():
-    """The lower-level _thread API keeps its existing child propagation path."""
+def test_disable_context_clears_gate_inside_thread_body():
+    """Control-plane bodies can explicitly opt out of the default internal gate."""
+
+    import threading
+
+    from retracesoftware.install import install_retrace
+    from retracesoftware.proxy.io import recorder
+
+    tape = []
+
+    def writer(*values):
+        tape.extend(values)
+
+    system = recorder(writer=writer)
+    uninstall = install_retrace(system=system, retrace_shutdown=False)
+    try:
+        enabled_states = []
+
+        def target():
+            enabled_states.append(system.enabled())
+            with system.disable():
+                enabled_states.append(system.enabled())
+            enabled_states.append(system.enabled())
+
+        thread = threading.Thread(target=target)
+        tape.clear()
+        system.run(thread.start)
+        with system.disable():
+            thread.join(timeout=5)
+
+        assert enabled_states == [True, False, True]
+    finally:
+        uninstall()
+
+
+def test_direct_start_new_thread_defaults_to_internal_gate():
+    """The lower-level _thread API also relies on default gate state."""
 
     import _thread
     import time
@@ -206,46 +200,20 @@ def test_direct_start_new_thread_still_propagates_retrace_state():
     system = recorder(writer=writer)
     uninstall = install_retrace(system=system, retrace_shutdown=False)
     try:
-        thread_ids = []
+        enabled_states = []
 
         def target():
-            thread_ids.append(system.thread_id())
+            enabled_states.append(system.enabled())
 
         tape.clear()
         system.run(_thread.start_new_thread, target, ())
         deadline = time.time() + 5
-        while not thread_ids and time.time() < deadline:
-            time.sleep(0.01)
+        with system.disable():
+            while not enabled_states and time.time() < deadline:
+                time.sleep(0.01)
 
-        assert thread_ids == [1]
-        assert tape == ["ON_START", "THREAD_SWITCH", 1, "SYNC", "ON_START"]
-    finally:
-        uninstall()
-
-
-def test_asyncio_same_thread_schedule_does_not_emit_sync():
-    """Same-thread loop bookkeeping is deterministic code, not a wakeup edge."""
-
-    import asyncio
-
-    from retracesoftware.install import install_retrace
-    from retracesoftware.proxy.io import recorder
-
-    tape = []
-
-    def writer(*values):
-        tape.extend(values)
-
-    system = recorder(writer=writer)
-    uninstall = install_retrace(system=system, retrace_shutdown=False)
-    try:
-        loop = asyncio.new_event_loop()
-        try:
-            tape.clear()
-            system.run(loop.call_soon, lambda: None)
-            assert "SYNC" not in tape
-        finally:
-            loop.close()
+        assert enabled_states == [True]
+        assert "ON_START" in tape
     finally:
         uninstall()
 
@@ -276,7 +244,7 @@ def test_stacktrace_replay_normalizes_exception_exit_checkpoint(tmp_path: Path):
 
     record = subprocess.run(
         [
-            sys.executable,
+            PYTHON,
             "-m",
             "retracesoftware",
             "--recording",
@@ -300,7 +268,7 @@ def test_stacktrace_replay_normalizes_exception_exit_checkpoint(tmp_path: Path):
 
     replay = subprocess.run(
         [
-            sys.executable,
+            PYTHON,
             "-m",
             "retracesoftware",
             "--recording",
@@ -343,7 +311,7 @@ def test_stacktrace_replay_normalizes_ssl_descriptor_checkpoint(tmp_path: Path):
 
     record = subprocess.run(
         [
-            sys.executable,
+            PYTHON,
             "-m",
             "retracesoftware",
             "--recording",
@@ -367,7 +335,7 @@ def test_stacktrace_replay_normalizes_ssl_descriptor_checkpoint(tmp_path: Path):
 
     replay = subprocess.run(
         [
-            sys.executable,
+            PYTHON,
             "-m",
             "retracesoftware",
             "--recording",
@@ -389,7 +357,7 @@ def test_stacktrace_replay_normalizes_ssl_descriptor_checkpoint(tmp_path: Path):
 
 
 def test_asyncio_default_executor_replay_wakeup_progresses(tmp_path: Path):
-    """Executor completion schedules the loop with a live wakeup plus SYNC."""
+    """Executor completion schedules the loop through the live wakeup path."""
 
     script = tmp_path / "asyncio_executor_replay.py"
     script.write_text(
@@ -417,7 +385,7 @@ def test_asyncio_default_executor_replay_wakeup_progresses(tmp_path: Path):
 
     record = subprocess.run(
         [
-            sys.executable,
+            PYTHON,
             "-m",
             "retracesoftware",
             "--recording",
@@ -439,7 +407,7 @@ def test_asyncio_default_executor_replay_wakeup_progresses(tmp_path: Path):
     )
 
     replay = subprocess.run(
-        [sys.executable, "-m", "retracesoftware", "--recording", str(recording)],
+        [PYTHON, "-m", "retracesoftware", "--recording", str(recording)],
         capture_output=True,
         text=True,
         timeout=15,
@@ -492,7 +460,7 @@ def test_replay_post_run_daemon_thread_cleanup_does_not_consume_trace(
 
     record = subprocess.run(
         [
-            sys.executable,
+            PYTHON,
             "-m",
             "retracesoftware",
             "--recording",
@@ -515,7 +483,7 @@ def test_replay_post_run_daemon_thread_cleanup_does_not_consume_trace(
 
     replay = subprocess.run(
         [
-            sys.executable,
+            PYTHON,
             "-m",
             "retracesoftware",
             "--recording",

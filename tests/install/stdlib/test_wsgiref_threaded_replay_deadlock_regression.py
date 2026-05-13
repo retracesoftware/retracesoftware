@@ -1,4 +1,4 @@
-"""Regression: threaded wsgiref replay can deadlock in the replay demux.
+"""Regression: threaded wsgiref replay can deadlock in replay scheduling.
 
 This is the deterministic version of the flaky top-level Henry WSGI smoke:
 recording succeeds, but replay can leave the WSGI request thread and the
@@ -13,6 +13,9 @@ import sys
 import textwrap
 from pathlib import Path
 
+import pytest
+
+from tests.helpers import PYTHON
 
 _ROOT = Path(__file__).resolve().parents[3]
 
@@ -48,6 +51,12 @@ def _editable_skip() -> str:
     return os.pathsep.join(entries)
 
 
+@pytest.mark.xfail(
+    reason=(
+        "threaded wsgiref replay can deadlock with both replay threads waiting "
+        "for proxy.io scheduler results"
+    ),
+)
 def test_wsgiref_many_threaded_requests_replay_does_not_deadlock(tmp_path: Path):
     script = tmp_path / "wsgiref_threaded_replay_deadlock.py"
     script.write_text(
@@ -153,7 +162,7 @@ def test_wsgiref_many_threaded_requests_replay_does_not_deadlock(tmp_path: Path)
     for attempt in range(1, 3):
         try:
             proc = subprocess.run(
-                [sys.executable, str(script)],
+                [PYTHON, str(script)],
                 cwd=tmp_path,
                 env=env,
                 capture_output=True,

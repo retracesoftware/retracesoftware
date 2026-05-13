@@ -207,14 +207,13 @@ def create_tape_writer(options, argv, *, thread_getter) -> TapeWriter:
         inflight_limit=options.inflight_limit,
         consumer_wait_timeout_ms=options.consumer_wait_timeout_ms,
         queue_capacity=options.queue_capacity,
-        flush_interval=options.flush_interval,
         quit_on_error=options.quit_on_error,
         serialize_errors=not options.quit_on_error,
     )
 
 
 @contextmanager
-def open_tape_reader(args, *, thread_id):
+def open_tape_reader(args):
     format_hint = getattr(args, "format", None)
     path = Path(args.recording).resolve()
 

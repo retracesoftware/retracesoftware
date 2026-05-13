@@ -3,9 +3,9 @@ from __future__ import annotations
 import os
 from pathlib import Path
 import subprocess
-import sys
 
 import pytest
+from tests.helpers import PYTHON
 
 
 def test_record_then_replay_flask_request_from_unretraced_client_thread(
@@ -80,7 +80,7 @@ def test_record_then_replay_flask_request_from_unretraced_client_thread(
 
     record = subprocess.run(
         [
-            sys.executable,
+            PYTHON,
             "-m",
             "retracesoftware",
             "--recording",
@@ -104,7 +104,7 @@ def test_record_then_replay_flask_request_from_unretraced_client_thread(
 
     replay = subprocess.run(
         [
-            sys.executable,
+            PYTHON,
             "-m",
             "retracesoftware",
             "--recording",

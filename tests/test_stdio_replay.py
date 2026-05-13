@@ -1,14 +1,15 @@
 """End-to-end test: record unframed, replay with --stdio, validate breakpoint hit."""
 import json
 import os
-import sys
 import shutil
+import sys
 import tempfile
 import subprocess
 
 import pytest
 
-PYTHON = sys.executable
+from tests.helpers import PYTHON, retrace_env
+
 TIMEOUT = 30
 SCRIPTS_DIR = os.path.join(os.path.dirname(__file__), "scripts")
 
@@ -33,7 +34,9 @@ def record_raw(script_path, trace_path):
         "--format", "unframed_binary",
         "--", script_path,
     ]
-    result = subprocess.run(cmd, capture_output=True, text=True, timeout=TIMEOUT)
+    result = subprocess.run(
+        cmd, capture_output=True, text=True, timeout=TIMEOUT, env=retrace_env(python=PYTHON),
+    )
     assert result.returncode == 0, f"Record failed:\n{result.stderr}"
     assert os.path.isfile(trace_path), "Trace file not created"
     return result
@@ -53,7 +56,7 @@ def replay_stdio(trace_path, commands):
     ]
     result = subprocess.run(
         cmd, input=stdin_data,
-        capture_output=True, text=True, timeout=TIMEOUT,
+        capture_output=True, text=True, timeout=TIMEOUT, env=retrace_env(python=PYTHON),
     )
 
     responses = []
@@ -126,7 +129,8 @@ def test_breakpoint_hit(tmpdir):
     assert bp_event["event"] == "breakpoint_hit"
     cursor = bp_event["payload"]["cursor"]
     assert "thread_id" in cursor
-    assert "function_counts" in cursor
+    assert "coordinates" in cursor
+    assert "function_counts" not in cursor
 
     # hit_breakpoints OK (max_hits=1 reached)
     bp_ok = responses[2]
@@ -176,9 +180,9 @@ def test_breakpoint_multiple_hits(tmpdir):
     assert responses[2]["kind"] == "event"
     assert responses[2]["event"] == "breakpoint_hit"
 
-    # The two hits should have different cursors (different call counters)
-    cursor1 = responses[1]["payload"]["cursor"]["function_counts"]
-    cursor2 = responses[2]["payload"]["cursor"]["function_counts"]
+    # The two hits should have different cursors.
+    cursor1 = responses[1]["payload"]["cursor"]["coordinates"]
+    cursor2 = responses[2]["payload"]["cursor"]["coordinates"]
     assert cursor1 != cursor2
 
     # OK response
