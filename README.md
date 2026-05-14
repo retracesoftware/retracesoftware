@@ -30,15 +30,11 @@ team as the project evolves.
 
 ## What Retrace Is Not
 
-Retrace is not an APM tool. It does not sample traces or aggregate metrics
-across requests.
+Retrace is not a logging library. You do not decide in advance which variables, branches, or errors might matter.
 
-It is not a logging library. You do not decide in advance which variables
-might matter.
+Retrace is not a metrics or tracing dashboard. It does not sample requests or aggregate performance data across your application.
 
-It is not rr for Python. Retrace does not record an entire machine process at
-the syscall level. It records the boundary between your Python code and the
-outside world, at Python semantics.
+Retrace is not `rr` for Python. It does not record an entire machine process at the syscall level. Instead, it records the boundary between your Python code and the outside world, then replays those interactions so the original execution can be debugged deterministically.
 
 ## Performance
 
