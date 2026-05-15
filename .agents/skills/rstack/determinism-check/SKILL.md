@@ -1,12 +1,6 @@
 ---
 name: determinism-check
-description: >
-  Manually review a proposed change for replay determinism hazards. Use only
-  for replay-sensitive edits touching proxy boundary logic, stream or protocol
-  semantics, replay message handling, Go replay/control behavior, thread/fork
-  behavior, weakref or finalizer timing, module interception coverage, or
-  similar control flow. Do not use for general code review, trivial cleanup,
-  or ordinary non-replay changes.
+description: "Check if a change breaks replay or affects recording determinism. Use when reviewing replay-sensitive edits touching proxy boundary logic, stream or protocol semantics, replay message handling, Go replay/control behavior, thread/fork behavior, weakref or finalizer timing, module interception coverage, or similar control flow. Also use for determinism review, replay safety check, or verifying a diff won't cause replay divergence. Do not use for general code review, trivial cleanup, or ordinary non-replay changes."
 ---
 
 # Determinism Check
@@ -34,7 +28,8 @@ cleanup, say so explicitly and return `GREEN`.
 ## Checklist
 
 For each relevant category below, decide whether the change is `safe`,
-`hazard`, or `not applicable`.
+`hazard`, or `not applicable`. See [REFERENCE.md](REFERENCE.md) for concrete
+hazard examples on the densest categories (§3, §4, §9).
 
 ### 1. Iteration and ordering
 
