@@ -82,6 +82,7 @@ def _record_and_replay_pth_script(
     tmp_path: Path,
     script_name: str,
     script_source: str,
+    timeout: int = TIMEOUT,
 ) -> tuple[subprocess.CompletedProcess[str], subprocess.CompletedProcess[str]]:
     script = tmp_path / script_name
     script.write_text(textwrap.dedent(script_source), encoding="utf-8")
@@ -100,6 +101,7 @@ def _record_and_replay_pth_script(
         [sys.executable, "-m", "retracesoftware", "install"],
         cwd=tmp_path,
         env=install_env,
+        timeout=timeout,
     )
     assert install.returncode == 0, _completed_process_error(
         "install auto-enable",
@@ -111,7 +113,12 @@ def _record_and_replay_pth_script(
     record_env["RETRACE_CONFIG"] = "debug"
     record_env["RETRACE_RECORDING"] = recording_name
 
-    record = _run([sys.executable, script.name], cwd=tmp_path, env=record_env)
+    record = _run(
+        [sys.executable, script.name],
+        cwd=tmp_path,
+        env=record_env,
+        timeout=timeout,
+    )
     assert record.returncode == 0, (
         f"record failed for {script_name}\n"
         f"exit: {record.returncode}\n"
@@ -120,7 +127,12 @@ def _record_and_replay_pth_script(
     )
     assert recording.exists()
 
-    extract = _run([str(recording), "--extract"], cwd=tmp_path, env=install_env)
+    extract = _run(
+        [str(recording), "--extract"],
+        cwd=tmp_path,
+        env=install_env,
+        timeout=timeout,
+    )
     assert extract.returncode == 0, _completed_process_error("extract", extract)
 
     list_pids = _run(
@@ -134,6 +146,7 @@ def _record_and_replay_pth_script(
         ],
         cwd=tmp_path,
         env=install_env,
+        timeout=timeout,
     )
     assert list_pids.returncode == 0, _completed_process_error(
         "list_pids",
@@ -145,7 +158,7 @@ def _record_and_replay_pth_script(
 
     replay_env = install_env.copy()
     replay_env["PYTHONFAULTHANDLER"] = "1"
-    replay = _run([str(pidfile)], cwd=tmp_path, env=replay_env)
+    replay = _run([str(pidfile)], cwd=tmp_path, env=replay_env, timeout=timeout)
     return record, replay
 
 
@@ -205,6 +218,67 @@ def test_threading_barrier_queue_pth_pidfile_replay_does_not_overfill_dispatcher
 
     assert replay.returncode == 0, (
         f"barrier pidfile replay diverged (exit {replay.returncode})\n"
+        f"record stdout:\n{_tail(record.stdout)}\n"
+        f"record stderr tail:\n{_tail(record.stderr)}\n"
+        f"replay stdout:\n{_tail(replay.stdout)}\n"
+        f"replay stderr tail:\n{_tail(replay.stderr)}"
+    )
+    assert replay.stdout == record.stdout
+    assert "Dispatcher: too many threads waiting for item" not in combined_replay
+    assert "Checkpoint difference:" not in combined_replay
+
+
+def test_threading_barrier_sleep_race_pth_pidfile_replay_does_not_overfill_dispatcher(
+    tmp_path: Path,
+):
+    record, replay = _record_and_replay_pth_script(
+        tmp_path=tmp_path,
+        script_name="threading_barrier_sleep_race_repro.py",
+        timeout=10,
+        script_source="""
+            import threading
+            import time
+
+
+            THREADS = 10
+            balance = 0
+            start = threading.Barrier(THREADS)
+            all_read = threading.Barrier(THREADS)
+
+
+            def deposit(amount):
+                global balance
+                start.wait()
+                current = balance
+                all_read.wait()
+                time.sleep(0.001)
+                balance = current + amount
+
+
+            def main():
+                threads = [
+                    threading.Thread(target=deposit, args=(100,))
+                    for _ in range(THREADS)
+                ]
+
+                for thread in threads:
+                    thread.start()
+                for thread in threads:
+                    thread.join()
+
+                assert balance == 100, f"expected deterministic lost update, got {balance}"
+                print(f"balance={balance}", flush=True)
+                print("threading barrier sleep race ok", flush=True)
+
+
+            if __name__ == "__main__":
+                main()
+        """,
+    )
+    combined_replay = replay.stdout + replay.stderr
+
+    assert replay.returncode == 0, (
+        f"barrier sleep race pidfile replay diverged (exit {replay.returncode})\n"
         f"record stdout:\n{_tail(record.stdout)}\n"
         f"record stderr tail:\n{_tail(record.stderr)}\n"
         f"replay stdout:\n{_tail(replay.stdout)}\n"
