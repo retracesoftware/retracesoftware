@@ -44,6 +44,11 @@ During replay, your Python code runs for real, but those recorded boundary
 calls return their captured values instead of touching the live world.
 That makes replay deterministic and lets the debugger step in either
 direction.
+Retrace is not a logging library. You do not decide in advance which variables, branches, or errors might matter.
+
+Retrace is not a metrics or tracing dashboard. It does not sample requests or aggregate performance data across your application.
+
+Retrace is not `rr` for Python. It does not record an entire machine process at the syscall level. Instead, it records the boundary between your Python code and the outside world, then replays those interactions so the original execution can be debugged deterministically.
 
 ## Built For Humans And AI Agents
 
