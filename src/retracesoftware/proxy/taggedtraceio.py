@@ -13,9 +13,13 @@ from retracesoftware.proxy.traceio import (
     CallbackResultMessage,
     CheckpointMessage,
     ErrorMessage,
+    GCMessage,
     OnStartMessage,
     ResultMessage,
+    RunToCoordinateMessage,
+    SignalMessage,
     StacktraceMessage,
+    SwitchThreadMessage,
     SyncMessage,
     ThreadSwitchMessage,
 )
@@ -41,21 +45,29 @@ def _binding_handle(binding):
 
 def tagged_trace_writer(sink):
     def thread_switch(cursor_delta, thread_id):
-        return sink("THREAD_SWITCH", thread_id, cursor_delta)
+        sink("RUN_TO_COORDINATE", cursor_delta)
+        return sink("SWITCH_THREAD", thread_id)
 
-    def checkpoint(cursor_delta, value):
-        return sink("CHECKPOINT", cursor_delta, value)
+    def checkpoint(cursor_delta, thread_id, value):
+        return sink("CHECKPOINT", thread_id, cursor_delta, value)
+
+    def signal_callback(fn, args, kwargs):
+        return sink("SIGNAL", fn, args, kwargs)
 
     return SimpleNamespace(
         on_start=functional.partial(sink, "ON_START"),
         result=functional.partial(sink, "RESULT"),
         error=functional.partial(sink, "ERROR"),
         callback=functional.partial(sink, "CALLBACK"),
+        signal_callback=signal_callback,
+        gc_collect=functional.partial(sink, "GC"),
         callback_result=functional.partial(sink, "CALLBACK_RESULT"),
         callback_error=functional.partial(sink, "CALLBACK_ERROR"),
         checkpoint=checkpoint,
         stacktrace=functional.partial(sink, "STACKTRACE"),
         thread_switch=thread_switch,
+        run_to_coordinate=functional.partial(sink, "RUN_TO_COORDINATE"),
+        switch_thread=functional.partial(sink, "SWITCH_THREAD"),
         new_binding=functional.partial(sink, "NEW_BINDING"),
         binding_delete=functional.partial(sink, "BINDING_DELETE"),
         call_marker=functional.partial(sink, "CALL"),
@@ -80,20 +92,33 @@ class TaggedTraceWriter:
     def callback(self, fn, args, kwargs):
         return self._write("CALLBACK", fn, args, kwargs)
 
+    def signal_callback(self, fn, args, kwargs):
+        return self._write("SIGNAL", fn, args, kwargs)
+
+    def gc_collect(self, generation):
+        return self._write("GC", generation)
+
     def callback_result(self, value):
         return self._write("CALLBACK_RESULT", value)
 
     def callback_error(self, error):
         return self._write("CALLBACK_ERROR", error)
 
-    def checkpoint(self, cursor_delta, value):
-        return self._write("CHECKPOINT", cursor_delta, value)
+    def checkpoint(self, cursor_delta, thread_id, value):
+        return self._write("CHECKPOINT", thread_id, cursor_delta, value)
 
     def stacktrace(self, value):
         return self._write("STACKTRACE", value)
 
     def thread_switch(self, cursor_delta, thread_id):
-        return self._write("THREAD_SWITCH", thread_id, cursor_delta)
+        self.run_to_coordinate(cursor_delta)
+        return self.switch_thread(thread_id)
+
+    def run_to_coordinate(self, cursor_delta):
+        return self._write("RUN_TO_COORDINATE", cursor_delta)
+
+    def switch_thread(self, thread_id):
+        return self._write("SWITCH_THREAD", thread_id)
 
     def new_binding(self, handle):
         return self._write("NEW_BINDING", handle)
@@ -149,6 +174,10 @@ def next_message(source):
         return ErrorMessage(_read(source))
     if message_type == "CALLBACK":
         return CallbackMessage(_read(source), _read(source), _read(source))
+    if message_type == "SIGNAL":
+        return SignalMessage(_read(source), _read(source), _read(source))
+    if message_type == "GC":
+        return GCMessage(_read(source))
     if message_type == "CALLBACK_RESULT":
         return CallbackResultMessage(_read(source))
     if message_type == "CALLBACK_ERROR":
@@ -158,9 +187,14 @@ def next_message(source):
     if message_type == "SYNC":
         return SyncMessage()
     if message_type == "CHECKPOINT":
-        return CheckpointMessage(_read(source), _read(source))
+        thread_id = _read(source)
+        return CheckpointMessage(_read(source), _read(source), thread_id=thread_id)
     if message_type == "STACKTRACE":
         return StacktraceMessage(_read(source))
+    if message_type == "RUN_TO_COORDINATE":
+        return RunToCoordinateMessage(_read(source))
+    if message_type == "SWITCH_THREAD":
+        return SwitchThreadMessage(_read(source))
     if message_type == "THREAD_SWITCH":
         thread_id = _read(source)
         return ThreadSwitchMessage(_read(source), thread_id=thread_id)

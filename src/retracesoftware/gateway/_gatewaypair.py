@@ -211,6 +211,7 @@ class GatewayPair:
         on_error: ErrorCallback,
         on_result: ResultCallback,
         bind: BindCallback,
+        proxy_type_customizer: Callable[..., Any] = utils.noop,
         internal_space=None,
         external_space=None,
     ) -> GatewayPair:
@@ -227,6 +228,7 @@ class GatewayPair:
             int_gateway=internal.gateway,
             ext_gateway=external.gateway,
             bind=bind,
+            customize_proxy_type=proxy_type_customizer,
         ))
 
         def ext_proxytype(cls: type) -> type:
@@ -251,6 +253,7 @@ class GatewayPair:
             bind=bind,
             is_patched_type=utils.FastTypePredicate(lambda cls: False).istypeof,
             proxy_ref=functional.memoize_one_arg(ProxyRef),
+            customize_proxy_type=proxy_type_customizer,
         )
         internal_proxy = int_proxy_factory(
             proxytype=retrace.root_space.wrap(
@@ -287,6 +290,7 @@ class GatewayPair:
         is_passthrough: PassthroughPredicate,
         next_result: NextResult,
         bind: BindCallback,
+        proxy_type_customizer: Callable[..., Any] = utils.noop,
         internal_space=None,
         external_space=None,
     ) -> GatewayPair:
@@ -302,6 +306,7 @@ class GatewayPair:
             int_gateway=internal.gateway,
             ext_gateway=external.gateway,
             bind=bind,
+            customize_proxy_type=proxy_type_customizer,
         ))
 
         def illegal_external_proxy(value):
@@ -315,6 +320,7 @@ class GatewayPair:
             bind=bind,
             is_patched_type=utils.FastTypePredicate(lambda cls: False).istypeof,
             proxy_ref=functional.memoize_one_arg(ProxyRef),
+            customize_proxy_type=proxy_type_customizer,
         )
         internal_proxy = int_proxy_factory(
             proxytype=retrace.root_space.wrap(

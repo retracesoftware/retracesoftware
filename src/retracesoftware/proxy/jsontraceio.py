@@ -13,9 +13,13 @@ from retracesoftware.proxy.traceio import (
     CallbackResultMessage,
     CheckpointMessage,
     ErrorMessage,
+    GCMessage,
     OnStartMessage,
     ResultMessage,
+    RunToCoordinateMessage,
+    SignalMessage,
     StacktraceMessage,
+    SwitchThreadMessage,
     SyncMessage,
     ThreadSwitchMessage,
 )
@@ -92,24 +96,43 @@ class JsonTraceWriter:
     def callback(self, fn, args, kwargs):
         return self._write("callback", fn=fn, args=args, kwargs=kwargs)
 
+    def signal_callback(self, fn, args, kwargs):
+        return self._write(
+            "signal",
+            fn=fn,
+            args=args,
+            kwargs=kwargs,
+        )
+
+    def gc_collect(self, generation):
+        return self._write("gc", generation=generation)
+
     def callback_result(self, value):
         return self._write("callback_result", value=value)
 
     def callback_error(self, error):
         return self._write("callback_error", error=_encode_error(error))
 
-    def checkpoint(self, cursor_delta, value):
-        return self._write("checkpoint", cursor_delta=cursor_delta, value=value)
+    def checkpoint(self, cursor_delta, thread_id, value):
+        return self._write(
+            "checkpoint",
+            cursor_delta=cursor_delta,
+            thread_id=thread_id,
+            value=value,
+        )
 
     def stacktrace(self, value):
         return self._write("stacktrace", value=value)
 
     def thread_switch(self, cursor_delta, thread_id):
-        return self._write(
-            "thread_switch",
-            thread_id=thread_id,
-            cursor_delta=cursor_delta,
-        )
+        self.run_to_coordinate(cursor_delta)
+        return self.switch_thread(thread_id)
+
+    def run_to_coordinate(self, cursor_delta):
+        return self._write("run_to_coordinate", cursor_delta=cursor_delta)
+
+    def switch_thread(self, thread_id):
+        return self._write("switch_thread", thread_id=thread_id)
 
     def new_binding(self, handle):
         return self._write("new_binding", handle=handle)
@@ -170,6 +193,14 @@ def _message_from_payload(payload):
             _tuple_tree(payload["args"]),
             payload["kwargs"],
         )
+    if event == "signal":
+        return SignalMessage(
+            payload["fn"],
+            _tuple_tree(payload["args"]),
+            payload["kwargs"],
+        )
+    if event == "gc":
+        return GCMessage(payload["generation"])
     if event == "callback_result":
         return CallbackResultMessage(payload["value"])
     if event == "callback_error":
@@ -178,6 +209,7 @@ def _message_from_payload(payload):
         return CheckpointMessage(
             _tuple_tree(payload["cursor_delta"]),
             payload["value"],
+            thread_id=payload["thread_id"],
         )
     if event == "stacktrace":
         return StacktraceMessage(_tuple_tree(payload["value"]))
@@ -186,6 +218,10 @@ def _message_from_payload(payload):
             _tuple_tree(payload["cursor_delta"]),
             thread_id=payload["thread_id"],
         )
+    if event == "run_to_coordinate":
+        return RunToCoordinateMessage(_tuple_tree(payload["cursor_delta"]))
+    if event == "switch_thread":
+        return SwitchThreadMessage(payload["thread_id"])
     if event == "new_binding":
         return BindOpenMessage(payload["handle"])
     if event == "binding_delete":

@@ -319,9 +319,10 @@ Concrete expectations:
   memory address while still representing distinct logical execution routes.
 - on retrace-python, record also installs the public `retrace` eval-loop
   scheduling callback while retraced code is active: switch callbacks write
-  `THREAD_SWITCH, <stable next _thread.get_ident()>, <previous coordinate
-  delta>`. This tag is scheduling telemetry; normal protocol writes still use
-  the writer-bound switch monitor for routing.
+  `RUN_TO_COORDINATE, <previous coordinate delta>` followed by
+  `SWITCH_THREAD, <stable next _thread.get_ident()>`. These tags are
+  scheduling telemetry; normal protocol writes still use the writer-bound
+  switch monitor for routing.
 - `TraceWriter` methods are called directly; do not add a Python lock/batching
   adapter around the native stream writer, and do not wrap the hot writer in
   `disable_for()` unless the writer itself is control-plane Python that must be
@@ -897,19 +898,21 @@ recorded results while the trace is active.
 
 Record writes one unified stream. To make that stream replayable:
 
-- on retrace-python, recorder mode writes `THREAD_SWITCH` records around
-  eval-loop handoffs; each switch stores the previous scheduled thread's cursor
-  delta and names the next stable thread id to run
-- GC uses the same scheduler shape: `gc.callbacks` start writes
-  `THREAD_SWITCH` plus a synthesized `CALLBACK(gc.collect, generation)`, and
-  GC stop writes the callback completion
-- Python signal handlers use the same shape: delivery writes `THREAD_SWITCH`,
-  a synthesized `CALLBACK(handler, signum, None)`, and callback completion
-- replay mode uses `SchedulerStream` as a peekable global stream; it applies
-  each `THREAD_SWITCH` delta to the previous scheduled thread, arms
-  `retrace.call_at(...)` at recorded cursors, and parks with
-  `ThreadHandoff.to(...)` only when the switch is actionable at a replay
-  scheduling point
+- on retrace-python, recorder mode writes `RUN_TO_COORDINATE` around eval-loop
+  handoffs to move the current replay thread to the recorded cursor, followed
+  by `SWITCH_THREAD` to name the next stable thread id to run
+- `System2` GC capture uses the same coordinate instruction shape:
+  `gc.callbacks` start writes `RUN_TO_COORDINATE` followed by
+  `GC(generation)`, and replay runs `gc.collect(generation)` when that
+  coordinate is reached.
+- `System2` Python signal handlers are recorded as `RUN_TO_COORDINATE` followed
+  by a signal event containing the handler, signum, and `None` frame
+  placeholder. Replay arms `retrace.call_at(...)` for that coordinate and
+  invokes the handler there, without treating signal delivery as an implied
+  thread switch.
+- replay mode uses the coordinate instruction as the scheduling point; the
+  following message decides whether replay should switch thread, deliver a
+  signal/callback, or continue to the next result/error/bind instruction
 - when replay hits a recorded switch cursor, it drains any immediately
   following callback envelope before continuing
 - `BindingStream` buffers lookahead globally; thread ordering is owned by
@@ -1085,8 +1088,8 @@ regressions.
 | Patched type method returning another external object | `socket.makefile()` or similar | External result proxying, binding, replay-side hydration | Record writes proxy metadata/bindings; replay reconstructs a usable external proxy rather than leaking raw metadata | [`test_system_io_round_trips_external_result_proxy_hydration_with_memory_tape`](../../../tests/proxy/test_system_io_tape.py) |
 | External code calling back into Python | `sorted(items, key=callback)` or `executor.submit(fn)` style callback | Internal gateway, callback hooks, callback result/error recording | The Python callback body executes live on both record and replay, and callback events stay aligned | [`test_system_io_round_trips_simple_override_callback_with_tape`](../../../tests/proxy/test_system_io_tape.py), [`test_system_io_records_and_rebinds_callback_receiver_with_tape`](../../../tests/proxy/test_system_io_tape.py) |
 | Standalone callback envelope before next result or bind | Protocol callback work is emitted before the next external `RESULT` / `ERROR` or patched-object bind | Replay callback consumption, message lookahead | Replay executes callback envelopes before consuming the next outbound result; for async patched-object binding, replay skips the stub-helper envelope and binds the live object to the recorded marker | [`test_replayer_skips_standalone_callback_result_before_next_call`](../../../tests/proxy/test_system_io_tape.py), [`test_replayer_skips_stub_callback_before_async_new_patched_bind`](../../../tests/proxy/test_system_io_tape.py) |
-| Async GC interruption | `gc.callbacks` reports collection start/stop while retraced code is active | Scheduler switch, synthesized callback envelope, replay callback drain | Record writes `THREAD_SWITCH`, `CALLBACK(gc.collect, generation)`, and callback completion; replay runs the callback at the recorded cursor before continuing | [`test_recorder_gc_callback_writes_async_callback_envelope`](../../../tests/proxy/test_system_io_tape.py), [`test_replay_scheduler_runs_callback_after_thread_switch`](../../../tests/proxy/test_system_io_tape.py) |
-| Async signal delivery | A registered Python signal handler runs while retraced code is active | Signal handler wrapper, scheduler switch, synthesized callback envelope | Record writes `THREAD_SWITCH`, `CALLBACK(handler, signum, None)`, and callback completion; replay delivers the handler from the stream rather than waiting for a live OS signal | [`test_recorder_signal_handler_writes_async_callback_envelope`](../../../tests/proxy/test_system_io_tape.py) |
+| Async GC interruption | `gc.callbacks` reports collection start while retraced code is active | GC hook, coordinate instruction, scheduled GC event | `System2` record writes `RUN_TO_COORDINATE` then `GC(generation)`; replay schedules `gc.collect(generation)` at that coordinate | [`test_record_system_capture_gc_records_collection_at_coordinate`](../../../tests/proxy/test_system2.py), [`test_replay_system_schedules_gc_at_coordinate`](../../../tests/proxy/test_system2.py) |
+| Async signal delivery | A registered Python signal handler runs while retraced code is active | Signal handler wrapper, coordinate instruction, scheduled signal event | `System2` record writes `RUN_TO_COORDINATE` then `SIGNAL(handler, signum, None)`; replay schedules the handler at that coordinate instead of waiting for a live OS signal or implying a thread switch | [`test_record_system_capture_signals_records_handler_as_callback`](../../../tests/proxy/test_system2.py), [`test_replay_system_schedules_signal_callback_at_cursor`](../../../tests/proxy/test_system2.py) |
 | Internal patched-object allocation after callback envelope | A patched object is allocated after helper/callback traffic | `System._on_alloc`, replay bind alignment, allocation-hook exception safety | Replay drains allowed envelope messages, binds the live object to the recorded handle, and does not let `ExpectedBindMarker` escape through native allocation | [`test_replayer_runs_callback_before_internal_patched_alloc_bind`](../../../tests/proxy/test_system_io_tape.py) |
 | Native constructor that performs external work | `grpc.server(...)` calls Cython `cygrpc.CompletionQueue(...)` / `cygrpc.Server(...)` | `stub_for_replay`, async patched-object binding | Record may run the native constructor, but replay uses a recorded/stubbed object and does not live-run native constructor code | [`test_replay_grpc_server_construction_does_not_segfault`](../../../tests/install/external/test_grpc_server_replay_regression.py) |
 | Live local factory with ext-proxied result | A local factory returns a runtime object | `ext_proxy_result`, phase-preserving live factory call, returned-object ext-proxying | Record and replay both call the real factory without changing the current phase, the factory call is not recorded as `RESULT`/`ERROR`, and the returned proxy shell is not itself bound | [`test_ext_proxy_result_live_runs_factory_and_wraps_returned_object`](../../../tests/proxy/test_system_io_tape.py) |

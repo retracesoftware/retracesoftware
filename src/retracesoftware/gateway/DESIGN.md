@@ -131,6 +131,12 @@ binding layer can assign stable handles.  That is why `bind` is part of the
 factory contract rather than an implementation detail hidden inside proxy
 construction.
 
+The surrounding runtime may also pass a proxy type customizer.  The customizer
+is called with `module`, qualified `name`, and generated proxy `cls` after a
+proxy type is created.  It is intentionally just a callback: GatewayPair owns
+proxy type creation, while installer-specific edgecase policy remains outside
+the gateway package.
+
 ### Record And Replay Differences
 
 Recording may create both internal and external proxies from live values:

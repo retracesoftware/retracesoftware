@@ -74,11 +74,17 @@ def test_next_message_reads_callback_completion():
 
 
 def test_next_message_reads_checkpoint_and_stacktrace():
-    checkpoint = next_message(read_from(["CHECKPOINT", (0, 4), {"state": "ok"}]))
+    checkpoint = next_message(read_from([
+        "CHECKPOINT",
+        "main",
+        (0, 4),
+        {"state": "ok"},
+    ]))
     stacktrace = next_message(read_from(["STACKTRACE", (0, ())]))
 
     assert isinstance(checkpoint, CheckpointMessage)
     assert checkpoint.cursor_delta == (0, 4)
+    assert checkpoint.thread_id == "main"
     assert checkpoint.value == {"state": "ok"}
     assert isinstance(stacktrace, StacktraceMessage)
     assert stacktrace.stacktrace == (0, ())

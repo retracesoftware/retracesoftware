@@ -204,14 +204,21 @@ class CaptureTraceWriter:
     def callback_error(self, error):
         self.calls.append(("callback_error", error))
 
-    def checkpoint(self, value):
-        self.calls.append(("checkpoint", value))
+    def checkpoint(self, cursor_delta, thread_id, value):
+        self.calls.append(("checkpoint", cursor_delta, thread_id, value))
 
     def stacktrace(self, value):
         self.calls.append(("stacktrace", value))
 
     def thread_switch(self, cursor_delta, thread_id):
-        self.calls.append(("thread_switch", cursor_delta, thread_id))
+        self.run_to_coordinate(cursor_delta)
+        self.switch_thread(thread_id)
+
+    def run_to_coordinate(self, cursor_delta):
+        self.calls.append(("run_to_coordinate", cursor_delta))
+
+    def switch_thread(self, thread_id):
+        self.calls.append(("switch_thread", thread_id))
 
     def new_binding(self, handle):
         self.calls.append(("new_binding", handle))
@@ -514,12 +521,14 @@ def test_recorder_retrace_python_callback_writes_thread_switch(monkeypatch):
 
     assert tape == [
         "ON_START",
-        "THREAD_SWITCH",
-        1,
+        "RUN_TO_COORDINATE",
         (3, 5, 8),
-        "THREAD_SWITCH",
-        2,
+        "SWITCH_THREAD",
+        1,
+        "RUN_TO_COORDINATE",
         (1, 13),
+        "SWITCH_THREAD",
+        2,
     ]
     assert fake.callbacks.thread_switch is old_switch_callback
 
@@ -553,16 +562,15 @@ def test_recorder_gc_callback_writes_async_callback_envelope(monkeypatch):
         if was_enabled:
             gc.enable()
 
-    switch_index = tape.index("THREAD_SWITCH")
+    run_to_index = tape.index("RUN_TO_COORDINATE")
     callback_index = tape.index("CALLBACK")
     result_index = tape.index("CALLBACK_RESULT")
 
-    assert tape[switch_index + 1] == "main-thread"
-    assert tape[switch_index + 2] == (0, 10, 20)
+    assert tape[run_to_index + 1] == (0, 10, 20)
     assert tape[callback_index + 1] is gc.collect
     assert tape[callback_index + 2] == (0,)
     assert tape[callback_index + 3] == {}
-    assert switch_index < callback_index < result_index
+    assert run_to_index < callback_index < result_index
 
 
 def test_recorder_signal_handler_writes_async_callback_envelope(monkeypatch):
@@ -608,18 +616,17 @@ def test_recorder_signal_handler_writes_async_callback_envelope(monkeypatch):
         if was_enabled:
             gc.enable()
 
-    switch_index = tape.index("THREAD_SWITCH")
+    run_to_index = tape.index("RUN_TO_COORDINATE")
     callback_index = tape.index("CALLBACK")
     result_index = tape.index("CALLBACK_RESULT")
 
     assert handler_calls == [(12, frame)]
-    assert tape[switch_index + 1] == "main-thread"
-    assert tape[switch_index + 2] == (0, 40, 50)
+    assert tape[run_to_index + 1] == (0, 40, 50)
     assert tape[callback_index + 1] is handler
     assert tape[callback_index + 2] == (12, None)
     assert tape[callback_index + 3] == {}
     assert tape[result_index + 1] == "handled"
-    assert switch_index < callback_index < result_index
+    assert run_to_index < callback_index < result_index
 
 
 def test_replay_binding_state_consumes_trailing_binding_deletes():

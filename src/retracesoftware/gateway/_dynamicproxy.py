@@ -4,7 +4,6 @@ import retrace
 import retracesoftware.functional as functional
 import retracesoftware.utils as utils
 
-from retracesoftware.install.edgecases import patchtype
 from retracesoftware.gateway._proxytype import DynamicProxy, method_names, superdict
 
 
@@ -104,6 +103,7 @@ def _ext_proxytype_from_spec_with(
     name,
     methods,
     attrs,
+    customize_proxy_type=utils.noop,
     has_custom_getattr=False,
     has_instance_dict=False,
 ):
@@ -130,7 +130,7 @@ def _ext_proxytype_from_spec_with(
 
     proxytype = type(name, (utils.ExternalWrapped, DynamicProxy,), spec)
 
-    patchtype(module=module, name=name, cls=proxytype)
+    customize_proxy_type(module=module, name=name, cls=proxytype)
     bind(proxytype)
     bind(proxy_ref(proxytype))
 
@@ -147,12 +147,22 @@ def int_proxy_factory(proxytype, bind):
 
 
 class ProxytypeFactory:
-    def __init__(self, *, internal, external, bind, is_patched_type, proxy_ref):
+    def __init__(
+        self,
+        *,
+        internal,
+        external,
+        bind,
+        is_patched_type,
+        proxy_ref,
+        customize_proxy_type=utils.noop,
+    ):
         self.internal = internal
         self.external = external
         self.bind = bind
         self.is_patched_type = is_patched_type
         self.proxy_ref = proxy_ref
+        self.customize_proxy_type = customize_proxy_type
 
     def _wrapped_function(self, handler, target):
         wrapped = utils.wrapped_function(handler=handler, target=target)
@@ -193,7 +203,7 @@ class ProxytypeFactory:
 
         proxytype = type(cls.__name__, (utils.InternalWrapped, DynamicProxy), spec)
         self.bind(proxytype)
-        patchtype(module=cls.__module__, name=cls.__qualname__, cls=proxytype)
+        self.customize_proxy_type(module=cls.__module__, name=cls.__qualname__, cls=proxytype)
         return proxytype
 
     def ext_proxytype(self, cls):
@@ -205,6 +215,7 @@ class ProxytypeFactory:
             wrap_ext=lambda target: self._wrapped_function(self.external.gateway, target),
             bind=self.bind,
             proxy_ref=self.proxy_ref,
+            customize_proxy_type=self.customize_proxy_type,
             module=cls.__module__,
             name=cls.__qualname__,
             methods=methods,
@@ -214,7 +225,12 @@ class ProxytypeFactory:
         )
 
 
-def create_ext_proxytype_from_spec(int_gateway, ext_gateway, bind):
+def create_ext_proxytype_from_spec(
+    int_gateway,
+    ext_gateway,
+    bind,
+    customize_proxy_type=utils.noop,
+):
     proxy_ref = functional.memoize_one_arg(ProxyRef)
 
     def wrap_ext(target):
@@ -254,7 +270,7 @@ def create_ext_proxytype_from_spec(int_gateway, ext_gateway, bind):
 
         proxytype = type(name, (utils.ExternalWrapped, DynamicProxy,), spec)
 
-        patchtype(module=module, name=name, cls=proxytype)
+        customize_proxy_type(module=module, name=name, cls=proxytype)
         bind(proxytype)
         bind(proxy_ref(proxytype))
 

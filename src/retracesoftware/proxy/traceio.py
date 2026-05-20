@@ -31,7 +31,7 @@ class CallMessage(_CallMessage):
 class CheckpointMessage(_CheckpointMessage):
     __slots__ = ("cursor_delta",)
 
-    def __init__(self, cursor_delta, value, *, thread_id=None):
+    def __init__(self, cursor_delta, value, *, thread_id):
         super().__init__(value, thread_id=thread_id)
         self.cursor_delta = cursor_delta
 
@@ -42,6 +42,35 @@ class OnStartMessage(ProtocolMessage):
 
 class CallbackMessage(CallMessage):
     __slots__ = ()
+
+
+class SignalMessage(CallbackMessage):
+    __slots__ = ()
+
+
+class GCMessage(ProtocolMessage):
+    __slots__ = ("generation",)
+
+    def __init__(self, generation):
+        super().__init__()
+        self.generation = generation
+
+
+class RunToCoordinateMessage(ProtocolMessage):
+    __slots__ = ("cursor_delta",)
+
+    def __init__(self, cursor_delta):
+        super().__init__()
+        self.cursor_delta = cursor_delta
+
+
+class SwitchThreadMessage(ProtocolMessage):
+    __slots__ = ()
+
+    def __init__(self, thread_id):
+        if thread_id is None:
+            raise ValueError("SwitchThreadMessage requires thread_id")
+        super().__init__(thread_id=thread_id)
 
 
 class CallbackResultMessage(ResultMessage):
@@ -139,7 +168,29 @@ class TraceWriter(Protocol):
     def callback_error(self, error: BaseException) -> None:
         ...
 
-    def checkpoint(self, cursor_delta: object, value: object) -> None:
+    def signal_callback(
+        self,
+        fn: object,
+        args: tuple[object, ...],
+        kwargs: dict[str, object],
+    ) -> None:
+        ...
+
+    def gc_collect(self, generation: object) -> None:
+        ...
+
+    def checkpoint(
+        self,
+        cursor_delta: object,
+        thread_id: object,
+        value: object,
+    ) -> None:
+        ...
+
+    def run_to_coordinate(self, cursor_delta: object) -> None:
+        ...
+
+    def switch_thread(self, thread_id: object) -> None:
         ...
 
     def thread_switch(self, cursor_delta: object, thread_id: object) -> None:
@@ -182,20 +233,35 @@ class DefaultTraceWriter:
     def callback(self, fn, args, kwargs):
         return self._write(CallbackMessage(fn, args, kwargs))
 
+    def signal_callback(self, fn, args, kwargs):
+        return self._write(SignalMessage(fn, args, kwargs))
+
+    def gc_collect(self, generation):
+        return self._write(GCMessage(generation))
+
     def callback_result(self, value):
         return self._write(CallbackResultMessage(value))
 
     def callback_error(self, error):
         return self._write(CallbackErrorMessage(error))
 
-    def checkpoint(self, cursor_delta, value):
-        return self._write(CheckpointMessage(cursor_delta, value))
+    def checkpoint(self, cursor_delta, thread_id, value):
+        return self._write(
+            CheckpointMessage(cursor_delta, value, thread_id=thread_id)
+        )
 
     def stacktrace(self, value):
         return self._write(StacktraceMessage(value))
 
     def thread_switch(self, cursor_delta, thread_id):
-        return self._write(ThreadSwitchMessage(cursor_delta, thread_id=thread_id))
+        self.run_to_coordinate(cursor_delta)
+        return self.switch_thread(thread_id)
+
+    def run_to_coordinate(self, cursor_delta):
+        return self._write(RunToCoordinateMessage(cursor_delta))
+
+    def switch_thread(self, thread_id):
+        return self._write(SwitchThreadMessage(thread_id))
 
     def new_binding(self, handle):
         return self._write(BindOpenMessage(handle))
@@ -221,11 +287,15 @@ __all__ = [
     "CheckpointMessage",
     "DefaultTraceWriter",
     "ErrorMessage",
+    "GCMessage",
     "OnStartMessage",
     "PeekableTraceReader",
     "ProtocolMessage",
     "ResultMessage",
+    "RunToCoordinateMessage",
+    "SignalMessage",
     "StacktraceMessage",
+    "SwitchThreadMessage",
     "SyncMessage",
     "ThreadSwitchMessage",
     "TraceMessage",

@@ -921,6 +921,13 @@ def call_recorder(
             return write_message(encode_trace_value(value))
         return write_bound_message
 
+    def write_checkpoint(value):
+        return writer.checkpoint(
+            system.internal_space.thread_delta(),
+            _thread.get_ident(),
+            encode_trace_value(value),
+        )
+
     def write_callback(fn, *args, **kwargs):
         writer.callback(
             encode_trace_value(fn),
@@ -935,7 +942,7 @@ def call_recorder(
 
     checkpoint = functional.sequence(
         functional.walker(_checkpoint_stable_marker),
-        binding_writer(writer.checkpoint),
+        write_checkpoint,
     )
 
     call = functional.sequence(_on_call, checkpoint) if debug else None
@@ -1225,14 +1232,9 @@ def replayer(*, next_object,
         call_callback = system.apply_with("internal", functional.call)
         try:
             fn = _retrace_include(replay_probe, message.fn)
-            result = call_callback(fn, message.args, message.kwargs)
+            return call_callback(fn, message.args, message.kwargs)
         except Exception as exc:
-            if debug:
-                checkpoint(_on_error(exc))
             return None
-        if debug:
-            checkpoint(_on_result(result))
-        return result
 
     def run_raw_callback(message):
         return run_callback(message)
@@ -1309,13 +1311,19 @@ def replayer(*, next_object,
         if not equal(record, replay):
             on_desync(record, replay)
 
+    def diff_thread(message):
+        if message.thread_id != _thread.get_ident():
+            on_desync(message.thread_id, _thread.get_ident())
+
     def checkpoint(replay):
         message = expect_message(CheckpointMessage)
+        diff_thread(message)
         diff(record = message.value, replay = replay)
 
     def raw_checkpoint(replay):
         message = read_message()
         if isinstance(message, CheckpointMessage):
+            diff_thread(message)
             diff(record=message.value, replay=replay)
             return
         on_desync(message, CheckpointMessage)
