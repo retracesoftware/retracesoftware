@@ -27,6 +27,7 @@ def test_json_trace_writer_emits_json_lines():
 
     writer.on_start()
     writer.result({"ok": True})
+    writer.checkpoint((0, 2), {"state": "ok"})
     writer.thread_switch((0, 3), "worker")
     writer.new_binding(7)
     writer.sync()
@@ -34,6 +35,7 @@ def test_json_trace_writer_emits_json_lines():
     assert [json.loads(line) for line in sink.getvalue().splitlines()] == [
         {"event": "on_start"},
         {"event": "result", "value": {"ok": True}},
+        {"event": "checkpoint", "cursor_delta": [0, 2], "value": {"state": "ok"}},
         {"event": "thread_switch", "thread_id": "worker", "cursor_delta": [0, 3]},
         {"event": "new_binding", "handle": 7},
         {"event": "sync"},
@@ -70,7 +72,11 @@ def test_json_trace_reader_decodes_json_lines_to_messages():
                         "args": ["callback boom"],
                     },
                 },
-                {"event": "checkpoint", "value": {"state": "ok"}},
+                {
+                    "event": "checkpoint",
+                    "cursor_delta": [0, 4],
+                    "value": {"state": "ok"},
+                },
                 {"event": "stacktrace", "value": [0, []]},
                 {
                     "event": "thread_switch",
@@ -115,6 +121,7 @@ def test_json_trace_reader_decodes_json_lines_to_messages():
 
     checkpoint = reader.next()
     assert isinstance(checkpoint, CheckpointMessage)
+    assert checkpoint.cursor_delta == (0, 4)
     assert checkpoint.value == {"state": "ok"}
 
     stacktrace = reader.next()
@@ -149,7 +156,7 @@ def test_json_trace_writer_and_reader_round_trip_json_compatible_messages():
     writer.result([1, 2, 3])
     writer.callback("callback", ("arg",), {"flag": True})
     writer.callback_result(None)
-    writer.checkpoint({"state": ["ok"]})
+    writer.checkpoint((0, 6), {"state": ["ok"]})
     writer.thread_switch((0, 8), "worker")
     writer.binding_delete(3)
 
@@ -165,7 +172,9 @@ def test_json_trace_writer_and_reader_round_trip_json_compatible_messages():
     assert callback.kwargs == {"flag": True}
 
     assert reader.next().result is None
-    assert reader.next().value == {"state": ["ok"]}
+    checkpoint = reader.next()
+    assert checkpoint.cursor_delta == (0, 6)
+    assert checkpoint.value == {"state": ["ok"]}
 
     switch = reader.next()
     assert switch.thread_id == "worker"

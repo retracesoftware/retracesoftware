@@ -42,7 +42,7 @@ def test_default_trace_writer_writes_messages_to_callable_sink():
     writer.callback(callback, (1,), {"x": 2})
     writer.callback_result("callback-result")
     writer.callback_error(error)
-    writer.checkpoint({"state": "ok"})
+    writer.checkpoint((0, 4), {"state": "ok"})
     writer.stacktrace(stacktrace)
     writer.thread_switch((0, 3), "worker")
     writer.new_binding(7)
@@ -64,6 +64,7 @@ def test_default_trace_writer_writes_messages_to_callable_sink():
     assert isinstance(messages[5], CallbackErrorMessage)
     assert messages[5].error is error
     assert isinstance(messages[6], CheckpointMessage)
+    assert messages[6].cursor_delta == (0, 4)
     assert messages[6].value == {"state": "ok"}
     assert isinstance(messages[7], StacktraceMessage)
     assert messages[7].stacktrace == stacktrace

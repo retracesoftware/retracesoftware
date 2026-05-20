@@ -98,8 +98,8 @@ class JsonTraceWriter:
     def callback_error(self, error):
         return self._write("callback_error", error=_encode_error(error))
 
-    def checkpoint(self, value):
-        return self._write("checkpoint", value=value)
+    def checkpoint(self, cursor_delta, value):
+        return self._write("checkpoint", cursor_delta=cursor_delta, value=value)
 
     def stacktrace(self, value):
         return self._write("stacktrace", value=value)
@@ -175,7 +175,10 @@ def _message_from_payload(payload):
     if event == "callback_error":
         return CallbackErrorMessage(_decode_error(payload["error"]))
     if event == "checkpoint":
-        return CheckpointMessage(payload["value"])
+        return CheckpointMessage(
+            _tuple_tree(payload["cursor_delta"]),
+            payload["value"],
+        )
     if event == "stacktrace":
         return StacktraceMessage(_tuple_tree(payload["value"]))
     if event == "thread_switch":

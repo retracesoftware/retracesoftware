@@ -13,6 +13,7 @@ from retracesoftware.gateway._gatewaypair import _space_dispatch
 from retracesoftware.proxy.traceio import (
     BindCloseMessage,
     BindOpenMessage,
+    CheckpointMessage,
     ErrorMessage,
     ResultMessage,
     TraceReader,
@@ -60,6 +61,7 @@ def _raise(error):
 
 class System2:
     def __init__(self, create_gateway_pair, bind) -> None:
+        self.root_space = retrace.root_space
         self.internal_space = retrace.CoordinateSpace()
         self.external_space = retrace.CoordinateSpace()
         self.immutable_types = set()
@@ -153,6 +155,11 @@ class System2:
 
         system.internal_space.thread_switch = writer.thread_switch
 
+        system.checkpoint = system.root_space.wrap(functional.spread(
+            writer.checkpoint,
+            functional.repeatedly(system.internal_space.thread_delta),
+            encode_for_write))
+
         return system
 
     @staticmethod
@@ -211,6 +218,30 @@ class System2:
                 raise RuntimeError(f"expected replay binding, got {message!r}")
             bindings[message.handle] = value
 
+        def checkpoint_cursor(delta):
+            cursor = cursors.advance(_thread.get_ident(), delta)
+            current = system.internal_space.coordinates()
+            if cursor != current:
+                from retracesoftware.install import ReplayDivergence
+                raise ReplayDivergence(
+                    "checkpoint cursor difference: "
+                    f"{cursor!r} was expecting {current!r}"
+                )
+
+        def checkpoint(value):
+            message = read_message()
+            if not isinstance(message, CheckpointMessage):
+                raise RuntimeError(f"expected replay checkpoint, got {message!r}")
+
+            checkpoint_cursor(message.cursor_delta)
+
+            record_value = resolve(message.value)
+            if record_value != value:
+                from retracesoftware.install import ReplayDivergence
+                raise ReplayDivergence(
+                    f"checkpoint difference: {record_value!r} was expecting {value!r}"
+                )
+
         def next_result(*_args, **_kwargs):
             message = read_message()
             if isinstance(message, BindOpenMessage):
@@ -227,5 +258,6 @@ class System2:
         )
 
         system = System2(create_gateway_pair=create_gateway_pair, bind=bind)
+        system.checkpoint = system.root_space.wrap(checkpoint)
         system.handoff = handoff
         return system

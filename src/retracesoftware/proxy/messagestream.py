@@ -210,6 +210,7 @@ def _resolve_message(message, bindings):
         )
     if isinstance(message, CheckpointMessage):
         return type(message)(
+            _resolve_value(message.cursor_delta, bindings),
             _resolve_value(message.value, bindings),
             thread_id=thread_id,
         )

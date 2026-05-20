@@ -11,11 +11,13 @@ from retracesoftware.gateway._dynamicproxy import ProxyRef
 from retracesoftware.proxy.traceio import (
     BindCloseMessage,
     BindOpenMessage,
+    CheckpointMessage,
     DefaultTraceWriter,
     ErrorMessage,
     ResultMessage,
     ThreadSwitchMessage,
 )
+from retracesoftware.install import ReplayDivergence
 from retracesoftware.proxy.system2 import ReplayThreadScheduleError, System2
 
 
@@ -36,6 +38,8 @@ class _FakeSpace:
         _FakeSpace._next_id += 1
         self.thread_switch = lambda previous_delta, next_thread_id: None
         self.call_at_calls = []
+        self.thread_delta_value = (0,)
+        self.coordinates_value = ()
 
     @property
     def apply(self):
@@ -57,6 +61,12 @@ class _FakeSpace:
 
     def call_at(self, *args):
         self.call_at_calls.append(args)
+
+    def thread_delta(self):
+        return self.thread_delta_value
+
+    def coordinates(self):
+        return self.coordinates_value
 
 
 class _FakeSpaceDispatch:
@@ -101,6 +111,9 @@ class _FakeWriter:
 
     def thread_switch(self, cursor_delta, thread_id):
         self.calls.append(("thread_switch", cursor_delta, thread_id))
+
+    def checkpoint(self, cursor_delta, value):
+        self.calls.append(("checkpoint", cursor_delta, value))
 
     def new_binding(self, handle):
         self.calls.append(("new_binding", handle))
@@ -246,6 +259,23 @@ def test_record_system_writes_bound_patched_object_as_binding(monkeypatch):
         unpatch()
 
 
+def test_record_system_checkpoint_writes_cursor_delta_and_encoded_value(monkeypatch):
+    _install_fake_retrace(monkeypatch)
+    trace = []
+    system = System2.record_system(DefaultTraceWriter(trace.append))
+    system.internal_space.thread_delta_value = (1, 2)
+
+    system.checkpoint({"state": "ok"})
+
+    checkpoints = [
+        message for message in trace
+        if isinstance(message, CheckpointMessage)
+    ]
+    assert len(checkpoints) == 1
+    assert checkpoints[0].cursor_delta == (1, 2)
+    assert checkpoints[0].value == {"state": "ok"}
+
+
 def test_replay_system_resolves_bound_result(monkeypatch):
     _install_fake_retrace(monkeypatch)
     obj = object()
@@ -260,6 +290,41 @@ def test_replay_system_resolves_bound_result(monkeypatch):
         raise AssertionError("live target should not run")
 
     assert system.gateway_pair.external(live_target) is obj
+
+
+def test_replay_system_checkpoint_accepts_matching_value(monkeypatch):
+    _install_fake_retrace(monkeypatch)
+    system = System2.replay_system(_FakeReader([
+        BindOpenMessage(0),
+        CheckpointMessage((0, 1, 2), {"state": "ok"}),
+    ]))
+    system.internal_space.coordinates_value = (1, 2)
+
+    system.checkpoint({"state": "ok"})
+
+
+def test_replay_system_checkpoint_raises_on_value_difference(monkeypatch):
+    _install_fake_retrace(monkeypatch)
+    system = System2.replay_system(_FakeReader([
+        BindOpenMessage(0),
+        CheckpointMessage((0, 1, 2), {"state": "record"}),
+    ]))
+    system.internal_space.coordinates_value = (1, 2)
+
+    with pytest.raises(ReplayDivergence, match="checkpoint difference"):
+        system.checkpoint({"state": "replay"})
+
+
+def test_replay_system_checkpoint_raises_on_cursor_difference(monkeypatch):
+    _install_fake_retrace(monkeypatch)
+    system = System2.replay_system(_FakeReader([
+        BindOpenMessage(0),
+        CheckpointMessage((0, 1, 2), {"state": "ok"}),
+    ]))
+    system.internal_space.coordinates_value = (1, 3)
+
+    with pytest.raises(ReplayDivergence, match="checkpoint cursor difference"):
+        system.checkpoint({"state": "ok"})
 
 
 def test_replay_system_consumes_binding_delete_before_result(monkeypatch):

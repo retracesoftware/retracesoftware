@@ -42,7 +42,7 @@ def test_tagged_trace_writer_methods_emit_wire_tags():
     writer.callback(callback, (1,), {"x": 2})
     writer.callback_result("callback-result")
     writer.callback_error(error)
-    writer.checkpoint({"state": "ok"})
+    writer.checkpoint((0, 4), {"state": "ok"})
     writer.stacktrace(stacktrace)
     writer.thread_switch((0, 3), "worker")
     writer.new_binding(7)
@@ -57,7 +57,7 @@ def test_tagged_trace_writer_methods_emit_wire_tags():
         ("CALLBACK", callback, (1,), {"x": 2}),
         ("CALLBACK_RESULT", "callback-result"),
         ("CALLBACK_ERROR", error),
-        ("CHECKPOINT", {"state": "ok"}),
+        ("CHECKPOINT", (0, 4), {"state": "ok"}),
         ("STACKTRACE", stacktrace),
         ("THREAD_SWITCH", "worker", (0, 3)),
         ("NEW_BINDING", 7),
@@ -82,7 +82,7 @@ def test_tagged_trace_writer_function_methods_emit_wire_tags():
     writer.callback(callback, (1,), {"x": 2})
     writer.callback_result("callback-result")
     writer.callback_error(error)
-    writer.checkpoint({"state": "ok"})
+    writer.checkpoint((0, 4), {"state": "ok"})
     writer.stacktrace(stacktrace)
     writer.thread_switch((0, 3), "worker")
     writer.new_binding(7)
@@ -97,7 +97,7 @@ def test_tagged_trace_writer_function_methods_emit_wire_tags():
         ("CALLBACK", callback, (1,), {"x": 2}),
         ("CALLBACK_RESULT", "callback-result"),
         ("CALLBACK_ERROR", error),
-        ("CHECKPOINT", {"state": "ok"}),
+        ("CHECKPOINT", (0, 4), {"state": "ok"}),
         ("STACKTRACE", stacktrace),
         ("THREAD_SWITCH", "worker", (0, 3)),
         ("NEW_BINDING", 7),
@@ -128,6 +128,7 @@ def test_tagged_trace_reader_decodes_wire_tags_to_messages():
         "CALLBACK_ERROR",
         error,
         "CHECKPOINT",
+        (0, 4),
         {"state": "ok"},
         "STACKTRACE",
         (0, ()),
@@ -168,6 +169,7 @@ def test_tagged_trace_reader_decodes_wire_tags_to_messages():
 
     checkpoint = reader.next()
     assert isinstance(checkpoint, CheckpointMessage)
+    assert checkpoint.cursor_delta == (0, 4)
     assert checkpoint.value == {"state": "ok"}
 
     stacktrace = reader.next()

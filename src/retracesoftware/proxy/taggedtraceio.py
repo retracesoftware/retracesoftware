@@ -43,6 +43,9 @@ def tagged_trace_writer(sink):
     def thread_switch(cursor_delta, thread_id):
         return sink("THREAD_SWITCH", thread_id, cursor_delta)
 
+    def checkpoint(cursor_delta, value):
+        return sink("CHECKPOINT", cursor_delta, value)
+
     return SimpleNamespace(
         on_start=functional.partial(sink, "ON_START"),
         result=functional.partial(sink, "RESULT"),
@@ -50,7 +53,7 @@ def tagged_trace_writer(sink):
         callback=functional.partial(sink, "CALLBACK"),
         callback_result=functional.partial(sink, "CALLBACK_RESULT"),
         callback_error=functional.partial(sink, "CALLBACK_ERROR"),
-        checkpoint=functional.partial(sink, "CHECKPOINT"),
+        checkpoint=checkpoint,
         stacktrace=functional.partial(sink, "STACKTRACE"),
         thread_switch=thread_switch,
         new_binding=functional.partial(sink, "NEW_BINDING"),
@@ -83,8 +86,8 @@ class TaggedTraceWriter:
     def callback_error(self, error):
         return self._write("CALLBACK_ERROR", error)
 
-    def checkpoint(self, value):
-        return self._write("CHECKPOINT", value)
+    def checkpoint(self, cursor_delta, value):
+        return self._write("CHECKPOINT", cursor_delta, value)
 
     def stacktrace(self, value):
         return self._write("STACKTRACE", value)
@@ -155,7 +158,7 @@ def next_message(source):
     if message_type == "SYNC":
         return SyncMessage()
     if message_type == "CHECKPOINT":
-        return CheckpointMessage(_read(source))
+        return CheckpointMessage(_read(source), _read(source))
     if message_type == "STACKTRACE":
         return StacktraceMessage(_read(source))
     if message_type == "THREAD_SWITCH":

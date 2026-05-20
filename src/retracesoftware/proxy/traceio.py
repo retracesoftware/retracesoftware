@@ -29,7 +29,11 @@ class CallMessage(_CallMessage):
 
 
 class CheckpointMessage(_CheckpointMessage):
-    __slots__ = ()
+    __slots__ = ("cursor_delta",)
+
+    def __init__(self, cursor_delta, value, *, thread_id=None):
+        super().__init__(value, thread_id=thread_id)
+        self.cursor_delta = cursor_delta
 
 
 class OnStartMessage(ProtocolMessage):
@@ -184,8 +188,8 @@ class DefaultTraceWriter:
     def callback_error(self, error):
         return self._write(CallbackErrorMessage(error))
 
-    def checkpoint(self, value):
-        return self._write(CheckpointMessage(value))
+    def checkpoint(self, cursor_delta, value):
+        return self._write(CheckpointMessage(cursor_delta, value))
 
     def stacktrace(self, value):
         return self._write(StacktraceMessage(value))
