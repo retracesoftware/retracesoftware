@@ -307,6 +307,7 @@ PyMODINIT_FUNC CONCAT(PyInit_, MODULE_NAME)(void) {
         &Iterate_Type,
         &TypePredicate_Type,
         &TransformArgs_Type,
+        &TransformCall_Type,
         &MapCall_Type,
         &First_Type,
         &Advice_Type,

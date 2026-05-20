@@ -45,6 +45,10 @@ isolate the owning bug into the narrowest runtime layer or Python test bucket.
 - Reproduce here first when the bug is scenario-dependent, then narrow it down.
 - If the failure is phase-specific, say which phase owns the problem before
   recommending changes.
+- Do not make the harness or scenario code special-case one library failure in
+  a way that hides the owning layer contract. After reproducing, isolate the
+  smallest product regression instead of adding concrete type/module-name
+  backdoors.
 - For server-style scenarios, distinguish `server-dryrun` / `server-record`
   failures from normal `dryrun` / `record` failures; they often point at
   different lifecycle or transport assumptions.

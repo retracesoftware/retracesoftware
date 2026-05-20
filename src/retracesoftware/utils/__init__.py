@@ -5,7 +5,6 @@ Set RETRACE_DEBUG=1 to use the debug build with symbols and assertions.
 """
 import os
 import sys
-import dis
 
 __path__ = [os.path.dirname(os.path.abspath(__file__))]
 import warnings
@@ -73,7 +72,6 @@ def _export_public(mod: ModuleType) -> None:
 
 _export_public(_backend_mod)
 
-_NativeLoopCounters = _backend_mod.LoopCounters
 _NativeStackFactory = _backend_mod.StackFactory
 stacktrace_exclude = set()
 
@@ -87,132 +85,6 @@ def StackFactory(*args, **kwargs):
     kwargs.setdefault("exclude", stacktrace_exclude.__contains__)
     return _NativeStackFactory(*args, **kwargs)
 
-
-_LOOP_BACKEDGE_OPCODES = frozenset(
-    dis.opmap[name]
-    for name in (
-        "JUMP_BACKWARD",
-        "JUMP_BACKWARD_NO_INTERRUPT",
-        "INSTRUMENTED_JUMP_BACKWARD",
-    )
-    if name in dis.opmap
-)
-
-
-def has_code_got_loops(code):
-    """Return True if *code* contains a backward bytecode jump."""
-    bytecode = code.co_code
-    for offset in range(0, len(bytecode), 2):
-        if bytecode[offset] in _LOOP_BACKEDGE_OPCODES:
-            return True
-    return False
-
-
-_memoized_has_code_got_loops = functional.memoize_one_arg(has_code_got_loops)
-
-
-def _claim_monitoring_tool_id(name):
-    for tool_id in range(6):
-        try:
-            sys.monitoring.use_tool_id(tool_id, name)
-        except ValueError:
-            continue
-        return tool_id
-    raise RuntimeError("No free sys.monitoring tool IDs available")
-
-
-class LoopCounters:
-    """Python registration wrapper around the native loop-counter callbacks."""
-
-    def __init__(self, enabled_threadlocal=None, has_code_got_loops=None):
-        predicate = has_code_got_loops or _memoized_has_code_got_loops
-        monitoring_disable = (
-            sys.monitoring.DISABLE
-            if hasattr(sys, "monitoring")
-            else None
-        )
-        self._native = _NativeLoopCounters(
-            predicate,
-            enabled_threadlocal,
-            monitoring_disable,
-        )
-        self._tool_id = None
-        self._registered_events = ()
-        self.current = self._native.current
-        self.reset = self._native.reset
-
-    @property
-    def native(self):
-        return self._native
-
-    @property
-    def installed(self):
-        return self._tool_id is not None
-
-    @property
-    def tool_id(self):
-        return -1 if self._tool_id is None else self._tool_id
-
-    def install(self):
-        if self._tool_id is not None:
-            return
-        if sys.version_info < (3, 12) or not hasattr(sys, "monitoring"):
-            raise RuntimeError("LoopCounters requires sys.monitoring on Python 3.12+")
-
-        events = sys.monitoring.events
-        event_callbacks = [
-            (events.PY_START, self._native.on_py_start),
-            (events.PY_RESUME, self._native.on_py_resume),
-            (events.PY_RETURN, self._native.on_py_return),
-            (events.PY_UNWIND, self._native.on_py_unwind),
-            (events.PY_YIELD, self._native.on_py_yield),
-            (events.JUMP, self._native.on_jump),
-        ]
-
-        tool_id = _claim_monitoring_tool_id("retrace_loop_counters")
-        try:
-            for event, callback in event_callbacks:
-                sys.monitoring.register_callback(tool_id, event, callback)
-            active_events = 0
-            for event, _ in event_callbacks:
-                active_events |= event
-            sys.monitoring.set_events(tool_id, active_events)
-        except BaseException:
-            sys.monitoring.set_events(tool_id, 0)
-            for event, _ in event_callbacks:
-                sys.monitoring.register_callback(tool_id, event, None)
-            sys.monitoring.free_tool_id(tool_id)
-            raise
-
-        self._tool_id = tool_id
-        self._registered_events = tuple(event for event, _ in event_callbacks)
-        self._native.reset()
-
-    def uninstall(self):
-        if self._tool_id is None:
-            return
-        tool_id = self._tool_id
-        try:
-            sys.monitoring.set_events(tool_id, 0)
-            for event in self._registered_events:
-                sys.monitoring.register_callback(tool_id, event, None)
-            sys.monitoring.free_tool_id(tool_id)
-        finally:
-            self._tool_id = None
-            self._registered_events = ()
-            self._native.reset()
-
-    def __enter__(self):
-        self.install()
-        return self
-
-    def __exit__(self, exc_type, exc, tb):
-        self.uninstall()
-        return False
-
-    def __repr__(self):
-        state = "installed" if self.installed else "idle"
-        return f"<LoopCounters {state}>"
 
 _WrappedBase = _backend_mod.Wrapped
 

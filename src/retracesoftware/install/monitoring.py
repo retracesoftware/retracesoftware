@@ -110,6 +110,8 @@ else:
         return tuple(sorted(dirs))
 
     def _is_retrace_filename(filename, retrace_dirs, *, realpath=os.path.realpath):
+        if filename.startswith("<frozen retrace"):
+            return True
         return (
             filename.startswith(retrace_dirs)
             or realpath(filename).startswith(retrace_dirs)

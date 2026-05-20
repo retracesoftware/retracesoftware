@@ -264,6 +264,15 @@ def patch(
             if update_refs:
                 update(old, new)
 
+    def _wrap(wrapper_factory, value):
+        try:
+            parameters = inspect.signature(wrapper_factory).parameters
+        except (TypeError, ValueError):
+            parameters = {}
+        if "system" in parameters:
+            return wrapper_factory(value, system=system)
+        return wrapper_factory(value)
+
     if getattr(system, "retrace_mode", None) == "replay":
         for name in spec.get("stub_for_replay", ()):
             if name not in namespace:
@@ -333,7 +342,7 @@ def patch(
                 if name not in namespace:
                     continue
                 value = namespace[name]
-                new = system.disable_for(value)
+                new = system.disable_for(value, retrace=False)
                 _apply(name, value, new)
 
         elif directive == 'wrap':
@@ -342,7 +351,7 @@ def patch(
                     continue
                 value = namespace[name]
                 wrapper_factory = resolved_wrap[name]
-                new = wrapper_factory(value)
+                new = _wrap(wrapper_factory, value)
                 _apply(name, value, new)
 
         elif directive == 'patch_class':
@@ -386,7 +395,13 @@ def patch(
                                     value = getattr(cls, attr)
                                     if not callable(value) or isinstance(value, type):
                                         continue
-                                    set_type_attr(attr, system.disabled_method_for(value))
+                                    set_type_attr(
+                                        attr,
+                                        system.disabled_method_for(
+                                            value,
+                                            retrace=False,
+                                        ),
+                                    )
                                 continue
 
                             if sub_directive == 'wrap':
@@ -395,7 +410,7 @@ def patch(
                                         continue
                                     value = getattr(cls, attr)
                                     wrapper_factory = resolve(dotted_path)
-                                    set_type_attr(attr, wrapper_factory(value))
+                                    set_type_attr(attr, _wrap(wrapper_factory, value))
                                 continue
 
                             # Recurse: sub_spec is e.g. {"proxy": ["now", "utcnow"]}
@@ -442,7 +457,11 @@ def patch(
                             predicate=pathpredicate,
                             fallback_index=fallback_index)
 
-                        wrapped = functional.if_then_else(should_retrace, patched, system.disable_for(patched))
+                        wrapped = functional.if_then_else(
+                            should_retrace,
+                            patched,
+                            system.disable_for(patched, retrace=False),
+                        )
                         namespace[name] = wrapped
                         module_ref_changes = []
                         if update_refs:
@@ -532,7 +551,7 @@ def create_patcher(system):
     patcher.update({
         'type_attributes': selector(type_attributes),
         'patch_class': selector(patch_class),
-        'disable': foreach(system.disable_for),
+        'disable': foreach(functional.partial(system.disable_for, retrace=False)),
         'patch_types': simple_patcher(system.patch_type),
         'proxy': foreach(system),
         'ext_proxy_result': foreach(system.ext_proxy_result),

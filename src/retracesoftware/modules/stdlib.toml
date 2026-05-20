@@ -23,6 +23,13 @@ immutable = ["BaseException", "memoryview", "int", "float", "complex", "str", "b
 [threading.type_attributes.Thread]
 disable = ["start"]
 
+[threading.type_attributes.Semaphore]
+proxy = ["acquire"]
+wrap = { acquire = "retracesoftware.install.edgecases.semaphore_acquire_trylock" }
+
+[_queue.type_attributes.SimpleQueue]
+disable = ["put", "put_nowait"]
+
 [logging]
 bind = ["_lock"]
 disable = ["_acquireLock", "_releaseLock"]
@@ -41,6 +48,10 @@ disable = [
 
 ["asyncio.base_events".type_attributes.BaseEventLoop]
 wrap = { shutdown_asyncgens = "retracesoftware.install.edgecases.collect_before" }
+
+["asyncio.selector_events".type_attributes.BaseSelectorEventLoop]
+proxy = ["_write_to_self"]
+wrap = { _write_to_self = "retracesoftware.install.edgecases.asyncio_write_to_self" }
 
 [_datetime]
 immutable = ["datetime", "tzinfo", "timezone"]

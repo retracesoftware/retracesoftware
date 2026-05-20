@@ -25,27 +25,35 @@ re-derive the contract from this file.
    See `DESIGN.md` -> "`disable()` / `disable_for()`".
 3. **Message order is contract.** Do not introduce, drop, reorder, or coalesce
    `CALLBACK`, `RESULT`, `ERROR`, `CHECKPOINT`, bind open/close, or
-   `THREAD_SWITCH` events. Replay alignment is a hard invariant.
+   thread scheduler events. Replay alignment is a hard invariant.
    See `DESIGN.md` -> "Record Versus Replay" and "Important Invariants".
 4. **Prefer the narrowest fix in the responsible handler.** If a single diff
    touches more than one of `system.py`, `gateway.py`, `patchtype.py`,
    `io.py`, or `proxytype.py`, stop and re-read `DESIGN.md` before continuing.
    See `DESIGN.md` -> "Main Pieces".
-5. **Do not add backwards-compatibility shims** for old trace formats,
+5. **Do not backdoor proxy semantics through concrete implementation checks.**
+   Boundary classification belongs to the proxy contract. Outside the owning
+   proxy code path, designated adapters, and focused type-behavior tests, do
+   not use `isinstance`, `issubclass`, exact `type(...)` checks, module names,
+   class-name strings, private attributes, `repr`, or object identity to infer
+   whether something is proxied, patched, bound, internal, external, a trace
+   message, or replay materialization state. If another layer needs that
+   answer, expose the narrowest semantic predicate/API from the owner instead.
+6. **Do not add backwards-compatibility shims** for old trace formats,
    message tags, or removed APIs. If a recording no longer matches the
    current code, regenerate the recording. Do not pattern new code after
    anything you find under `proxy/` that is not listed in "Live Files" below.
-6. **Prioritize simplicity above all else.** When two correct designs
+7. **Prioritize simplicity above all else.** When two correct designs
    exist, pick the smaller one. Do not add abstractions, indirection, or
    "extensibility hooks" without a concrete consumer that needs them.
    Deletion is preferred over generalization.
-7. **Tracing is observational; it must never alter thread scheduling.**
+8. **Tracing is observational; it must never alter thread scheduling.**
    See `DESIGN.md` -> "Threads" -> "Cross-thread synchronization".
    Smallest reproducer:
    `tests/install/stdlib/test_threading_lock_replay_regression.py`.
    If it fails, the portal/web replay regressions in the Proxy Kernel
    Sentinel Bundle are likely downstream.
-8. **Fix divergence causes, not exposed symptoms.** The mandatory replay
+9. **Fix divergence causes, not exposed symptoms.** The mandatory replay
    debugging loop is:
    1. Find the fundamental record/replay divergence.
    2. Build the smallest failing regression that reproduces that divergence.
@@ -68,13 +76,19 @@ Before editing any file under `src/retracesoftware/proxy/`, state in chat:
 3. The narrowest fix layer and why the fix does NOT belong one layer further
    out (module config in `src/retracesoftware/modules/*.toml`, install
    patcher, proxy handler, or proxy kernel).
-4. Which sentinel tests from "Sentinel Tests" below will be re-run.
-5. The smallest failing regression you will add or update for the fundamental
+4. The semantic question the code needs answered and the existing API that
+   answers it. If no such API exists, state which layer owns the new minimal
+   API and why.
+5. Why the fix does not inspect concrete types, private attributes, module
+   names, class-name strings, or object identity from another layer to recover
+   semantic meaning.
+6. Which sentinel tests from "Sentinel Tests" below will be re-run.
+7. The smallest failing regression you will add or update for the fundamental
    divergence. For any missing/extra-thread failure, this must be a stdlib or
    local-module reproducer that proves the thread scheduling decision itself
    diverges.
 
-If steps 1-3 cannot be completed from `DESIGN.md` and the live runtime path,
+If steps 1-5 cannot be completed from `DESIGN.md` and the live runtime path,
 re-read `DESIGN.md` and trace the call flow again before editing. Do not
 "try a fix" in `system.py`.
 
@@ -92,6 +106,8 @@ Before editing proxy-layer code, read these in order:
    - `src/retracesoftware/__main__.py`
    - `src/retracesoftware/tape.py` (top-level — recording I/O implementation)
    - `src/retracesoftware/proxy/tape.py` (Protocol types only)
+   - `src/retracesoftware/proxy/traceio.py`
+   - `src/retracesoftware/proxy/taggedtraceio.py`
    - `src/retracesoftware/proxy/io.py`
    - `src/retracesoftware/proxy/system.py`
    - `src/retracesoftware/proxy/gateway.py`
@@ -116,7 +132,7 @@ notes.
 | `system.py` | Owns `System`, the phase gate thread-local, gateway factories, `run()`, `disable`, `disable_for`, `patch`, `patch_function`. | `DESIGN.md` -> "Main Pieces", "Threads" |
 | `gateway.py` | Pure factories: `ext_gateway`, `int_gateway`, `ext_replay_gateway`, `int_replay_gateway`, plus `ext_runner`, `int_runner`, `unproxy_ext`, `unproxy_int`. Zero proxy-internal deps. | `DESIGN.md` -> "How The Two Gateways Interact" |
 | `patchtype.py` | In-place type-patching: `patch_type`, `unpatch_type`, subclass walk, alloc-hook installation, `__init_subclass__` rewriting. | `DESIGN.md` -> "Object Categories At The Boundary" -> "Patched objects and patched types" |
-| `io.py` / `messagestream.py` | `recorder()` / `replayer()` builders plus replay message parsing, binding resolution, scheduler ordering, and disabled-context real-object support. | `DESIGN.md` -> "Record Versus Replay" and "Allocation And Materialization" |
+| `io.py` / `messagestream.py` / `traceio.py` / `taggedtraceio.py` | `recorder()` / `replayer()` builders plus semantic trace messages, tagged trace encoding/decoding, replay parsing, binding resolution, scheduler ordering, and disabled-context real-object support. | `DESIGN.md` -> "Record Versus Replay" and "Allocation And Materialization" |
 | `tape.py` (proxy) | `Tape` / `TapeReader` / `TapeWriter` `Protocol` declarations only (~40 lines). | n/a — interface declarations |
 | `proxytype.py` | `DynamicProxy`, `superdict`, `dynamic_proxytype`, `dynamic_int_proxytype`. Reached via `system.py` and `patchtype.py`. | `DESIGN.md` -> "Internal Retrace: Using The Boundary On Ourselves" -> "Proxy generation through retrace" |
 | `typeutils.py` | `WithoutFlags`, `modify`. Used by `patchtype.py` and `install/patcher.py`. | n/a — utility |
@@ -157,10 +173,15 @@ enough that AI agents need them visible.
   `NewBinding` to the wire). `__main__._bind_record_runtime` deliberately
   uses `system.is_bound.add(obj)` for tape/recorder plumbing that must
   never appear on the wire — confusing the two is a determinism bug.
-- **`disable_for(fn)` returns a `disabled_callable` instance**, not just a
-  closure with a stamp. It clears the gate while `fn` is called.
-  `disabled_callable` subclasses `wrapped_callable`, so the same non-binding
-  behavior applies.
+- **`disable_for(fn, retrace=False)` returns a `disabled_callable` instance**,
+  not just a closure with a stamp. It clears the gate while `fn` is called.
+  With the default `retrace=True`, `disable_for(fn)` wraps that disabled
+  callable in `retrace.disable` when retrace-python is loaded, so even the
+  wrapper frame does not perturb coordinates/thread ids. The install patcher
+  uses `retrace=False` for TOML `disable` entries because those are
+  application/library passthroughs, not control-plane bodies.
+  The gate-only `disabled_callable` subclasses `wrapped_callable`, so the same
+  non-binding behavior applies.
 - **`patch_function()` returns a `wrapped_callable`** so module-level wrapped
   functions don't bind as methods when accessed through a class.
 - **`patch_type` is idempotent within the same `System`.** If the class is
@@ -187,11 +208,10 @@ enough that AI agents need them visible.
   `tests/proxy/test_system_io_tape.py::test_replayer_skips_standalone_callback_result_before_next_call`,
   `tests/proxy/test_system_io_tape.py::test_replayer_skips_stub_callback_before_async_new_patched_bind`.
 - **`io.py` scheduler stream owns replay thread ordering.** It is a peekable
-  global stream that consumes or defers `THREAD_START`, applies `THREAD_YIELD`
-  cursor deltas to the current scheduled thread, arms `retrace.call_at(...)`
-  from yielded cursors, and parks with `ThreadHandoff.to(...)` only for
-  `THREAD_RESUME` targets that have yielded a cursor. Do not reintroduce
-  per-thread replay queues here.
+  global stream that consumes or defers `THREAD_SWITCH`, applies the recorded
+  cursor delta to the previous scheduled thread, arms `retrace.call_at(...)`
+  from recorded cursors, and uses `ThreadHandoff.to(...)` only at actionable
+  replay scheduling points. Do not reintroduce per-thread replay queues here.
 
 ## Debugging Retrace + Stacktraces
 
@@ -214,8 +234,8 @@ A retrace stacktrace tells you three things at once:
    `internal` (running user/library Python) or `external` (running real
    nondeterministic code) when this happened?
 2. **Which boundary message was being emitted or consumed** — `CALLBACK`,
-   `RESULT`, `ERROR`, `CHECKPOINT`, `NEW_BINDING`,
-   `BINDING_DELETE`, `THREAD_SWITCH`, `STACKTRACE`.
+   `RESULT`, `ERROR`, `CHECKPOINT`, `NEW_BINDING`, `BINDING_DELETE`,
+  `THREAD_SWITCH`, `STACKTRACE`.
 3. **Where in the wire stream the failure occurred** — sequence number plus
    thread id, which lets you find the matching record-side event.
 
@@ -274,10 +294,9 @@ patterns:
 - zero or more `CALLBACK` / `CALLBACK_RESULT` pairs may appear before the
   next `RESULT` or `ERROR`. Anything that breaks this nesting on replay is a
   desync.
-- `THREAD_SWITCH` with a stable `_thread.get_ident()` id changes which per-thread
-  message buffer the next event belongs to. If a thread emits its first
-  outbound call without a prior `THREAD_SWITCH` to its id, the thread
-  routing is wrong.
+- `THREAD_SWITCH` with stable `_thread.get_ident()` ids drives replay
+  scheduling. If a thread emits outbound messages without the recorded switch
+  path needed to hand execution to and from that thread, scheduling is wrong.
 - `STACKTRACE` is emitted by `--stacktraces` mode and is replay-significant
   in that mode (it is a recorded message, not incidental logging).
   See `DESIGN.md` -> "Important Invariants".
@@ -292,10 +311,10 @@ patterns:
 - **Replay subprocess hangs / `subprocess.TimeoutExpired`** — replay is
   waiting for a message that never arrives. Almost always means record
   and replay disagree about how many messages a thread should consume,
-  often because of a missing or misrouted `THREAD_SWITCH`, or because a
-  callback envelope was emitted but is being expected as an outbound
-  call (or vice versa). Check `SchedulerStream` cursor arming and
-  global stream position.
+  often because a `THREAD_SWITCH` handoff is missing or misrouted, or because
+  a callback envelope was emitted but is being expected
+  as an outbound call (or vice versa). Check `SchedulerStream` cursor arming
+  and global stream position.
 - **`Could not read N bytes from tracefile with timeout`** — same
   underlying cause as the previous point: replay is blocked waiting for
   the global stream to reach the event a thread expects. The thread mentioned
@@ -380,6 +399,8 @@ Live CLI runtime path (verified by import graph):
 - `src/retracesoftware/__main__.py`
 - `src/retracesoftware/tape.py` (top-level — recording I/O implementation)
 - `src/retracesoftware/proxy/tape.py` (Protocol types only)
+- `src/retracesoftware/proxy/traceio.py`
+- `src/retracesoftware/proxy/taggedtraceio.py`
 - `src/retracesoftware/proxy/io.py`
 - `src/retracesoftware/proxy/system.py`
 - `src/retracesoftware/proxy/gateway.py`

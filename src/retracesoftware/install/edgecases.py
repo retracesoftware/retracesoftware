@@ -1,7 +1,7 @@
-# from .proxytype import *
-
+from contextlib import nullcontext
 import functools
 import gc
+import inspect
 import os
 import sys
 
@@ -143,6 +143,81 @@ def subprocess_internal_poll(target):
         return target(self, _deadstate, _waitpid, _WNOHANG, _ECHILD)
 
     return wrapper
+
+
+def semaphore_acquire_trylock(target, *, system=None):
+    raw_target = utils.try_unwrap(target)
+    signature = inspect.signature(raw_target)
+
+    @functools.wraps(raw_target)
+    @utils.exclude_from_stacktrace
+    def wrapper(self, *args, **kwargs):
+        try:
+            bound = signature.bind(self, *args, **kwargs)
+        except TypeError:
+            return raw_target(self, *args, **kwargs)
+
+        blocking = bound.arguments.get("blocking", True)
+        timeout = bound.arguments.get("timeout", None)
+        if blocking is False and timeout is not None:
+            return raw_target(self, *args, **kwargs)
+
+        if blocking is False or timeout == 0:
+            replaying = getattr(system, "retrace_mode", None) == "replay"
+            defer_schedule = (
+                getattr(system, "defer_replay_thread_schedule", None)
+                if replaying
+                else None
+            )
+            with defer_schedule() if defer_schedule is not None else nullcontext():
+                result = target(self, *args, **kwargs)
+                if result and replaying:
+                    consume = (
+                        system.disable_for(raw_target, unwrap_args=False)
+                        if system is not None
+                        else raw_target
+                    )
+                    consume(self)
+            return result
+
+        return raw_target(self, *args, **kwargs)
+
+    return wrapper
+
+
+def asyncio_write_to_self(target, *, system=None):
+    raw_target = utils.try_unwrap(target)
+
+    @functools.wraps(raw_target)
+    @utils.exclude_from_stacktrace
+    def wrapper(self, *args, **kwargs):
+        replaying = getattr(system, "retrace_mode", None) == "replay"
+        if not replaying:
+            return target(self, *args, **kwargs)
+
+        defer_schedule = getattr(system, "defer_replay_thread_schedule", None)
+        handoff_schedule_to = getattr(
+            system,
+            "handoff_replay_thread_schedule_to",
+            None,
+        )
+        consume_live = (
+            system.disable_for(raw_target, unwrap_args=False)
+            if system is not None
+            else raw_target
+        )
+
+        with defer_schedule() if defer_schedule is not None else nullcontext():
+            result = target(self, *args, **kwargs)
+
+        loop_thread_id = getattr(self, "_thread_id", None)
+        if handoff_schedule_to is not None and loop_thread_id is not None:
+            handoff_schedule_to(loop_thread_id)
+        consume_live(self, *args, **kwargs)
+        return result
+
+    return wrapper
+
 
 def concurrent_futures_threadpool_shutdown_sentinel(*args, **kwargs):
     if len(args) < 2 or args[1] is not None:

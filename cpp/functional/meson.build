@@ -42,6 +42,7 @@ _func_sources = files(
   'spreadpredicate.cpp',
   'ternarypredicate.cpp',
   'transformargs.cpp',
+  'transformcall.cpp',
   'typepredicate.cpp',
   'usewith.cpp',
   'vector.cpp',

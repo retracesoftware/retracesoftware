@@ -6,6 +6,7 @@ import pytest
 
 from retracesoftware.install import install_and_run
 from retracesoftware.proxy.io import recorder, replayer
+from retracesoftware.proxy.taggedtraceio import tagged_trace_writer
 from retracesoftware.testing.memorytape import IOMemoryTape, record_then_replay
 from tests.runner import retrace_test
 
@@ -65,7 +66,7 @@ def test_install_and_run_round_trips_time_proxy_with_memory_tape(monkeypatch):
     monkeypatch.setattr(time, "time", fake_time)
 
     record_system = recorder(
-        writer=tape.writer().write,
+        writer=tagged_trace_writer(tape.writer().write),
         debug=False,
         stacktraces=False,
     )
@@ -107,7 +108,7 @@ def test_install_and_run_round_trips_os_chdir_error_with_memory_tape(tmp_path):
     missing = tmp_path / "missing-dir"
 
     record_system = recorder(
-        writer=tape.writer().write,
+        writer=tagged_trace_writer(tape.writer().write),
         debug=False,
         stacktraces=False,
     )
@@ -143,7 +144,7 @@ def test_install_and_run_reads_socket_family_with_memory_tape():
     tape = IOMemoryTape()
 
     record_system = recorder(
-        writer=tape.writer().write,
+        writer=tagged_trace_writer(tape.writer().write),
         debug=False,
         stacktraces=False,
     )
@@ -179,7 +180,7 @@ def test_install_and_run_leaves_allocate_lock_live_with_memory_tape():
             lock.release()
 
     record_system = recorder(
-        writer=tape.writer().write,
+        writer=tagged_trace_writer(tape.writer().write),
         debug=False,
         stacktraces=False,
     )
@@ -258,7 +259,7 @@ def test_install_and_run_replays_flask_request_from_unretraced_client_thread_wit
             server.server_close()
 
     record_system = recorder(
-        writer=tape.writer().write,
+        writer=tagged_trace_writer(tape.writer().write),
         debug=False,
         stacktraces=True,
     )

@@ -1,18 +1,35 @@
 from collections import deque
+import functools
+import os
+import sys
+import threading
 
 import retracesoftware.stream as stream
 
-from retracesoftware.protocol.messages import (
-    CallMessage,
-    CheckpointMessage,
-    ErrorMessage,
-    ProtocolMessage,
-    ResultMessage,
-    StacktraceMessage,
-)
+from retracesoftware.gateway._dynamicproxy import is_proxy_ref
 from retracesoftware.install.monitoring import (
     begin_suppress_monitoring,
     end_suppress_monitoring,
+)
+from retracesoftware.proxy.taggedtraceio import (
+    TaggedTraceReader,
+    next_message,
+)
+from retracesoftware.proxy.traceio import (
+    BindCloseMessage,
+    BindOpenMessage,
+    CallMessage,
+    CallMarkerMessage,
+    CallbackErrorMessage,
+    CallbackMessage,
+    CallbackResultMessage,
+    CheckpointMessage,
+    ErrorMessage,
+    OnStartMessage,
+    ResultMessage,
+    StacktraceMessage,
+    SyncMessage,
+    ThreadSwitchMessage,
 )
 from retracesoftware.stream.reader import ExpectedBindMarker
 
@@ -30,6 +47,14 @@ def _read(source):
         return source()
 
     return next(source)
+
+
+_SCHED_DEBUG = bool(os.environ.get("RETRACE_THREAD_SCHEDULE_DEBUG"))
+
+
+def _debug_scheduler(message):
+    if _SCHED_DEBUG:
+        print(f"Retrace scheduler: {message}", file=sys.stderr, flush=True)
 
 
 def _probe_callback_name(kind):
@@ -55,7 +80,10 @@ def _set_thread_callback(probe, kind, callback):
     try:
         callbacks = getattr(probe, "callbacks", None)
         if callbacks is not None:
-            setattr(callbacks, _probe_callback_name(kind), callback)
+            name = _probe_callback_name(kind)
+            if not hasattr(callbacks, name):
+                return False
+            setattr(callbacks, name, callback)
             return True
         setter = getattr(probe, f"set_thread_{kind}_callback", None)
         if setter is None:
@@ -76,10 +104,19 @@ def _probe_call_at(probe, *args):
 def _retrace_callback(probe, callback):
     if probe is None:
         return callback
-    disable = getattr(probe, "disable", None) or getattr(probe, "exclude", None)
+    exclude = getattr(probe, "exclude", None)
+    if exclude is not None:
+        return exclude(callback)
+
+    disable = getattr(probe, "disable", None)
     if disable is None:
         return callback
-    return disable(callback)
+
+    @functools.wraps(callback)
+    def disabled_callback(*args, **kwargs):
+        return disable(callback, *args, **kwargs)
+
+    return disabled_callback
 
 
 class PeekableStream:
@@ -114,95 +151,14 @@ class PeekableStream:
             return self._close()
 
 
-class OnStartMessage(ProtocolMessage):
+class MessageStream(TaggedTraceReader):
     __slots__ = ()
-
-
-class CallbackMessage(CallMessage):
-    __slots__ = ()
-
-
-class CallbackResultMessage(ResultMessage):
-    __slots__ = ()
-
-
-class CallbackErrorMessage(ErrorMessage):
-    __slots__ = ()
-
-
-class ThreadStartMessage(ProtocolMessage):
-    __slots__ = ()
-
-
-class ThreadYieldMessage(ProtocolMessage):
-    __slots__ = ("cursor_delta",)
-
-    def __init__(self, cursor_delta, *, thread_id=None):
-        super().__init__(thread_id=thread_id)
-        self.cursor_delta = cursor_delta
-
-
-class ThreadResumeMessage(ProtocolMessage):
-    __slots__ = ()
-
-
-class BindOpenMessage(ProtocolMessage):
-    __slots__ = ("handle",)
-
-    def __init__(self, handle):
-        super().__init__()
-        self.handle = handle
-
-
-class BindCloseMessage(ProtocolMessage):
-    __slots__ = ("handle",)
-
-    def __init__(self, handle):
-        super().__init__()
-        self.handle = handle
-
-
-class MessageStream:
-    __slots__ = ("source", "_close")
-
-    def __init__(self, source, *, close=None):
-        self.source = source
-        self._close = close if close is not None else getattr(source, "close", None)
-
-    def __call__(self):
-        return self.next()
-
-    def __iter__(self):
-        return self
-
-    def __next__(self):
-        return self.next()
-
-    def next(self):
-        return next_message(self.source)
-
-    read = next
-
-    def close(self):
-        if self._close is not None:
-            return self._close()
-
-
-def _binding_handle(binding):
-    return binding.handle if hasattr(binding, "handle") else binding
-
-
-def _is_proxy_ref(value):
-    return (
-        type(value).__name__ == "ProxyRef"
-        and type(value).__module__ == "retracesoftware.proxy.system"
-    )
 
 
 def _resolve_value(value, bindings):
     if isinstance(value, stream.Binding):
         return _resolve_value(bindings[value.handle], bindings)
-    if _is_proxy_ref(value):
+    if is_proxy_ref(value):
         return value()
     if isinstance(value, tuple):
         changed = False
@@ -262,12 +218,19 @@ def _resolve_message(message, bindings):
             _resolve_value(message.stacktrace, bindings),
             thread_id=thread_id,
         )
-    if isinstance(message, ThreadYieldMessage):
+    if isinstance(message, ThreadSwitchMessage):
         return type(message)(
             _resolve_value(message.cursor_delta, bindings),
             thread_id=thread_id,
         )
-    if isinstance(message, (ThreadStartMessage, ThreadResumeMessage, OnStartMessage)):
+    if isinstance(
+        message,
+        (
+            CallMarkerMessage,
+            OnStartMessage,
+            SyncMessage,
+        ),
+    ):
         return type(message)(thread_id=thread_id)
     return _resolve_value(message, bindings)
 
@@ -318,9 +281,8 @@ class BindingStream:
 
     read = next
 
-    def peek(self):
+    def peek(self, offset=0):
         shadow_bindings = dict(self._bindings)
-        offset = 0
 
         while True:
             message = self.source.peek(offset)
@@ -360,7 +322,6 @@ class BindingStream:
 class SchedulerStream:
     __slots__ = (
         "source",
-        "set_callback",
         "probe",
         "handoff",
         "_active",
@@ -369,14 +330,10 @@ class SchedulerStream:
         "_current_thread_id",
         "_cursors",
         "_disable_for",
-        "_on_yield",
-        "_old_thread_resume_callback",
-        "_old_thread_start_callback",
-        "_pending_starts",
-        "_parked_starts",
+        "_lock",
+        "_on_switch",
+        "_old_thread_switch_callback",
         "_should_schedule",
-        "_should_start",
-        "_skip_until_thread_id",
         "_thread_id",
     )
 
@@ -393,10 +350,8 @@ class SchedulerStream:
         active=True,
         disable_for=None,
         should_schedule=None,
-        should_start=None,
     ):
         self.source = source
-        self.set_callback = set_callback
         self.probe = probe
         self.handoff = handoff
         self._active = active
@@ -405,14 +360,10 @@ class SchedulerStream:
         self._current_thread_id = current_thread_id
         self._cursors = {}
         self._disable_for = disable_for
-        self._on_yield = None
-        self._old_thread_resume_callback = None
-        self._old_thread_start_callback = None
-        self._pending_starts = set()
-        self._parked_starts = set()
+        self._lock = threading.RLock()
+        self._on_switch = set_callback
+        self._old_thread_switch_callback = None
         self._should_schedule = should_schedule
-        self._should_start = should_start
-        self._skip_until_thread_id = None
         self._thread_id = initial_thread_id
 
     def __call__(self):
@@ -432,10 +383,9 @@ class SchedulerStream:
 
     def set_replay_guards(self, *, should_schedule=None, should_start=None):
         self._should_schedule = should_schedule
-        self._should_start = should_start
 
-    def set_on_yield(self, on_yield):
-        self._on_yield = on_yield
+    def set_on_switch(self, on_switch):
+        self._on_switch = on_switch
 
     def activate(self):
         self._active = True
@@ -449,40 +399,29 @@ class SchedulerStream:
     def resume_thread(self):
         if not self._active:
             return None
-        while self._advance_scheduler():
-            pass
+        _debug_scheduler(f"replay resume current={self._read_current_thread_id()!r}")
+        self._advance_scheduler()
 
-    def start_thread(self):
+    def advance_thread_schedule(
+        self,
+        *,
+        allow_handoff=None,
+        skip_handoff_if_current_done=False,
+    ):
         if not self._active:
-            return None
+            return False
+        _debug_scheduler(f"replay advance current={self._read_current_thread_id()!r}")
+        if allow_handoff is None:
+            allow_handoff = self._should_replay_thread_schedule()
+        return self._advance_scheduled_switches(
+            allow_handoff=allow_handoff,
+            skip_handoff_if_current_done=skip_handoff_if_current_done,
+        )
 
-        current_thread_id = self._read_current_thread_id()
-        if current_thread_id in self._pending_starts:
-            self._pending_starts.remove(current_thread_id)
-            self._set_thread_id(current_thread_id)
-            return None
-
-        message = self.source.peek()
-        if (
-            isinstance(message, ThreadStartMessage)
-            and message.thread_id == current_thread_id
-        ):
-            self.source.next()
-            self._set_thread_id(message.thread_id)
-            return None
-
-        if isinstance(message, ThreadStartMessage):
-            if self.handoff is not None and current_thread_id is not None:
-                self._parked_starts.add(current_thread_id)
-                self._handoff_start()
-                self._parked_starts.discard(current_thread_id)
-                if current_thread_id in self._pending_starts:
-                    self._pending_starts.remove(current_thread_id)
-                    self._set_thread_id(current_thread_id)
-            return None
-        return None
-
-    enter_thread = start_thread
+    def handoff_thread_schedule_to(self, thread_id):
+        if not self._active:
+            return False
+        return self._handoff_next_switch_target(only_thread_id=thread_id)
 
     def _call_disabled(self, function, *args):
         if function is None:
@@ -496,47 +435,33 @@ class SchedulerStream:
             return True
         return self._should_schedule()
 
-    def _should_replay_thread_start(self):
-        if self._should_start is None:
-            return True
-        return self._should_start()
-
-    def _thread_start_callback(self):
-        if self._should_replay_thread_start():
-            self._call_disabled(self.start_thread)
-        if self._old_thread_start_callback is not None:
-            self._old_thread_start_callback()
-
-    def _thread_resume_callback(self):
-        if self._should_replay_thread_schedule():
-            self._call_disabled(self.resume_thread)
-        if self._old_thread_resume_callback is not None:
-            self._old_thread_resume_callback()
+    def _thread_switch_callback(self, previous_delta, next_thread_id):
+        schedule = self._should_replay_thread_schedule()
+        _debug_scheduler(
+            "replay switch callback "
+            f"next={next_thread_id!r} schedule={schedule!r}"
+        )
+        if schedule:
+            self._call_disabled(self._advance_observed_thread_switch, next_thread_id)
+        if self._old_thread_switch_callback is not None:
+            self._old_thread_switch_callback(previous_delta, next_thread_id)
 
     def _install_thread_callbacks(self):
         if self.probe is None or self._callbacks_installed:
             return
-        self._old_thread_start_callback = _get_thread_callback(self.probe, "start")
-        self._old_thread_resume_callback = _get_thread_callback(self.probe, "resume")
+        self._old_thread_switch_callback = _get_thread_callback(self.probe, "switch")
         _set_thread_callback(
             self.probe,
-            "start",
-            _retrace_callback(self.probe, self._thread_start_callback),
-        )
-        _set_thread_callback(
-            self.probe,
-            "resume",
-            _retrace_callback(self.probe, self._thread_resume_callback),
+            "switch",
+            _retrace_callback(self.probe, self._thread_switch_callback),
         )
         self._callbacks_installed = True
 
     def _uninstall_thread_callbacks(self):
         if self.probe is None or not self._callbacks_installed:
             return
-        _set_thread_callback(self.probe, "start", self._old_thread_start_callback)
-        _set_thread_callback(self.probe, "resume", self._old_thread_resume_callback)
-        self._old_thread_start_callback = None
-        self._old_thread_resume_callback = None
+        _set_thread_callback(self.probe, "switch", self._old_thread_switch_callback)
+        self._old_thread_switch_callback = None
         self._callbacks_installed = False
 
     def _set_thread_id(self, thread_id):
@@ -562,78 +487,27 @@ class SchedulerStream:
 
     def _handoff_to(self, thread_id):
         if self.handoff is None or thread_id is None:
-            return None
-        if thread_id == self._read_current_thread_id():
-            return None
-        return self._call_disabled(self.handoff.to, thread_id)
-
-    def _handoff_start(self):
-        if self.handoff is None:
-            return None
-        return self._call_disabled(self.handoff.start)
-
-    def _resume_is_replayable(self, thread_id):
-        return (
-            thread_id in self._cursors
-            or thread_id in self._pending_starts
-            or thread_id in self._parked_starts
+            return False
+        if not self._thread_exists(thread_id):
+            return False
+        current_thread_id = self._read_current_thread_id()
+        if thread_id == current_thread_id:
+            _debug_scheduler(f"replay skip handoff target={thread_id!r} current")
+            return False
+        _debug_scheduler(
+            f"replay handoff from={current_thread_id!r} to={thread_id!r}"
         )
-
-    def _has_resume_for_thread_ahead(self, thread_id):
-        if thread_id is None:
-            return False
-
-        offset = 0
-        while True:
-            try:
-                message = self.source.peek(offset)
-            except TypeError:
-                return False
-            except StopIteration:
-                return False
-            if (
-                isinstance(message, ThreadResumeMessage)
-                and message.thread_id == thread_id
-            ):
-                return True
-            offset += 1
-
-    def _start_skipping_until_thread(self, current_thread_id):
-        if current_thread_id is None:
-            return False
-        if not self._has_resume_for_thread_ahead(current_thread_id):
-            return False
-        self._skip_until_thread_id = current_thread_id
+        self._call_disabled(self.handoff.to, thread_id)
         return True
 
-    def _advance_skipped_thread_segment(self):
-        thread_id = self._skip_until_thread_id
-        if thread_id is None:
-            return False
-
-        message = self.source.peek()
-        if isinstance(message, BindCloseMessage):
-            return False
-
-        if (
-            isinstance(message, ThreadResumeMessage)
-            and message.thread_id == thread_id
-        ):
-            message = self.source.next()
-            self._set_thread_id(message.thread_id)
-            self._skip_until_thread_id = None
+    def _thread_exists(self, thread_id):
+        if self.probe is None or not hasattr(self.probe, "coordinates"):
             return True
-
-        self.source.next()
+        try:
+            self._call_disabled(self.probe.coordinates, thread_id)
+        except (LookupError, ValueError):
+            return False
         return True
-
-    def _skip_unreplayed_thread_segment(self, current_thread_id):
-        if not self._start_skipping_until_thread(current_thread_id):
-            return
-
-        while True:
-            if not self._advance_skipped_thread_segment():
-                return
 
     def _close_handoff(self):
         if self.handoff is None:
@@ -641,80 +515,198 @@ class SchedulerStream:
         return self._call_disabled(self.handoff.close)
 
     def _resume_thread_at_checkpoint(self):
+        if not self._should_replay_thread_schedule():
+            return None
         self._call_disabled(self.resume_thread)
+        return None
 
-    def _arm_thread_checkpoint(self, message):
-        if self.probe is None:
-            return
+    def _arm_thread_checkpoint(self, thread_id, cursor=None):
+        if self.probe is None or thread_id is None:
+            return False
+        if cursor is None:
+            cursor = self.cursor(thread_id)
         callback = _retrace_callback(self.probe, self._resume_thread_at_checkpoint)
         try:
             _probe_call_at(
                 self.probe,
-                message.thread_id,
-                self.cursor(message.thread_id),
+                thread_id,
+                cursor,
                 callback,
                 callback,
             )
         except (LookupError, ValueError):
-            return
+            return False
+        return True
 
-    def _advance_scheduler(self, *, allow_start_handoff=False):
+    def _finish_thread_switch(self, message, previous_thread_id):
+        self._arm_thread_checkpoint(previous_thread_id)
+        self._call_disabled(self._on_switch, message)
+
+    def _scheduled_previous_thread_id(self):
+        previous_thread_id = self._thread_id
+        if previous_thread_id is None:
+            previous_thread_id = self._read_current_thread_id()
+        return previous_thread_id
+
+    def _arm_observed_switch_checkpoint(self, message):
+        previous_thread_id = self._scheduled_previous_thread_id()
+        if previous_thread_id is None:
+            return
+        cursor = self._cursor_after_delta(previous_thread_id, message.cursor_delta)
+        self._arm_thread_checkpoint(previous_thread_id, cursor)
+
+    def _advance_observed_thread_switch(self, next_thread_id):
         if not self._active:
             return False
 
-        if self._advance_skipped_thread_segment():
-            return True
+        arm_message = None
+        with self._lock:
+            try:
+                message = self.source.peek()
+            except (LookupError, RuntimeError, StopIteration):
+                return False
+            if not isinstance(message, ThreadSwitchMessage):
+                return False
+            if message.thread_id != next_thread_id:
+                _debug_scheduler(
+                    "replay leave unmatched switch "
+                    f"recorded={message.thread_id!r} observed={next_thread_id!r}"
+                )
+                arm_message = message
 
-        message = self.source.peek()
-        if isinstance(message, ThreadStartMessage):
+        if arm_message is not None:
+            self._arm_observed_switch_checkpoint(arm_message)
+            return False
+
+        return self._advance_scheduler()
+
+    def _consume_next_thread_switch(self, *, allow_handoff=True):
+        if not self._active:
+            return None
+
+        handoff_target = None
+        with self._lock:
+            try:
+                message = self.source.peek()
+            except (LookupError, RuntimeError, StopIteration):
+                return None
+            if not isinstance(message, ThreadSwitchMessage):
+                return None
+
+            message = self.source.next()
             current_thread_id = self._read_current_thread_id()
-            if message.thread_id != current_thread_id:
-                if not allow_start_handoff:
-                    return False
-                message = self.source.next()
-                self._set_thread_id(message.thread_id)
-                self._pending_starts.add(message.thread_id)
-                if message.thread_id in self._parked_starts:
-                    self._handoff_to(message.thread_id)
-                return True
-            message = self.source.next()
-            self._set_thread_id(message.thread_id)
-            return True
-
-        if isinstance(message, ThreadYieldMessage):
-            message = self.source.next()
-            if message.thread_id is None:
-                message.thread_id = self._thread_id
-            else:
-                self._set_thread_id(message.thread_id)
-            self._cursors[message.thread_id] = self._cursor_after_delta(
-                message.thread_id,
-                message.cursor_delta,
+            previous_thread_id = self._thread_id
+            if previous_thread_id is None:
+                previous_thread_id = current_thread_id
+            _debug_scheduler(
+                "replay consumed switch "
+                f"previous={previous_thread_id!r} next={message.thread_id!r} "
+                f"current={current_thread_id!r}"
             )
-            self._arm_thread_checkpoint(message)
-            self._call_disabled(self.set_callback, message)
-            self._call_disabled(self._on_yield)
-            return True
-
-        if isinstance(message, ThreadResumeMessage):
-            message = self.source.next()
-            current_thread_id = self._read_current_thread_id()
+            if previous_thread_id is not None:
+                self._cursors[previous_thread_id] = self._cursor_after_delta(
+                    previous_thread_id,
+                    message.cursor_delta,
+                )
             self._set_thread_id(message.thread_id)
-            if self._resume_is_replayable(message.thread_id):
-                self._handoff_to(message.thread_id)
-            elif (
-                message.thread_id is not None
-                and message.thread_id != current_thread_id
-            ):
-                self._skip_unreplayed_thread_segment(current_thread_id)
-            return True
+            if allow_handoff and message.thread_id != current_thread_id:
+                handoff_target = message.thread_id
 
-        return False
+        return message, previous_thread_id, handoff_target
+
+    def _advance_scheduler(self, *, allow_handoff=True):
+        consumed = self._consume_next_thread_switch(allow_handoff=allow_handoff)
+        if consumed is None:
+            return False
+
+        switch_message, previous_thread_id, handoff_target = consumed
+        self._finish_thread_switch(switch_message, previous_thread_id)
+        if handoff_target is not None:
+            self._handoff_to(handoff_target)
+
+        return True
+
+    def _advance_scheduled_switches(
+        self,
+        *,
+        allow_handoff=True,
+        skip_handoff_if_current_done=False,
+    ):
+        consumed = None
+        while True:
+            if allow_handoff and self._handoff_next_switch_target(
+                skip_handoff_if_current_done=skip_handoff_if_current_done,
+            ):
+                continue
+            next_switch = self._consume_next_thread_switch(allow_handoff=False)
+            if next_switch is None:
+                break
+            consumed = next_switch
+            switch_message, previous_thread_id, _handoff_target = next_switch
+            self._finish_thread_switch(switch_message, previous_thread_id)
+
+        if consumed is None:
+            return False
+
+        return True
+
+    def _has_future_switch_to_thread(self, thread_id, *, offset=0):
+        if thread_id is None:
+            return False
+        while True:
+            try:
+                message = self.source.peek(offset)
+            except (LookupError, RuntimeError, StopIteration):
+                return False
+            if (
+                isinstance(message, ThreadSwitchMessage)
+                and message.thread_id == thread_id
+            ):
+                return True
+            offset += 1
+
+    def _next_switch_is_adjacent(self):
+        try:
+            return isinstance(self.source.peek(1), ThreadSwitchMessage)
+        except (LookupError, RuntimeError, StopIteration):
+            return False
+
+    def _handoff_next_switch_target(
+        self,
+        *,
+        skip_handoff_if_current_done=False,
+        only_thread_id=None,
+    ):
+        with self._lock:
+            try:
+                message = self.source.peek()
+            except (LookupError, RuntimeError, StopIteration):
+                return False
+            if not isinstance(message, ThreadSwitchMessage):
+                return False
+            if self._next_switch_is_adjacent():
+                return False
+
+            current_thread_id = self._read_current_thread_id()
+            if only_thread_id is not None and message.thread_id != only_thread_id:
+                return False
+            if message.thread_id == current_thread_id:
+                return False
+            if (
+                skip_handoff_if_current_done
+                and not self._has_future_switch_to_thread(current_thread_id, offset=1)
+            ):
+                return False
+            if not self._thread_exists(message.thread_id):
+                return False
+
+        return self._handoff_to(message.thread_id)
 
     def next(self):
-        while self._advance_scheduler(allow_start_handoff=True):
-            pass
-        return self.source.next()
+        allow_handoff = self._should_replay_thread_schedule()
+        self._advance_scheduled_switches(allow_handoff=allow_handoff)
+        with self._lock:
+            return self.source.next()
 
     read = next
 
@@ -770,49 +762,11 @@ class CallbackStream:
             return message
 
 
-def next_message(tape):
-    message_type = _read(tape)
-
-    if stream._is_bind_open(message_type):
-        return BindOpenMessage(stream._bind_index(message_type))
-    elif stream._is_bind_close(message_type):
-        return BindCloseMessage(stream._bind_index(message_type))
-    elif message_type == 'ON_START':
-        return OnStartMessage()
-    elif message_type == 'RESULT':
-        return ResultMessage(_read(tape))
-    elif message_type == 'ERROR':
-        return ErrorMessage(_read(tape))
-    elif message_type == 'CALLBACK':
-        return CallbackMessage(_read(tape), _read(tape), _read(tape))
-    elif message_type == 'CALLBACK_RESULT':
-        return CallbackResultMessage(_read(tape))
-    elif message_type == 'CALLBACK_ERROR':
-        return CallbackErrorMessage(_read(tape))
-    elif message_type == 'CHECKPOINT':
-        return CheckpointMessage(_read(tape))
-    elif message_type == 'STACKTRACE':
-        return StacktraceMessage(_read(tape))
-    elif message_type == 'THREAD_START':
-        return ThreadStartMessage(thread_id=_read(tape))
-    elif message_type == 'THREAD_YIELD':
-        return ThreadYieldMessage(_read(tape))
-    elif message_type == 'THREAD_RESUME':
-        return ThreadResumeMessage(thread_id=_read(tape))
-    elif message_type == 'THREAD_SWITCH':
-        return ThreadResumeMessage(thread_id=_read(tape))
-    elif message_type == 'NEW_BINDING':
-        return BindOpenMessage(_binding_handle(_read(tape)))
-    elif message_type == 'BINDING_DELETE':
-        return BindCloseMessage(_binding_handle(_read(tape)))
-    else:
-        return message_type
-
-
 __all__ = [
     "BindCloseMessage",
     "BindOpenMessage",
     "BindingStream",
+    "CallMarkerMessage",
     "CallbackStream",
     "CallbackErrorMessage",
     "CallbackMessage",
@@ -822,8 +776,7 @@ __all__ = [
     "OnStartMessage",
     "PeekableStream",
     "SchedulerStream",
-    "ThreadResumeMessage",
-    "ThreadStartMessage",
-    "ThreadYieldMessage",
+    "SyncMessage",
+    "ThreadSwitchMessage",
     "next_message",
 ]

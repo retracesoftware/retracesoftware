@@ -1,29 +1,29 @@
 import pytest
 import retracesoftware.stream as stream
 
-from retracesoftware.protocol.messages import (
+from retracesoftware.proxy.traceio import (
+    CallMarkerMessage,
     CallMessage,
     CheckpointMessage,
     ErrorMessage,
     ResultMessage,
     StacktraceMessage,
-)
-from retracesoftware.proxy.messagestream import (
     BindCloseMessage,
     BindOpenMessage,
-    BindingStream,
     CallbackErrorMessage,
     CallbackMessage,
     CallbackResultMessage,
+    OnStartMessage,
+    SyncMessage,
+    ThreadSwitchMessage,
+)
+from retracesoftware.proxy.messagestream import (
+    BindingStream,
     CallbackStream,
     ExpectedBindMarker,
     MessageStream,
-    OnStartMessage,
     PeekableStream,
     SchedulerStream,
-    ThreadResumeMessage,
-    ThreadStartMessage,
-    ThreadYieldMessage,
     next_message,
 )
 
@@ -87,29 +87,21 @@ def test_next_message_passes_unknown_tags_through():
     assert next_message(read_from(["UNKNOWN"])) == "UNKNOWN"
 
 
-def test_next_message_treats_thread_switch_as_scheduler_resume():
-    message = next_message(read_from(["THREAD_SWITCH", "worker"]))
-
-    assert isinstance(message, ThreadResumeMessage)
-    assert message.thread_id == "worker"
+def test_next_message_reads_control_markers():
+    assert isinstance(next_message(read_from(["CALL"])), CallMarkerMessage)
+    assert isinstance(next_message(read_from(["SYNC"])), SyncMessage)
 
 
 def test_next_message_reads_lifecycle_message():
     assert isinstance(next_message(read_from(["ON_START"])), OnStartMessage)
 
 
-def test_next_message_reads_thread_messages():
-    start = next_message(read_from(["THREAD_START", "worker"]))
-    yield_message = next_message(read_from(["THREAD_YIELD", (1, 2, 3)]))
-    resume = next_message(read_from(["THREAD_RESUME", "main"]))
+def test_next_message_reads_thread_switch():
+    message = next_message(read_from(["THREAD_SWITCH", "worker", (1, 2, 3)]))
 
-    assert isinstance(start, ThreadStartMessage)
-    assert start.thread_id == "worker"
-    assert isinstance(yield_message, ThreadYieldMessage)
-    assert yield_message.thread_id is None
-    assert yield_message.cursor_delta == (1, 2, 3)
-    assert isinstance(resume, ThreadResumeMessage)
-    assert resume.thread_id == "main"
+    assert isinstance(message, ThreadSwitchMessage)
+    assert message.thread_id == "worker"
+    assert message.cursor_delta == (1, 2, 3)
 
 
 def test_next_message_reads_binding_messages():
@@ -136,7 +128,8 @@ def test_peekable_stream_peek_does_not_consume():
 
 def test_message_stream_peeks_complete_messages():
     stream = PeekableStream(MessageStream(read_from([
-        "THREAD_YIELD",
+        "THREAD_SWITCH",
+        "worker",
         (1, 2, 3),
         "RESULT",
         10,
@@ -146,8 +139,8 @@ def test_message_stream_peeks_complete_messages():
 
     assert stream.peek() is message
     assert stream.next() is message
-    assert isinstance(message, ThreadYieldMessage)
-    assert message.thread_id is None
+    assert isinstance(message, ThreadSwitchMessage)
+    assert message.thread_id == "worker"
     assert message.cursor_delta == (1, 2, 3)
 
     result = stream.next()
@@ -220,39 +213,68 @@ def test_binding_stream_peek_skips_bind_closes_without_consuming():
         messages.lookup_handle(7)
 
 
-def test_scheduler_stream_sets_callback_and_drops_thread_yield():
+def test_scheduler_stream_consumes_thread_switch_and_arms_checkpoint():
     callbacks = []
+    calls = []
+
+    class FakeProbe:
+        def exclude(self, callback):
+            return callback
+
+        def call_at(self, *args):
+            calls.append(args)
+
     messages = BindingStream(PeekableStream(MessageStream(read_from([
-        "THREAD_YIELD",
+        "THREAD_SWITCH",
+        "worker",
         (1, 2, 3),
         "RESULT",
         "done",
     ]))))
-    scheduler = SchedulerStream(messages, callbacks.append, initial_thread_id="worker")
+    scheduler = SchedulerStream(
+        messages,
+        callbacks.append,
+        probe=FakeProbe(),
+        initial_thread_id="main",
+        current_thread_id=lambda: "main",
+    )
 
     message = scheduler.next()
 
     assert len(callbacks) == 1
     assert callbacks[0].thread_id == "worker"
     assert callbacks[0].cursor_delta == (1, 2, 3)
+    assert scheduler.cursor("main") == (2, 3)
+    assert len(calls) == 1
+    thread_id, cursor, on_hit, on_missed = calls[0]
+    assert thread_id == "main"
+    assert cursor == (2, 3)
+    assert callable(on_hit)
+    assert callable(on_missed)
     assert isinstance(message, ResultMessage)
     assert message.result == "done"
 
 
-def test_scheduler_stream_handoffs_and_drops_thread_resume():
+def test_scheduler_stream_handoffs_to_thread_switch_target():
+    current = ["main"]
+
     class FakeHandoff:
         def __init__(self):
+            self.close_calls = 0
             self.to_calls = []
+
+        def close(self):
+            self.close_calls += 1
 
         def to(self, thread_id):
             self.to_calls.append(thread_id)
+            current[0] = thread_id
 
     handoff = FakeHandoff()
     messages = BindingStream(PeekableStream(MessageStream(read_from([
-        "THREAD_YIELD",
-        (0, 11),
-        "THREAD_RESUME",
+        "THREAD_SWITCH",
         "worker",
+        (0, 11),
         "RESULT",
         "done",
     ]))))
@@ -260,7 +282,7 @@ def test_scheduler_stream_handoffs_and_drops_thread_resume():
         messages,
         handoff=handoff,
         initial_thread_id="worker",
-        current_thread_id=lambda: "main",
+        current_thread_id=lambda: current[0],
     )
 
     message = scheduler.next()
@@ -270,7 +292,7 @@ def test_scheduler_stream_handoffs_and_drops_thread_resume():
     assert message.result == "done"
 
 
-def test_scheduler_stream_does_not_handoff_resume_without_yield_cursor():
+def test_scheduler_stream_does_not_handoff_thread_switch_to_current_thread():
     class FakeHandoff:
         def __init__(self):
             self.to_calls = []
@@ -280,8 +302,9 @@ def test_scheduler_stream_does_not_handoff_resume_without_yield_cursor():
 
     handoff = FakeHandoff()
     messages = BindingStream(PeekableStream(MessageStream(read_from([
-        "THREAD_RESUME",
-        "worker",
+        "THREAD_SWITCH",
+        "main",
+        (0, 7),
         "RESULT",
         "done",
     ]))))
@@ -294,38 +317,261 @@ def test_scheduler_stream_does_not_handoff_resume_without_yield_cursor():
     message = scheduler.next()
 
     assert handoff.to_calls == []
+    assert scheduler.cursor("main") == (7,)
     assert isinstance(message, ResultMessage)
     assert message.result == "done"
 
 
-def test_scheduler_stream_installs_retrace_callbacks_and_consumes_start():
+def test_scheduler_stream_coalesces_adjacent_switches_before_handoff():
+    current = ["worker"]
+
+    class FakeHandoff:
+        def __init__(self):
+            self.close_calls = 0
+            self.to_calls = []
+
+        def close(self):
+            self.close_calls += 1
+
+        def to(self, thread_id):
+            self.to_calls.append(thread_id)
+            current[0] = thread_id
+
+    handoff = FakeHandoff()
+    messages = BindingStream(PeekableStream(MessageStream(read_from([
+        "THREAD_SWITCH",
+        "main",
+        (0, 1),
+        "THREAD_SWITCH",
+        "worker",
+        (0, 2),
+        "RESULT",
+        "done",
+    ]))))
+    scheduler = SchedulerStream(
+        messages,
+        handoff=handoff,
+        initial_thread_id="worker",
+        current_thread_id=lambda: current[0],
+    )
+
+    message = scheduler.next()
+
+    assert handoff.to_calls == []
+    assert scheduler.current_thread_id() == "worker"
+    assert isinstance(message, ResultMessage)
+    assert message.result == "done"
+
+
+def test_scheduler_stream_does_not_handoff_terminal_switch():
+    current = ["worker"]
+
+    class FakeHandoff:
+        def __init__(self):
+            self.close_calls = 0
+            self.to_calls = []
+
+        def close(self):
+            self.close_calls += 1
+
+        def to(self, thread_id):
+            self.to_calls.append(thread_id)
+            current[0] = thread_id
+
+    handoff = FakeHandoff()
+    messages = BindingStream(PeekableStream(MessageStream(read_from([
+        "THREAD_SWITCH",
+        "main",
+        (0, 1),
+    ]))))
+    scheduler = SchedulerStream(
+        messages,
+        handoff=handoff,
+        initial_thread_id="worker",
+        current_thread_id=lambda: current[0],
+    )
+
+    assert scheduler.advance_thread_schedule() is True
+    assert scheduler.current_thread_id() == "main"
+    assert handoff.close_calls == 1
+    assert handoff.to_calls == []
+
+
+def test_scheduler_stream_result_advance_skips_one_shot_target_handoff():
+    current = ["main"]
+
+    class FakeHandoff:
+        def __init__(self):
+            self.close_calls = 0
+            self.to_calls = []
+
+        def close(self):
+            self.close_calls += 1
+
+        def to(self, thread_id):
+            self.to_calls.append(thread_id)
+            current[0] = thread_id
+
+    handoff = FakeHandoff()
+    messages = BindingStream(PeekableStream(MessageStream(read_from([
+        "THREAD_SWITCH",
+        "worker",
+        (0, 1),
+        "RESULT",
+        "worker-done",
+        "THREAD_SWITCH",
+        "main",
+        (0, 2),
+        "RESULT",
+        "main-done",
+    ]))))
+    scheduler = SchedulerStream(
+        messages,
+        handoff=handoff,
+        initial_thread_id="main",
+        current_thread_id=lambda: current[0],
+    )
+
+    assert scheduler.advance_thread_schedule(
+        skip_handoff_if_current_done=True,
+    ) is True
+
+    assert scheduler.current_thread_id() == "worker"
+    assert handoff.to_calls == []
+    assert handoff.close_calls == 0
+    assert isinstance(messages.peek(), ResultMessage)
+    assert messages.peek().result == "worker-done"
+
+
+def test_scheduler_stream_does_not_handoff_to_dead_thread():
+    current = ["main"]
+
+    class FakeProbe:
+        def call_at(self, *_args):
+            return None
+
+        def coordinates(self, thread_id):
+            raise LookupError(thread_id)
+
+    class FakeHandoff:
+        def __init__(self):
+            self.close_calls = 0
+            self.to_calls = []
+
+        def close(self):
+            self.close_calls += 1
+
+        def to(self, thread_id):
+            self.to_calls.append(thread_id)
+            current[0] = thread_id
+
+    handoff = FakeHandoff()
+    messages = BindingStream(PeekableStream(MessageStream(read_from([
+        "THREAD_SWITCH",
+        "worker",
+        (0, 1),
+        "RESULT",
+        "done",
+    ]))))
+    scheduler = SchedulerStream(
+        messages,
+        probe=FakeProbe(),
+        handoff=handoff,
+        initial_thread_id="main",
+        current_thread_id=lambda: current[0],
+    )
+
+    message = scheduler.next()
+
+    assert handoff.to_calls == []
+    assert handoff.close_calls == 0
+    assert isinstance(message, ResultMessage)
+    assert message.result == "done"
+
+
+def test_scheduler_stream_yields_early_target_to_previous_thread():
+    current = ["main"]
+
+    class FakeProbe:
+        def call_at(self, *_args):
+            return None
+
+        def coordinates(self, _thread_id):
+            return ()
+
+    class FakeHandoff:
+        def __init__(self):
+            self.to_calls = []
+
+        def to(self, thread_id):
+            self.to_calls.append(thread_id)
+            current[0] = thread_id
+
+    handoff = FakeHandoff()
+    messages = BindingStream(PeekableStream(MessageStream(read_from([
+        "THREAD_SWITCH",
+        "main",
+        (0, 1),
+        "RESULT",
+        "done",
+    ]))))
+    scheduler = SchedulerStream(
+        messages,
+        probe=FakeProbe(),
+        handoff=handoff,
+        initial_thread_id="worker",
+        current_thread_id=lambda: current[0],
+    )
+
+    message = scheduler.next()
+
+    assert handoff.to_calls == ["worker", "main"]
+    assert isinstance(message, ResultMessage)
+    assert message.result == "done"
+
+
+def test_scheduler_stream_resume_ignores_end_of_stream_probe():
+    class EndedSource:
+        def peek(self):
+            raise RuntimeError("Could not read: 1 bytes from tracefile")
+
+        def next(self):
+            raise RuntimeError("Could not read: 1 bytes from tracefile")
+
+    scheduler = SchedulerStream(EndedSource())
+
+    scheduler.resume_thread()
+
+    with pytest.raises(RuntimeError, match="Could not read"):
+        scheduler.next()
+
+
+def test_scheduler_stream_installs_retrace_thread_switch_callback():
     old_calls = []
 
-    def old_start():
-        old_calls.append("start")
-
-    def old_resume():
-        old_calls.append("resume")
+    def old_switch(previous_delta, next_thread_id):
+        old_calls.append((previous_delta, next_thread_id))
 
     class Callbacks:
-        pass
+        def __init__(self):
+            self.thread_switch = old_switch
 
     class FakeProbe:
         def __init__(self):
             self.callbacks = Callbacks()
-            self.callbacks.thread_start = old_start
-            self.callbacks.thread_resume = old_resume
 
         def exclude(self, callback):
             return callback
 
+        def call_at(self, *args):
+            return None
+
+        def disable(self, callback, *args, **kwargs):
+            raise AssertionError("disable executes callbacks; exclude must wrap them")
+
     class FakeHandoff:
         def __init__(self):
-            self.start_calls = 0
             self.close_calls = 0
-
-        def start(self):
-            self.start_calls += 1
 
         def close(self):
             self.close_calls += 1
@@ -333,8 +579,9 @@ def test_scheduler_stream_installs_retrace_callbacks_and_consumes_start():
     probe = FakeProbe()
     handoff = FakeHandoff()
     messages = BindingStream(PeekableStream(MessageStream(read_from([
-        "THREAD_START",
+        "THREAD_SWITCH",
         "worker",
+        (0, 1),
         "RESULT",
         "done",
     ]))))
@@ -348,182 +595,133 @@ def test_scheduler_stream_installs_retrace_callbacks_and_consumes_start():
 
     scheduler.activate()
 
-    assert probe.callbacks.thread_start is not old_start
-    assert probe.callbacks.thread_resume is not old_resume
+    assert probe.callbacks.thread_switch is not old_switch
 
-    probe.callbacks.thread_start()
+    probe.callbacks.thread_switch((0, 1), "worker")
 
-    assert handoff.start_calls == 0
-    assert old_calls == ["start"]
-    probe.callbacks.thread_resume()
-    assert old_calls == ["start", "resume"]
+    assert old_calls == [((0, 1), "worker")]
     assert scheduler.next().result == "done"
 
     scheduler.deactivate()
 
-    assert probe.callbacks.thread_start is old_start
-    assert probe.callbacks.thread_resume is old_resume
+    assert probe.callbacks.thread_switch is old_switch
     assert handoff.close_calls == 1
 
 
-def test_scheduler_stream_arms_retrace_checkpoint_from_thread_yield():
+def test_scheduler_stream_switch_callback_consumes_one_recorded_switch():
+    class Callbacks:
+        def __init__(self):
+            self.thread_switch = None
+
     class FakeProbe:
         def __init__(self):
-            self.calls = []
+            self.callbacks = Callbacks()
 
         def exclude(self, callback):
             return callback
 
         def call_at(self, *args):
-            self.calls.append(args)
+            return None
 
+    class FakeHandoff:
+        def __init__(self):
+            self.to_calls = []
+
+        def to(self, thread_id):
+            self.to_calls.append(thread_id)
+            current[0] = thread_id
+
+    current = ["worker"]
     probe = FakeProbe()
+    handoff = FakeHandoff()
     messages = BindingStream(PeekableStream(MessageStream(read_from([
-        "THREAD_YIELD",
-        (0, 11),
+        "THREAD_SWITCH",
+        "worker",
+        (0, 1),
+        "THREAD_SWITCH",
+        "main",
+        (1, 2),
         "RESULT",
         "done",
     ]))))
     scheduler = SchedulerStream(
         messages,
         probe=probe,
-        initial_thread_id="worker",
+        handoff=handoff,
+        initial_thread_id="main",
+        current_thread_id=lambda: current[0],
+        active=False,
     )
 
-    message = scheduler.next()
+    scheduler.activate()
+    probe.callbacks.thread_switch((0, 1), "worker")
 
-    assert isinstance(message, ResultMessage)
-    assert message.result == "done"
-    assert len(probe.calls) == 1
-    thread_id, cursor, on_hit, on_missed = probe.calls[0]
-    assert thread_id == "worker"
-    assert cursor == (11,)
-    assert callable(on_hit)
-    assert callable(on_missed)
+    assert scheduler.current_thread_id() == "worker"
+    assert handoff.to_calls == []
+
+    assert scheduler.next().result == "done"
+    assert handoff.to_calls == ["main"]
 
 
-def test_scheduler_stream_start_thread_consumes_matching_thread_start():
+def test_scheduler_stream_switch_callback_leaves_unmatched_recorded_switch():
+    call_at_calls = []
+
+    class Callbacks:
+        def __init__(self):
+            self.thread_switch = None
+
+    class FakeProbe:
+        def __init__(self):
+            self.callbacks = Callbacks()
+
+        def exclude(self, callback):
+            return callback
+
+        def call_at(self, *args):
+            call_at_calls.append(args)
+
     class FakeHandoff:
         def __init__(self):
-            self.start_calls = 0
             self.to_calls = []
-
-        def start(self):
-            self.start_calls += 1
 
         def to(self, thread_id):
             self.to_calls.append(thread_id)
+            current[0] = thread_id
 
+    current = ["worker"]
+    probe = FakeProbe()
     handoff = FakeHandoff()
     messages = BindingStream(PeekableStream(MessageStream(read_from([
-        "THREAD_START",
-        "worker",
+        "THREAD_SWITCH",
+        "future-worker",
+        (0, 1),
         "RESULT",
         "done",
     ]))))
     scheduler = SchedulerStream(
         messages,
+        probe=probe,
         handoff=handoff,
-        current_thread_id=lambda: "worker",
+        initial_thread_id="main",
+        current_thread_id=lambda: current[0],
+        active=False,
     )
 
-    scheduler.start_thread()
-    message = scheduler.next()
+    scheduler.activate()
+    probe.callbacks.thread_switch((0, 1), "worker")
 
-    assert handoff.start_calls == 0
+    assert scheduler.current_thread_id() == "main"
     assert handoff.to_calls == []
-    assert isinstance(message, ResultMessage)
-    assert message.result == "done"
-
-
-def test_scheduler_stream_late_thread_start_claims_pending_start():
-    class FakeHandoff:
-        def __init__(self):
-            self.start_calls = 0
-            self.to_calls = []
-
-        def start(self):
-            self.start_calls += 1
-
-        def to(self, thread_id):
-            self.to_calls.append(thread_id)
-
-    handoff = FakeHandoff()
-    current = "main"
-    messages = BindingStream(PeekableStream(MessageStream(read_from([
-        "THREAD_START",
-        "worker",
-        "RESULT",
-        "done",
-    ]))))
-    scheduler = SchedulerStream(
-        messages,
-        handoff=handoff,
-        current_thread_id=lambda: current,
-    )
+    assert len(call_at_calls) == 1
+    assert call_at_calls[0][0] == "main"
+    assert call_at_calls[0][1] == (1,)
 
     assert scheduler.next().result == "done"
-
-    current = "worker"
-    scheduler.start_thread()
-
-    assert handoff.start_calls == 0
-    assert handoff.to_calls == []
+    assert scheduler.current_thread_id() == "future-worker"
+    assert handoff.to_calls == ["future-worker"]
 
 
-def test_scheduler_stream_start_thread_does_not_park_without_start_message():
-    class FakeHandoff:
-        def __init__(self):
-            self.start_calls = 0
-
-        def start(self):
-            self.start_calls += 1
-
-    handoff = FakeHandoff()
-    messages = BindingStream(PeekableStream(MessageStream(read_from([
-        "RESULT",
-        "done",
-    ]))))
-    scheduler = SchedulerStream(
-        messages,
-        handoff=handoff,
-        current_thread_id=lambda: "worker",
-    )
-
-    scheduler.start_thread()
-
-    assert handoff.start_calls == 0
-    assert scheduler.next().result == "done"
-
-
-def test_scheduler_stream_start_thread_leaves_other_thread_start_queued():
-    class FakeHandoff:
-        def __init__(self):
-            self.start_calls = 0
-
-        def start(self):
-            self.start_calls += 1
-
-    handoff = FakeHandoff()
-    messages = BindingStream(PeekableStream(MessageStream(read_from([
-        "THREAD_START",
-        "other",
-        "RESULT",
-        "done",
-    ]))))
-    scheduler = SchedulerStream(
-        messages,
-        handoff=handoff,
-        current_thread_id=lambda: "worker",
-    )
-
-    scheduler.start_thread()
-
-    assert handoff.start_calls == 1
-    assert isinstance(messages.peek(), ThreadStartMessage)
-
-
-def test_scheduler_stream_does_not_set_callback_on_non_yield():
+def test_scheduler_stream_does_not_set_callback_on_non_switch():
     callbacks = []
     scheduler = SchedulerStream(
         BindingStream(PeekableStream(MessageStream(read_from([
@@ -535,30 +733,6 @@ def test_scheduler_stream_does_not_set_callback_on_non_yield():
 
     assert scheduler.next().result == 5
     assert callbacks == []
-
-
-def test_scheduler_stream_skips_unreplayed_thread_segment_before_binding():
-    current = "main"
-    raw = PeekableStream(MessageStream(read_from([
-        "THREAD_RESUME",
-        "helper",
-        "NEW_BINDING",
-        7,
-        "RESULT",
-        None,
-        "THREAD_RESUME",
-        "main",
-        "RESULT",
-        "done",
-    ])))
-    scheduler = SchedulerStream(raw, current_thread_id=lambda: current)
-    messages = BindingStream(PeekableStream(scheduler))
-
-    message = messages.next()
-
-    assert isinstance(message, ResultMessage)
-    assert message.result == "done"
-    assert scheduler.current_thread_id() == "main"
 
 
 def test_callback_stream_calls_callback_and_drops_completion():

@@ -28,25 +28,18 @@ thread is created, while still leaving `_thread.start_new_thread` and
 
 ## Recording Path
 
-`stream.writer` is created with `thread=_thread.get_ident`. The native writer
-emits a `THREAD_SWITCH` marker when the writing thread changes, followed by the
-stable thread id. Record-side `retrace` eval-loop callbacks can also emit
-`THREAD_START, <thread-id>`, `THREAD_YIELD, <cursor-delta>`, and
-`THREAD_RESUME, <thread-id>` scheduling telemetry.
-
-Those routing messages are transport metadata. They are not user-visible
-application events.
+Record-side `retrace` eval-loop callbacks emit
+`THREAD_SWITCH, <next-thread-id>, <previous-cursor-delta>` scheduling
+telemetry. That scheduler message is transport metadata. It is not a
+user-visible application event.
 
 ## Replay Path
 
-Replay reads the same interleaved stream globally. `THREAD_START` names a newly
-started thread before it has a Python cursor. If replay sees a future start
-before the child start callback runs, it records that id as pending so the
-child can claim it later without parking inside Python thread bootstrap.
-`THREAD_YIELD` updates the current scheduled thread's cursor from its delta and
-arms `retrace.call_at(thread_id, cursor, callback)` for yielded cursors.
-`THREAD_RESUME` names the scheduled thread id; replay only performs a native
-handoff when that target has a yielded cursor.
+Replay reads the same interleaved stream globally. `THREAD_SWITCH` updates the
+previous scheduled thread's cursor from its delta, names the next scheduled
+thread id, and arms `retrace.call_at(thread_id, cursor, callback)` at the
+recorded cursor. Replay uses `ThreadHandoff.to(...)` only when the recorded
+switch is actionable at a replay scheduling point.
 
 The checkpoint callback consumes the scheduler event and then arms the next
 scheduler cursor. Protocol messages are consumed directly from the global

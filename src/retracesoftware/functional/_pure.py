@@ -799,6 +799,86 @@ def intercept(
     return advice(target, on_call=on_call, on_result=on_result, on_error=on_error)
 
 
+class _TransformCall:
+    def __init__(
+        self,
+        function: Callable[..., Any],
+        arg_transforms: tuple[Callable[[Any], Any], ...],
+        rest_transform: Callable[[Any], Any],
+        result_transform: Callable[[Any], Any],
+        on_error: Callable[[type, BaseException, Any], Any] | None = None,
+        error_transform: Callable[[type, BaseException, Any], BaseException] | None = None,
+    ) -> None:
+        if not callable(function):
+            raise TypeError("transform_call() expects function to be callable")
+        for arg_transform in arg_transforms:
+            if not callable(arg_transform):
+                raise TypeError("transform_call() expects arg transforms to be callable")
+        if not callable(rest_transform):
+            raise TypeError("transform_call() expects rest_transform to be callable")
+        if not callable(result_transform):
+            raise TypeError("transform_call() expects result_transform to be callable")
+        if on_error is not None and not callable(on_error):
+            raise TypeError("transform_call() expects on_error to be callable or None")
+        if error_transform is not None and not callable(error_transform):
+            raise TypeError("transform_call() expects error_transform to be callable or None")
+        self._function = function
+        self._arg_transforms = arg_transforms
+        self._rest_transform = rest_transform
+        self._result_transform = result_transform
+        self._on_error = on_error
+        self._error_transform = error_transform
+        functools.update_wrapper(self, function)  # type: ignore[arg-type]
+
+    def __call__(self, *args: Any, **kwargs: Any) -> Any:
+        prefix = self._arg_transforms
+        prefix_count = len(prefix)
+        args2 = [
+            (prefix[index] if index < prefix_count else self._rest_transform)(arg)
+            for index, arg in enumerate(args)
+        ]
+        kwargs2 = {key: self._rest_transform(value) for key, value in kwargs.items()}
+        try:
+            result = self._function(*args2, **kwargs2)
+        except BaseException:
+            if self._on_error is None and self._error_transform is None:
+                raise
+            exc_type, exc_value, exc_tb = sys.exc_info()
+            assert exc_type is not None and exc_value is not None
+            if self._on_error is not None:
+                self._on_error(exc_type, exc_value, exc_tb)
+            if self._error_transform is None:
+                raise
+            transformed = self._error_transform(exc_type, exc_value, exc_tb)
+            if not isinstance(transformed, BaseException):
+                raise TypeError("error_transform must return a BaseException instance")
+            raise transformed from exc_value
+        return self._result_transform(result)
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._function, name)
+
+
+def transform_call(
+    function: Callable[..., Any],
+    *arg_transforms: Callable[[Any], Any],
+    rest_transform: Callable[[Any], Any],
+    result_transform: Callable[[Any], Any],
+    on_error: Callable[[type, BaseException, Any], Any] | None = None,
+    error_transform: Callable[[type, BaseException, Any], BaseException] | None = None,
+) -> Callable[..., Any]:
+    """Transform selected args, rest args, result, and optionally exception side effects."""
+
+    return _TransformCall(
+        function,
+        arg_transforms,
+        rest_transform,
+        result_transform,
+        on_error,
+        error_transform,
+    )
+
+
 def side_effect(effect: Callable[..., Any]) -> Callable[..., Any]:
     """side_effect(effect)(x, *args, **kwargs) runs effect(...) then returns the original first arg."""
 
@@ -983,6 +1063,7 @@ __all__ = [
     "side_effect",
     "spread",
     "ternary_predicate",
+    "transform_call",
     "tuple",
     "typeof",
     "walker",

@@ -1,8 +1,6 @@
 import retracesoftware.utils as utils
 import retracesoftware.functional as functional
 
-from retracesoftware.proxy.stubfactory import Stub
-
 class DynamicProxy:
     __slots__ = []
 
@@ -67,7 +65,7 @@ def dynamic_proxytype(handler, cls, wrapped_base = utils.ExternalWrapped):
 
     # target_type = functional.sequence(utils.unwrap, functional.typeof)
 
-    target_type = cls.__retrace_target_type__ if issubclass(cls, Stub) else cls
+    target_type = getattr(cls, "__retrace_target_type__", cls)
     # functional.repeatedly(resolved)
 
     # spec['__class__'] = property(target_type)

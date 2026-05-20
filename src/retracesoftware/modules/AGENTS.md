@@ -50,6 +50,10 @@ touching core runtime code.
 
 - Prefer the narrowest config change that fixes interception coverage before
   rewriting deeper runtime code.
+- Module config should describe public import paths, callables, types, and
+  directives. Do not compensate for missing semantics by adding wrong-layer
+  concrete type checks, private-attribute checks, module-name heuristics, or
+  object-identity special cases in install/proxy code.
 - When editing a TOML file, explain which concrete call path or type behavior is
   being intercepted and why the chosen directive is correct.
 - If you add or change `bind` or `wrap`, re-check the relevant

@@ -86,6 +86,10 @@ def _busy_loop(iterations=1000):
     return value
 
 
+def _advance_leaf_instruction(coordinates, delta):
+    return (*coordinates[:-2], coordinates[-2] + delta, 0)
+
+
 def _stop_reasons(responses):
     return [
         response["payload"]["reason"]
@@ -117,7 +121,7 @@ def _run_worker_to_cursor(delta):
     base = tuple(retrace.coordinates(target_id))
     cursor = {
         "thread_id": target_id,
-        "coordinates": list((*base[:-1], base[-1] + delta)),
+        "coordinates": list(_advance_leaf_instruction(base, delta)),
     }
     socket = MockControlSocket([_run_to_cursor_request(cursor)])
     Controller(control_socket=socket)

@@ -19,6 +19,7 @@ import pytest
 import retracesoftware.utils as retrace_utils
 from retracesoftware.install import install_retrace
 from retracesoftware.proxy.io import recorder
+from retracesoftware.proxy.taggedtraceio import tagged_trace_writer
 from tests.runner import Runner
 
 needs_kqueue = pytest.mark.skipif(
@@ -47,7 +48,7 @@ def test_select_readable():
         c.sendall(b"ping")
         c.close()
 
-    t = threading.Thread(target=client)
+    t = threading.Thread(target=runner.unretraced(client))
     t.start()
 
     def work():
@@ -97,7 +98,7 @@ def test_select_timeout():
 @needs_pollselector
 def test_preloaded_pollselector_factory_is_retraced():
     """selectors is preloaded, so its cached select.poll factory must be patched."""
-    system = recorder(writer=lambda *values: None)
+    system = recorder(writer=tagged_trace_writer(lambda *values: None))
     uninstall = install_retrace(system=system, retrace_shutdown=False)
     try:
         assert selectors.PollSelector._selector_cls is select.poll
@@ -162,7 +163,7 @@ def test_kqueue_readable():
         c.sendall(b"kq-ping")
         c.close()
 
-    t = threading.Thread(target=client)
+    t = threading.Thread(target=runner.unretraced(client))
     t.start()
 
     def work():

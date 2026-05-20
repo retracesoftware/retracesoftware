@@ -564,13 +564,11 @@ class _IOThreadAwareTapeWriter:
         self.tape = self._writer.tape
 
     def write(self, *values):
-        self._writer._maybe_switch()
         for value in values:
             self._writer.tape.append(self._writer._encode_value(value))
         return None
 
     def bind(self, obj):
-        self._writer._maybe_switch()
         return self._writer.bind(obj)
 
     def monitor_event(self, value):
@@ -621,6 +619,7 @@ def record_then_replay(
     import _thread
     from retracesoftware.install import ReplayDivergence, install_retrace
     from retracesoftware.proxy.io import recorder, replayer
+    from retracesoftware.proxy.taggedtraceio import tagged_trace_writer
 
     kwargs = {} if kwargs is None else dict(kwargs)
     options = _default_install_options() if options is None else options
@@ -638,7 +637,7 @@ def record_then_replay(
         thread=_thread.get_ident,
     )
     record_system = recorder(
-        writer=writer.write,
+        writer=tagged_trace_writer(writer.write),
         debug=debug,
         stacktraces=stacktraces,
     )

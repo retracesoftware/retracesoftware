@@ -24,7 +24,10 @@ def _require_retrace_python():
     required = (
         "callbacks",
         "call_at",
+        "CoordinateSpace",
         "coordinates",
+        "disabled_space",
+        "space_dispatch",
         "thread_delta",
     )
     missing = [name for name in required if not hasattr(retrace, name)]
@@ -35,15 +38,17 @@ def _require_retrace_python():
             file=sys.stderr,
         )
         raise SystemExit(1)
+    return retrace
 
 
-_require_retrace_python()
+retrace = _require_retrace_python()
 
 import retracesoftware.utils as utils
 
 from retracesoftware.proxy.tape import TapeReader
 from retracesoftware.exceptions import RecordingNotFoundError, VersionMismatchError
 from retracesoftware.proxy.io import recorder, replayer
+from retracesoftware.proxy.taggedtraceio import tagged_trace_writer
 from retracesoftware.stream.reader import ExpectedBindMarker
 from retracesoftware.run import run_python_command, wait_for_non_daemon_threads
 from retracesoftware.tape import (
@@ -148,6 +153,7 @@ class Runner:
     env: dict[str, str] | None = None
     cwd: str | None = None
     sys_path: list[str] | None = None
+    internal_space: object | None = None
 
     def __call__(self):
         uninstall = _setup_runner(self)
@@ -167,8 +173,7 @@ def _setup_runner(runner):
         sys.path[:] = runner.sys_path
 
     def runpy_exec(source, globals=None, locals=None):
-        with runner.system.gate.context("internal"):
-            return builtins.exec(source, globals, locals)
+        return runner.system.run_internal(builtins.exec, source, globals, locals)
 
     utils.update(
         runpy,
@@ -222,9 +227,19 @@ def _setup_runner(runner):
         raise
 
 
-def _run_target(runner):
+def _run_enabled_target(runner):
     with runner.system.enable():
         return run_python_command(runner.argv)
+
+
+def _run_target(runner):
+    if runner.internal_space is not None:
+        return runner.internal_space.apply(_run_enabled_target, runner)
+    return _run_enabled_target(runner)
+
+
+def _new_internal_retrace_space():
+    return retrace.CoordinateSpace()
 
 
 def _finish_runner(runner, uninstall):
@@ -305,25 +320,28 @@ def create_record_runner(options):
         # events reach disk before the queue closes.
         atexit.register(close_tape_writer)
 
+    internal_space = _new_internal_retrace_space()
     try:
         system = recorder(
-            writer=tape_writer,
+            writer=tagged_trace_writer(tape_writer),
             debug=options.stacktraces,
             stacktraces=options.stacktraces,
+            retrace_space=internal_space,
         )
         _bind_record_runtime(system, tape_writer)
         if hasattr(tape_writer, "enable_heartbeat"):
-            def heartbeat_payload():
-                with system.disable():
-                    return tape_writer.heartbeat_payload()
-
             flush_interval = getattr(options, "flush_interval", None)
-            tape_writer.enable_heartbeat(flush_interval, heartbeat_payload)
+            tape_writer.enable_heartbeat(flush_interval)
     except BaseException:
         close_tape_writer()
         raise
 
-    return Runner(argv=argv, system=system, options=options)
+    return Runner(
+        argv=argv,
+        system=system,
+        options=options,
+        internal_space=internal_space,
+    )
 
 
 def create_replay_runner(options):
@@ -369,11 +387,13 @@ def create_replay_runner(options):
         stacktraces = header.get('stacktraces', False)
 
         tape_reader = TapeReaderAdapter(reader, controller_ref)
+        internal_space = _new_internal_retrace_space()
         system = replayer(
             next_object=tape_reader.read,
             close=getattr(tape_reader, "close", None),
             debug=stacktraces,
             stacktraces=stacktraces,
+            retrace_space=internal_space,
         )
         if hasattr(reader, "stub_factory"):
             reader.stub_factory = system.disable_for(reader.stub_factory)
@@ -411,6 +431,7 @@ def create_replay_runner(options):
                 on_before_fork=_before_fork,
                 on_after_fork=_after_fork,
                 disable_for=system.disable_for,
+                retrace_space=internal_space,
             )
             controller_ref[0] = controller
 
@@ -422,6 +443,7 @@ def create_replay_runner(options):
             sys_path=list(recorded_sys_path),
             system=system,
             options=options,
+            internal_space=internal_space,
         )
     except BaseException:
         resources.close()
@@ -655,5 +677,9 @@ def create_runner(argv=None):
     raise ValueError(f"unknown mode: {target_mode!r}")
 
 
+def _create_runner_disabled():
+    return retrace.disabled_space.apply(create_runner)
+
+
 if __name__ == "__main__":
-    create_runner()()
+    _create_runner_disabled()()

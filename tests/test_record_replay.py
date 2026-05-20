@@ -12,7 +12,7 @@ from pathlib import Path
 import pytest
 
 from run_record_replay import record_then_replay
-from tests.helpers import PYTHON, TIMEOUT, run_record, run_replay
+from tests.helpers import PYTHON, TIMEOUT, retrace_env, run_record, run_replay
 
 HELLO_SCRIPT = """\
 import time
@@ -281,6 +281,57 @@ print("done", flush=True)
     )
 
     replay = run_replay(trace_file)
+    assert replay.returncode == 0, (
+        f"Replay failed (exit {replay.returncode}):\n"
+        f"stdout:\n{replay.stdout}\n"
+        f"stderr:\n{replay.stderr}"
+    )
+    assert replay.stdout == record.stdout
+
+
+def test_record_then_replay_asyncio_stop_join_minimal(tmpdir):
+    trace_file = os.path.join(tmpdir, "asyncio_stop_join_minimal.retrace")
+    script_file = Path(tmpdir) / "asyncio_stop_join_minimal.py"
+    script_file.write_text(
+        """\
+import asyncio
+import threading
+from concurrent.futures import Future
+
+loop_ready = Future()
+
+
+def runner():
+    loop = asyncio.new_event_loop()
+    loop_ready.set_result(loop)
+    loop.run_forever()
+    loop.close()
+
+
+thread = threading.Thread(target=runner, daemon=True)
+thread.start()
+loop = loop_ready.result()
+loop.call_soon_threadsafe(loop.stop)
+thread.join()
+print("done", flush=True)
+""",
+        encoding="utf-8",
+    )
+
+    record = run_record(script_file, trace_file)
+    assert record.returncode == 0, (
+        f"Record failed (exit {record.returncode}):\n"
+        f"stdout:\n{record.stdout}\n"
+        f"stderr:\n{record.stderr}"
+    )
+
+    replay = subprocess.run(
+        [PYTHON, "-m", "retracesoftware", "--recording", trace_file],
+        capture_output=True,
+        text=True,
+        timeout=5,
+        env=retrace_env(python=PYTHON),
+    )
     assert replay.returncode == 0, (
         f"Replay failed (exit {replay.returncode}):\n"
         f"stdout:\n{replay.stdout}\n"

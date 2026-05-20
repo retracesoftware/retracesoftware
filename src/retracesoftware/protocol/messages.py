@@ -76,6 +76,8 @@ class ThreadSwitchMessage(ProtocolMessage):
     __slots__ = ()
 
     def __init__(self, thread_id):
+        if thread_id is None:
+            raise ValueError("ThreadSwitchMessage requires thread_id")
         super().__init__(thread_id=thread_id)
 
     def __repr__(self):

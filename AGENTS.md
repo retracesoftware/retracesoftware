@@ -39,19 +39,31 @@ hard constraints, not as an encyclopedia.
 5. Prefer fixes in the narrowest responsible layer. Do not modify `install`,
    `proxy`, and `stream` together unless the change genuinely requires all
    three. Cross-layer diffs need an explicit justification.
-6. Do not delete or rewrite a high-level abstraction (e.g. proxy types,
+6. Do not backdoor another layer by recovering semantic meaning from concrete
+   implementation details. Outside the owning layer, designated adapters, and
+   tests that explicitly assert type behavior, do not use `isinstance`,
+   `issubclass`, exact `type(...)` checks, `__module__`,
+   `__class__.__name__`, `repr` strings, private attributes, object identity,
+   or module-name checks to decide proxy/install/stream/protocol/replay
+   semantics. Use an explicit semantic API owned by the responsible layer. If
+   that API does not exist, add the narrowest one there and explain why.
+7. Do not delete or rewrite a high-level abstraction (e.g. proxy types,
    factories, gates) to fix a localized bug without first explaining what
    contract in the relevant `AGENTS.md` or `DESIGN.md` is being violated.
-7. Do not introduce backwards-compatibility shims for old trace formats,
+8. Do not introduce backwards-compatibility shims for old trace formats,
    message tags, or APIs. Retrace breaks format/API freely; if a recording
    no longer matches the current code, the recording is regenerated, not
    the code. Compatibility code that already exists in legacy files is
    tolerated only because it has not been deleted yet, not because new
    compatibility code is welcome.
-8. Prioritize simplicity above all else. When two correct designs exist,
+9. Prioritize simplicity above all else. When two correct designs exist,
    pick the smaller one. Do not add abstractions, indirection, or
    "extensibility hooks" without a current, concrete consumer that needs
    them. Deleting code is preferred over generalizing it.
+10. For any product bug, always reduce to the smallest failing case first,
+    add that case to the appropriate test harness as a regression, confirm it
+    fails, and then fix the owning contract. Do not rely on the original large
+    scenario as the only reproducer unless no smaller case can be made.
 
 ## Repo Map
 
@@ -122,6 +134,9 @@ hard constraints, not as an encyclopedia.
 - Replay correctness is more important than convenience.
 - Avoid set iteration, `id()`, `hash()`, memory-address ordering, or object
   identity assumptions in replay-sensitive code paths.
+- Concrete implementation checks across layer boundaries are brittle
+  backdoors. A layer may ask another layer only semantic questions exposed by
+  that layer's public API.
 - Threading, weakrefs, finalizers, and `fork()` changes are high risk.
 - Control-plane I/O for debugging or analysis must bypass retrace gates.
 - `cpp/stream` and the trace format are compatibility-sensitive.
@@ -194,6 +209,12 @@ if needed.
   `tests/`, `dockertests/`, `vscode/`, or `go/`, read the local `AGENTS.md` in that
   directory before editing — and any `DESIGN.md` in that directory if one
   exists.
+- Before editing replay-sensitive or cross-layer code, state the fix routing:
+  the symptom, the violated contract, the owning layer, the semantic question
+  the code needs answered, the existing API that answers it (or the layer where
+  the new minimal API belongs), why adjacent layers are not being changed, and
+  why the fix does not inspect concrete types or private implementation details
+  from another layer.
 - If you touch `meson.build`, package install lists, or runtime entrypoints,
   run packaging smoke checks in addition to ordinary tests.
 - If a task depends on a test-directory-specific manual replay loop, inspect
@@ -203,8 +224,8 @@ if needed.
   the repo skill `$determinism-check`.
 - Replay failures must be debugged in this order:
   1. Find the fundamental divergence between record and replay.
-  2. Build the smallest failing regression that reproduces that divergence
-     without the original application or dockertest when possible.
+  2. Build the smallest failing regression that reproduces that divergence,
+     add it to the appropriate test harness, and confirm it fails.
   3. Fix the fundamental shared cause, then verify the regression and the
      original failing scenario.
   Do not patch the library or symptom that happened to expose the bug before

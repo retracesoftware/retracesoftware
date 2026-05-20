@@ -60,10 +60,17 @@ class InstructionMonitor:
             pass
 
 
-def trace_function_instructions(coordinates, callback, *, target_frame=None, on_complete=None):
+def trace_function_instructions(
+    coordinates,
+    callback,
+    *,
+    target_frame=None,
+    thread_id=None,
+    on_complete=None,
+):
     """Fire *callback(code, instruction_offset)* for every bytecode instruction
-    executed within the function invocation at *coordinates* on the current
-    thread.
+    executed within the function invocation at *coordinates* on *thread_id*.
+    When *thread_id* is omitted, the current thread is used.
 
     *on_complete* is called (with no arguments) after the monitor auto-closes
     due to the target function returning or unwinding.  It is **not** called
@@ -78,6 +85,8 @@ def trace_function_instructions(coordinates, callback, *, target_frame=None, on_
     """
     retrace = _retrace()
     coordinates = tuple(coordinates)
+    if thread_id is None:
+        thread_id = _thread.get_ident()
 
     # --- Allocate a dedicated tool_id for INSTRUCTION events ---
     tool_id = _acquire_tool_id("retrace_trace_fn")
@@ -130,7 +139,7 @@ def trace_function_instructions(coordinates, callback, *, target_frame=None, on_
         _begin_tracing_with_frame(target_frame)
     else:
         try:
-            retrace.call_at(_thread.get_ident(), coordinates, begin)
+            retrace.call_at(thread_id, coordinates, begin)
         except ValueError as exc:
             monitor.close()
             raise TargetUnreachableError(

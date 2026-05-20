@@ -4,6 +4,7 @@ import threading
 
 from retracesoftware.install import install_retrace
 from retracesoftware.proxy.io import recorder, replayer
+from retracesoftware.proxy.taggedtraceio import tagged_trace_writer
 from retracesoftware.testing.memorytape import IOMemoryTape
 
 
@@ -19,7 +20,11 @@ def _new_socket():
 def test_install_retrace_uninstall_resets_patched_types():
     tape = IOMemoryTape()
 
-    record_system = recorder(writer=tape.writer().write, debug=False, stacktraces=False)
+    record_system = recorder(
+        writer=tagged_trace_writer(tape.writer().write),
+        debug=False,
+        stacktraces=False,
+    )
     _configure_system(record_system)
     uninstall_record = install_retrace(
         system=record_system,
@@ -72,7 +77,11 @@ def test_install_retrace_does_not_patch_thread_lock_aliases():
     original_threading_lock = threading.Lock
     original_threading_allocate_lock = threading._allocate_lock
 
-    record_system = recorder(writer=tape.writer().write, debug=False, stacktraces=False)
+    record_system = recorder(
+        writer=tagged_trace_writer(tape.writer().write),
+        debug=False,
+        stacktraces=False,
+    )
     _configure_system(record_system)
     uninstall_record = install_retrace(
         system=record_system,

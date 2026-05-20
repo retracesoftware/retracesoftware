@@ -59,6 +59,7 @@ _bootstrap_local_checkout()
 from retracesoftware.install import ReplayDivergence, install_retrace
 from retracesoftware.proxy.io import _ReplayBindingState, recorder, replayer
 from retracesoftware.proxy.system import LifecycleHooks
+from retracesoftware.proxy.taggedtraceio import tagged_trace_writer
 from retracesoftware.testing.memorytape import _IOThreadAwareTapeWriter
 
 
@@ -81,7 +82,11 @@ def _work(_system):
 def _build_recording():
     tape_storage: list[object] = []
     writer = _IOThreadAwareTapeWriter(tape_storage, thread=_thread.get_ident)
-    record_system = recorder(writer=writer.write, debug=False, stacktraces=False)
+    record_system = recorder(
+        writer=tagged_trace_writer(writer.write),
+        debug=False,
+        stacktraces=False,
+    )
     record_system.immutable_types.update(IMMUTABLE_TYPES)
 
     uninstall = install_retrace(

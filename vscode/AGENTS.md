@@ -11,6 +11,9 @@ TypeScript client for the Go replay binary's DAP adapter; DAP semantics live in
   display, launch wiring, and debug-adapter process startup.
 - Do not duplicate DAP stepping, breakpoint, stack-frame, or variable semantics
   in TypeScript. Those belong in `go/replay/` and the Python control runtime.
+- Do not infer replay/debugger semantics from process names, strings, private
+  adapter details, or workspace layout quirks when the DAP/control payload
+  should carry the information.
 - If extension behavior changes the DAP launch path or user-visible debug
   workflow, update `docs/DEBUGGER_DESIGN.md` and the opt-in VS Code smoke test
   in `tests/test_vscode_e2e_smoke.py`.

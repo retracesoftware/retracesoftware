@@ -59,6 +59,10 @@ checking the Go DAP proxy and replay tooling too.
 
 - Treat control-plane I/O as special. Keep it outside normal retrace boundary
   semantics.
+- Do not infer debugger/control semantics from concrete proxy, stream, or
+  runtime implementation details. DAP code should use explicit control-plane
+  payloads, cursor APIs, and documented replay events instead of private
+  attributes, class names, or object identity from data-path layers.
 - If you change stepping, pause, or cursor behavior, explain how replay order
   and stop points are affected.
 - Do not assume debugger-visible state can outlive resume. Be careful with

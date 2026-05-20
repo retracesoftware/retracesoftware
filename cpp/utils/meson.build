@@ -10,7 +10,6 @@ _utils_sources = files(
   'iddict.cpp',
   'idset.cpp',
   'instancecheck.cpp',
-  'loopcounter.cpp',
   'marker.cpp',
   'memoryaddresses.cpp',
   'module.cpp',

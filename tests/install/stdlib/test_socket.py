@@ -49,7 +49,7 @@ def _loopback_pair():
     return cli, conn, srv
 
 
-def _start_server_only_client(*, ready, port_box, payload):
+def _start_server_only_client(*, runner, ready, port_box, payload):
     client_errors = []
 
     def client():
@@ -64,7 +64,7 @@ def _start_server_only_client(*, ready, port_box, payload):
         except Exception as exc:
             client_errors.append(exc)
 
-    thread = threading.Thread(target=client)
+    thread = threading.Thread(target=runner.unretraced(client))
     thread.start()
     return thread, client_errors
 
@@ -110,13 +110,14 @@ def test_server_recv():
     """
     ready = threading.Event()
     port_box = []
+    runner = Runner()
 
     t, client_errors = _start_server_only_client(
+        runner=runner,
         ready=ready,
         port_box=port_box,
         payload=b"hello from client",
     )
-    runner = Runner()
 
     def server_work():
         srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -154,15 +155,15 @@ def test_client_recv():
     srv.bind(("127.0.0.1", 0))
     port = srv.getsockname()[1]
     srv.listen(1)
+    runner = Runner()
 
     def server():
         conn, _addr = srv.accept()
         conn.sendall(b"hello from server")
         conn.close()
 
-    t = threading.Thread(target=server)
+    t = threading.Thread(target=runner.unretraced(server))
     t.start()
-    runner = Runner()
 
     def client_work():
         cli = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -292,13 +293,14 @@ def test_recv_into_server_only():
     """
     ready = threading.Event()
     port_box = []
+    runner = Runner()
 
     t, client_errors = _start_server_only_client(
+        runner=runner,
         ready=ready,
         port_box=port_box,
         payload=b"hello via recv_into",
     )
-    runner = Runner()
 
     def server_work():
         srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)

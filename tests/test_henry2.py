@@ -92,6 +92,7 @@ def test_wsgiref_two_requests_replay_succeeds_without_timeout(tmp_path):
         import signal
         import socket
         import threading
+        import traceback
         from wsgiref.simple_server import make_server
 
         from retracesoftware.install import ReplayDivergence
@@ -131,32 +132,48 @@ def test_wsgiref_two_requests_replay_succeeds_without_timeout(tmp_path):
             return [body]
 
 
-        def server_work():
+        unretraced_http_get = runner.unretraced(_http_get)
+        unretraced_call = runner.unretraced(lambda function, *args: function(*args))
+
+
+        def start_client(port: int, path: str):
+            def launch():
+                ready = threading.Event()
+
+                def client():
+                    responses.append(unretraced_http_get(port, path, ready))
+
+                thread = threading.Thread(target=client)
+                thread.start()
+                assert ready.wait(timeout=5)
+                return thread
+
+            return unretraced_call(launch)
+
+
+        def join_client(thread):
+            def join():
+                thread.join(timeout=5)
+                assert not thread.is_alive()
+
+            unretraced_call(join)
+
+
+        def server_work(client_starter):
             srv = make_server("127.0.0.1", 0, app)
             state["srv"] = srv
             port = srv.server_address[1]
 
-            def client(path: str, ready):
-                responses.append(_http_get(port, path, ready))
-
-            ready1 = threading.Event()
-            t1 = threading.Thread(target=client, args=("/one", ready1))
-            t1.start()
-            assert ready1.wait(timeout=5)
-            srv._handle_request_noblock()
-            t1.join(timeout=5)
-            assert not t1.is_alive()
-
-            ready2 = threading.Event()
-            t2 = threading.Thread(target=client, args=("/two", ready2))
-            t2.start()
-            assert ready2.wait(timeout=5)
-            srv._handle_request_noblock()
-            t2.join(timeout=5)
-            assert not t2.is_alive()
+            for path in ("/one", "/two"):
+                thread = None
+                if client_starter is not None:
+                    thread = client_starter(port, path)
+                srv._handle_request_noblock()
+                if thread is not None:
+                    join_client(thread)
 
 
-        recording = runner.record(server_work)
+        recording = runner.record(server_work, start_client)
         state.pop("srv").server_close()
         assert recording.error is None, recording.error
         assert len(responses) == 2
@@ -173,9 +190,14 @@ def test_wsgiref_two_requests_replay_succeeds_without_timeout(tmp_path):
         signal.alarm(30)
         try:
             try:
-                runner.replay(recording, server_work)
-            except ReplayDivergence:
-                print("ReplayDivergence")
+                runner.replay(recording, server_work, None)
+            except ReplayDivergence as exc:
+                print(f"ReplayDivergence: {exc}")
+                if exc.__cause__ is not None:
+                    print(f"ReplayDivergence cause: {type(exc.__cause__).__name__}: {exc.__cause__}")
+                    traceback.print_exception(exc.__cause__)
+                for note in getattr(exc, "__notes__", ()):
+                    print(f"ReplayDivergence note: {note}")
             else:
                 print("ReplaySucceeded")
         finally:

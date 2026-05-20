@@ -299,10 +299,10 @@ or the replay hangs indefinitely.
 
 **What this means:**
 
-Multi-threaded replay uses `THREAD_START`, `THREAD_YIELD`, and `THREAD_RESUME`
-scheduler telemetry plus cursor checkpoints to enforce the recorded thread
-interleaving. If a thread takes a different code path, it never reaches the
-expected scheduler cursor, and replay waits forever.
+Multi-threaded replay uses `THREAD_SWITCH` scheduler telemetry plus cursor
+checkpoints to enforce the recorded thread interleaving. If a thread takes a
+different code path, it never reaches the expected scheduler cursor, and replay
+waits forever.
 
 **Common causes:**
 

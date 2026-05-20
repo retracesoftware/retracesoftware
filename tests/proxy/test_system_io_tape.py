@@ -3,7 +3,6 @@ from dataclasses import dataclass
 from pathlib import Path
 import gc
 import sys
-import threading
 
 import pytest
 import retracesoftware.stream as stream
@@ -24,7 +23,8 @@ from retracesoftware.proxy.messagestream import (
     SchedulerStream,
 )
 from retracesoftware.proxy.patchtype import patch_type
-from retracesoftware.proxy.system import ProxyRef, System
+from retracesoftware.proxy.system import ProxyRef, RecordSystem, System
+from retracesoftware.proxy.taggedtraceio import tagged_trace_writer
 from retracesoftware.proxy.tape import Tape
 from retracesoftware.testing.memorytape import IOMemoryTape
 import retracesoftware.utils as utils
@@ -47,13 +47,6 @@ ALL_IO_MODES = [
         id="debug-stacktraces",
     ),
 ]
-
-
-def _active_threads_with(*thread_ids):
-    active = dict(getattr(threading, "_active", {}))
-    for thread_id in thread_ids:
-        active[thread_id] = object()
-    return active
 
 
 def _thread_id():
@@ -136,12 +129,157 @@ def _entered(resource):
 @contextmanager
 def _recorder_context(mode, tape_writer):
     with recorder_context(
-        writer=tape_writer.write,
+        writer=tagged_trace_writer(tape_writer.write),
         debug=mode.debug,
         stacktraces=mode.stacktraces,
     ) as system:
         _configure_system(system)
         yield system
+
+
+def test_recorder_accepts_caller_constructed_trace_writer(monkeypatch):
+    tape = []
+
+    def write(*values):
+        tape.extend(values)
+
+    monkeypatch.setattr(proxy_io, "_load_retrace_probe", lambda *args, **kwargs: None)
+    system = proxy_io.recorder(writer=tagged_trace_writer(write))
+    tape.clear()
+    try:
+        system.lifecycle_hooks.on_start()
+    finally:
+        system.unpatch_types()
+
+    assert tape == ["ON_START"]
+
+
+def test_call_recorder_does_not_install_runtime_observation(monkeypatch):
+    class FakeCallbacks:
+        thread_switch = None
+
+    class FakeRetrace:
+        callbacks = FakeCallbacks()
+
+        def thread_delta(self):
+            return (0,)
+
+    fake = FakeRetrace()
+    tape = []
+
+    def write(*values):
+        tape.extend(values)
+
+    monkeypatch.setattr(proxy_io, "_load_retrace_probe", lambda *args, **kwargs: fake)
+    system = proxy_io.call_recorder(writer=tagged_trace_writer(write))
+    tape.clear()
+    try:
+        system.lifecycle_hooks.on_start()
+    finally:
+        system.unpatch_types()
+
+    assert tape == ["ON_START"]
+    assert fake.callbacks.thread_switch is None
+
+
+class CaptureTraceWriter:
+    def __init__(self):
+        self.calls = []
+
+    def on_start(self):
+        self.calls.append(("on_start",))
+
+    def result(self, value):
+        self.calls.append(("result", value))
+
+    def error(self, error):
+        self.calls.append(("error", error))
+
+    def callback(self, fn, args, kwargs):
+        self.calls.append(("callback", fn, args, kwargs))
+
+    def callback_result(self, value):
+        self.calls.append(("callback_result", value))
+
+    def callback_error(self, error):
+        self.calls.append(("callback_error", error))
+
+    def checkpoint(self, value):
+        self.calls.append(("checkpoint", value))
+
+    def stacktrace(self, value):
+        self.calls.append(("stacktrace", value))
+
+    def thread_switch(self, cursor_delta, thread_id):
+        self.calls.append(("thread_switch", cursor_delta, thread_id))
+
+    def new_binding(self, handle):
+        self.calls.append(("new_binding", handle))
+
+    def binding_delete(self, handle):
+        self.calls.append(("binding_delete", handle))
+
+    def call_marker(self):
+        self.calls.append(("call_marker",))
+
+    def sync(self):
+        self.calls.append(("sync",))
+
+
+def test_call_recorder_passes_dynamic_external_proxy_to_writer():
+    class DemoExternalWrapped(utils.ExternalWrapped):
+        pass
+
+    writer = CaptureTraceWriter()
+    system = proxy_io.call_recorder(writer=writer)
+    proxy = ProxyRef(DemoExternalWrapped)()
+    writer.calls.clear()
+
+    system.primary_hooks.on_result(proxy)
+
+    assert len(writer.calls) == 1
+    event, value = writer.calls[0]
+    assert event == "result"
+    assert value is proxy
+
+
+def test_call_recorder_writes_bound_patched_object_as_binding():
+    class Patched:
+        pass
+
+    writer = CaptureTraceWriter()
+    system = proxy_io.call_recorder(writer=writer)
+    patch_type(system, Patched)
+    obj = Patched()
+    writer.calls.clear()
+
+    system.primary_hooks.on_result(obj)
+
+    try:
+        assert len(writer.calls) == 1
+        event, value = writer.calls[0]
+        assert event == "result"
+        assert isinstance(value, stream.Binding)
+    finally:
+        system.unpatch_types()
+
+
+def test_call_recorder_writes_bound_return_value_as_binding():
+    class Bound:
+        pass
+
+    writer = CaptureTraceWriter()
+    system = proxy_io.call_recorder(writer=writer)
+    obj = Bound()
+    system.bind(obj)
+    writer.calls.clear()
+
+    system.primary_hooks.on_result(obj)
+
+    assert len(writer.calls) == 1
+    event, value = writer.calls[0]
+    assert event == "result"
+    assert isinstance(value, stream.Binding)
 
 
 @contextmanager
@@ -173,6 +311,17 @@ def _raw_tape(tape):
     return getattr(tape, "tape", None)
 
 
+def _result_index_after_on_start(raw, nth=0):
+    seen = 0
+    for index in range(raw.index("ON_START") + 1, len(raw)):
+        if raw[index] != "RESULT":
+            continue
+        if seen == nth:
+            return index
+        seen += 1
+    raise ValueError("RESULT not found after ON_START")
+
+
 def _message_pipeline(items, *, initial_thread_id=0, current_thread_id=None, set_callback=None, handoff=None):
     class FlatTapeReader:
         def __init__(self, items):
@@ -198,28 +347,13 @@ def _message_pipeline(items, *, initial_thread_id=0, current_thread_id=None, set
     return raw_messages, tape_reader, scheduler, tape_reader
 
 
-def test_replayer_consumes_protocol_result_after_thread_switch():
-    _, _, scheduler, messages = _message_pipeline([
-        "THREAD_SWITCH",
-        0,
-        "RESULT",
-        42,
-    ])
-
-    message = messages.next()
-
-    assert message.result == 42
-    assert scheduler.current_thread_id() == 0
-
-
-def test_replayer_routes_thread_resume_and_ignores_thread_yield_delta():
+def test_replayer_routes_thread_switch_and_records_previous_cursor():
     callbacks = []
     _, _, scheduler, messages = _message_pipeline(
         [
-            "THREAD_YIELD",
-            (0, 1, 2),
-            "THREAD_RESUME",
+            "THREAD_SWITCH",
             1,
+            (0, 1, 2),
             "RESULT",
             42,
         ],
@@ -233,43 +367,46 @@ def test_replayer_routes_thread_resume_and_ignores_thread_yield_delta():
     assert message.result == 42
     assert scheduler.current_thread_id() == 1
     assert len(callbacks) == 1
-    assert callbacks[0].thread_id == 0
+    assert callbacks[0].thread_id == 1
     assert scheduler.cursor(0) == (1, 2)
 
 
-def test_replay_scheduler_consumes_thread_resume_none_without_rerouting():
+def test_replay_scheduler_rejects_thread_switch_without_thread_id():
     _, _, scheduler, messages = _message_pipeline([
-        "THREAD_RESUME",
+        "THREAD_SWITCH",
         None,
+        (0,),
         "RESULT",
         42,
     ])
 
-    assert messages.next().result == 42
-    assert scheduler.current_thread_id() == 0
+    with pytest.raises(ValueError, match="requires thread_id"):
+        messages.next()
 
 
-def test_replay_scheduler_expands_thread_yield_delta():
+def test_replay_scheduler_expands_thread_switch_delta():
     cursors = []
     scheduler_holder = []
 
-    def on_yield(message):
+    def on_switch(message):
         scheduler = scheduler_holder[0]
         cursors.append(scheduler.cursor(message.thread_id))
 
     _, _, scheduler, messages = _message_pipeline(
         [
-            "THREAD_YIELD",
+            "THREAD_SWITCH",
+            0,
             (0, 10, 20, 30),
             "RESULT",
             2,
-            "THREAD_YIELD",
+            "THREAD_SWITCH",
+            0,
             (2, 31),
             "RESULT",
             3,
         ],
         initial_thread_id=0,
-        set_callback=on_yield,
+        set_callback=on_switch,
     )
     scheduler_holder.append(scheduler)
 
@@ -279,11 +416,12 @@ def test_replay_scheduler_expands_thread_yield_delta():
     assert cursors == [(10, 20, 30), (10, 20, 31)]
 
 
-def test_replay_scheduler_runs_yield_callback_before_resume():
+def test_replay_scheduler_runs_callback_after_thread_switch():
     seen = []
     _, _, scheduler, _messages = _message_pipeline(
         [
-            "THREAD_YIELD",
+            "THREAD_SWITCH",
+            0,
             (0, 3, 5),
             "CALLBACK",
             lambda: None,
@@ -291,15 +429,13 @@ def test_replay_scheduler_runs_yield_callback_before_resume():
             {},
             "CALLBACK_RESULT",
             None,
-            "THREAD_RESUME",
-            0,
             "RESULT",
             42,
         ],
         initial_thread_id=0,
         set_callback=lambda _message: None,
     )
-    scheduler.set_on_yield(lambda: seen.extend([scheduler.read(), scheduler.read()]))
+    scheduler.set_on_switch(lambda _message: seen.extend([scheduler.read(), scheduler.read()]))
 
     message = scheduler.read()
 
@@ -309,155 +445,93 @@ def test_replay_scheduler_runs_yield_callback_before_resume():
     ]
     assert message.result == 42
 
-
-def test_replay_scheduler_consumes_matching_thread_start():
-    live_thread_id = [0]
-    _, _, scheduler, messages = _message_pipeline(
-        [
-            "THREAD_START",
-            1,
-            "RESULT",
-            8,
-        ],
-        initial_thread_id=0,
-        current_thread_id=lambda: live_thread_id[0],
-    )
-
-    scheduler.start_thread()
-    assert scheduler.current_thread_id() == 0
-
-    live_thread_id[0] = 1
-    scheduler.start_thread()
-
-    assert scheduler.current_thread_id() == 1
-    assert messages.next().result == 8
-
-
-def test_replay_scheduler_arms_first_yield_after_thread_start():
+def test_replay_scheduler_handoffs_on_thread_switch():
     callbacks = []
-    live_thread_id = [0]
+    current = [0]
+
+    class FakeHandoff:
+        def __init__(self):
+            self.to_calls = []
+
+        def to(self, thread_id):
+            self.to_calls.append(thread_id)
+            current[0] = thread_id
+
+    handoff = FakeHandoff()
     _, _, scheduler, messages = _message_pipeline(
         [
-            "THREAD_START",
+            "THREAD_SWITCH",
             2,
-            "THREAD_YIELD",
             (0, 3),
             "RESULT",
             8,
         ],
         initial_thread_id=0,
-        current_thread_id=lambda: live_thread_id[0],
+        current_thread_id=lambda: current[0],
         set_callback=callbacks.append,
+        handoff=handoff,
     )
 
-    scheduler.start_thread()
-    assert scheduler.current_thread_id() == 0
-
-    live_thread_id[0] = 2
-    scheduler.start_thread()
-
-    assert scheduler.current_thread_id() == 2
     assert messages.next().result == 8
+    assert scheduler.current_thread_id() == 2
+    assert handoff.to_calls == [2]
     assert len(callbacks) == 1
     assert callbacks[0].thread_id == 2
-    assert scheduler.cursor(2) == (3,)
+    assert scheduler.cursor(0) == (3,)
 
 
-def test_recorder_retrace_python_callbacks_write_delta_and_resume_thread(monkeypatch):
+def test_recorder_retrace_python_callback_writes_thread_switch(monkeypatch):
     class FakeCallbacks:
         def __init__(self):
-            self.thread_start = lambda: None
-            self.thread_yield = lambda: None
-            self.thread_resume = lambda: None
+            self.thread_switch = lambda previous_delta, next_thread_id: None
 
     class FakeRetrace:
         def __init__(self):
             self.callbacks = FakeCallbacks()
 
         def thread_delta(self):
-            return (3, 5, 8)
+            return (0, 21)
 
     fake = FakeRetrace()
-    old_start_callback = fake.callbacks.thread_start
-    old_yield_callback = fake.callbacks.thread_yield
-    old_resume_callback = fake.callbacks.thread_resume
+    old_switch_callback = fake.callbacks.thread_switch
     tape = []
 
     def writer(*values):
         tape.extend(values)
 
     monkeypatch.setattr(proxy_io, "_load_retrace_probe", lambda: fake)
-    system = proxy_io.recorder(writer=writer)
-    current_thread_id = [system.thread_id()]
-    main_thread_id = current_thread_id[0]
-    system.thread_id = lambda: current_thread_id[0]
-    active = _active_threads_with(current_thread_id[0])
-    monkeypatch.setattr(threading, "_active", active)
+    system = proxy_io.recorder(writer=tagged_trace_writer(writer))
     tape.clear()
 
     system.lifecycle_hooks.on_start()
     try:
-        assert fake.callbacks.thread_start is not old_start_callback
-        assert fake.callbacks.thread_yield is not old_yield_callback
-        assert fake.callbacks.thread_resume is not old_resume_callback
+        assert fake.callbacks.thread_switch is not old_switch_callback
 
-        fake.callbacks.thread_yield()
-        fake.callbacks.thread_resume()
-        current_thread_id[0] = 1
-        active[1] = object()
-        fake.callbacks.thread_start()
-        fake.callbacks.thread_yield()
-        current_thread_id[0] = 2
-        active[2] = object()
-        fake.callbacks.thread_resume()
-        fake.callbacks.thread_yield()
+        fake.callbacks.thread_switch((3, 5, 8), 1)
+        fake.callbacks.thread_switch((1, 13), 2)
     finally:
         system.lifecycle_hooks.on_end()
 
     assert tape == [
         "ON_START",
-        "THREAD_YIELD",
-        (3, 5, 8),
-        "THREAD_RESUME",
-        main_thread_id,
-        "THREAD_START",
+        "THREAD_SWITCH",
         1,
-        "THREAD_YIELD",
         (3, 5, 8),
-        "THREAD_RESUME",
+        "THREAD_SWITCH",
         2,
-        "THREAD_YIELD",
-        (3, 5, 8),
+        (1, 13),
     ]
-    assert fake.callbacks.thread_start is old_start_callback
-    assert fake.callbacks.thread_yield is old_yield_callback
-    assert fake.callbacks.thread_resume is old_resume_callback
+    assert fake.callbacks.thread_switch is old_switch_callback
 
 
 def test_recorder_gc_callback_writes_async_callback_envelope(monkeypatch):
     class FakeRetrace:
-        def __init__(self):
-            self.yield_callback = lambda: None
-            self.resume_callback = lambda: None
-
         def thread_delta(self):
             return (0, 10, 20, 30)
 
         def coordinates(self):
             return (10, 20, 30)
 
-        def get_thread_yield_callback(self):
-            return self.yield_callback
-
-        def get_thread_resume_callback(self):
-            return self.resume_callback
-
-        def set_thread_yield_callback(self, callback):
-            self.yield_callback = callback
-
-        def set_thread_resume_callback(self, callback):
-            self.resume_callback = callback
-
     fake = FakeRetrace()
     tape = []
 
@@ -465,7 +539,7 @@ def test_recorder_gc_callback_writes_async_callback_envelope(monkeypatch):
         tape.extend(values)
 
     monkeypatch.setattr(proxy_io, "_load_retrace_probe", lambda: fake)
-    system = proxy_io.recorder(writer=writer)
+    system = proxy_io.recorder(writer=tagged_trace_writer(writer))
     system.thread_id = lambda: "main-thread"
     tape.clear()
 
@@ -479,42 +553,25 @@ def test_recorder_gc_callback_writes_async_callback_envelope(monkeypatch):
         if was_enabled:
             gc.enable()
 
-    yield_index = tape.index("THREAD_YIELD")
+    switch_index = tape.index("THREAD_SWITCH")
     callback_index = tape.index("CALLBACK")
     result_index = tape.index("CALLBACK_RESULT")
-    resume_index = tape.index("THREAD_RESUME")
 
-    assert tape[yield_index + 1] == (0, 10, 20)
+    assert tape[switch_index + 1] == "main-thread"
+    assert tape[switch_index + 2] == (0, 10, 20)
     assert tape[callback_index + 1] is gc.collect
     assert tape[callback_index + 2] == (0,)
     assert tape[callback_index + 3] == {}
-    assert yield_index < callback_index < result_index < resume_index
-    assert tape[resume_index + 1] == "main-thread"
+    assert switch_index < callback_index < result_index
 
 
 def test_recorder_signal_handler_writes_async_callback_envelope(monkeypatch):
     class FakeRetrace:
-        def __init__(self):
-            self.yield_callback = lambda: None
-            self.resume_callback = lambda: None
-
         def thread_delta(self):
             return (0, 40, 50, 60)
 
         def coordinates(self):
             return (40, 50, 60)
-
-        def get_thread_yield_callback(self):
-            return self.yield_callback
-
-        def get_thread_resume_callback(self):
-            return self.resume_callback
-
-        def set_thread_yield_callback(self, callback):
-            self.yield_callback = callback
-
-        def set_thread_resume_callback(self, callback):
-            self.resume_callback = callback
 
     fake = FakeRetrace()
     tape = []
@@ -536,7 +593,7 @@ def test_recorder_signal_handler_writes_async_callback_envelope(monkeypatch):
 
     monkeypatch.setattr(proxy_io, "_load_retrace_probe", lambda: fake)
     monkeypatch.setattr(proxy_io._signal, "signal", signal_signal)
-    system = proxy_io.recorder(writer=writer)
+    system = proxy_io.recorder(writer=tagged_trace_writer(writer))
     system.thread_id = lambda: "main-thread"
     tape.clear()
 
@@ -551,19 +608,18 @@ def test_recorder_signal_handler_writes_async_callback_envelope(monkeypatch):
         if was_enabled:
             gc.enable()
 
-    yield_index = tape.index("THREAD_YIELD")
+    switch_index = tape.index("THREAD_SWITCH")
     callback_index = tape.index("CALLBACK")
     result_index = tape.index("CALLBACK_RESULT")
-    resume_index = tape.index("THREAD_RESUME")
 
     assert handler_calls == [(12, frame)]
-    assert tape[yield_index + 1] == (0, 40, 50)
+    assert tape[switch_index + 1] == "main-thread"
+    assert tape[switch_index + 2] == (0, 40, 50)
     assert tape[callback_index + 1] is handler
     assert tape[callback_index + 2] == (12, None)
     assert tape[callback_index + 3] == {}
     assert tape[result_index + 1] == "handled"
-    assert yield_index < callback_index < result_index < resume_index
-    assert tape[resume_index + 1] == "main-thread"
+    assert switch_index < callback_index < result_index
 
 
 def test_replay_binding_state_consumes_trailing_binding_deletes():
@@ -642,8 +698,7 @@ def test_replayer_skips_nested_sync_call_marker_while_reading_external_result():
 
     raw = _raw_tape(tape)
     assert raw is not None
-    outer_call_index = raw.index("CALL")
-    outer_result_index = raw.index("RESULT", outer_call_index)
+    outer_result_index = _result_index_after_on_start(raw)
     raw.insert(outer_result_index, "CALL")
 
     def raise_unexpected(message):
@@ -704,8 +759,7 @@ def test_replayer_raises_keyboard_interrupt_on_sync_while_reading_external_resul
 
     raw = _raw_tape(tape)
     assert raw is not None
-    wait_call_index = raw.index("CALL")
-    wait_result_index = raw.index("RESULT", wait_call_index)
+    wait_result_index = _result_index_after_on_start(raw)
     del raw[wait_result_index:wait_result_index + 2]
     raw.insert(wait_result_index, "SYNC")
 
@@ -758,8 +812,7 @@ def test_replayer_raises_keyboard_interrupt_on_terminal_sync_at_eof():
 
     raw = _raw_tape(tape)
     assert raw is not None
-    outer_call_index = raw.index("CALL")
-    outer_result_index = raw.index("RESULT", outer_call_index)
+    outer_result_index = _result_index_after_on_start(raw)
     del raw[outer_result_index:outer_result_index + 2]
     raw.insert(outer_result_index, "SYNC")
 
@@ -788,7 +841,7 @@ def test_checkpoint_equal_matches_descriptor_marker_to_proxy_shell():
     descriptor = super(ssl.SSLContext, ssl.SSLContext).minimum_version
     marker = _checkpoint_descriptor_marker(descriptor)
 
-    system = System()
+    system = RecordSystem()
     try:
         descriptor_proxy = system.descriptor_proxytype(type(descriptor))(descriptor)
         assert equal(marker, descriptor_proxy)
@@ -813,12 +866,8 @@ def test_checkpoint_equal_matches_memoryview_and_bytes_by_content():
 def test_raw_tape_source_consumes_binding_delete_before_replay_scheduler():
     _, tape_reader, _scheduler, messages = _message_pipeline(
         [
-            "THREAD_SWITCH",
-            1,
             "BINDING_DELETE",
             7,
-            "THREAD_SWITCH",
-            0,
             "RESULT",
             42,
         ],
@@ -910,8 +959,7 @@ def test_replayer_skips_stub_callback_before_async_new_patched_bind():
     with _entered(writer) as writer:
         with _recorder_context(IOMode("plain"), writer) as record_system:
             patch_type(record_system, External)
-            with record_system.disable():
-                recorded_obj = External()
+            recorded_obj = record_system.apply_with(None, External)()
             assert record_system.run(flow, record_system, recorded_obj) == "ok"
 
     raw = _raw_tape(tape)
@@ -934,8 +982,7 @@ def test_replayer_skips_stub_callback_before_async_new_patched_bind():
         try:
             _configure_system(replay_system)
             patch_type(replay_system, External)
-            with replay_system.disable():
-                replay_obj = External()
+            replay_obj = replay_system.apply_with(None, External)()
             assert replay_system.run(flow, replay_system, replay_obj) == "ok"
         finally:
             replay_system.unpatch_types()
@@ -1055,7 +1102,7 @@ def test_replayer_skips_result_before_internal_patched_alloc_bind():
 def test_ext_proxy_result_live_runs_factory_and_wraps_returned_object():
     tape = IOMemoryTape()
     calls = []
-    gate_values = []
+    phase_values = []
     proxy_values = []
     active_system = []
 
@@ -1063,7 +1110,7 @@ def test_ext_proxy_result_live_runs_factory_and_wraps_returned_object():
         pass
 
     def factory(label):
-        gate_values.append(active_system[-1].gate.get())
+        phase_values.append(active_system[-1].location)
         calls.append(label)
         return ExternalResource()
 
@@ -1128,7 +1175,7 @@ def test_ext_proxy_result_live_runs_factory_and_wraps_returned_object():
 
     assert replayed == recorded
     assert calls == ["record", "replay"]
-    assert gate_values == ["internal", "internal"]
+    assert phase_values == ["internal", "internal"]
     assert proxy_values == [(True, False), (True, False)]
 
 
@@ -1441,11 +1488,11 @@ def test_system_io_round_trips_external_result_proxy_hydration_with_memory_tape(
 def test_system_ext_proxytype_can_build_for_socket_family_descriptor_type():
     import _socket
     import os
-    from retracesoftware.proxy.system import System
+    from retracesoftware.proxy.system import RecordSystem
 
     pid = os.fork()
     if pid == 0:
-        system = System()
+        system = RecordSystem()
         _configure_system(system)
         descriptor_type = type(_socket.socket.__dict__["family"])
         system.ext_proxytype(descriptor_type)
@@ -1459,9 +1506,9 @@ def test_system_ext_proxytype_can_build_for_socket_family_descriptor_type():
 
 def test_generated_ext_proxytype_getattr_forwards_declared_descriptor():
     import _io
-    from retracesoftware.proxy.system import System
+    from retracesoftware.proxy.system import RecordSystem
 
-    system = System()
+    system = RecordSystem()
     _configure_system(system)
     proxy_type = system.ext_proxytype(_io.BufferedReader)
 
@@ -1475,9 +1522,9 @@ def test_generated_ext_proxytype_getattr_forwards_declared_descriptor():
 
 
 def test_generated_ext_proxytype_setattr_forwards_dynamic_attrs():
-    from retracesoftware.proxy.system import System
+    from retracesoftware.proxy.system import RecordSystem
 
-    system = System()
+    system = RecordSystem()
     _configure_system(system)
     proxy_type = system.ext_proxytype(FreshExternalResult)
 

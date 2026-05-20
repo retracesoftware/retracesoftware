@@ -89,6 +89,10 @@ normal Python failures.
 
 - Keep native fixes narrow. Avoid mixing refactors, behavior changes, and
   performance changes in one diff unless required.
+- Do not special-case higher-layer Python objects from native code by concrete
+  class, module string, private attribute, `repr`, or identity unless the C++
+  subsystem owns that object model. Add or call an explicit semantic predicate
+  at the owning layer instead.
 - If you change transport or serialization behavior in `cpp/stream`, call out
   wire-format or compatibility impact explicitly.
 - If you change thread ordering, queue wakeups, or background-thread behavior,

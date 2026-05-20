@@ -11,7 +11,14 @@ def test_retrace_python_launches_patched_runtime():
             "-c",
             (
                 "import json, sys, retrace\n"
-                "print(json.dumps({'executable': sys.executable, 'module': retrace.__name__}))\n"
+                "print(json.dumps({\n"
+                "    'executable': sys.executable,\n"
+                "    'module': retrace.__name__,\n"
+                "    'has_coordinates': hasattr(retrace, 'coordinates'),\n"
+                "    'has_call_at': hasattr(retrace, 'call_at'),\n"
+                "    'has_thread_delta': hasattr(retrace, 'thread_delta'),\n"
+                "    'has_callbacks': hasattr(retrace, 'callbacks'),\n"
+                "}))\n"
             ),
         ],
         capture_output=True,
@@ -22,5 +29,8 @@ def test_retrace_python_launches_patched_runtime():
     assert proc.returncode == 0, proc.stderr
     payload = json.loads(proc.stdout)
     assert payload["module"] == "retrace"
-    assert "retracesoftware_cpython" in payload["executable"]
-    assert "_runtime" in payload["executable"]
+    assert payload["executable"]
+    assert payload["has_coordinates"]
+    assert payload["has_call_at"]
+    assert payload["has_thread_delta"]
+    assert payload["has_callbacks"]

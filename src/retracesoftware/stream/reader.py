@@ -5,10 +5,8 @@ This module keeps the reader pipeline split into small layers:
 - ``HeartbeatReader`` strips heartbeat control messages while remembering the
   most recent one.
 - ``WithThreadReader`` converts a flat tape stream into ``(thread_id, obj)``
-  tuples. It understands both legacy ``ThreadSwitch`` control records, the
-  protocol-level ``"THREAD_SWITCH", <thread_id>`` message pair, and
-  retrace-python's ``THREAD_START`` / ``THREAD_YIELD`` / ``THREAD_RESUME``
-  scheduling telemetry.
+  tuples. It understands ``ThreadSwitch`` control records and the
+  protocol-level ``"THREAD_SWITCH", <thread_id>, <cursor_delta>`` message.
 - ``PeekableReader`` buffers future ``(thread_id, obj)`` tuples.
 - ``DemuxReader`` routes those tuples by thread.
 - ``ResolvingReader`` resolves ``stream.Binding`` records against a live
@@ -32,11 +30,6 @@ from . import (
 )
 
 _MISSING = object()
-_THREAD_START_TAG = "THREAD_START"
-_THREAD_YIELD_TAG = "THREAD_YIELD"
-_THREAD_RESUME_TAG = "THREAD_RESUME"
-
-
 class ExpectedBindMarker(RuntimeError):
     __slots__ = ["next"]
 
@@ -75,9 +68,9 @@ class WithThreadReader:
     """Attach the current thread id to plain tape objects.
 
     The wrapped source emits plain record-domain objects, including
-    legacy ``ThreadSwitch`` markers or protocol-level ``"THREAD_SWITCH"``
-    messages. This adapter consumes those markers and yields ``(thread_id,
-    obj)`` tuples for the current thread.
+    ``ThreadSwitch`` markers or protocol-level ``"THREAD_SWITCH"`` messages.
+    This adapter consumes those markers and yields ``(thread_id, obj)`` tuples
+    for the current thread.
     """
 
     __slots__ = ["source", "thread_id"]
@@ -98,19 +91,7 @@ class WithThreadReader:
                 continue
             if item == "THREAD_SWITCH":
                 next_thread_id = self.source()
-                if next_thread_id is not None:
-                    self.thread_id = next_thread_id
-                continue
-            if item == _THREAD_START_TAG:
-                next_thread_id = self.source()
-                if next_thread_id is not None:
-                    self.thread_id = next_thread_id
-                continue
-            if item == _THREAD_YIELD_TAG:
                 self.source()
-                continue
-            if item == _THREAD_RESUME_TAG:
-                next_thread_id = self.source()
                 if next_thread_id is not None:
                     self.thread_id = next_thread_id
                 continue

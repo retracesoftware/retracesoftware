@@ -58,6 +58,11 @@ through the tape. Many "protocol" failures are actually stream contract bugs.
 ## Working Rules
 
 - Treat binding/materialization failures as stream contract issues first.
+- Do not inspect proxy/protocol/install concrete implementation types or
+  private attributes to decide stream behavior. Stream may reason about
+  transport-visible records such as bindings, heartbeats, thread switches, and
+  reader/writer state; higher-level semantic questions need APIs in the owning
+  layer.
 - If you change `reader.py`, reason through `next()`, `bind()`, `peek()`, and
   delete consumption together; they are one contract.
 - If you change writer-side binding emission, update or re-check the matching

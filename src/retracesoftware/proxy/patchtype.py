@@ -3,7 +3,7 @@ import types
 import retracesoftware.stream as stream
 import retracesoftware.utils as utils
 
-from retracesoftware.proxy.proxytype import superdict
+from retracesoftware.gateway._proxytype import superdict
 from retracesoftware.proxy.typeutils import WithoutFlags
 
 _MISSING = object()

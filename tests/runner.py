@@ -1,11 +1,18 @@
 import sys
+import threading
 
 import pytest
 
 from retracesoftware.install import Recording, ReplayDivergence, install_retrace
-from retracesoftware.install.monitoring import install_monitoring, suppress_monitoring
+from retracesoftware.install.monitoring import (
+    begin_suppress_monitoring,
+    end_suppress_monitoring,
+    install_monitoring,
+    suppress_monitoring,
+)
 from retracesoftware.proxy.io import recorder, replayer
 from retracesoftware.proxy.patchtype import patch_type
+from retracesoftware.proxy.taggedtraceio import tagged_trace_writer
 from retracesoftware.testing.memorytape import IOMemoryTape
 
 _RUNNER_SETTINGS_ATTR = "__retrace_runner_settings__"
@@ -57,6 +64,41 @@ def _drain_reader(reader):
         except StopIteration:
             return items
 
+
+def _new_internal_retrace_space():
+    try:
+        import retrace
+    except ImportError:
+        return None
+    CoordinateSpace = getattr(retrace, "CoordinateSpace", None)
+    if CoordinateSpace is None:
+        return None
+    return CoordinateSpace()
+
+
+def _run_in_internal_retrace_space(space, function, *args, **kwargs):
+    if space is None:
+        return function(*args, **kwargs)
+
+    previous_count = begin_suppress_monitoring()
+
+    def run_function():
+        end_suppress_monitoring(previous_count)
+        try:
+            return function(*args, **kwargs)
+        finally:
+            begin_suppress_monitoring()
+
+    try:
+        return space.run(run_function)
+    finally:
+        end_suppress_monitoring(previous_count)
+
+
+def _call_external(function, args, kwargs):
+    return function(*args, **kwargs)
+
+
 class Runner:
     @staticmethod
     def settings(
@@ -106,6 +148,34 @@ class Runner:
         self._stacktraces = stacktraces
         self._monitor = monitor
         self._matrix = _resolve_matrix(matrix)
+        self._recording_spaces = {}
+        self._external_condition = threading.Condition()
+        self._external_call = None
+
+    def _set_external_call(self, external_call):
+        with self._external_condition:
+            self._external_call = external_call
+            self._external_condition.notify_all()
+
+    def _clear_external_call(self, external_call):
+        with self._external_condition:
+            if self._external_call is external_call:
+                self._external_call = None
+            self._external_condition.notify_all()
+
+    def _wait_external_call(self, timeout):
+        with self._external_condition:
+            while self._external_call is None:
+                if not self._external_condition.wait(timeout):
+                    raise TimeoutError("timed out waiting for Runner.record()")
+            return self._external_call
+
+    def unretraced(self, function, *, timeout=30.0):
+        def wrapper(*args, **kwargs):
+            external_call = self._wait_external_call(timeout)
+            return external_call(function, args, kwargs)
+
+        return wrapper
 
     def _settings_for(self, fn, overrides=None):
         settings = {
@@ -134,13 +204,21 @@ class Runner:
             else:
                 system.patch(obj)
 
-    def _record_with_settings(self, settings, fn, *args, **kwargs):
+    def _record_with_settings(
+        self,
+        settings,
+        fn,
+        *args,
+        internal_space=None,
+        **kwargs,
+    ):
         tape = IOMemoryTape()
         writer = tape.writer()
         system = recorder(
-            writer=writer.write,
+            writer=tagged_trace_writer(writer.write),
             debug=settings["debug"],
             stacktraces=settings["stacktraces"],
+            retrace_space=internal_space,
         )
         self._apply_settings(system, settings)
 
@@ -152,6 +230,15 @@ class Runner:
                 writer.monitor_event(value)
 
         write_monitor_disabled = system.disable_for(write_monitor)
+        external_call = system.disable_for(_call_external, unwrap_args=False)
+        set_external_call = system.disable_for(
+            self._set_external_call,
+            unwrap_args=False,
+        )
+        clear_external_call = system.disable_for(
+            self._clear_external_call,
+            unwrap_args=False,
+        )
 
         def checkpoint_monitor(value):
             if system.location == "internal":
@@ -175,11 +262,24 @@ class Runner:
         )
 
         try:
+            set_external_call(external_call)
             try:
-                result = system.run(fn, *args, **kwargs)
+                run_in_internal_space = system.disable_for(
+                    _run_in_internal_retrace_space,
+                    unwrap_args=False,
+                    retrace=False,
+                )
+                result = run_in_internal_space(
+                    internal_space,
+                    system.run,
+                    fn,
+                    *args,
+                    **kwargs,
+                )
             except Exception as exc:
                 error = exc
         finally:
+            clear_external_call(external_call)
             if uninstall_monitor is not None:
                 uninstall_monitor()
             uninstall()
@@ -189,9 +289,26 @@ class Runner:
 
     def record(self, fn, *args, **kwargs):
         settings = self._settings_for(fn)
-        return self._record_with_settings(settings, fn, *args, **kwargs)
+        internal_space = _new_internal_retrace_space()
+        recording = self._record_with_settings(
+            settings,
+            fn,
+            *args,
+            internal_space=internal_space,
+            **kwargs,
+        )
+        self._recording_spaces[id(recording)] = internal_space
+        return recording
 
-    def _replay_with_settings(self, settings, recording, fn, *args, **kwargs):
+    def _replay_with_settings(
+        self,
+        settings,
+        recording,
+        fn,
+        *args,
+        internal_space=None,
+        **kwargs,
+    ):
         tape = IOMemoryTape(recording.tape)
         reader = tape.reader()
 
@@ -214,12 +331,13 @@ class Runner:
             on_desync=on_desync,
             debug=settings["debug"],
             stacktraces=settings["stacktraces"],
+            retrace_space=internal_space,
         )
         self._apply_settings(system, settings)
 
         def verify_monitor(value):
             with suppress_monitoring():
-                reader.monitor_checkpoint(value)
+                system.monitor_checkpoint(value)
 
         verify_monitor_disabled = system.disable_for(verify_monitor)
 
@@ -246,7 +364,18 @@ class Runner:
 
         try:
             try:
-                replay_result = system.run(fn, *args, **kwargs)
+                run_in_internal_space = system.disable_for(
+                    _run_in_internal_retrace_space,
+                    unwrap_args=False,
+                    retrace=False,
+                )
+                replay_result = run_in_internal_space(
+                    internal_space,
+                    system.run,
+                    fn,
+                    *args,
+                    **kwargs,
+                )
             except ReplayDivergence:
                 raise
             except Exception as exc:
@@ -293,13 +422,34 @@ class Runner:
 
     def replay(self, recording, fn, *args, **kwargs):
         settings = self._settings_for(fn)
-        return self._replay_with_settings(settings, recording, fn, *args, **kwargs)
+        return self._replay_with_settings(
+            settings,
+            recording,
+            fn,
+            *args,
+            internal_space=self._recording_spaces.get(id(recording)),
+            **kwargs,
+        )
 
     def _run_once_with_settings(self, settings, fn, *args, **kwargs):
-        recording = self._record_with_settings(settings, fn, *args, **kwargs)
+        internal_space = _new_internal_retrace_space()
+        recording = self._record_with_settings(
+            settings,
+            fn,
+            *args,
+            internal_space=internal_space,
+            **kwargs,
+        )
 
         try:
-            return self._replay_with_settings(settings, recording, fn, *args, **kwargs)
+            return self._replay_with_settings(
+                settings,
+                recording,
+                fn,
+                *args,
+                internal_space=internal_space,
+                **kwargs,
+            )
         except ReplayDivergence as exc:
             diagnostic_settings = self._settings_for(
                 fn,
@@ -312,11 +462,21 @@ class Runner:
                 raise
 
             try:
+                diagnostic_space = _new_internal_retrace_space()
                 diagnostic_recording = self._record_with_settings(
-                    diagnostic_settings, fn, *args, **kwargs
+                    diagnostic_settings,
+                    fn,
+                    *args,
+                    internal_space=diagnostic_space,
+                    **kwargs,
                 )
                 self._replay_with_settings(
-                    diagnostic_settings, diagnostic_recording, fn, *args, **kwargs
+                    diagnostic_settings,
+                    diagnostic_recording,
+                    fn,
+                    *args,
+                    internal_space=diagnostic_space,
+                    **kwargs,
                 )
             except ReplayDivergence as diagnostic_exc:
                 diagnostic_exc.add_note(

@@ -86,6 +86,10 @@ Many bugs that look like proxy or replay bugs are actually install-layer bugs.
 - Prefer fixing interception coverage in `modules/*.toml` or `patcher.py`
   before changing deeper runtime semantics.
 - Be explicit about lifecycle: install, patch, run, uninstall.
+- Do not infer proxy, stream, protocol, or replay semantics from concrete
+  classes, private attributes, module names, class-name strings, or object
+  identity. Install code should express interception policy through module
+  config, patcher/session state, or a semantic API owned by the relevant layer.
 - `install_retrace()` / `install_and_run()` own hook installation, module
   patching order, and teardown order. Treat them as the lifecycle coordinators.
 - Any hook that can recurse into Python execution must be reviewed for gate

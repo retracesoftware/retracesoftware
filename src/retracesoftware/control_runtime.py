@@ -292,12 +292,15 @@ def _coordinate_snapshot(
     frame=None,
     code: Optional[CodeType] = None,
     f_lasti: Optional[int] = None,
+    coordinates: Optional[Callable[..., Any]] = None,
 ) -> dict[str, Any]:
     if thread_id is None:
         thread_id = _thread.get_ident()
+    if coordinates is None:
+        coordinates = retrace.coordinates
     snapshot: dict[str, Any] = {
         "thread_id": thread_id,
-        "coordinates": list(retrace.coordinates(thread_id)),
+        "coordinates": list(coordinates(thread_id)),
     }
     if frame is not None:
         snapshot["f_lasti"] = frame.f_lasti
@@ -737,9 +740,11 @@ class TraceInstructionMonitor:
         sys.settrace(self._orig_trace)
 
 
-def register_cursor_callback(cursor_dict, callback, on_missed=None):
+def register_cursor_callback(cursor_dict, callback, on_missed=None, call_at=None):
     thread_id = cursor_dict.get("thread_id")
     coordinates = _cursor_coordinates(cursor_dict)
+    if call_at is None:
+        call_at = retrace.call_at
 
     def _on_hit():
         callback(_find_user_frame())
@@ -749,7 +754,7 @@ def register_cursor_callback(cursor_dict, callback, on_missed=None):
             on_missed()
 
     try:
-        retrace.call_at(
+        call_at(
             thread_id,
             coordinates,
             _disable_retrace_callback(_on_hit),
@@ -793,8 +798,19 @@ class Controller:
         on_after_fork: Optional[Callable[[Any], None]] = None,
         disable_for: Optional[Callable] = None,
         get_thread_id: Optional[Callable[[], Any]] = None,
+        retrace_space: Optional[Any] = None,
     ):
         self._get_thread_id = get_thread_id or _thread.get_ident
+        self._coordinates = (
+            retrace_space.coordinates
+            if retrace_space is not None
+            else retrace.coordinates
+        )
+        self._call_at = (
+            retrace_space.call_at
+            if retrace_space is not None
+            else retrace.call_at
+        )
         if disable_for is None:
             self._disable_for = _disable_retrace_callback
         else:
@@ -806,7 +822,7 @@ class Controller:
         self._in_control_log = False
         self._monitor = None
         self._trace_monitor = None
-        self._resume_callback_restore = None
+        self._thread_switch_callback_restore = None
         self._current_breakpoint = None
         self._backstop = None
         self._message_index = 0
@@ -863,7 +879,23 @@ class Controller:
                 if code is not None and f_lasti is not None:
                     snapshot["lineno"] = self._lineno_from_code(code, f_lasti)
             return snapshot
-        return _coordinate_snapshot(thread_id=self._get_thread_id())
+        return self._coordinate_snapshot(thread_id=self._get_thread_id())
+
+    def _coordinate_snapshot(
+        self,
+        *,
+        thread_id: Optional[int] = None,
+        frame=None,
+        code: Optional[CodeType] = None,
+        f_lasti: Optional[int] = None,
+    ) -> dict[str, Any]:
+        return _coordinate_snapshot(
+            thread_id=thread_id,
+            frame=frame,
+            code=code,
+            f_lasti=f_lasti,
+            coordinates=self._coordinates,
+        )
 
     def _set_backstop(self, message_index: int):
         self._backstop = message_index
@@ -875,7 +907,7 @@ class Controller:
 
     def _stopped_coordinate_snapshot(self) -> dict[str, Any]:
         if self._stopped_frame is not None:
-            return self._cursor_dict(_coordinate_snapshot(frame=self._stopped_frame))
+            return self._cursor_dict(self._coordinate_snapshot(frame=self._stopped_frame))
         return self._cursor_dict()
 
     def on_new_message(self, message):
@@ -925,6 +957,7 @@ class Controller:
                 intent.cursor,
                 self._disable_for(self._on_cursor_hit),
                 on_missed=self._disable_for(lambda: self._send_reason("overshoot")),
+                call_at=self._call_at,
             )
 
         elif isinstance(intent, RunToReturn):
@@ -963,6 +996,7 @@ class Controller:
             intent.cursor,
             self._disable_for(_on_return),
             on_missed=self._disable_for(_on_missed),
+            call_at=self._call_at,
         )
 
     def _install_next_instruction(self):
@@ -1052,7 +1086,7 @@ class Controller:
             self._trace_monitor = None
             self._last_code = code
             self._stopped_frame = _find_frame_for_code(code) or _find_user_frame()
-            cursor_dict = _coordinate_snapshot(
+            cursor_dict = self._coordinate_snapshot(
                 thread_id=self._get_thread_id(),
                 code=code,
                 f_lasti=offset,
@@ -1065,14 +1099,14 @@ class Controller:
         sys.monitoring.set_events(tool_id, E.INSTRUCTION)
 
     def _install_wait_for_thread_change(self):
-        old_callback = retrace.callbacks.thread_resume
-        self._resume_callback_restore = old_callback
+        old_callback = retrace.callbacks.thread_switch
+        self._thread_switch_callback_restore = old_callback
 
-        def on_switch():
-            retrace.callbacks.thread_resume = old_callback
-            self._resume_callback_restore = None
+        def on_switch(previous_delta, next_thread_id):
+            retrace.callbacks.thread_switch = old_callback
+            self._thread_switch_callback_restore = None
             if old_callback is not None:
-                old_callback()
+                old_callback(previous_delta, next_thread_id)
             self._event_loop_lock.acquire()
             try:
                 if self._done:
@@ -1087,7 +1121,7 @@ class Controller:
             finally:
                 self._event_loop_lock.release()
 
-        retrace.callbacks.thread_resume = self._disable_for(on_switch)
+        retrace.callbacks.thread_switch = self._disable_for(on_switch)
 
     def _get_instruction_info(self) -> tuple[list[int], list[int]] | None:
         code = None
@@ -1109,7 +1143,7 @@ class Controller:
 
     def _on_instruction_hit(self, code, offset):
         self._last_code = code
-        cursor_dict = _coordinate_snapshot(
+        cursor_dict = self._coordinate_snapshot(
             thread_id=self._get_thread_id(),
             code=code,
             f_lasti=offset,
@@ -1174,7 +1208,7 @@ class Controller:
         if self._trace_monitor is not None:
             self._trace_monitor.close()
             self._trace_monitor = None
-        if self._resume_callback_restore is not None:
-            retrace.callbacks.thread_resume = self._resume_callback_restore
-            self._resume_callback_restore = None
+        if self._thread_switch_callback_restore is not None:
+            retrace.callbacks.thread_switch = self._thread_switch_callback_restore
+            self._thread_switch_callback_restore = None
         self._stopped_frame = None

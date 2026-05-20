@@ -50,6 +50,7 @@ extern PyTypeObject SpreadOr_Type;
 extern PyTypeObject Iterate_Type;
 extern PyTypeObject TypePredicate_Type;
 extern PyTypeObject TransformArgs_Type;
+extern PyTypeObject TransformCall_Type;
 extern PyTypeObject MapCall_Type;
 extern PyTypeObject First_Type;
 extern PyTypeObject Advice_Type;

@@ -707,20 +707,17 @@ def test_with_thread_reader_attaches_current_thread_to_objects():
         stream.ThreadSwitch(thread_a),
         "a1",
         1,
-        "THREAD_YIELD",
+        "THREAD_SWITCH",
+        thread_a,
         (0, 11),
-        "THREAD_RESUME",
-        None,
         "a2",
         "THREAD_SWITCH",
         thread_b,
-        "THREAD_START",
-        thread_b,
-        "b1",
-        "THREAD_YIELD",
         (0, 22),
-        "THREAD_RESUME",
+        "b1",
+        "THREAD_SWITCH",
         thread_a,
+        (1, 33),
         "a3",
     ]).__next__)
 
@@ -772,12 +769,15 @@ def test_peekable_reader_peeks_tape_reader_by_thread(tmp_path):
     try:
         assert persister.write_object("THREAD_SWITCH") is None
         assert persister.write_object(thread_a) is None
+        assert persister.write_object((0, 1)) is None
         persister.write_object("a1")
         assert persister.write_object("THREAD_SWITCH") is None
         assert persister.write_object(thread_b) is None
+        assert persister.write_object((0, 2)) is None
         persister.write_object("b1")
         assert persister.write_object("THREAD_SWITCH") is None
         assert persister.write_object(thread_a) is None
+        assert persister.write_object((0, 3)) is None
         persister.write_object("a2")
         persister.flush()
     finally:
@@ -825,12 +825,15 @@ def test_demux_reader_dispatches_tape_reader_by_thread(tmp_path):
     try:
         assert persister.write_object("THREAD_SWITCH") is None
         assert persister.write_object(thread_a) is None
+        assert persister.write_object((0, 1)) is None
         persister.write_object("a1")
         assert persister.write_object("THREAD_SWITCH") is None
         assert persister.write_object(thread_b) is None
+        assert persister.write_object((0, 2)) is None
         persister.write_object("b1")
         assert persister.write_object("THREAD_SWITCH") is None
         assert persister.write_object(thread_a) is None
+        assert persister.write_object((0, 3)) is None
         persister.write_object("a2")
         persister.flush()
     finally:

@@ -24,6 +24,12 @@ import sys
 from tests.helpers import PYTHON
 
 
+def _trace_writer(writer):
+    from retracesoftware.proxy.taggedtraceio import tagged_trace_writer
+
+    return tagged_trace_writer(writer)
+
+
 def test_record_does_not_hang_when_threadpool_cleanup_is_atexit(tmp_path: Path):
     script = tmp_path / "threadpool_hang_repro.py"
     script.write_text(
@@ -104,7 +110,7 @@ def test_install_retrace_does_not_patch_native_thread_start():
     def writer(*values):
         tape.extend(values)
 
-    system = recorder(writer=writer)
+    system = recorder(writer=_trace_writer(writer))
     original_start_new_thread = _thread.start_new_thread
     original_threading_start_new_thread = threading._start_new_thread
     uninstall = install_retrace(system=system, retrace_shutdown=False)
@@ -128,7 +134,7 @@ def test_new_thread_defaults_to_internal_gate():
     def writer(*values):
         tape.extend(values)
 
-    system = recorder(writer=writer)
+    system = recorder(writer=_trace_writer(writer))
     uninstall = install_retrace(system=system, retrace_shutdown=False)
     try:
         enabled_states = []
@@ -139,8 +145,7 @@ def test_new_thread_defaults_to_internal_gate():
         thread = threading.Thread(target=target)
         tape.clear()
         system.run(thread.start)
-        with system.disable():
-            thread.join(timeout=5)
+        system.apply_with(None, thread.join)(timeout=5)
 
         assert enabled_states == [True]
         assert "ON_START" in tape
@@ -148,8 +153,8 @@ def test_new_thread_defaults_to_internal_gate():
         uninstall()
 
 
-def test_disable_context_clears_gate_inside_thread_body():
-    """Control-plane bodies can explicitly opt out of the default internal gate."""
+def test_disabled_space_call_clears_phase_inside_thread_body():
+    """Control-plane calls can explicitly opt out of the internal space."""
 
     import threading
 
@@ -161,22 +166,23 @@ def test_disable_context_clears_gate_inside_thread_body():
     def writer(*values):
         tape.extend(values)
 
-    system = recorder(writer=writer)
+    system = recorder(writer=_trace_writer(writer))
     uninstall = install_retrace(system=system, retrace_shutdown=False)
     try:
         enabled_states = []
 
         def target():
             enabled_states.append(system.enabled())
-            with system.disable():
-                enabled_states.append(system.enabled())
+            system.apply_with(
+                None,
+                lambda: enabled_states.append(system.enabled()),
+            )()
             enabled_states.append(system.enabled())
 
         thread = threading.Thread(target=target)
         tape.clear()
         system.run(thread.start)
-        with system.disable():
-            thread.join(timeout=5)
+        system.apply_with(None, thread.join)(timeout=5)
 
         assert enabled_states == [True, False, True]
     finally:
@@ -197,7 +203,7 @@ def test_direct_start_new_thread_defaults_to_internal_gate():
     def writer(*values):
         tape.extend(values)
 
-    system = recorder(writer=writer)
+    system = recorder(writer=_trace_writer(writer))
     uninstall = install_retrace(system=system, retrace_shutdown=False)
     try:
         enabled_states = []
@@ -208,9 +214,10 @@ def test_direct_start_new_thread_defaults_to_internal_gate():
         tape.clear()
         system.run(_thread.start_new_thread, target, ())
         deadline = time.time() + 5
-        with system.disable():
+        def wait_for_target():
             while not enabled_states and time.time() < deadline:
                 time.sleep(0.01)
+        system.apply_with(None, wait_for_target)()
 
         assert enabled_states == [True]
         assert "ON_START" in tape
@@ -356,6 +363,245 @@ def test_stacktrace_replay_normalizes_ssl_descriptor_checkpoint(tmp_path: Path):
     assert replay.stdout == "ok\n"
 
 
+def test_asyncio_default_executor_single_wakeup_minimal(tmp_path: Path):
+    """Minimal default-executor replay hang after one completed worker call."""
+
+    script = tmp_path / "asyncio_executor_single_replay.py"
+    script.write_text(
+        (
+            "import asyncio\n"
+            "\n"
+            "async def main():\n"
+            "    loop = asyncio.get_running_loop()\n"
+            "    result = await loop.run_in_executor(None, lambda: 1)\n"
+            "    print('value', result, flush=True)\n"
+            "\n"
+            "asyncio.run(main())\n"
+        ),
+        encoding="utf-8",
+    )
+
+    recording = tmp_path / "trace.retrace"
+    env = os.environ.copy()
+    env["RETRACE_CONFIG"] = "debug"
+    env["PYTHONFAULTHANDLER"] = "1"
+    env["RETRACE_SKIP_CHECKSUMS"] = "1"
+
+    record = subprocess.run(
+        [
+            PYTHON,
+            "-m",
+            "retracesoftware",
+            "--recording",
+            str(recording),
+            "--format",
+            "unframed_binary",
+            "--",
+            str(script),
+        ],
+        capture_output=True,
+        text=True,
+        timeout=15,
+        env=env,
+    )
+    assert record.returncode == 0, (
+        f"record run failed (exit {record.returncode})\n"
+        f"stdout:\n{record.stdout}\n"
+        f"stderr:\n{record.stderr}"
+    )
+
+    try:
+        replay = subprocess.run(
+            [PYTHON, "-m", "retracesoftware", "--recording", str(recording)],
+            capture_output=True,
+            text=True,
+            timeout=8,
+            env=env,
+        )
+    except subprocess.TimeoutExpired as exc:
+        stdout = exc.stdout or ""
+        stderr = exc.stderr or ""
+        if isinstance(stdout, bytes):
+            stdout = stdout.decode("utf-8", "replace")
+        if isinstance(stderr, bytes):
+            stderr = stderr.decode("utf-8", "replace")
+        raise AssertionError(
+            "replay timed out after the single default-executor result\n"
+            f"stdout:\n{stdout}\n"
+            f"stderr:\n{stderr}"
+        ) from exc
+
+    assert replay.returncode == 0, (
+        f"replay run failed (exit {replay.returncode})\n"
+        f"stdout:\n{replay.stdout}\n"
+        f"stderr:\n{replay.stderr}"
+    )
+    assert replay.stdout == record.stdout == "value 1\n"
+
+
+def test_asyncio_default_executor_reused_worker_wakeup_minimal(tmp_path: Path):
+    """Minimal replay hang when an idle default-executor worker is reused."""
+
+    script = tmp_path / "asyncio_executor_reused_worker_replay.py"
+    script.write_text(
+        (
+            "import asyncio\n"
+            "\n"
+            "async def main():\n"
+            "    loop = asyncio.get_running_loop()\n"
+            "    for value in range(2):\n"
+            "        result = await loop.run_in_executor(None, lambda v=value: v * 2)\n"
+            "        print('value', result, flush=True)\n"
+            "\n"
+            "asyncio.run(main())\n"
+        ),
+        encoding="utf-8",
+    )
+
+    recording = tmp_path / "trace.retrace"
+    env = os.environ.copy()
+    env["RETRACE_CONFIG"] = "debug"
+    env["PYTHONFAULTHANDLER"] = "1"
+    env["RETRACE_SKIP_CHECKSUMS"] = "1"
+
+    record = subprocess.run(
+        [
+            PYTHON,
+            "-m",
+            "retracesoftware",
+            "--recording",
+            str(recording),
+            "--format",
+            "unframed_binary",
+            "--",
+            str(script),
+        ],
+        capture_output=True,
+        text=True,
+        timeout=15,
+        env=env,
+    )
+    assert record.returncode == 0, (
+        f"record run failed (exit {record.returncode})\n"
+        f"stdout:\n{record.stdout}\n"
+        f"stderr:\n{record.stderr}"
+    )
+
+    try:
+        replay = subprocess.run(
+            [PYTHON, "-m", "retracesoftware", "--recording", str(recording)],
+            capture_output=True,
+            text=True,
+            timeout=8,
+            env=env,
+        )
+    except subprocess.TimeoutExpired as exc:
+        stdout = exc.stdout or ""
+        stderr = exc.stderr or ""
+        if isinstance(stdout, bytes):
+            stdout = stdout.decode("utf-8", "replace")
+        if isinstance(stderr, bytes):
+            stderr = stderr.decode("utf-8", "replace")
+        raise AssertionError(
+            "replay timed out when reusing the idle default-executor worker\n"
+            f"stdout:\n{stdout}\n"
+            f"stderr:\n{stderr}"
+        ) from exc
+
+    assert replay.returncode == 0, (
+        f"replay run failed (exit {replay.returncode})\n"
+        f"stdout:\n{replay.stdout}\n"
+        f"stderr:\n{replay.stderr}"
+    )
+    assert replay.stdout == record.stdout == "value 0\nvalue 2\n"
+
+
+def test_asyncio_call_soon_threadsafe_raw_thread_exit_minimal(tmp_path: Path):
+    """Raw thread exit after call_soon_threadsafe must not park replay."""
+
+    script = tmp_path / "asyncio_raw_thread_exit_replay.py"
+    script.write_text(
+        (
+            "import asyncio\n"
+            "import threading\n"
+            "\n"
+            "async def main():\n"
+            "    loop = asyncio.get_running_loop()\n"
+            "    future = loop.create_future()\n"
+            "\n"
+            "    def worker():\n"
+            "        loop.call_soon_threadsafe(future.set_result, 'done')\n"
+            "\n"
+            "    thread = threading.Thread(target=worker)\n"
+            "    thread.start()\n"
+            "    print('value', await future, flush=True)\n"
+            "    thread.join(timeout=2)\n"
+            "    print('joined', not thread.is_alive(), flush=True)\n"
+            "\n"
+            "asyncio.run(main())\n"
+        ),
+        encoding="utf-8",
+    )
+
+    recording = tmp_path / "trace.retrace"
+    env = os.environ.copy()
+    env["RETRACE_CONFIG"] = "debug"
+    env["PYTHONFAULTHANDLER"] = "1"
+    env["RETRACE_SKIP_CHECKSUMS"] = "1"
+
+    record = subprocess.run(
+        [
+            PYTHON,
+            "-m",
+            "retracesoftware",
+            "--recording",
+            str(recording),
+            "--format",
+            "unframed_binary",
+            "--",
+            str(script),
+        ],
+        capture_output=True,
+        text=True,
+        timeout=15,
+        env=env,
+    )
+    assert record.returncode == 0, (
+        f"record run failed (exit {record.returncode})\n"
+        f"stdout:\n{record.stdout}\n"
+        f"stderr:\n{record.stderr}"
+    )
+    assert record.stdout == "value done\njoined True\n"
+
+    try:
+        replay = subprocess.run(
+            [PYTHON, "-m", "retracesoftware", "--recording", str(recording)],
+            capture_output=True,
+            text=True,
+            timeout=8,
+            env=env,
+        )
+    except subprocess.TimeoutExpired as exc:
+        stdout = exc.stdout or ""
+        stderr = exc.stderr or ""
+        if isinstance(stdout, bytes):
+            stdout = stdout.decode("utf-8", "replace")
+        if isinstance(stderr, bytes):
+            stderr = stderr.decode("utf-8", "replace")
+        raise AssertionError(
+            "replay timed out after a raw thread used call_soon_threadsafe and exited\n"
+            f"stdout:\n{stdout}\n"
+            f"stderr:\n{stderr}"
+        ) from exc
+
+    assert replay.returncode == 0, (
+        f"replay run failed (exit {replay.returncode})\n"
+        f"stdout:\n{replay.stdout}\n"
+        f"stderr:\n{replay.stderr}"
+    )
+    assert replay.stdout == record.stdout
+
+
 def test_asyncio_default_executor_replay_wakeup_progresses(tmp_path: Path):
     """Executor completion schedules the loop through the live wakeup path."""
 
@@ -373,6 +619,66 @@ def test_asyncio_default_executor_replay_wakeup_progresses(tmp_path: Path):
             "        print('value', await one(value), flush=True)\n"
             "\n"
             "asyncio.run(main())\n"
+        ),
+        encoding="utf-8",
+    )
+
+    recording = tmp_path / "trace.retrace"
+    env = os.environ.copy()
+    env["RETRACE_CONFIG"] = "debug"
+    env["PYTHONFAULTHANDLER"] = "1"
+    env["RETRACE_SKIP_CHECKSUMS"] = "1"
+
+    record = subprocess.run(
+        [
+            PYTHON,
+            "-m",
+            "retracesoftware",
+            "--recording",
+            str(recording),
+            "--format",
+            "unframed_binary",
+            "--",
+            str(script),
+        ],
+        capture_output=True,
+        text=True,
+        timeout=15,
+        env=env,
+    )
+    assert record.returncode == 0, (
+        f"record run failed (exit {record.returncode})\n"
+        f"stdout:\n{record.stdout}\n"
+        f"stderr:\n{record.stderr}"
+    )
+
+    replay = subprocess.run(
+        [PYTHON, "-m", "retracesoftware", "--recording", str(recording)],
+        capture_output=True,
+        text=True,
+        timeout=15,
+        env=env,
+    )
+    assert replay.returncode == 0, (
+        f"replay run failed (exit {replay.returncode})\n"
+        f"stdout:\n{replay.stdout}\n"
+        f"stderr:\n{replay.stderr}"
+    )
+    assert replay.stdout == record.stdout
+
+
+def test_threadpool_executor_replay_ignores_cleanup_only_switch_tail(tmp_path: Path):
+    """A worker switch followed only by binding cleanup must not park replay."""
+
+    script = tmp_path / "threadpool_cleanup_switch_tail.py"
+    script.write_text(
+        (
+            "from concurrent.futures import ThreadPoolExecutor\n"
+            "\n"
+            "with ThreadPoolExecutor(max_workers=1) as executor:\n"
+            "    for value in range(2):\n"
+            "        result = executor.submit(lambda v=value: v * 2).result(timeout=5)\n"
+            "        print('value', result, flush=True)\n"
         ),
         encoding="utf-8",
     )

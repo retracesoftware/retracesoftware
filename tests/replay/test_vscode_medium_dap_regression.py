@@ -17,7 +17,7 @@ import sys
 import time
 
 import pytest
-from tests.helpers import PYTHON
+from tests.helpers import PYTHON, retrace_env
 
 
 requires_312 = pytest.mark.skipif(
@@ -384,11 +384,9 @@ def _replay_binary() -> Path:
 
 
 def _clean_env() -> dict[str, str]:
-    env = os.environ.copy()
+    env = retrace_env(os.environ.copy(), PYTHON)
     for key in list(env):
         if key.startswith("RETRACE_") or key in {
-            "MESONPY_EDITABLE_SKIP",
-            "PYTHONPATH",
             "VIRTUAL_ENV",
         }:
             env.pop(key, None)

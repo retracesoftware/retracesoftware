@@ -83,6 +83,9 @@ mix changes.
 
 - Prefer `tests/helpers.py` for shared record/replay helpers instead of copying
   ad hoc subprocess command construction.
+- When testing a layer contract, include non-canonical fakes, wrappers, or
+  protocol implementations where practical so concrete `isinstance`, exact
+  type, module-name, private-attribute, or object-identity backdoors fail.
 - If a test launches a subprocess or records/replays a helper script, check
   `tests/scripts/` before creating a new ad hoc target.
 - When changing CLI or protocol semantics, update the relevant tests in the same

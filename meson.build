@@ -81,6 +81,8 @@ py.install_sources(
   _py_root / 'proxy/stubfactory.py',
   _py_root / 'proxy/system.py',
   _py_root / 'proxy/tape.py',
+  _py_root / 'proxy/taggedtraceio.py',
+  _py_root / 'proxy/traceio.py',
   _py_root / 'proxy/typeutils.py',
   subdir: 'retracesoftware/proxy',
 )

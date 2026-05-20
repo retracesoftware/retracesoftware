@@ -1,4 +1,6 @@
 import sys
+import _thread
+import threading
 from types import CodeType
 
 import pytest
@@ -14,6 +16,10 @@ def _busy_loop():
         value ^= index
         value += 1
     return value
+
+
+def _advance_leaf_instruction(coordinates, delta):
+    return (*coordinates[:-2], coordinates[-2] + delta, 0)
 
 
 def test_trace_current_frame_with_explicit_target_frame():
@@ -46,25 +52,56 @@ def test_trace_current_frame_with_explicit_target_frame():
 
 def test_trace_future_coordinate_uses_retrace_call_at():
     hits = []
-    monitor = None
 
-    for delta in range(1, 1000):
-        base = tuple(retrace.coordinates())
-        target = (*base[:-1], base[-1] + delta)
+    def attempt(delta):
+        errors = []
+        ready = threading.Event()
+        go = threading.Event()
+        idents = {}
+
+        def worker():
+            try:
+                idents["target"] = _thread.get_ident()
+                ready.set()
+                assert go.wait(5)
+                _busy_loop()
+            except BaseException as exc:
+                errors.append(exc)
+
+        thread = threading.Thread(target=worker)
+        thread.start()
+        assert ready.wait(5)
+
+        target_id = idents["target"]
+        base = tuple(retrace.coordinates(target_id))
+        target = _advance_leaf_instruction(base, delta)
+        monitor = None
         try:
             monitor = utils.trace_function_instructions(
                 target,
                 lambda code, offset: hits.append((code, offset)),
+                thread_id=target_id,
             )
         except utils.TargetUnreachableError:
-            continue
+            go.set()
+            thread.join(timeout=5)
+            assert not thread.is_alive()
+            assert not errors
+            return False
+
         try:
-            _busy_loop()
-            if hits:
-                break
+            go.set()
+            thread.join(timeout=5)
+            assert not thread.is_alive()
+            assert not errors
+            return bool(hits)
         finally:
             monitor.close()
             retrace.call_at(None)
+
+    for delta in range(1, 1000):
+        if attempt(delta):
+            break
     else:
         pytest.fail("could not find a reachable future coordinate")
 
@@ -76,11 +113,11 @@ def test_trace_future_coordinate_uses_retrace_call_at():
 def test_target_unreachable_error_releases_monitoring_tool_id():
     coordinates = tuple(retrace.coordinates())
     for _ in range(1000):
-        if coordinates[-1] > 0:
+        if coordinates[-2] > 0:
             break
         coordinates = tuple(retrace.coordinates())
-    assert coordinates[-1] > 0
-    past = (*coordinates[:-1], coordinates[-1] - 1)
+    assert coordinates[-2] > 0
+    past = (*coordinates[:-2], coordinates[-2] - 1, 0)
 
     for _ in range(8):
         with pytest.raises(utils.TargetUnreachableError):

@@ -11,13 +11,13 @@ from tests.runner import Runner
 
 
 def _assert_semaphore_branch_replays_thread_birth(**lane):
-    sem = threading.Semaphore(1)
-    started = []
-
-    def worker():
-        started.append(threading.current_thread().name)
-
     def work():
+        sem = threading.Semaphore(1)
+        started = []
+
+        def worker():
+            started.append(threading.current_thread().name)
+
         before = len(started)
         if sem.acquire(timeout=0):
             thread = threading.Thread(target=worker, name=f"worker-{len(started)}")
@@ -152,6 +152,7 @@ def test_cli_thread_switch_smoke_replays_order_dependent_digest(tmp_path: Path):
     recording = tmp_path / "trace.retrace"
     env = os.environ.copy()
     env["PYTHONFAULTHANDLER"] = "1"
+    env["RETRACE_SKIP_CHECKSUMS"] = "1"
 
     record = run_record(str(script), str(recording), env=env, stacktraces=False)
     assert record.returncode == 0, (

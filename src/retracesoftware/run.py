@@ -19,6 +19,11 @@ def wait_for_non_daemon_threads(timeout=None):
     import threading
     import time
 
+    shutdown = getattr(threading, "_shutdown", None)
+    if timeout is None and shutdown is not None:
+        shutdown()
+        return True
+
     start_time = time.time() if timeout is not None else None
     main_thread = threading.main_thread()
 
@@ -113,8 +118,7 @@ def run_python_command(argv):
 def run_with_retrace(system, argv, trace_shutdown = False):
 
     def runpy_exec(source, globals = None, locals = None):
-        with system.gate.context('internal'):
-            return builtins.exec(source, globals, locals)
+        return system.run_internal(builtins.exec, source, globals, locals)
     
     utils.update(runpy, "_run_code",
                  utils.wrap_func_with_overrides,
@@ -127,8 +131,7 @@ def run_with_retrace(system, argv, trace_shutdown = False):
         system.disable_for(wait_for_non_daemon_threads)()
         try:
             if trace_shutdown:
-                with system.gate.context('internal'):
-                    atexit._run_exitfuncs()
+                system.run_internal(atexit._run_exitfuncs)
             else:
                 atexit._run_exitfuncs()
         except Exception as e:

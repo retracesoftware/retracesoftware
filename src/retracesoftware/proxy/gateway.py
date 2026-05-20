@@ -7,20 +7,20 @@ unproxy_ext = functional.walker(when_instanceof(utils.ExternalWrapped, utils.unw
 
 unproxy_int = functional.walker(when_instanceof(utils.InternalWrapped, utils.unwrap))
 
-def int_runner(gate, int_proxy):
-    return gate.apply_with('internal', functional.mapargs(
+def int_runner(phase, int_proxy):
+    return phase.apply_with('internal', functional.mapargs(
         starting = 1,
         transform = unproxy_int,
         function = functional.sequence(utils.try_unwrap_apply, int_proxy)))
 
-def ext_runner(gate, ext_proxy):
-    return gate.apply_with('external', functional.mapargs(
+def ext_runner(phase, ext_proxy):
+    return phase.apply_with('external', functional.mapargs(
         starting = 1,
         transform = unproxy_ext,
         function = functional.sequence(utils.try_unwrap_apply, ext_proxy)))
 
-def ext_gateway(gate, int_proxy, ext_proxy, hooks):
-    runner = ext_runner(gate, ext_proxy)
+def ext_gateway(phase, int_proxy, ext_proxy, hooks):
+    runner = ext_runner(phase, ext_proxy)
 
     observer = utils.observer(
         on_call = hooks.on_call,
@@ -35,8 +35,8 @@ def ext_gateway(gate, int_proxy, ext_proxy, hooks):
                 function = observer),
             unproxy_int)
 
-def ext_method_gateway(gate, int_proxy, ext_proxy, hooks):
-    runner = ext_runner(gate, ext_proxy)
+def ext_method_gateway(phase, int_proxy, ext_proxy, hooks):
+    runner = ext_runner(phase, ext_proxy)
 
     observer = utils.observer(
         on_call = hooks.on_call,
@@ -51,13 +51,13 @@ def ext_method_gateway(gate, int_proxy, ext_proxy, hooks):
                 function = observer),
             unproxy_int)
 
-def ext_replay_gateway(ext_runner, gate, int_proxy, ext_proxy, hooks):
+def ext_replay_gateway(ext_runner, phase, int_proxy, ext_proxy, hooks):
     
     observer = utils.observer(
         on_call = hooks.on_call,
         on_result = hooks.on_result,
         on_error = hooks.on_error,
-        function = gate.apply_with('external', ext_runner))
+        function = phase.apply_with('external', ext_runner))
 
     return functional.sequence(
             functional.mapargs(
@@ -65,13 +65,13 @@ def ext_replay_gateway(ext_runner, gate, int_proxy, ext_proxy, hooks):
                 transform = int_proxy,
                 function = observer),
             unproxy_int)
-def ext_replay_method_gateway(ext_runner, gate, int_proxy, ext_proxy, hooks):
+def ext_replay_method_gateway(ext_runner, phase, int_proxy, ext_proxy, hooks):
 
     observer = utils.observer(
         on_call = hooks.on_call,
         on_result = hooks.on_result,
         on_error = hooks.on_error,
-        function = gate.apply_with('external', ext_runner))
+        function = phase.apply_with('external', ext_runner))
 
     return functional.sequence(
             functional.mapargs(
@@ -80,15 +80,15 @@ def ext_replay_method_gateway(ext_runner, gate, int_proxy, ext_proxy, hooks):
                 function = observer),
             unproxy_int)
 
-def int_replay_gateway(gate, int_proxy, ext_proxy, hooks):
+def int_replay_gateway(phase, int_proxy, ext_proxy, hooks):
     return utils.observer(
         on_call = hooks.on_call,
         on_result = hooks.on_result,
         on_error = hooks.on_error,
-        function = int_runner(gate, int_proxy))
+        function = int_runner(phase, int_proxy))
 
-def int_gateway(gate, int_proxy, ext_proxy, hooks):
-    runner = int_runner(gate, int_proxy)
+def int_gateway(phase, int_proxy, ext_proxy, hooks):
+    runner = int_runner(phase, int_proxy)
 
     observer = utils.observer(
         on_call = hooks.on_call,

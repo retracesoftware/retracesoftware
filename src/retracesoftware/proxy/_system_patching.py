@@ -6,7 +6,7 @@ import retracesoftware.stream as stream
 import retracesoftware.utils as utils
 
 from retracesoftware.proxy.typeutils import WithoutFlags
-from retracesoftware.proxy.proxytype import superdict
+from retracesoftware.gateway._proxytype import superdict
 
 
 class Patched(utils.Patched):

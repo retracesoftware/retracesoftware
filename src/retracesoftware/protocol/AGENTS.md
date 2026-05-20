@@ -64,6 +64,9 @@ async materialization.
 
 - Keep stream concerns and protocol concerns separate; do not move binding rules
   into protocol code or semantic rules into stream code casually.
+- Do not recover protocol meaning by checking concrete proxy, stream, install,
+  or control-plane implementation details. Protocol code should consume the
+  semantic message API it owns and explicit stream APIs below it.
 - If you change protocol tags or their ordering, review the matching tests
   and the higher-level callers in `proxy` and `control_runtime.py`.
 - If you change client-visible control events, reason explicitly about:

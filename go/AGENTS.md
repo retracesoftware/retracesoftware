@@ -52,6 +52,10 @@ path even when Python runtime code is unchanged.
 
 - Treat CLI flags, output formats, and DAP/control payloads as compatibility
   boundaries. If they change, update the matching tests in the same diff.
+- Do not infer Python runtime, proxy, stream, or DAP semantics from brittle
+  path/name/string heuristics when a structured control payload or index field
+  should answer the question. Add the minimal field/API at the owning layer
+  instead of duplicating hidden knowledge in Go.
 - If a DAP change affects event ordering or stop semantics, compare it against
   the Python-side expectations in `src/retracesoftware/dap/` and
   `tests/test_stdio_replay.py`.
