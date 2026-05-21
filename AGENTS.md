@@ -11,6 +11,9 @@ workspace generation, and DAP workflows.
 Keep this file brief and factual. Use it as a table of contents and a list of
 hard constraints, not as an encyclopedia.
 
+For public-facing LLM discovery and problem framing, see `llms.txt`. This file
+is the operational contributor guide for making safe changes in this repo.
+
 ## Hard Rules (Non-Negotiable)
 
 1. Before editing any subdirectory listed in Repo Map, read its local
