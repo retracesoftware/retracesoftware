@@ -1,4 +1,4 @@
-````md
+```md
 # Contributing to Retrace
 
 Thank you for your interest in contributing to Retrace.
@@ -74,5 +74,3 @@ Retrace prioritises:
 * Practical debugging workflows for Python developers and AI coding agents.
 
 When in doubt, favour small, reviewable changes that make record/replay more reliable or easier to understand.
-
-```
