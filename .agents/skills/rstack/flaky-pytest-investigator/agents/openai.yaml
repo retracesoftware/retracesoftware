@@ -1,0 +1,4 @@
+interface:
+  display_name: "Flaky Pytest Investigator"
+  short_description: "Investigate flaky pytest failures"
+  default_prompt: "Use $flaky-pytest-investigator to investigate this intermittent pytest failure."
