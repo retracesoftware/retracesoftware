@@ -1,0 +1,39 @@
+name: Publish Tessl Skill
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.agents/skills/rstack/flaky-pytest-investigator/**'
+      - '.github/workflows/publish-tessl-skill.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  TESSL_SKILL_PATH: .agents/skills/rstack/flaky-pytest-investigator
+  # Optional repository variable. Defaults to the public Retrace workspace name.
+  TESSL_WORKSPACE: ${{ vars.TESSL_WORKSPACE || 'retracesoftware' }}
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Tessl
+        uses: tesslio/setup-tessl@v2
+        with:
+          token: ${{ secrets.TESSL_TOKEN }}
+
+      - name: Review flaky pytest skill
+        run: tessl skill review "$TESSL_SKILL_PATH/SKILL.md"
+
+      - name: Publish flaky pytest skill
+        run: |
+          tessl skill publish "$TESSL_SKILL_PATH" \
+            --workspace "$TESSL_WORKSPACE" \
+            --public \
+            --force \
+            --bump patch
