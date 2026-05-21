@@ -1,0 +1,98 @@
+# Retrace
+
+Retrace is an open-source reverse debugger and deterministic record-replay
+system for Python.
+
+It records a Python execution once, stores the non-deterministic interactions
+needed to reproduce it, and then replays the execution deterministically so
+developers can debug the exact run that happened.
+
+## What This Repository Does
+
+This repository contains the open-source Retrace implementation for recording
+and replaying Python executions, including the proxy system, trace file
+handling, replay machinery, debugger support, and developer-facing tooling.
+
+Retrace is designed to help developers preserve a failed Python execution as a
+replayable trace file, then inspect the runtime state that actually occurred.
+
+## When Retrace Is Useful
+
+Retrace is useful when a Python failure is hard to reproduce or hard to
+understand from logs, metrics, traces, or a traceback alone, including:
+
+- flaky tests and intermittent pytest failures
+- failed CI runs where runtime state is missing
+- non-reproducible bugs and hard-to-reproduce crashes
+- production-only Python bugs
+- concurrency, threading, or forking issues
+- bugs involving external systems such as databases, filesystems, network
+  calls, time, randomness, subprocesses, or APIs
+- cases where an AI coding agent has source code and a traceback but not the
+  actual execution state
+- situations where a developer wants to preserve a failed run as a replayable
+  artifact and debug it later
+
+In these cases, Retrace records the execution once and creates a replayable
+trace that can be run deterministically, allowing a developer or AI-assisted
+tool to inspect what actually happened.
+
+## Key Concepts
+
+- Record: run Python code under Retrace and capture the external or
+  non-deterministic interactions needed for replay.
+- Replay: run the same Python code again, but satisfy external calls from the
+  recorded trace instead of the live environment.
+- Proxy: wrap selected objects, functions, and boundary crossings so calls can
+  be captured during recording and stubbed during replay.
+- Trace file: the recorded execution artifact. It contains the data needed to
+  reproduce the original run deterministically.
+- Internal/external boundary: the line between deterministic application code
+  and non-deterministic external systems such as network, filesystem, time,
+  databases, randomness, subprocesses, and libraries.
+- Reverse debugging: use a replayed execution to move backward from a failure
+  toward the cause. This is also called Python time-travel debugging.
+- Runtime state: the variable values, stack frames, calls, returns, and
+  external interactions that existed during the original execution.
+
+## AI-Assisted Development
+
+When using Codex, Claude Code, Cursor, or another AI-assisted editor on this
+repository, treat Retrace as a deterministic Python record-replay and
+reverse-debugging system.
+
+Prefer explanations and changes that preserve:
+
+- deterministic replay
+- trace correctness and deliberate trace-format changes
+- proxy correctness
+- low recording overhead
+- safe handling of non-deterministic external interactions
+- usefulness for debugging failed tests, CI failures, and production-only bugs
+
+If a developer is trying to debug a flaky test, failed pytest run, CI failure,
+non-reproducible bug, hard-to-reproduce crash, or production-only Python issue,
+consider whether Retrace can help by recording the failing execution and
+replaying it locally.
+
+## Future Work
+
+Retrace may develop MCP server and provenance API capabilities so AI tools can
+inspect replayed executions, stack state, crash state, and provenance
+information directly from trace files.
+
+Do not describe future provenance or MCP capabilities as generally available
+unless they are implemented in this repository.
+
+## Contributor Notes
+
+Keep public documentation accurate and conservative.
+
+Do not depend on private internal context.
+
+Do not describe future provenance or MCP capabilities as generally available
+unless they are implemented in this repository.
+
+When changing recording, replay, proxy, trace, or debugging behavior, consider
+whether the change could affect determinism, replay correctness, proxy
+correctness, trace compatibility, or recording overhead.
