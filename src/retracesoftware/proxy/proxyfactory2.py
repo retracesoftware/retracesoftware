@@ -13,10 +13,10 @@ def proxy(type_to_proxytype):
     )
 
 class ProxyFactory:
-    """Locked proxy creation boundary for System2.
+    """Locked proxy creation boundary for System.
 
     Keep this constructor and public attributes stable.  ``ProxyFactory`` is
-    the single gateway from System2-level wiring into proxy type generation:
+    the single gateway from System-level wiring into proxy type generation:
     callers provide a Binder, GatewayPair, and lifecycle callbacks, then
     consume ``typefactory``, ``proxy_internal``, ``proxy_external``, and
     ``proxy_type``.

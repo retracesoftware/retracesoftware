@@ -11,7 +11,7 @@ from retracesoftware.proxy.contracts import (
     TraceWriter,
     Unpatcher,
 )
-from retracesoftware.proxy.system2 import System2
+from retracesoftware.proxy.system import System
 from retracesoftware.proxy.traceio import TraceReader as TraceReaderContract
 from retracesoftware.proxy.traceio import TraceWriter as TraceWriterContract
 
@@ -60,10 +60,10 @@ def test_checkpoint_contract_is_single_value_callable():
     assert hints["return"] is type(None)
 
 
-def test_system2_declares_patcher_contract_and_checkpoint_member():
-    hints = get_type_hints(System2)
+def test_system_declares_patcher_contract_and_checkpoint_member():
+    hints = get_type_hints(System)
 
-    assert Patcher in System2.__mro__
-    assert Binder in System2.__mro__
-    assert ImmutableRegistry in System2.__mro__
+    assert Patcher in System.__mro__
+    assert Binder in System.__mro__
+    assert ImmutableRegistry in System.__mro__
     assert hints["checkpoint"] is Checkpoint

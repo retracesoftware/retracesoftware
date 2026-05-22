@@ -121,7 +121,6 @@ class ProtocolServer:
         return self._resp_ok(req_id, {"count": len(self.breakpoints)})
 
     def _run_until_stop(self, target_cursor=None):
-        from retracesoftware.proxy.system import System
         from retracesoftware import __main__ as retrace_main
         from retracesoftware.search import ReplayStop
         replay_args = SimpleNamespace(
@@ -136,9 +135,13 @@ class ProtocolServer:
             protocol_breakpoints=self.breakpoints,
             protocol_cursor=target_cursor,
             protocol_backstop=self.backstop,
+            mode="replay",
+            stdio=False,
+            format=None,
+            list_pids=False,
         )
         try:
-            retrace_main.replay(System(), replay_args)
+            retrace_main.create_replay_runner(replay_args)()
         except ReplayStop as stop:
             payload = dict(stop.payload)
             payload.setdefault("thread_cursors", {})
@@ -203,7 +206,6 @@ class ProtocolServer:
         original_stdout = sys.stdout
         try:
             sys.stdout = capture
-            from retracesoftware.proxy.system import System
             from retracesoftware import __main__ as retrace_main
             replay_args = SimpleNamespace(
                 recording=self.recording,
@@ -214,9 +216,16 @@ class ProtocolServer:
                 chunk_ms=None,
                 breakpoint=bp,
                 control_socket=None,
+                protocol_breakpoints=None,
+                protocol_cursor=None,
+                protocol_backstop=None,
+                mode="replay",
+                stdio=False,
+                format=None,
+                list_pids=False,
             )
             try:
-                retrace_main.replay(System(), replay_args)
+                retrace_main.create_replay_runner(replay_args)()
             except _BackstopReached:
                 _send_line(sock, {"type": "event", "event": "stream_end", "payload": {"request_id": req_id, "reason": "backstop", "count": capture.count}})
                 return self._resp_ok(req_id, {"reason": "backstop", "count": capture.count, "message_index": capture.count})

@@ -47,7 +47,7 @@ import retracesoftware.utils as utils
 
 from retracesoftware.proxy.tape import TapeReader
 from retracesoftware.exceptions import RecordingNotFoundError, VersionMismatchError
-from retracesoftware.proxy.system2 import System2
+from retracesoftware.proxy.system import System
 from retracesoftware.proxy.taggedtraceio import TaggedTraceReader, tagged_trace_writer
 from retracesoftware.stream.reader import ExpectedBindMarker
 from retracesoftware.run import run_python_command, wait_for_non_daemon_threads
@@ -328,7 +328,7 @@ def create_record_runner(options):
         atexit.register(close_tape_writer)
 
     try:
-        system = System2.record_system(
+        system = System.record_system(
             writer=tagged_trace_writer(tape_writer),
             debug=options.stacktraces,
         )
@@ -392,7 +392,7 @@ def create_replay_runner(options):
         stacktraces = header.get('stacktraces', False)
 
         tape_reader = TapeReaderAdapter(reader, controller_ref)
-        system = System2.replay_system(
+        system = System.replay_system(
             reader=TaggedTraceReader(
                 tape_reader,
                 close=getattr(tape_reader, "close", None),

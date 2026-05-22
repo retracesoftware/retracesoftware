@@ -5,13 +5,18 @@ import os
 
 from retracesoftware.install import install_retrace
 from retracesoftware.install.importhook import install_import_hooks
-from retracesoftware.proxy.system import System
+from retracesoftware.proxy.io import recorder
+from retracesoftware.proxy.taggedtraceio import tagged_trace_writer
 from retracesoftware.modules import DIRECTIVE_KEYS, ModuleConfigResolver
+
+
+def _record_system():
+    return recorder(writer=tagged_trace_writer(lambda *values: None))
 
 
 def test_install_retrace_patches_loaded_io_open_by_default():
     """Default install keeps `_io.open` patched so fd calls can be retraced."""
-    system = System()
+    system = _record_system()
     uninstall = install_retrace(system=system, retrace_shutdown=False)
     try:
         assert repr(_io.open) != "<built-in function open>"
@@ -22,7 +27,7 @@ def test_install_retrace_patches_loaded_io_open_by_default():
 def test_default_io_pathpredicate_passthroughs_paths_but_retraces_fds(
     capsys, tmp_path
 ):
-    system = System()
+    system = _record_system()
     uninstall = install_retrace(
         system=system,
         retrace_shutdown=False,
@@ -62,7 +67,7 @@ def test_install_retrace_can_patch_loaded_builtin_modules_via_user_override(
     )
     monkeypatch.setenv("RETRACE_MODULES_PATH", str(module_dir))
 
-    system = System()
+    system = _record_system()
     uninstall = install_retrace(system=system, retrace_shutdown=False)
     try:
         assert _io.open is not original_open

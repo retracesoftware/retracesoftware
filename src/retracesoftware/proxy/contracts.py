@@ -1,7 +1,7 @@
 """Public proxy-layer contracts used to glue runtime layers together.
 
 These protocols are intentionally small. They describe what another layer may
-ask the proxy runtime to do; they do not expose how System2, GatewayPair,
+ask the proxy runtime to do; they do not expose how System, GatewayPair,
 TypePatcher, binding, or trace I/O implement that behavior.
 
 Do not use these protocols as a reason to probe concrete runtime objects. If a
@@ -125,7 +125,7 @@ class ProxyTypeCustomizer(Protocol):
       ``module``, qualified ``name``, and generated proxy ``cls``.
     - May mutate ``cls`` in place.
     - Must not perform trace I/O, consume replay messages, or inspect
-      GatewayPair/System2 internals.
+      GatewayPair/System internals.
     - A no-op customizer is valid and is the default.
     """
 

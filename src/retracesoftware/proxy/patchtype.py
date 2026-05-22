@@ -155,7 +155,7 @@ def patch_type(system, cls, install_session=None):
         Example
         -------
             import _socket
-            system = System()
+            system = System(...)
             system.immutable_types.update({int, str, bytes, bool})
             patch_type(system, _socket.socket)
             # Now socket.connect(), socket.recv(), etc. all go through

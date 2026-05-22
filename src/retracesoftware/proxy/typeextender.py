@@ -10,7 +10,7 @@ from retracesoftware.gateway._proxytype import DynamicProxy, superdict
 class ExtendedType:
     """Marker base for retrace-extended types.
 
-    ``System2.is_passthrough`` is a hot-path type predicate.  Extended
+    ``System.is_passthrough`` is a hot-path type predicate.  Extended
     instances are already retrace-owned and may cross the boundary as
     themselves, so generated extended types inherit this marker to make that
     answer a direct ``issubclass(type(value), ExtendedType)`` check.

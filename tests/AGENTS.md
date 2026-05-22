@@ -106,7 +106,7 @@ If a diff touches any of these files:
 - `src/retracesoftware/proxy/gateway.py`
 - `src/retracesoftware/proxy/patchtype.py`
 - `src/retracesoftware/proxy/io.py`
-- `src/retracesoftware/proxy/proxytype.py`
+- `src/retracesoftware/proxy/proxyfactory2.py`
 - `src/retracesoftware/proxy/tape.py`
 - `src/retracesoftware/tape.py`
 - `src/retracesoftware/protocol/replay.py`
@@ -122,8 +122,7 @@ do not stop at the nearest unit tests. Rerun the adjacent sentinel bundle.
 
 Run these before saying a proxy-kernel change is safe:
 
-- `tests/proxy/test_system_io_tape.py`
-- `tests/proxy/test_proxy_runtime.py`
+- `tests/proxy/test_system.py`
 - `tests/proxy/test_io_memory_tape.py`
 - `tests/proxy/test_monitoring.py`
 - `tests/test_main_memory_tape.py`

@@ -284,6 +284,19 @@ def test_system_patch_type_registers_bind_support(monkeypatch):
     from retracesoftware.proxy.patchtype import patch_type
     from retracesoftware.proxy.system import System
 
+    class TestBinder:
+        def __init__(self):
+            self._binder = utils.Binder()
+
+        def bind(self, obj):
+            return self._binder.bind(obj)
+
+        def unbind(self, obj):
+            return None
+
+        def __call__(self, obj):
+            return self._binder(obj)
+
     seen = []
     original = utils.Binder.add_bind_support
 
@@ -293,7 +306,7 @@ def test_system_patch_type_registers_bind_support(monkeypatch):
 
     monkeypatch.setattr(utils.Binder, "add_bind_support", staticmethod(recording_add_bind_support))
 
-    system = System()
+    system = System(binder=TestBinder())
     try:
         patch_type(system, _socket.socket)
     finally:

@@ -11,10 +11,10 @@ from retracesoftware.install.installation import Installation
 _MISSING_ATTR = object()
 
 
-# ── Lightweight patcher for System ─────────────────────────────────
+# ── Lightweight patcher for System ────────────────────────────────
 #
 # patch(module, spec, installation) applies a TOML-derived patch spec to a
-# module using the new System class (proxy/system.py).  Each TOML
+# module using System (proxy/system.py).  Each TOML
 # directive maps to a System method — no closures, no thread_state.
 #
 # Supported directives:

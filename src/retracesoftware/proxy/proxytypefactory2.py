@@ -18,9 +18,9 @@ from retracesoftware.proxy.typeextender import TypeExtender
 
 
 class ProxyTypeFactory:
-    """Generate the proxy type shapes used by System2.
+    """Generate the proxy type shapes used by System.
 
-    This class is intentionally a coordinator, not a registry. ``System2``
+    This class is intentionally a coordinator, not a registry. ``System``
     owns original-to-retrace mappings, replay policy flags, binding tables,
     and lifecycle policy. The factory only builds proxy type shapes and wires
     lifecycle callbacks into generated owned proxy instances.
