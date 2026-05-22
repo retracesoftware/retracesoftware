@@ -234,15 +234,8 @@ def _setup_runner(runner):
         raise
 
 
-def _run_enabled_target(runner):
-    with runner.system.enable():
-        return run_python_command(runner.argv)
-
-
 def _run_target(runner):
-    if runner.internal_space is not None:
-        return runner.internal_space.apply(_run_enabled_target, runner)
-    return _run_enabled_target(runner)
+    return runner.system.run(run_python_command, runner.argv)
 
 
 def _new_internal_retrace_space():

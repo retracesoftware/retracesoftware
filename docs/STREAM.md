@@ -705,6 +705,12 @@ In stream, binding becomes concrete messages and state:
 - `MessageStream::bind(...)`
 - replay-side bind handling in `ObjectStream`
 
+Native `Binder` instances own their own handle namespace. Two binders may bind
+the same object independently and both may assign handle `0` to their first
+local binding. A `Binding` value is therefore meaningful only with the binder
+or stream table that produced it; cross-binder uniqueness is not part of the
+contract.
+
 This is why binding is more than “bookkeeping.” It is the bridge between
 proxy’s object-identity semantics and stream’s serialized representation.
 

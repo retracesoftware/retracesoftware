@@ -741,7 +741,6 @@ class TraceInstructionMonitor:
 
 
 def register_cursor_callback(cursor_dict, callback, on_missed=None, call_at=None):
-    thread_id = cursor_dict.get("thread_id")
     coordinates = _cursor_coordinates(cursor_dict)
     if call_at is None:
         call_at = retrace.call_at
@@ -755,7 +754,6 @@ def register_cursor_callback(cursor_dict, callback, on_missed=None, call_at=None
 
     try:
         call_at(
-            thread_id,
             coordinates,
             _disable_retrace_callback(_on_hit),
             _disable_retrace_callback(_on_overshoot),

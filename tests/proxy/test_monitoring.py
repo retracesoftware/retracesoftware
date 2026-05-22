@@ -138,6 +138,19 @@ class TestRunnerMonitoring:
         filename = str(link_root / "retracesoftware" / "memorytape.py")
         assert monitoring._is_retrace_filename(filename, (str(real_pkg),))
 
+    def test_non_retrace_filename_skips_realpath(self, tmp_path):
+        from retracesoftware.install import monitoring
+
+        def realpath(_filename):
+            raise AssertionError("realpath should not run for ordinary app paths")
+
+        filename = str(tmp_path / "app.py")
+        assert not monitoring._is_retrace_filename(
+            filename,
+            (str(tmp_path / "retracesoftware"),),
+            realpath=realpath,
+        )
+
     def test_run_with_monitor_level_1(self):
         """Record+replay with monitor=1 — should not raise."""
         import socket

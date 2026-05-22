@@ -211,8 +211,8 @@ class GatewayPair:
             external_endpoint = create_endpoint()
             sandbox_space = internal_endpoint.space
             external_space = external_endpoint.space
-            internal = _space_wrap(external_space, internal_endpoint.gateway)
-            external = _space_wrap(sandbox_space, external_endpoint.gateway)
+            internal = internal_endpoint.gateway
+            external = external_endpoint.gateway
 
         if internal is None or external is None:
             raise TypeError("GatewayPair requires both internal and external callables")
@@ -242,8 +242,8 @@ class GatewayPair:
         external_endpoint = create_endpoint(external_space)
 
         return GatewayPair(
-            internal=_space_wrap(external_endpoint.space, internal_endpoint.gateway),
-            external=_space_wrap(internal_endpoint.space, external_endpoint.gateway),
+            internal=internal_endpoint.gateway,
+            external=external_endpoint.gateway,
             sandbox_space=internal_endpoint.space,
             external_space=external_endpoint.space,
             internal_endpoint=internal_endpoint,

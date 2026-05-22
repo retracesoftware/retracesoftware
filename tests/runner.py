@@ -10,8 +10,8 @@ from retracesoftware.install.monitoring import (
     install_monitoring,
     suppress_monitoring,
 )
+from retracesoftware.install.monitoring_system import root_disable_for
 from retracesoftware.proxy.io import recorder, replayer
-from retracesoftware.proxy.patchtype import patch_type
 from retracesoftware.proxy.taggedtraceio import tagged_trace_writer
 from retracesoftware.testing.memorytape import IOMemoryTape
 
@@ -200,9 +200,9 @@ class Runner:
             settings["configure_system"](system)
         for obj in settings["patch"]:
             if isinstance(obj, type):
-                patch_type(system, obj)
+                system.proxy_type(obj)
             else:
-                system.patch(obj)
+                system.patch_function(obj)
 
     def _record_with_settings(
         self,
@@ -244,21 +244,21 @@ class Runner:
             if system.location == "internal":
                 write_monitor_disabled(value)
 
+        uninstall_monitor = (
+            system.root_space.wrap(install_monitoring)(
+                checkpoint_monitor,
+                settings["monitor"],
+                disable_for=root_disable_for(system),
+            )
+            if settings["monitor"] > 0
+            else None
+        )
         uninstall = install_retrace(
             system=system,
             retrace_file_patterns=None,
             monitor_level=0,
             verbose=False,
             retrace_shutdown=False,
-        )
-        uninstall_monitor = (
-            install_monitoring(
-                checkpoint_monitor,
-                settings["monitor"],
-                disable_for=system.disable_for,
-            )
-            if settings["monitor"] > 0
-            else None
         )
 
         try:
@@ -281,9 +281,8 @@ class Runner:
         finally:
             clear_external_call(external_call)
             if uninstall_monitor is not None:
-                uninstall_monitor()
+                system.root_space.wrap(uninstall_monitor)()
             uninstall()
-            system.unpatch_types()
 
         return Recording(list(tape.tape), result, error)
 
@@ -337,7 +336,7 @@ class Runner:
 
         def verify_monitor(value):
             with suppress_monitoring():
-                system.monitor_checkpoint(value)
+                reader.monitor_checkpoint(value)
 
         verify_monitor_disabled = system.disable_for(verify_monitor)
 
@@ -345,21 +344,21 @@ class Runner:
             if system.location == "internal":
                 verify_monitor_disabled(value)
 
+        uninstall_monitor = (
+            system.root_space.wrap(install_monitoring)(
+                checkpoint_monitor,
+                settings["monitor"],
+                disable_for=root_disable_for(system),
+            )
+            if settings["monitor"] > 0
+            else None
+        )
         uninstall = install_retrace(
             system=system,
             retrace_file_patterns=None,
             monitor_level=0,
             verbose=False,
             retrace_shutdown=False,
-        )
-        uninstall_monitor = (
-            install_monitoring(
-                checkpoint_monitor,
-                settings["monitor"],
-                disable_for=system.disable_for,
-            )
-            if settings["monitor"] > 0
-            else None
         )
 
         try:
@@ -387,9 +386,8 @@ class Runner:
                 raise recording.error
         finally:
             if uninstall_monitor is not None:
-                uninstall_monitor()
+                system.root_space.wrap(uninstall_monitor)()
             uninstall()
-            system.unpatch_types()
 
         if recording.error is not None:
             raise ReplayDivergence(

@@ -5,21 +5,19 @@ from retracesoftware.proxy.contracts import (
     Binder,
     Checkpoint,
     ImmutableRegistry,
-    Patcher,
+    ProxyRuntime,
     ProxyTypeCustomizer,
     TraceReader,
     TraceWriter,
-    Unpatcher,
 )
 from retracesoftware.proxy.system import System
 from retracesoftware.proxy.traceio import TraceReader as TraceReaderContract
 from retracesoftware.proxy.traceio import TraceWriter as TraceWriterContract
 
 
-def test_patcher_contract_exports_patch_methods():
-    assert hasattr(Patcher, "patch_type")
-    assert hasattr(Patcher, "patch_function")
-    assert Unpatcher is not None
+def test_proxy_runtime_contract_exports_generation_methods():
+    assert hasattr(ProxyRuntime, "proxy_type")
+    assert hasattr(ProxyRuntime, "patch_function")
 
 
 def test_binder_contract_exports_bind_method():
@@ -60,10 +58,10 @@ def test_checkpoint_contract_is_single_value_callable():
     assert hints["return"] is type(None)
 
 
-def test_system_declares_patcher_contract_and_checkpoint_member():
+def test_system_declares_proxy_runtime_contract_and_checkpoint_member():
     hints = get_type_hints(System)
 
-    assert Patcher in System.__mro__
+    assert ProxyRuntime in System.__mro__
     assert Binder in System.__mro__
     assert ImmutableRegistry in System.__mro__
     assert hints["checkpoint"] is Checkpoint

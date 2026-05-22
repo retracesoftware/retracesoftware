@@ -41,10 +41,7 @@ def recorder(
 @contextmanager
 def recorder_context(**kwargs):
     system = recorder(**kwargs)
-    try:
-        yield system
-    finally:
-        system.unpatch_types()
+    yield system
 
 
 def replayer(

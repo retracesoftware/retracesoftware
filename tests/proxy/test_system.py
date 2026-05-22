@@ -12,12 +12,16 @@ from retracesoftware.proxy.contracts import AsyncCapture
 from retracesoftware.proxy.traceio import (
     BindCloseMessage,
     BindOpenMessage,
+    CallbackErrorMessage,
     CallbackMessage,
+    CallbackResultMessage,
     CheckpointMessage,
     DefaultTraceWriter,
     ErrorMessage,
     GCMessage,
+    OnStartMessage,
     ResultMessage,
+    RunCompletedMessage,
     RunToCoordinateMessage,
     SignalMessage,
     SwitchThreadMessage,
@@ -33,6 +37,7 @@ def test_thread_cursors_advance_returns_full_cursor():
     assert cursors.advance("main", (0, 1, 2)) == (1, 2)
     assert cursors.advance("main", (1, 7)) == (1, 7)
     assert cursors.advance("worker", (0, 3)) == (3,)
+    assert cursors.advance("worker", None) is None
 
 
 class _FakeSpace:
@@ -296,15 +301,22 @@ def _replay_gateway_system(monkeypatch):
     return system, calls
 
 
-def test_record_system_creates_gateway_pair_and_type_patcher(monkeypatch):
+def _external_call(system, *args, **kwargs):
+    return system.run_internal(system.gateway_pair.external, *args, **kwargs)
+
+
+def _internal_call(system, *args, **kwargs):
+    return system_module._space_apply(system.external_space, system.gateway_pair.internal, *args, **kwargs)
+
+
+def test_record_system_creates_gateway_pair_and_proxy_factory(monkeypatch):
     _install_fake_retrace(monkeypatch)
     writer = _FakeWriter()
 
     system = System.record_system(writer=writer, debug=False)
 
     assert system.gateway_pair is not None
-    assert system.type_patcher.gateway_pair is system.gateway_pair
-    assert system.patched_types is system.type_patcher.patched_types
+    assert system.proxy_factory.typefactory.gateway_pair is system.gateway_pair
 
 
 def test_system_passes_proxy_type_customizer_to_gateway_factory(monkeypatch):
@@ -400,7 +412,7 @@ def test_record_system_proxy_type_customizer_sees_generated_external_type(monkey
         proxy_type_customizer=lambda **kwargs: customizations.append(kwargs),
     )
 
-    system.gateway_pair.external(lambda: External())
+    _external_call(system, lambda: External())
 
     assert len(customizations) == 1
     customization = customizations[0]
@@ -423,7 +435,7 @@ def test_dynamic_external_proxy_serialized_representation_is_proxy_type(monkeypa
         proxy_type_customizer=lambda **kwargs: customizations.append(kwargs),
     )
 
-    system.gateway_pair.external(lambda: External())
+    _external_call(system, lambda: External())
     proxy_type = customizations[0]["cls"]
     proxy = ProxyRef(proxy_type)()
     binding = proxy_type.__retrace_type_binding__
@@ -443,7 +455,7 @@ def test_dynamic_internal_proxy_serialized_representation_is_binding(monkeypatch
 
     system = System.record_system(writer=writer, debug=False)
 
-    result = system.gateway_pair.external(
+    result = _external_call(system, 
         lambda value: seen.append(value),
         Internal(),
     )
@@ -543,7 +555,7 @@ def test_record_system_typeextender_uses_record_register_path(monkeypatch):
     retrace_type = system.extend_type(External, python_distribution=False)
     writer.calls.clear()
 
-    obj = retrace_type()
+    obj = system.run_internal(retrace_type)
     binding = obj.__retrace_binding__()
 
     assert isinstance(binding, stream.Binding)
@@ -560,10 +572,10 @@ def test_extend_type_methods_route_through_external_gateway(monkeypatch):
             return f"read:{value}"
 
     retrace_type = system.extend_type(External, python_distribution=False)
-    obj = retrace_type()
+    obj = system.run_internal(retrace_type)
     calls.clear()
 
-    assert obj.read("value") == "read:value"
+    assert system.run_internal(obj.read, "value") == "read:value"
     assert calls == [(External.read, (obj, "value"), {})]
 
 
@@ -578,7 +590,7 @@ def test_extend_type_wraps_init_and_tracks_lifecycle_in_new(monkeypatch):
     assert "__init__" in retrace_type.__dict__
     assert "__new__" in retrace_type.__dict__
 
-    obj = retrace_type()
+    obj = system.run_internal(retrace_type)
 
     assert calls[-1] == (External.__init__, (obj,), {})
 
@@ -598,10 +610,10 @@ def test_extend_type_wraps_subclass_overrides_as_callbacks(monkeypatch):
         def read(self):
             return "override"
 
-    obj = PublicExternal()
+    obj = system.run_internal(PublicExternal)
     writer.calls.clear()
 
-    assert obj.read() == "override"
+    assert system_module._space_apply(system.external_space, obj.read) == "override"
     binding = obj.__retrace_binding__()
     assert (
         "callback",
@@ -650,7 +662,7 @@ def test_replay_shape_type_feeds_extend_type_without_original_inheritance(monkey
         shape_obj.read("value")
 
     retrace_type = system.extend_type(shape_type, python_distribution=False)
-    obj = retrace_type("constructor", ignored=True)
+    obj = system.run_internal(retrace_type, "constructor", ignored=True)
     calls.clear()
 
     assert system.extend_type(shape_type, python_distribution=False) is retrace_type
@@ -667,7 +679,7 @@ def test_replay_shape_type_feeds_extend_type_without_original_inheritance(monkey
     assert "_retrace_binding" in retrace_type.__slots__
     assert retrace_type.__retrace_original_type__ is External
 
-    assert obj.read("value") == "recorded"
+    assert system.run_internal(obj.read, "value") == "recorded"
 
     target, args, kwargs = calls[-1]
     assert target.__retrace_shape_method__ == (External, "read")
@@ -698,7 +710,7 @@ def test_replay_shape_type_subclass_overrides_follow_extend_type_callbacks(monke
     obj = object.__new__(PublicExternal)
     writer.calls.clear()
 
-    assert obj.read() == "override"
+    assert system_module._space_apply(system.external_space, obj.read) == "override"
     assert (
         "callback",
         utils.try_unwrap(PublicExternal.__dict__["read"]),
@@ -770,7 +782,7 @@ def test_replay_system_typeextender_uses_counter_register_path(monkeypatch):
     retrace_type = system.extend_type(External, python_distribution=False)
     next_counter = system.thread_counters.get("thread-1", 0)
 
-    obj = retrace_type()
+    obj = system.run_internal(retrace_type)
     binding = obj.__retrace_binding__()
 
     assert binding == ("thread-1", next_counter)
@@ -790,7 +802,7 @@ def test_wrap_type_is_idempotent_and_constructor_wraps_target(monkeypatch):
             self.value = value
 
     wrapper_type = system.wrap_type(External)
-    wrapped = wrapper_type("payload")
+    wrapped = system.run_internal(wrapper_type, "payload")
     binding = wrapped.__retrace_binding__()
 
     assert system.wrap_type(External) is wrapper_type
@@ -827,11 +839,11 @@ def test_wrap_type_methods_and_properties_route_to_wrapped_target(monkeypatch):
             return f"{self._value}:{suffix}"
 
     wrapper_type = system.wrap_type(External)
-    wrapped = wrapper_type("payload")
+    wrapped = system.run_internal(wrapper_type, "payload")
     calls.clear()
 
-    assert wrapped.read("next") == "payload:next"
-    assert wrapped.value == "payload"
+    assert system.run_internal(wrapped.read, "next") == "payload:next"
+    assert system.run_internal(lambda: wrapped.value) == "payload"
     assert calls == [
         (External.read, (wrapped, "next"), {}),
         (getattr, (wrapped, "value"), {}),
@@ -865,7 +877,7 @@ def test_record_system_external_call_writes_result(monkeypatch):
     system = System.record_system(writer=writer, debug=False)
     writer.calls.clear()
 
-    result = system.gateway_pair.external(lambda value: f"result:{value}", "x")
+    result = _external_call(system, lambda value: f"result:{value}", "x")
 
     assert result == "result:x"
     assert writer.calls[-1] == ("result", "result:x")
@@ -877,7 +889,7 @@ def test_record_system_external_call_leaves_none_unproxied(monkeypatch):
     system = System.record_system(writer=writer, debug=False)
     writer.calls.clear()
 
-    assert system.gateway_pair.external(lambda: None) is None
+    assert _external_call(system, lambda: None) is None
     assert writer.calls[-1] == ("result", None)
 
 
@@ -890,7 +902,7 @@ def test_record_system_callback_writes_callback(monkeypatch):
     def callback(value):
         return f"callback:{value}"
 
-    assert system.gateway_pair.internal(callback, "x") == "callback:x"
+    assert _internal_call(system, callback, "x") == "callback:x"
     assert ("callback", callback, ("x",), {}) in writer.calls
 
 
@@ -905,7 +917,7 @@ def test_record_system_callback_observes_call_only(monkeypatch):
         seen.append((value, label, system.location))
         return "callback-result"
 
-    assert system.gateway_pair.internal(callback, "arg", label="kw") == "callback-result"
+    assert _internal_call(system, callback, "arg", label="kw") == "callback-result"
 
     assert seen == [("arg", "kw", "internal")]
     assert writer.calls == [
@@ -924,7 +936,7 @@ def test_record_system_external_call_error_records_and_preserves_exception(monke
         raise ValueError("boom")
 
     with pytest.raises(ValueError, match="boom") as raised:
-        system.gateway_pair.external(target, "arg")
+        _external_call(system, target, "arg")
 
     assert ("error", raised.value) in writer.calls
 
@@ -941,7 +953,7 @@ def test_record_system_bind_encodes_result(monkeypatch):
     system.bind(obj)
     writer.calls.clear()
 
-    system.gateway_pair.external(lambda: obj)
+    _external_call(system, lambda: obj)
 
     assert len(writer.calls) == 1
     event, value = writer.calls[0]
@@ -962,7 +974,7 @@ def test_record_system_bind_encodes_result_containers(monkeypatch):
     binding = system.binder.lookup(obj)
     writer.calls.clear()
 
-    system.gateway_pair.external(
+    _external_call(system, 
         lambda: [obj, {"value": obj}, (obj,)],
     )
 
@@ -987,7 +999,7 @@ def test_record_system_callback_encodes_nested_container_bindings(monkeypatch):
     def callback(items, *, label):
         return None
 
-    system.gateway_pair.internal(
+    _internal_call(system,
         callback,
         [obj, (obj,)],
         label={"value": obj},
@@ -1012,7 +1024,7 @@ def test_record_system_passes_dynamic_external_proxy_to_writer(monkeypatch):
     proxy = ProxyRef(ExternalProxy)()
     writer.calls.clear()
 
-    system.gateway_pair.external(lambda: proxy)
+    _external_call(system, lambda: proxy)
 
     assert writer.calls == [("result", proxy)]
 
@@ -1029,7 +1041,7 @@ def test_record_system_encodes_dynamic_external_proxy_in_containers(monkeypatch)
     binding = type(proxy).__retrace_type_binding__
     writer.calls.clear()
 
-    system.gateway_pair.external(
+    _external_call(system, 
         lambda: [proxy, {"value": proxy}, (proxy,)],
     )
 
@@ -1050,33 +1062,29 @@ def test_record_system_passes_dynamic_external_proxy_argument_through(monkeypatc
     target = utils.try_unwrap(proxy)
     seen = []
 
-    system.gateway_pair.external(lambda value: seen.append(value), proxy)
+    _external_call(system, lambda value: seen.append(value), proxy)
 
     assert seen == [target]
 
 
-def test_record_system_writes_bound_patched_object_as_binding(monkeypatch):
+def test_record_system_writes_bound_object_as_binding(monkeypatch):
     _install_fake_retrace(monkeypatch)
     writer = _FakeWriter()
     system = System.record_system(writer=writer, debug=False)
 
-    class Patched:
+    class Bound:
         pass
 
-    unpatch = system.patch_type(Patched)
-    try:
-        obj = Patched()
-        system.bind(obj)
-        writer.calls.clear()
+    obj = Bound()
+    system.bind(obj)
+    writer.calls.clear()
 
-        system.gateway_pair.external(lambda: obj)
+    _external_call(system, lambda: obj)
 
-        assert len(writer.calls) == 1
-        event, value = writer.calls[0]
-        assert event == "result"
-        assert isinstance(value, stream.Binding)
-    finally:
-        unpatch()
+    assert len(writer.calls) == 1
+    event, value = writer.calls[0]
+    assert event == "result"
+    assert isinstance(value, stream.Binding)
 
 
 def test_system_add_immutable_types_updates_passthrough_policy(monkeypatch):
@@ -1113,6 +1121,29 @@ def test_record_system_checkpoint_writes_cursor_delta_and_encoded_value(monkeypa
     assert checkpoints[0].value == {"state": "ok"}
 
 
+def test_record_system_run_writes_lifecycle_markers(monkeypatch):
+    _install_fake_retrace(monkeypatch)
+    trace = []
+    system = System.record_system(writer=DefaultTraceWriter(trace.append))
+
+    assert system.run(lambda: "done") == "done"
+
+    assert isinstance(trace[0], OnStartMessage)
+    assert isinstance(trace[-1], RunCompletedMessage)
+
+
+def test_record_system_run_writes_completed_after_error(monkeypatch):
+    _install_fake_retrace(monkeypatch)
+    trace = []
+    system = System.record_system(writer=DefaultTraceWriter(trace.append))
+
+    with pytest.raises(ValueError):
+        system.run(lambda: (_ for _ in ()).throw(ValueError("boom")))
+
+    assert isinstance(trace[0], OnStartMessage)
+    assert isinstance(trace[-1], RunCompletedMessage)
+
+
 def test_record_system_debug_checkpoints_external_call_target(monkeypatch):
     _install_fake_retrace(monkeypatch)
     monkeypatch.setattr(system_module._thread, "get_ident", lambda: "main")
@@ -1126,7 +1157,7 @@ def test_record_system_debug_checkpoints_external_call_target(monkeypatch):
     def target(value):
         return f"result:{value}"
 
-    result = system.gateway_pair.external(target, "x")
+    result = _external_call(system, target, "x")
 
     assert result == "result:x"
     checkpoint_index = next(
@@ -1158,7 +1189,7 @@ def test_debug_record_then_replay_external_call(monkeypatch):
     )
     record_system.internal_space.thread_delta_value = (0, 1, 2)
 
-    recorded = record_system.gateway_pair.external(target, "x")
+    recorded = _external_call(record_system, target, "x")
 
     replay_system = System.replay_system(
         reader=_FakeReader(trace),
@@ -1166,7 +1197,7 @@ def test_debug_record_then_replay_external_call(monkeypatch):
     )
     replay_system.internal_space.coordinates_value = (1, 2)
 
-    assert replay_system.gateway_pair.external(target, "x") == recorded
+    assert _external_call(replay_system, target, "x") == recorded
 
 
 def test_record_system_capture_signals_records_handler_as_callback(monkeypatch):
@@ -1271,12 +1302,11 @@ def test_replay_system_schedules_signal_callback_at_cursor(monkeypatch):
         ResultMessage("ok"),
     ]))
 
-    assert system.gateway_pair.external(lambda: "live") == "ok"
+    assert _external_call(system, lambda: "live") == "ok"
     assert calls == []
     assert len(system.internal_space.call_at_calls) == 1
 
-    thread_id, cursor, on_hit, on_missed = system.internal_space.call_at_calls[0]
-    assert thread_id == "main"
+    cursor, on_hit, on_missed = system.internal_space.call_at_calls[0]
     assert cursor == (4, 5)
 
     on_hit()
@@ -1329,12 +1359,11 @@ def test_replay_system_schedules_gc_at_coordinate(monkeypatch):
         ResultMessage("ok"),
     ]))
 
-    assert system.gateway_pair.external(lambda: "live") == "ok"
+    assert _external_call(system, lambda: "live") == "ok"
     assert collects == []
     assert len(system.internal_space.call_at_calls) == 1
 
-    thread_id, cursor, on_hit, on_missed = system.internal_space.call_at_calls[0]
-    assert thread_id == "main"
+    cursor, on_hit, on_missed = system.internal_space.call_at_calls[0]
     assert cursor == (8, 13)
 
     on_hit()
@@ -1354,7 +1383,7 @@ def test_replay_system_resolves_bound_result(monkeypatch):
     def live_target():
         raise AssertionError("live target should not run")
 
-    assert system.gateway_pair.external(live_target) is obj
+    assert _external_call(system, live_target) is obj
 
 
 def test_replay_system_hydrates_dynamic_external_proxy_type_result(monkeypatch):
@@ -1370,7 +1399,7 @@ def test_replay_system_hydrates_dynamic_external_proxy_type_result(monkeypatch):
     binding = system.binder.lookup(proxy_type)
     reader.messages.append(ResultMessage(binding))
 
-    result = system.gateway_pair.external(lambda: "live")
+    result = _external_call(system, lambda: "live")
 
     assert type(result) is proxy_type
     assert utils.try_unwrap(result) is None
@@ -1432,7 +1461,7 @@ def test_replay_system_consumes_binding_delete_before_result(monkeypatch):
     ]))
     system.bind(obj)
 
-    assert system.gateway_pair.external(lambda: "live") == "ok"
+    assert _external_call(system, lambda: "live") == "ok"
 
 
 def test_replay_system_consumes_multiple_binding_deletes_before_result(monkeypatch):
@@ -1447,7 +1476,7 @@ def test_replay_system_consumes_multiple_binding_deletes_before_result(monkeypat
     system.bind(first)
     system.bind(second)
 
-    assert system.gateway_pair.external(lambda: "live") == "done"
+    assert _external_call(system, lambda: "live") == "done"
 
 
 def test_replay_system_runs_callback_before_result(monkeypatch):
@@ -1459,11 +1488,45 @@ def test_replay_system_runs_callback_before_result(monkeypatch):
 
     system = System.replay_system(reader=_FakeReader([
         CallbackMessage(callback, ("x",), {}),
+        ResultMessage(None),
         ResultMessage("ok"),
     ]))
 
-    assert system.gateway_pair.external(lambda: "live") == "ok"
+    assert _external_call(system, lambda: "live") == "ok"
     assert calls == [(system.internal_space, "x")]
+
+
+def test_replay_system_drops_callback_completion_before_result(monkeypatch):
+    _install_fake_retrace(monkeypatch)
+    calls = []
+
+    def callback(value):
+        calls.append((_FakeSpace.current, value))
+
+    system = System.replay_system(reader=_FakeReader([
+        CallbackMessage(callback, ("x",), {}),
+        CallbackResultMessage("callback-result"),
+        ResultMessage("ok"),
+    ]))
+
+    assert _external_call(system, lambda: "live") == "ok"
+    assert calls == [(system.internal_space, "x")]
+
+
+def test_replay_system_binds_callback_completion_result(monkeypatch):
+    _install_fake_retrace(monkeypatch)
+    callback_result = object()
+
+    def callback():
+        return callback_result
+
+    system = System.replay_system(reader=_FakeReader([
+        CallbackMessage(callback, (), {}),
+        ResultMessage(stream.Binding(0)),
+        ResultMessage(stream.Binding(0)),
+    ]))
+
+    assert _external_call(system, lambda: "live") is callback_result
 
 
 def test_replay_system_run_internal_external_gateway_reads_result(monkeypatch):
@@ -1488,6 +1551,38 @@ def test_replay_system_run_internal_external_gateway_reads_result(monkeypatch):
     assert seen == []
 
 
+def test_replay_system_root_space_control_plane_does_not_consume_result(monkeypatch):
+    _install_fake_retrace(monkeypatch)
+    system = System.replay_system(reader=_FakeReader([
+        ResultMessage("recorded"),
+    ]))
+    observed = []
+
+    def root_control_plane():
+        observed.append(system.location)
+        return "live"
+
+    assert system.root_space.wrap(root_control_plane)() == "live"
+    assert system.run_internal(system.gateway_pair.external, lambda: "should-not-run") == "recorded"
+    assert observed == [None]
+
+
+def test_monitoring_root_adapter_patched_call_does_not_consume_result(monkeypatch):
+    from retracesoftware.install.monitoring_system import root_disable_for
+
+    _install_fake_retrace(monkeypatch)
+    system = System.replay_system(reader=_FakeReader([
+        ResultMessage("recorded"),
+    ]))
+    root_external = root_disable_for(system)(
+        system.gateway_pair.external,
+        unwrap_args=False,
+    )
+
+    assert root_external(lambda: "live") == "live"
+    assert _external_call(system, lambda: "should-not-run") == "recorded"
+
+
 def test_replay_system_resolves_callback_bindings(monkeypatch):
     _install_fake_retrace(monkeypatch)
     calls = []
@@ -1498,11 +1593,12 @@ def test_replay_system_resolves_callback_bindings(monkeypatch):
 
     system = System.replay_system(reader=_FakeReader([
         CallbackMessage(callback, (stream.Binding(0),), {}),
+        ResultMessage(None),
         ResultMessage("ok"),
     ]))
     system.bind(obj)
 
-    assert system.gateway_pair.external(lambda: "live") == "ok"
+    assert _external_call(system, lambda: "live") == "ok"
     assert calls == [obj]
 
 
@@ -1515,11 +1611,10 @@ def test_replay_system_schedules_thread_switch_before_result(monkeypatch):
         ResultMessage("ok"),
     ]))
 
-    assert system.gateway_pair.external(lambda: "live") == "ok"
+    assert _external_call(system, lambda: "live") == "ok"
 
     assert len(system.internal_space.call_at_calls) == 1
-    thread_id, cursor, on_hit, on_missed = system.internal_space.call_at_calls[0]
-    assert thread_id == 1
+    cursor, on_hit, on_missed = system.internal_space.call_at_calls[0]
     assert cursor == (3, 5)
     assert callable(on_hit)
     assert callable(on_missed)
@@ -1541,16 +1636,14 @@ def test_replay_system_schedules_thread_switch_delta_from_current_thread(monkeyp
         ResultMessage("ok"),
     ]))
 
-    assert system.gateway_pair.external(lambda: "live") == "ok"
+    assert _external_call(system, lambda: "live") == "ok"
 
     first, second = system.internal_space.call_at_calls
-    assert first[0] == 1
-    assert first[1] == (1, 2)
-    assert second[0] == 1
-    assert second[1] == (1, 7)
+    assert first[0] == (1, 2)
+    assert second[0] == (1, 7)
     assert system.handoff.to_calls == []
-    first[2]()
-    second[2]()
+    first[1]()
+    second[1]()
     assert system.handoff.to_calls == ["worker", "main"]
 
 
@@ -1564,7 +1657,7 @@ def test_recorded_thread_switch_replays_as_scheduled_handoff(monkeypatch):
     )
 
     record.internal_space.thread_switch((0, 3), "worker")
-    assert record.gateway_pair.external(lambda: "recorded") == "recorded"
+    assert _external_call(record, lambda: "recorded") == "recorded"
 
     run_to_messages = [
         message for message in trace
@@ -1578,10 +1671,9 @@ def test_recorded_thread_switch_replays_as_scheduled_handoff(monkeypatch):
 
     replay = System.replay_system(reader=_FakeReader(trace))
 
-    assert replay.gateway_pair.external(lambda: "live") == "recorded"
+    assert _external_call(replay, lambda: "live") == "recorded"
     assert len(replay.internal_space.call_at_calls) == 1
-    thread_id, cursor, on_hit, on_missed = replay.internal_space.call_at_calls[0]
-    assert thread_id == 1
+    cursor, on_hit, on_missed = replay.internal_space.call_at_calls[0]
     assert cursor == (3,)
     assert replay.handoff.to_calls == []
 
@@ -1635,34 +1727,24 @@ def test_patch_function_returns_external_gateway_wrapper(monkeypatch):
     assert system.is_bound(patched)
     writer.calls.clear()
 
-    assert patched("x") == "external:x"
+    assert system.run_internal(patched, "x") == "external:x"
     assert writer.calls[-1] == ("result", "external:x")
 
 
-def test_patch_type_returns_unpatcher(monkeypatch):
+def test_proxy_type_generates_retrace_type(monkeypatch):
     _install_fake_retrace(monkeypatch)
     system = System.record_system(writer=_FakeWriter(), debug=False)
-    calls = []
 
     class Target:
         pass
 
-    def patch_type(cls):
-        calls.append(("patch", cls))
+    retrace_type = system.proxy_type(Target)
 
-    def unpatch_type(cls):
-        calls.append(("unpatch", cls))
-
-    system.type_patcher.patch_type = patch_type
-    system.type_patcher.unpatch_type = unpatch_type
-
-    unpatch = system.patch_type(Target)
-    unpatch()
-
-    assert calls == [("patch", Target), ("unpatch", Target)]
+    assert issubclass(retrace_type, Target)
+    assert retrace_type is not Target
 
 
-def test_patch_type_record_then_replay_uses_recorded_result(monkeypatch):
+def test_proxy_type_record_then_replay_uses_recorded_result(monkeypatch):
     _install_fake_retrace(monkeypatch)
     messages = []
     value = ["recorded"]
@@ -1671,28 +1753,19 @@ def test_patch_type_record_then_replay_uses_recorded_result(monkeypatch):
         def read(self):
             return value[0]
 
-    def run(system):
-        return system.internal_space.apply(lambda: External().read())
-
     record_system = System.record_system(
         writer=DefaultTraceWriter(messages.append),
         debug=False,
     )
     record_system.immutable_types.update({str, type(None)})
-    unpatch_record = record_system.patch_type(External)
-    try:
-        assert run(record_system) == "recorded"
-    finally:
-        unpatch_record()
+    RecordExternal = record_system.proxy_type(External)
+    assert record_system.run(lambda: RecordExternal().read()) == "recorded"
 
     value[0] = "live"
     replay_system = System.replay_system(reader=_FakeReader(messages))
     replay_system.immutable_types.update({str, type(None)})
-    unpatch_replay = replay_system.patch_type(External)
-    try:
-        assert run(replay_system) == "recorded"
-    finally:
-        unpatch_replay()
+    ReplayExternal = replay_system.proxy_type(External)
+    assert replay_system.run(lambda: ReplayExternal().read()) == "recorded"
 
 
 def test_replay_system_external_call_reads_result(monkeypatch):
@@ -1704,7 +1777,48 @@ def test_replay_system_external_call_reads_result(monkeypatch):
     def live_target():
         raise AssertionError("live target should not run")
 
-    assert system.gateway_pair.external(live_target) == "recorded"
+    assert _external_call(system, live_target) == "recorded"
+
+
+def test_replay_system_skips_run_completed_marker(monkeypatch):
+    _install_fake_retrace(monkeypatch)
+    system = System.replay_system(reader=_FakeReader([
+        OnStartMessage(),
+        RunCompletedMessage(),
+        ResultMessage("recorded"),
+    ]))
+
+    def live_target():
+        raise AssertionError("live target should not run")
+
+    assert _external_call(system, live_target) == "recorded"
+
+
+def test_replay_system_continues_after_run_to_completed_marker(monkeypatch):
+    _install_fake_retrace(monkeypatch)
+    system = System.replay_system(reader=_FakeReader([
+        RunToCoordinateMessage(None),
+        RunCompletedMessage(),
+        ResultMessage("recorded"),
+    ]))
+
+    def live_target():
+        raise AssertionError("live target should not run")
+
+    assert _external_call(system, live_target) == "recorded"
+    assert len(system.internal_space.call_at_calls) == 0
+
+
+def test_replay_system_consumes_lifecycle_markers_around_run(monkeypatch):
+    _install_fake_retrace(monkeypatch)
+    reader = _FakeReader([
+        OnStartMessage(),
+        RunCompletedMessage(),
+    ])
+    system = System.replay_system(reader=reader)
+
+    assert system.run(lambda: "done") == "done"
+    assert reader.messages == []
 
 
 def test_replay_system_external_call_raises_recorded_error(monkeypatch):
@@ -1718,6 +1832,6 @@ def test_replay_system_external_call_raises_recorded_error(monkeypatch):
         raise AssertionError("live target should not run")
 
     with pytest.raises(ValueError, match="recorded") as raised:
-        system.gateway_pair.external(live_target)
+        _external_call(system, live_target)
 
     assert raised.value is error

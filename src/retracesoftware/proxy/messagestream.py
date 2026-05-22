@@ -27,6 +27,7 @@ from retracesoftware.proxy.traceio import (
     ErrorMessage,
     OnStartMessage,
     ResultMessage,
+    RunCompletedMessage,
     StacktraceMessage,
     SyncMessage,
     ThreadSwitchMessage,
@@ -50,6 +51,7 @@ def _read(source):
 
 
 _SCHED_DEBUG = bool(os.environ.get("RETRACE_THREAD_SCHEDULE_DEBUG"))
+_DEFAULT_CURSOR = object()
 
 
 def _debug_scheduler(message):
@@ -229,6 +231,7 @@ def _resolve_message(message, bindings):
         (
             CallMarkerMessage,
             OnStartMessage,
+            RunCompletedMessage,
             SyncMessage,
         ),
     ):
@@ -480,6 +483,9 @@ class SchedulerStream:
         return self._cursors.get(thread_id, ())
 
     def _cursor_after_delta(self, thread_id, delta):
+        if delta is None:
+            return None
+
         cursor = list(self._cursors.get(thread_id, ()))
         common = delta[0] if delta else 0
         del cursor[common:]
@@ -521,20 +527,17 @@ class SchedulerStream:
         self._call_disabled(self.resume_thread)
         return None
 
-    def _arm_thread_checkpoint(self, thread_id, cursor=None):
+    def _arm_thread_checkpoint(self, thread_id, cursor=_DEFAULT_CURSOR):
         if self.probe is None or thread_id is None:
             return False
-        if cursor is None:
+        if cursor is _DEFAULT_CURSOR:
             cursor = self.cursor(thread_id)
         callback = _retrace_callback(self.probe, self._resume_thread_at_checkpoint)
         try:
-            _probe_call_at(
-                self.probe,
-                thread_id,
-                cursor,
-                callback,
-                callback,
-            )
+            if cursor is None:
+                _probe_call_at(self.probe, None, callback)
+            else:
+                _probe_call_at(self.probe, cursor, callback, callback)
         except (LookupError, ValueError):
             return False
         return True
@@ -685,6 +688,8 @@ class SchedulerStream:
                 return False
             if not isinstance(message, ThreadSwitchMessage):
                 return False
+            if message.cursor_delta is None:
+                return False
             if self._next_switch_is_adjacent():
                 return False
 
@@ -705,9 +710,12 @@ class SchedulerStream:
 
     def next(self):
         allow_handoff = self._should_replay_thread_schedule()
-        self._advance_scheduled_switches(allow_handoff=allow_handoff)
-        with self._lock:
-            return self.source.next()
+        while True:
+            self._advance_scheduled_switches(allow_handoff=allow_handoff)
+            with self._lock:
+                message = self.source.next()
+            if not isinstance(message, (OnStartMessage, RunCompletedMessage)):
+                return message
 
     read = next
 

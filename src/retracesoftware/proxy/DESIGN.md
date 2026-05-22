@@ -913,6 +913,17 @@ Record writes one unified stream. To make that stream replayable:
 - replay mode uses the coordinate instruction as the scheduling point; the
   following message decides whether replay should switch thread, deliver a
   signal/callback, or continue to the next result/error/bind instruction
+- replay arms scheduling checkpoints with `retrace.call_at(cursor, callback)`
+  in the current thread's coordinate space; retrace-python no longer accepts a
+  thread id there
+- a thread switch cursor delta of `None` means the previous thread completed
+  naturally, not the root cursor. Replay must preserve that terminal cursor
+  state and must use `retrace.call_at(None, callback)` only when waiting for
+  the current thread to complete.
+- record writes `RUN_COMPLETED` after the main application `System.run()`
+  exits its internal coordinate space. Replay treats this as a terminal
+  progress marker and skips it while looking for the next user-visible
+  boundary message.
 - when replay hits a recorded switch cursor, it drains any immediately
   following callback envelope before continuing
 - `BindingStream` buffers lookahead globally; thread ordering is owned by

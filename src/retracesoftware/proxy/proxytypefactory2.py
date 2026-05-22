@@ -13,7 +13,7 @@ from retracesoftware.gateway._dynamicproxy import (
     _has_custom_getattr,
     _has_instance_dict,
 )
-from retracesoftware.gateway._proxytype import method_names, superdict
+from retracesoftware.gateway._proxytype import Proxy, method_names, superdict
 from retracesoftware.proxy.typeextender import TypeExtender
 
 
@@ -54,7 +54,15 @@ class ProxyTypeFactory:
             on_del=on_del,
         )
 
+    def _assert_unproxied_source_type(self, cls: type) -> None:
+        assert isinstance(cls, type)
+        assert not issubclass(cls, Proxy), (
+            "ProxyTypeFactory source cls must not already be a proxy type"
+        )
+
     def dynamic_external_type(self, cls: type, *, from_spec=None) -> type:
+        self._assert_unproxied_source_type(cls)
+
         if from_spec is None:
             from_spec = self.dynamic_external_type_from_spec
 
@@ -95,12 +103,15 @@ class ProxyTypeFactory:
         )
 
     def dynamic_internal_type(self, cls: type) -> type:
+        self._assert_unproxied_source_type(cls)
         return self.dynamic_proxy_factory.int_proxytype(cls)
 
     def extended_type(self, cls: type) -> type:
+        self._assert_unproxied_source_type(cls)
         return self.type_extender.extend_type(cls)
 
     def instantiable_external_type(self, cls: type) -> type:
+        self._assert_unproxied_source_type(cls)
         return self.type_extender.wrap_type(cls)
 
     def _wrapped_external_method(self, target):

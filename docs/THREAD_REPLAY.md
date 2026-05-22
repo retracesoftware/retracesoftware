@@ -36,10 +36,23 @@ user-visible application event.
 ## Replay Path
 
 Replay reads the same interleaved stream globally. `THREAD_SWITCH` updates the
-previous scheduled thread's cursor from its delta, names the next scheduled
-thread id, and arms `retrace.call_at(thread_id, cursor, callback)` at the
-recorded cursor. Replay uses `ThreadHandoff.to(...)` only when the recorded
-switch is actionable at a replay scheduling point.
+previous scheduled thread's cursor from its delta and names the next scheduled
+thread id. Replay arms `retrace.call_at(cursor, callback)` in the current
+thread's coordinate space; `call_at` no longer takes a thread id.
+
+A `THREAD_SWITCH` cursor delta of `None` means the previous thread completed
+naturally and has no resumable bytecode coordinate. Replay must not treat
+`None` as an empty/root cursor, must not compute a cursor delta from it, and
+must not arm a coordinate checkpoint for it. If replay needs to wait for the
+current thread to complete, it uses `retrace.call_at(None, callback)`.
+
+Replay uses `ThreadHandoff.to(...)` only when the recorded switch is
+actionable at a replay scheduling point.
+
+Record writes `RUN_COMPLETED` after the main application `System.run()` exits
+its internal coordinate space. Replay treats this as a terminal progress marker:
+if scheduler lookahead sees it, replay consumes it and continues rather than
+interpreting an empty stream as stalled progress.
 
 The checkpoint callback consumes the scheduler event and then arms the next
 scheduler cursor. Protocol messages are consumed directly from the global

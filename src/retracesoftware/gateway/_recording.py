@@ -112,7 +112,11 @@ def create_recording_pair_recorder(
         bindings[handle] = value
         record(Bind(handle, value))
 
-    return _gatewaypair.GatewayPair.create_recording_pair(
+    def proxy_value(value: Any) -> Any:
+        return ("wrapped", value)
+
+    pair = _gatewaypair.GatewayPair.create_unwired(bind=bind)
+    return pair.wire_for_record(
         is_passthrough=is_passthrough,
         on_callback=lambda function, *args, **kwargs: record(
             Callback(
@@ -125,7 +129,8 @@ def create_recording_pair_recorder(
             Error(exc_type, exc_value, traceback)
         ),
         on_result=lambda value: record(Result(_encode(value, handles_by_id))),
-        bind=bind,
+        int_proxy=proxy_value,
+        ext_proxy=proxy_value,
     )
 
 

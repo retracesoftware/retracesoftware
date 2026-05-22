@@ -16,6 +16,7 @@ from retracesoftware.proxy.traceio import (
     GCMessage,
     OnStartMessage,
     ResultMessage,
+    RunCompletedMessage,
     RunToCoordinateMessage,
     SignalMessage,
     StacktraceMessage,
@@ -65,6 +66,7 @@ def tagged_trace_writer(sink):
         stacktrace=functional.partial(sink, "STACKTRACE"),
         thread_switch=thread_switch,
         run_to_coordinate=functional.partial(sink, "RUN_TO_COORDINATE"),
+        run_completed=functional.partial(sink, "RUN_COMPLETED"),
         switch_thread=functional.partial(sink, "SWITCH_THREAD"),
         binding_delete=lambda binding: sink("BINDING_DELETE", _binding_handle(binding)),
         call_marker=functional.partial(sink, "CALL"),
@@ -113,6 +115,9 @@ class TaggedTraceWriter:
 
     def run_to_coordinate(self, cursor_delta):
         return self._write("RUN_TO_COORDINATE", cursor_delta)
+
+    def run_completed(self):
+        return self._write("RUN_COMPLETED")
 
     def switch_thread(self, thread_id):
         return self._write("SWITCH_THREAD", thread_id)
@@ -187,6 +192,8 @@ def next_message(source):
         return StacktraceMessage(_read(source))
     if message_type == "RUN_TO_COORDINATE":
         return RunToCoordinateMessage(_read(source))
+    if message_type == "RUN_COMPLETED":
+        return RunCompletedMessage()
     if message_type == "SWITCH_THREAD":
         return SwitchThreadMessage(_read(source))
     if message_type == "THREAD_SWITCH":

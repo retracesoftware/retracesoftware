@@ -87,6 +87,11 @@ def trace_function_instructions(
     coordinates = tuple(coordinates)
     if thread_id is None:
         thread_id = _thread.get_ident()
+    elif thread_id != _thread.get_ident():
+        raise TargetUnreachableError(
+            "trace_function_instructions can only arm retrace.call_at "
+            "for the current thread"
+        )
 
     # --- Allocate a dedicated tool_id for INSTRUCTION events ---
     tool_id = _acquire_tool_id("retrace_trace_fn")
@@ -139,8 +144,8 @@ def trace_function_instructions(
         _begin_tracing_with_frame(target_frame)
     else:
         try:
-            retrace.call_at(thread_id, coordinates, begin)
-        except ValueError as exc:
+            retrace.call_at(coordinates, begin)
+        except (TypeError, ValueError) as exc:
             monitor.close()
             raise TargetUnreachableError(
                 f"target {coordinates} already passed"

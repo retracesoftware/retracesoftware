@@ -1,5 +1,4 @@
 from argparse import Namespace
-from contextlib import contextmanager
 from types import SimpleNamespace
 
 import retracesoftware.__main__ as main
@@ -15,16 +14,20 @@ class _Space:
 
 
 class _System:
-    @contextmanager
-    def enable(self):
-        yield
+    def __init__(self):
+        self.calls = []
+
+    def run(self, function, *args, **kwargs):
+        self.calls.append((function, args, kwargs))
+        return function(*args, **kwargs)
 
 
-def test_run_target_runs_application_inside_internal_space(monkeypatch):
+def test_run_target_uses_system_run(monkeypatch):
     internal_space = _Space()
+    system = _System()
     runner = main.Runner(
         argv=["target.py"],
-        system=_System(),
+        system=system,
         options=Namespace(trace_shutdown=False),
         internal_space=internal_space,
     )
@@ -32,9 +35,10 @@ def test_run_target_runs_application_inside_internal_space(monkeypatch):
     monkeypatch.setattr(main, "run_python_command", lambda argv: ("ran", list(argv)))
 
     assert main._run_target(runner) == ("ran", ["target.py"])
-    assert len(internal_space.calls) == 1
-    assert internal_space.calls[0][0] is main._run_enabled_target
-    assert internal_space.calls[0][1] == (runner,)
+    assert internal_space.calls == []
+    assert len(system.calls) == 1
+    assert system.calls[0][0] is main.run_python_command
+    assert system.calls[0][1] == (["target.py"],)
 
 
 def test_create_runner_runs_in_default_disabled_space(monkeypatch):

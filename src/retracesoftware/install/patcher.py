@@ -19,8 +19,8 @@ _MISSING_ATTR = object()
 #
 # Supported directives:
 #
-#   proxy          types → installation.patch_type / Patcher.patch_type
-#                  functions → Patcher.patch_function
+#   proxy          types → installation.patch_type / system.proxy_type
+#                  functions → system.patch_function
 #   ext_proxy_result
 #                  functions → live-run and ext-proxy the returned object
 #   patch_types    installation.patch_type (types only)
@@ -210,9 +210,8 @@ def patch(
     -------
     callable
         An undo function that restores the namespace to its pre-patch
-        state.  Types that were ``patch_type``'d in-place are still tracked
-        on the installation's system for later ``system.unpatch_type`` by the
-        caller.
+        state.  Generated proxy types are bound back into the module namespace
+        by the installation, which also owns restoration on uninstall.
     """
     if not isinstance(installation, Installation):
         raise TypeError(
@@ -310,7 +309,8 @@ def patch(
                     continue
                 value = namespace[name]
                 if isinstance(value, type):
-                    installation.patch_value(value)
+                    patched = installation.patch_value(value)
+                    _apply(name, value, patched)
 
         elif directive == 'immutable':
             for name in config:
@@ -515,86 +515,3 @@ def patch_class(transforms, cls):
                 utils.update(cls, attr, wrapper)
 
     return cls
-
-def create_patcher(system):
-
-    patcher = {}
-
-    def foreach(func): return lambda config: {name: func for name in config}
-    def selector(func): return lambda config: {name: functional.partial(func, value) for name, value in config.items()}
-
-    def simple_patcher(func): return foreach(functional.side_effect(func))
-
-    def type_attributes(transforms, cls):
-        with modify(cls):
-            for action, attrs in transforms.items():
-                for attr,func in patcher[action](attrs).items():
-                    utils.update(cls, attr, func)
-        return cls
-
-    def bind(obj):
-        if issubclass(obj, enum.Enum):
-            for member in obj:
-                system.bind(member)
-        else:
-            system.bind(obj)
-
-    def add_immutable_type(obj):
-        if not isinstance(obj, type):
-            raise Exception("TODO")
-        system.immutable_types.add(obj)
-        return obj
-
-    patcher.update({
-        'type_attributes': selector(type_attributes),
-        'patch_class': selector(patch_class),
-        'disable': foreach(functional.partial(system.disable_for, retrace=False)),
-        'patch_types': simple_patcher(system.patch_type),
-        'proxy': foreach(system),
-        'ext_proxy_result': foreach(system.ext_proxy_result),
-        'bind': simple_patcher(bind),
-        'wrap': lambda config: {name: resolve(action) for name,action in config.items() },
-        'immutable': simple_patcher(add_immutable_type),
-        'stub_for_replay': foreach(functional.identity),
-    })
-    return patcher
-
-def patch_namespace(patcher, config, namespace, update_refs):
-    for phase_name, phase_config in config.items():
-        if phase_name in patcher:
-            for name,func in patcher[phase_name](phase_config).items():
-                if name in namespace:
-                    # print(f"patching: {name}")
-
-                    value = namespace[name]
-
-                    try:
-                        new_value = func(value)
-                    except Exception as e:
-                        print(f"Error patching {name}, phase: {phase_name}: {e}")
-                        raise e
-                    
-                    if value is not new_value:
-                        namespace[name] = new_value
-
-                        if update_refs:
-                            update(value, new_value)
-        else:
-            print(phase_name)
-            utils.sigtrap('FOO1')
-    
-def patch_module(patcher, config, namespace, update_refs):
-    if '__name__' in namespace:
-        name = namespace['__name__']
-        if name in config:
-            patch_namespace(patcher, config = config[name], namespace=namespace, update_refs=update_refs)
-
-def patch_imported_module(patcher, checkpoint, config, namespace, update_refs):
-    if '__name__' in namespace:
-        name = namespace['__name__']
-        checkpoint(f"importing module: {name}")
-
-        if name in config:
-            # print(f"Patching imported module: {name}")
-            # checkpoint(f"Patching imported module: {name}")
-            patch_namespace(patcher, config = config[name], namespace=namespace, update_refs=update_refs)

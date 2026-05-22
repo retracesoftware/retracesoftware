@@ -4,10 +4,10 @@ from typing import Any, Callable
 
 import retracesoftware.utils as utils
 
-from retracesoftware.gateway._proxytype import DynamicProxy, superdict
+from retracesoftware.gateway._proxytype import DynamicProxy, Proxy, superdict
 
 
-class ExtendedType:
+class ExtendedType(Proxy):
     """Marker base for retrace-extended types.
 
     ``System.is_passthrough`` is a hot-path type predicate.  Extended

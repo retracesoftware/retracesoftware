@@ -1,7 +1,14 @@
 import retracesoftware.utils as utils
 import retracesoftware.functional as functional
 
-class DynamicProxy:
+
+class Proxy:
+    """Marker base for generated retrace proxy types."""
+
+    __slots__ = []
+
+
+class DynamicProxy(Proxy):
     __slots__ = []
 
 

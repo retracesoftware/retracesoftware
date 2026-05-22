@@ -13,19 +13,20 @@ from retracesoftware.install.replace import ModuleRefIndex, restore_module_refs
 
 class _ContractSystem:
     def __init__(self):
-        self.patched_types = []
-        self.unpatched_types = []
+        self.proxied_types = []
         self.patched_functions = []
         self.bound = []
         self.immutable_types = set()
 
-    def patch_type(self, cls):
-        self.patched_types.append(cls)
+    def proxy_type(self, cls):
+        self.proxied_types.append(cls)
 
-        def unpatch():
-            self.unpatched_types.append(cls)
+        class ProxyType(cls):
+            pass
 
-        return unpatch
+        ProxyType.__name__ = cls.__name__
+        ProxyType.__qualname__ = cls.__qualname__
+        return ProxyType
 
     def patch_function(self, fn):
         self.patched_functions.append(fn)
@@ -107,7 +108,7 @@ def test_installation_proxy_uses_patcher_contract_for_function():
     assert namespace["add"] is add
 
 
-def test_installation_patch_type_unpatches_on_uninstall():
+def test_installation_patch_type_replaces_type_and_uninstalls():
     system = _system()
     installation = Installation(system)
 
@@ -119,15 +120,16 @@ def test_installation_patch_type_unpatches_on_uninstall():
 
     patched = installation.patch_type(namespace, "Example")
 
-    assert patched is Example
-    assert system.patched_types == [Example]
+    assert patched is namespace["Example"]
+    assert patched is not Example
+    assert system.proxied_types == [Example]
 
     installation.uninstall()
 
-    assert system.unpatched_types == [Example]
+    assert namespace["Example"] is Example
 
 
-def test_installation_patch_type_uses_returned_unpatcher():
+def test_installation_patch_type_uses_proxy_type_result():
     system = _ContractSystem()
     installation = Installation(system)
 
@@ -138,16 +140,16 @@ def test_installation_patch_type_uses_returned_unpatcher():
 
     patched = installation.patch_type(namespace, "Example")
 
-    assert patched is Example
-    assert system.patched_types == [Example]
-    assert system.unpatched_types == []
+    assert patched is namespace["Example"]
+    assert patched is not Example
+    assert system.proxied_types == [Example]
 
     installation.uninstall()
 
-    assert system.unpatched_types == [Example]
+    assert namespace["Example"] is Example
 
 
-def test_installation_proxy_type_tracks_and_unpatches_type():
+def test_installation_proxy_type_tracks_and_restores_module_binding():
     system = _system()
     installation = Installation(system)
 
@@ -159,13 +161,14 @@ def test_installation_proxy_type_tracks_and_unpatches_type():
 
     proxied = installation.proxy(namespace, "Example")
 
-    assert proxied is Example
-    assert system.patched_types == [Example]
+    assert proxied is namespace["Example"]
+    assert proxied is not Example
+    assert system.proxied_types == [Example]
     assert installation.module_objects[0].name == "Example"
 
     installation.uninstall()
 
-    assert system.unpatched_types == [Example]
+    assert namespace["Example"] is Example
 
 
 def test_patcher_uses_installation_contracts_for_bind_and_immutable():

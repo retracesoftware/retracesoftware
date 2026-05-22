@@ -16,6 +16,7 @@ from retracesoftware.proxy.traceio import (
     GCMessage,
     OnStartMessage,
     ResultMessage,
+    RunCompletedMessage,
     RunToCoordinateMessage,
     SignalMessage,
     StacktraceMessage,
@@ -132,6 +133,9 @@ class JsonTraceWriter:
     def run_to_coordinate(self, cursor_delta):
         return self._write("run_to_coordinate", cursor_delta=cursor_delta)
 
+    def run_completed(self):
+        return self._write("run_completed")
+
     def switch_thread(self, thread_id):
         return self._write("switch_thread", thread_id=thread_id)
 
@@ -218,6 +222,8 @@ def _message_from_payload(payload):
         )
     if event == "run_to_coordinate":
         return RunToCoordinateMessage(_tuple_tree(payload["cursor_delta"]))
+    if event == "run_completed":
+        return RunCompletedMessage()
     if event == "switch_thread":
         return SwitchThreadMessage(payload["thread_id"])
     if event == "new_binding":

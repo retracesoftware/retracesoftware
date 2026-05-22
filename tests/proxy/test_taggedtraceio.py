@@ -18,6 +18,7 @@ from retracesoftware.proxy.traceio import (
     GCMessage,
     OnStartMessage,
     ResultMessage,
+    RunCompletedMessage,
     RunToCoordinateMessage,
     SignalMessage,
     StacktraceMessage,
@@ -49,6 +50,7 @@ def test_tagged_trace_writer_methods_emit_wire_tags():
     writer.checkpoint((0, 4), "main", {"state": "ok"})
     writer.stacktrace(stacktrace)
     writer.thread_switch((0, 3), "worker")
+    writer.run_completed()
     writer.binding_delete(7)
     writer.call_marker()
     writer.sync()
@@ -66,6 +68,7 @@ def test_tagged_trace_writer_methods_emit_wire_tags():
         ("STACKTRACE", stacktrace),
         ("RUN_TO_COORDINATE", (0, 3)),
         ("SWITCH_THREAD", "worker"),
+        ("RUN_COMPLETED",),
         ("BINDING_DELETE", 7),
         ("CALL",),
         ("SYNC",),
@@ -92,6 +95,7 @@ def test_tagged_trace_writer_function_methods_emit_wire_tags():
     writer.checkpoint((0, 4), "main", {"state": "ok"})
     writer.stacktrace(stacktrace)
     writer.thread_switch((0, 3), "worker")
+    writer.run_completed()
     writer.binding_delete(7)
     writer.call_marker()
     writer.sync()
@@ -109,6 +113,7 @@ def test_tagged_trace_writer_function_methods_emit_wire_tags():
         ("STACKTRACE", stacktrace),
         ("RUN_TO_COORDINATE", (0, 3)),
         ("SWITCH_THREAD", "worker"),
+        ("RUN_COMPLETED",),
         ("BINDING_DELETE", 7),
         ("CALL",),
         ("SYNC",),
@@ -151,6 +156,7 @@ def test_tagged_trace_reader_decodes_wire_tags_to_messages():
         (0, 3),
         "SWITCH_THREAD",
         "worker",
+        "RUN_COMPLETED",
         "NEW_BINDING",
         stream.Binding(7),
         "BINDING_DELETE",
@@ -210,6 +216,8 @@ def test_tagged_trace_reader_decodes_wire_tags_to_messages():
     switch = reader.next()
     assert isinstance(switch, SwitchThreadMessage)
     assert switch.thread_id == "worker"
+
+    assert isinstance(reader.next(), RunCompletedMessage)
 
     bind_open = reader.next()
     assert isinstance(bind_open, BindOpenMessage)

@@ -7,6 +7,7 @@ from retracesoftware.proxy.traceio import (
     CheckpointMessage,
     ErrorMessage,
     ResultMessage,
+    RunCompletedMessage,
     StacktraceMessage,
     BindCloseMessage,
     BindOpenMessage,
@@ -101,6 +102,7 @@ def test_next_message_reads_control_markers():
 
 def test_next_message_reads_lifecycle_message():
     assert isinstance(next_message(read_from(["ON_START"])), OnStartMessage)
+    assert isinstance(next_message(read_from(["RUN_COMPLETED"])), RunCompletedMessage)
 
 
 def test_next_message_reads_thread_switch():
@@ -253,8 +255,7 @@ def test_scheduler_stream_consumes_thread_switch_and_arms_checkpoint():
     assert callbacks[0].cursor_delta == (1, 2, 3)
     assert scheduler.cursor("main") == (2, 3)
     assert len(calls) == 1
-    thread_id, cursor, on_hit, on_missed = calls[0]
-    assert thread_id == "main"
+    cursor, on_hit, on_missed = calls[0]
     assert cursor == (2, 3)
     assert callable(on_hit)
     assert callable(on_missed)
@@ -389,7 +390,7 @@ def test_scheduler_stream_does_not_handoff_terminal_switch():
     messages = BindingStream(PeekableStream(MessageStream(read_from([
         "THREAD_SWITCH",
         "main",
-        (0, 1),
+        None,
     ]))))
     scheduler = SchedulerStream(
         messages,
@@ -400,11 +401,12 @@ def test_scheduler_stream_does_not_handoff_terminal_switch():
 
     assert scheduler.advance_thread_schedule() is True
     assert scheduler.current_thread_id() == "main"
-    assert handoff.close_calls == 1
+    assert scheduler.cursor("worker") is None
+    assert handoff.close_calls == 0
     assert handoff.to_calls == []
 
 
-def test_scheduler_stream_result_advance_skips_one_shot_target_handoff():
+def test_scheduler_stream_result_advance_handoffs_when_current_has_future_switch():
     current = ["main"]
 
     class FakeHandoff:
@@ -444,7 +446,7 @@ def test_scheduler_stream_result_advance_skips_one_shot_target_handoff():
     ) is True
 
     assert scheduler.current_thread_id() == "worker"
-    assert handoff.to_calls == []
+    assert handoff.to_calls == ["worker"]
     assert handoff.close_calls == 0
     assert isinstance(messages.peek(), ResultMessage)
     assert messages.peek().result == "worker-done"
@@ -496,7 +498,7 @@ def test_scheduler_stream_does_not_handoff_to_dead_thread():
     assert message.result == "done"
 
 
-def test_scheduler_stream_yields_early_target_to_previous_thread():
+def test_scheduler_stream_consumes_switch_to_current_thread_without_handoff():
     current = ["main"]
 
     class FakeProbe:
@@ -532,7 +534,7 @@ def test_scheduler_stream_yields_early_target_to_previous_thread():
 
     message = scheduler.next()
 
-    assert handoff.to_calls == ["worker", "main"]
+    assert handoff.to_calls == []
     assert isinstance(message, ResultMessage)
     assert message.result == "done"
 
@@ -720,8 +722,7 @@ def test_scheduler_stream_switch_callback_leaves_unmatched_recorded_switch():
     assert scheduler.current_thread_id() == "main"
     assert handoff.to_calls == []
     assert len(call_at_calls) == 1
-    assert call_at_calls[0][0] == "main"
-    assert call_at_calls[0][1] == (1,)
+    assert call_at_calls[0][0] == (1,)
 
     assert scheduler.next().result == "done"
     assert scheduler.current_thread_id() == "future-worker"
@@ -740,6 +741,20 @@ def test_scheduler_stream_does_not_set_callback_on_non_switch():
 
     assert scheduler.next().result == 5
     assert callbacks == []
+
+
+def test_scheduler_stream_skips_lifecycle_markers():
+    source = SchedulerStream(BindingStream(PeekableStream(MessageStream(read_from([
+        "ON_START",
+        "RUN_COMPLETED",
+        "RESULT",
+        "done",
+    ])))))
+
+    message = source.next()
+
+    assert isinstance(message, ResultMessage)
+    assert message.result == "done"
 
 
 def test_callback_stream_calls_callback_and_drops_completion():

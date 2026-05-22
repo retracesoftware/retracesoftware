@@ -26,18 +26,22 @@ from retracesoftware.proxy.contracts import (
     Binder,
     Checkpoint,
     ImmutableRegistry,
-    Patcher,
+    ProxyRuntime,
     ProxyTypeCustomizer,
     TraceReader,
     TraceWriter,
 )
 from retracesoftware.proxy.traceio import (
     BindCloseMessage,
+    CallbackErrorMessage,
     CallbackMessage,
+    CallbackResultMessage,
     CheckpointMessage,
     ErrorMessage,
     GCMessage,
+    OnStartMessage,
     ResultMessage,
+    RunCompletedMessage,
     RunToCoordinateMessage,
     SignalMessage,
     SwitchThreadMessage,
@@ -45,7 +49,6 @@ from retracesoftware.proxy.traceio import (
 from retracesoftware.proxy.proxyfactory2 import ProxyFactory
 
 from retracesoftware.proxy.typeextender import ExtendedType, replay_shape_type
-from retracesoftware.proxy.typepatcher import TypePatcher
 
 wrapped_callable = utils.wrapped_callable
 
@@ -219,6 +222,10 @@ class _ThreadCursors:
         self.cursors = {}
 
     def advance(self, thread_id, delta):
+        if delta is None:
+            self.cursors[thread_id] = None
+            return None
+
         cursor = list(self.cursors.get(thread_id, ()))
         common = delta[0] if delta else 0
         del cursor[common:]
@@ -233,11 +240,8 @@ class ReplayThreadScheduleError(BaseException):
 def _raise(error):
     raise error
 
-class System(Patcher, Binder, ImmutableRegistry):
+class System(ProxyRuntime, Binder, ImmutableRegistry):
     checkpoint: Checkpoint
-    _patch_type_blacklist = frozenset(
-        ["__new__", "__getattribute__", "__del__", "__dict__"]
-    )
 
     def wire_for_record(self, *, on_callback, on_error, on_result):
         self.gateway_pair.wire_for_record(
@@ -273,7 +277,6 @@ class System(Patcher, Binder, ImmutableRegistry):
         self.ext_gateway = self.gateway_pair.external
         self.immutable_types = {type(None)}
         immutable_types = self.immutable_types
-        self.patched = utils.WeakSet()
         self.is_bound = utils.WeakSet()
         self.thread_counters = {}
         self.lifecycle_hooks = LifecycleHooks()
@@ -299,7 +302,6 @@ class System(Patcher, Binder, ImmutableRegistry):
 
         self.bind = bind_and_mark
         self.binder = binder
-        self.proxy_type_customizer = proxy_type_customizer
         self.original_to_retrace_type = {}
         self.retrace_to_original_type = {}
         self.extended_type_flags = {}
@@ -326,26 +328,7 @@ class System(Patcher, Binder, ImmutableRegistry):
             proxy_type_customizer=proxy_type_customizer,
         )
 
-        def on_alloc(value):
-            current_system = self_ref()
-            if current_system is None:
-                return
-            current_system.bind(value)
-            current_system.patched.add(value)
-
-        self._on_alloc = self.dispatch(
-            internal=on_alloc,
-            external=on_alloc,
-            disabled=utils.noop,
-        )
-
-        self.type_patcher = TypePatcher(
-            self.gateway_pair,
-            bind=self.bind,
-            on_alloc = self._on_alloc,
-            owner=self)
-
-        self.patched_types = self.type_patcher.patched_types
+        self.proxy_type = self.proxy_factory.proxy_type
 
     def dispatch(self, *, internal, external, disabled):
         disp = _space_dispatch(disabled)
@@ -435,25 +418,7 @@ class System(Patcher, Binder, ImmutableRegistry):
         return wrapper
 
     def install(self):
-        def uninstall():
-            if getattr(self, "retrace_mode", None) == "replay":
-                self._replay_trace_active = False
-
-        return uninstall
-
-    def unpatch_type(self, cls):
-        return self.type_patcher.unpatch_type(cls)
-
-    def unpatch_types(self):
-        return self.type_patcher.unpatch_all()
-
-    def patch(self, obj, install_session=None):
-        if isinstance(obj, type):
-            self.type_patcher.patch_type(obj, install_session=install_session)
-            return obj
-        if callable(obj):
-            return self.patch_function(obj)
-        raise TypeError(f"cannot patch {type(obj).__name__!r} object")
+        return utils.noop
 
     def ext_proxy_result(self, fn):
         call_real = fn
@@ -466,18 +431,6 @@ class System(Patcher, Binder, ImmutableRegistry):
         standalone = wrapped_callable(wrapped)
         self.bind(standalone)
         return standalone
-
-    def descriptor_proxytype(self, cls):
-        slots = {}
-
-        for name in ["__get__", "__set__", "__delete__"]:
-            if name in cls.__dict__:
-                slots[name] = self._wrapped_function(
-                    self.gateway_pair.external,
-                    cls.__dict__[name],
-                )
-
-        return type("DescriptorProxy", (utils.ExternalWrapped,), slots)
 
     def _wrapped_function(self, handler, target):
         wrapped = utils.wrapped_function(handler=handler, target=target)
@@ -575,10 +528,6 @@ class System(Patcher, Binder, ImmutableRegistry):
         patched = utils.wrapped_callable(wrapped)
         self.bind(patched)
         return patched
-
-    def patch_type(self, cls):
-        self.type_patcher.patch_type(cls)
-        return functools.partial(self.type_patcher.unpatch_type, cls)
 
     def add_immutable_type(self, cls):
         self.immutable_types.add(cls)
@@ -704,11 +653,17 @@ class System(Patcher, Binder, ImmutableRegistry):
 
         system = System(binder = binder, proxy_type_customizer = proxy_type_customizer)
         system.retrace_mode = "record"
-        system.lifecycle_hooks = LifecycleHooks(
-            on_start=getattr(writer, "on_start", utils.noop),
-            on_end=None,
-        )
-        
+        run = system.run
+
+        def record_run(function, *args, **kwargs):
+            writer.on_start()
+            try:
+                return run(function, *args, **kwargs)
+            finally:
+                writer.run_completed()
+
+        system.run = record_run
+
         dynamic_ext_proxy_to_type = functional.when(
             system.proxy_factory.is_dynamic_external_proxy,
             functional.typeof,
@@ -790,14 +745,33 @@ class System(Patcher, Binder, ImmutableRegistry):
             
         def run_callback(message):
             try:
-                system.internal_space.apply(
+                return system.internal_space.apply(
                     functional.call,
                     replay_value(message.fn),
                     replay_value(message.args),
                     replay_value(message.kwargs),
                 )
             except Exception:
-                pass
+                return None
+
+        def consume_callback_completion(callback_result):
+            try:
+                message = reader.peek()
+            except (LookupError, RuntimeError, StopIteration):
+                return None
+            if isinstance(message, (CallbackResultMessage, ResultMessage)):
+                message = reader()
+                result = message.result
+                if isinstance(result, stream.Binding):
+                    bindings[_binding_handle(result)] = callback_result
+                return message
+            if isinstance(message, (CallbackErrorMessage, ErrorMessage)):
+                return reader()
+            return None
+
+        def run_callback_envelope(message):
+            callback_result = run_callback(message)
+            consume_callback_completion(callback_result)
 
         def advance_to_coordinate(result=None):
             while isinstance(reader.peek(), RunToCoordinateMessage):
@@ -822,20 +796,25 @@ class System(Patcher, Binder, ImmutableRegistry):
                     error = ReplayThreadScheduleError("overshot replay gc")
                 elif isinstance(instruction, CallbackMessage):
                     instruction = reader()
-                    on_hit = functional.repeatedly(run_callback, instruction)
+                    on_hit = functional.repeatedly(run_callback_envelope, instruction)
                     error = ReplayThreadScheduleError("overshot replay callback")
+                elif isinstance(instruction, RunCompletedMessage):
+                    reader()
+                    continue
                 else:
                     on_hit = utils.noop
                     error = ReplayThreadScheduleError(
                         f"overshot replay coordinate {cursor!r}"
                     )
 
-                system.internal_space.call_at(
-                    thread_id,
-                    cursor,
-                    on_hit,
-                    functional.repeatedly(_raise, error),
-                )
+                if cursor is None:
+                    system.internal_space.call_at(cursor, on_hit)
+                else:
+                    system.internal_space.call_at(
+                        cursor,
+                        on_hit,
+                        functional.repeatedly(_raise, error),
+                    )
             return result
 
         def read_message():
@@ -845,10 +824,14 @@ class System(Patcher, Binder, ImmutableRegistry):
                 if isinstance(message, BindCloseMessage):
                     bindings.pop(message.handle, None)
                     continue
+                elif isinstance(message, OnStartMessage):
+                    continue
                 elif isinstance(message, SwitchThreadMessage):
                     raise RuntimeError(
                         f"switch thread without run-to-coordinate: {message!r}"
                     )
+                elif isinstance(message, RunCompletedMessage):
+                    continue
                 elif isinstance(message, SignalMessage):
                     run_callback(message)
                     continue
@@ -856,10 +839,19 @@ class System(Patcher, Binder, ImmutableRegistry):
                     gc.collect(message.generation)
                     continue
                 elif isinstance(message, CallbackMessage):
-                    run_callback(message)
+                    run_callback_envelope(message)
                     continue
 
                 return message
+
+        def consume_lifecycle_marker(message_type):
+            try:
+                message = reader.peek()
+            except (LookupError, RuntimeError, StopIteration):
+                return None
+            if isinstance(message, message_type):
+                return reader()
+            return None
 
         def checkpoint_thread(thread_id):
             current = _thread.get_ident()
@@ -934,7 +926,10 @@ class System(Patcher, Binder, ImmutableRegistry):
             proxy_type_customizer=proxy_type_customizer,
         )
         system.retrace_mode = "replay"
-        system._replay_trace_active = True
+        system.lifecycle_hooks = LifecycleHooks(
+            on_start=functional.partial(consume_lifecycle_marker, OnStartMessage),
+            on_end=functional.partial(consume_lifecycle_marker, RunCompletedMessage),
+        )
         materialize_replay_value = functional.walker(
             system.proxy_factory.materialize_dynamic_external_proxy)
         system.wire_for_replay(next_result=next_result)

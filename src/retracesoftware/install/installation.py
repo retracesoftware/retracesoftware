@@ -2,7 +2,6 @@ from dataclasses import dataclass
 
 from retracesoftware.install.replace import restore_module_refs, update, update_module_refs
 from retracesoftware.install.session import InstallSession
-from retracesoftware.proxy.patchtype import patch_type as legacy_patch_type
 
 
 _MISSING = object()
@@ -42,8 +41,6 @@ class Installation:
         "update_refs",
         "module_refs_only",
         "_changes",
-        "_patched_types",
-        "_type_unpatchers",
         "_module_objects",
         "_uninstalled",
     )
@@ -54,8 +51,6 @@ class Installation:
         self.update_refs = update_refs
         self.module_refs_only = module_refs_only
         self._changes = []
-        self._patched_types = []
-        self._type_unpatchers = []
         self._module_objects = []
         self._uninstalled = False
 
@@ -93,13 +88,6 @@ class Installation:
             )
         )
 
-    def _track_type(self, cls):
-        if cls not in self._patched_types:
-            self._patched_types.append(cls)
-
-    def _track_type_unpatcher(self, unpatch):
-        self._type_unpatchers.append(unpatch)
-
     def bind(self, obj):
         return self.system.bind(obj)
 
@@ -115,19 +103,12 @@ class Installation:
 
     def patch_value(self, value):
         if isinstance(value, type):
-            unpatch = getattr(self.system, "patch_type", None)
-            if unpatch is None:
-                legacy_patch_type(self.system, value, install_session=self.install_session)
-                self._track_type(value)
-            else:
-                self._track_type_unpatcher(unpatch(value))
-            return value
+            return self.system.proxy_type(value)
 
         if callable(value):
             patch_function = getattr(self.system, "patch_function", None)
             if patch_function is not None:
                 return patch_function(value)
-            return self.system.patch(value, install_session=self.install_session)
 
         raise TypeError(f"cannot patch {type(value).__name__!r} object")
 
@@ -193,9 +174,7 @@ class Installation:
         if not isinstance(value, type):
             raise TypeError(f"cannot patch_type {type(value).__name__!r} object")
 
-        self.patch_value(value)
-        self._track_object(namespace, name, value, value)
-        return value
+        return self.proxy(module, name)
 
     def proxy(self, module, name, *, update_refs=None, module_refs_only=None):
         namespace = self._namespace(module)
@@ -254,15 +233,6 @@ class Installation:
                 if not change.module_refs_only:
                     update(change.new, change.old)
 
-        for unpatch in reversed(self._type_unpatchers):
-            unpatch()
-
-        for cls in sorted(self._patched_types, key=lambda cls: len(cls.__mro__), reverse=True):
-            if getattr(cls, "__retrace_system__", None) is self.system:
-                self.system.unpatch_type(cls)
-
         self._changes.clear()
-        self._patched_types.clear()
-        self._type_unpatchers.clear()
         self._module_objects.clear()
         self._uninstalled = True

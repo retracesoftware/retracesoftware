@@ -9,19 +9,6 @@ retrace = pytest.importorskip("retrace")
 utils = pytest.importorskip("retracesoftware.utils")
 
 
-def _busy_loop():
-    value = 0
-    for index in range(1000):
-        value += index
-        value ^= index
-        value += 1
-    return value
-
-
-def _advance_leaf_instruction(coordinates, delta):
-    return (*coordinates[:-2], coordinates[-2] + delta, 0)
-
-
 def test_trace_current_frame_with_explicit_target_frame():
     hits = []
     completed = []
@@ -50,64 +37,32 @@ def test_trace_current_frame_with_explicit_target_frame():
     assert any(code is traced.__code__ for code, _ in hits)
 
 
-def test_trace_future_coordinate_uses_retrace_call_at():
-    hits = []
+def test_trace_function_instructions_rejects_non_current_thread_id():
+    ready = threading.Event()
+    done = threading.Event()
+    idents = {}
 
-    def attempt(delta):
-        errors = []
-        ready = threading.Event()
-        go = threading.Event()
-        idents = {}
+    def worker():
+        idents["target"] = _thread.get_ident()
+        ready.set()
+        done.wait(5)
 
-        def worker():
-            try:
-                idents["target"] = _thread.get_ident()
-                ready.set()
-                assert go.wait(5)
-                _busy_loop()
-            except BaseException as exc:
-                errors.append(exc)
-
-        thread = threading.Thread(target=worker)
-        thread.start()
+    thread = threading.Thread(target=worker)
+    thread.start()
+    try:
         assert ready.wait(5)
+        assert idents["target"] != _thread.get_ident()
 
-        target_id = idents["target"]
-        base = tuple(retrace.coordinates(target_id))
-        target = _advance_leaf_instruction(base, delta)
-        monitor = None
-        try:
-            monitor = utils.trace_function_instructions(
-                target,
-                lambda code, offset: hits.append((code, offset)),
-                thread_id=target_id,
+        with pytest.raises(utils.TargetUnreachableError):
+            utils.trace_function_instructions(
+                retrace.coordinates(),
+                lambda code, offset: None,
+                thread_id=idents["target"],
             )
-        except utils.TargetUnreachableError:
-            go.set()
-            thread.join(timeout=5)
-            assert not thread.is_alive()
-            assert not errors
-            return False
-
-        try:
-            go.set()
-            thread.join(timeout=5)
-            assert not thread.is_alive()
-            assert not errors
-            return bool(hits)
-        finally:
-            monitor.close()
-            retrace.call_at(None)
-
-    for delta in range(1, 1000):
-        if attempt(delta):
-            break
-    else:
-        pytest.fail("could not find a reachable future coordinate")
-
-    assert hits
-    assert all(isinstance(code, CodeType) for code, _ in hits)
-    assert all(isinstance(offset, int) for _, offset in hits)
+    finally:
+        done.set()
+        thread.join(timeout=5)
+        assert not thread.is_alive()
 
 
 def test_target_unreachable_error_releases_monitoring_tool_id():

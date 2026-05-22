@@ -112,10 +112,11 @@ else:
     def _is_retrace_filename(filename, retrace_dirs, *, realpath=os.path.realpath):
         if filename.startswith("<frozen retrace"):
             return True
-        return (
-            filename.startswith(retrace_dirs)
-            or realpath(filename).startswith(retrace_dirs)
-        )
+        if filename.startswith(retrace_dirs):
+            return True
+        if "retracesoftware" not in filename.split(os.sep):
+            return False
+        return realpath(filename).startswith(retrace_dirs)
 
     def install_monitoring(checkpoint_fn, level, *, disable_for=None):
         """Register ``sys.monitoring`` callbacks for divergence detection.

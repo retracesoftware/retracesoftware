@@ -239,7 +239,8 @@ def test_multiple_binders_track_same_object_independently():
     left_binding = autobind_and_lookup(left, obj)
     right_binding = autobind_and_lookup(right, obj)
 
-    assert left_binding != right_binding
+    assert left_binding is not right_binding
+    assert left_binding.handle == right_binding.handle
     assert left.lookup(obj) is left_binding
     assert right.lookup(obj) is right_binding
 

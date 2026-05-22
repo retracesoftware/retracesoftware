@@ -13,6 +13,7 @@ from retracesoftware.proxy.traceio import (
     GCMessage,
     OnStartMessage,
     ResultMessage,
+    RunCompletedMessage,
     RunToCoordinateMessage,
     SignalMessage,
     StacktraceMessage,
@@ -49,6 +50,7 @@ def test_default_trace_writer_writes_messages_to_callable_sink():
     writer.checkpoint((0, 4), "main", {"state": "ok"})
     writer.stacktrace(stacktrace)
     writer.thread_switch((0, 3), "worker")
+    writer.run_completed()
     writer.binding_delete(7)
     writer.call_marker()
     writer.sync()
@@ -82,10 +84,11 @@ def test_default_trace_writer_writes_messages_to_callable_sink():
     assert messages[10].cursor_delta == (0, 3)
     assert isinstance(messages[11], SwitchThreadMessage)
     assert messages[11].thread_id == "worker"
-    assert isinstance(messages[12], BindCloseMessage)
-    assert messages[12].handle == 7
-    assert isinstance(messages[13], CallMarkerMessage)
-    assert isinstance(messages[14], SyncMessage)
+    assert isinstance(messages[12], RunCompletedMessage)
+    assert isinstance(messages[13], BindCloseMessage)
+    assert messages[13].handle == 7
+    assert isinstance(messages[14], CallMarkerMessage)
+    assert isinstance(messages[15], SyncMessage)
 
 
 def test_default_trace_writer_uses_write_method_sink():

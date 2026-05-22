@@ -64,6 +64,10 @@ class RunToCoordinateMessage(ProtocolMessage):
         self.cursor_delta = cursor_delta
 
 
+class RunCompletedMessage(ProtocolMessage):
+    __slots__ = ()
+
+
 class SwitchThreadMessage(ProtocolMessage):
     __slots__ = ()
 
@@ -190,6 +194,9 @@ class TraceWriter(Protocol):
     def run_to_coordinate(self, cursor_delta: object) -> None:
         ...
 
+    def run_completed(self) -> None:
+        ...
+
     def switch_thread(self, thread_id: object) -> None:
         ...
 
@@ -261,6 +268,9 @@ class DefaultTraceWriter:
     def run_to_coordinate(self, cursor_delta):
         return self._write(RunToCoordinateMessage(cursor_delta))
 
+    def run_completed(self):
+        return self._write(RunCompletedMessage())
+
     def switch_thread(self, thread_id):
         return self._write(SwitchThreadMessage(thread_id))
 
@@ -290,6 +300,7 @@ __all__ = [
     "PeekableTraceReader",
     "ProtocolMessage",
     "ResultMessage",
+    "RunCompletedMessage",
     "RunToCoordinateMessage",
     "SignalMessage",
     "StacktraceMessage",

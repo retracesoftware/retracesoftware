@@ -1,9 +1,11 @@
 from types import SimpleNamespace
 
+import pytest
+
 import retracesoftware.utils as utils
 
 from retracesoftware.gateway._dynamicproxy import ProxyRef
-from retracesoftware.gateway._proxytype import DynamicProxy
+from retracesoftware.gateway._proxytype import DynamicProxy, Proxy
 from retracesoftware.proxy.proxytypefactory2 import ProxyTypeFactory
 
 
@@ -110,6 +112,29 @@ def test_proxy_type_factory_creates_dynamic_internal_type():
     assert issubclass(proxy_type, utils.InternalWrapped)
     assert issubclass(proxy_type, DynamicProxy)
     assert calls == []
+
+
+def test_proxy_type_factory_rejects_proxy_types_as_source_classes():
+    factory, _calls = _factory()
+
+    class External:
+        pass
+
+    dynamic_external = factory.dynamic_external_type(External)
+    dynamic_internal = factory.dynamic_internal_type(External)
+    extended = factory.extended_type(External)
+    instantiable = factory.instantiable_external_type(External)
+
+    for proxy_type in (dynamic_external, dynamic_internal, extended, instantiable):
+        assert issubclass(proxy_type, Proxy)
+        with pytest.raises(AssertionError):
+            factory.dynamic_external_type(proxy_type)
+        with pytest.raises(AssertionError):
+            factory.dynamic_internal_type(proxy_type)
+        with pytest.raises(AssertionError):
+            factory.extended_type(proxy_type)
+        with pytest.raises(AssertionError):
+            factory.instantiable_external_type(proxy_type)
 
 
 def test_proxy_type_factory_dynamic_internal_type_calls_on_del():

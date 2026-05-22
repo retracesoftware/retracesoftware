@@ -2,7 +2,7 @@
 
 These protocols are intentionally small. They describe what another layer may
 ask the proxy runtime to do; they do not expose how System, GatewayPair,
-TypePatcher, binding, or trace I/O implement that behavior.
+proxy type generation, binding, or trace I/O implement that behavior.
 
 Do not use these protocols as a reason to probe concrete runtime objects. If a
 consumer needs more behavior, add the narrowest new protocol or callable here
@@ -12,12 +12,9 @@ after agreeing the contract.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Callable, Protocol, TypeAlias
+from typing import Any, Callable, Protocol
 
 from retracesoftware.proxy.traceio import TraceReader, TraceWriter
-
-
-Unpatcher: TypeAlias = Callable[[], None]
 
 
 @dataclass(frozen=True)
@@ -35,19 +32,20 @@ class AsyncCapture:
     thread_switch: bool = True
 
 
-class Patcher(Protocol):
-    """Install runtime patches for external boundary interception.
+class ProxyRuntime(Protocol):
+    """Generate proxy values for external boundary interception.
 
     CONTRACT LOCKED:
-    - ``patch_type(cls)`` patches ``cls`` and returns an unpatcher callable.
-    - The returned unpatcher reverses that patch for ``cls``.
+    - ``proxy_type(cls)`` returns the type that should replace ``cls`` in the
+      caller-owned namespace.
     - ``patch_function(fn)`` returns the callable that should replace ``fn``.
-    - Consumers must not inspect the concrete patcher implementation.
+    - The caller owns namespace replacement and uninstall bookkeeping.
+    - Consumers must not inspect the concrete proxy runtime implementation.
     - Consumers must not infer proxy, gateway, binding, or trace semantics from
       the returned callable's concrete type or private attributes.
     """
 
-    def patch_type(self, cls: type) -> Unpatcher:
+    def proxy_type(self, cls: type) -> type:
         ...
 
     def patch_function(self, fn: Callable[..., Any]) -> Callable[..., Any]:
@@ -138,9 +136,8 @@ __all__ = [
     "Binder",
     "Checkpoint",
     "ImmutableRegistry",
-    "Patcher",
+    "ProxyRuntime",
     "ProxyTypeCustomizer",
     "TraceReader",
     "TraceWriter",
-    "Unpatcher",
 ]
