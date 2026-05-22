@@ -11,12 +11,28 @@ after agreeing the contract.
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import Any, Callable, Protocol, TypeAlias
 
 from retracesoftware.proxy.traceio import TraceReader, TraceWriter
 
 
 Unpatcher: TypeAlias = Callable[[], None]
+
+
+@dataclass(frozen=True)
+class AsyncCapture:
+    """Record-time async event capture policy.
+
+    ``thread_switch`` captures retrace-python scheduler handoffs.
+    ``signal`` captures Python signal handler delivery only while internal code
+    is running.
+    ``gc`` captures observed GC collection start events.
+    """
+
+    gc: bool = False
+    signal: bool = False
+    thread_switch: bool = True
 
 
 class Patcher(Protocol):
@@ -35,6 +51,52 @@ class Patcher(Protocol):
         ...
 
     def patch_function(self, fn: Callable[..., Any]) -> Callable[..., Any]:
+        ...
+
+
+class Binder(Protocol):
+    """Register objects that are already represented in the trace.
+
+    CONTRACT LOCKED:
+    - ``bind(obj)`` gives the proxy runtime a stable semantic handle for
+      ``obj`` without installing automatic cleanup detection.
+    - ``autobind(obj)`` gives ``obj`` a stable semantic handle and arranges
+      for cleanup to be detected automatically when the object is collected.
+    - ``unbind(obj)`` removes ``obj``'s binding and emits the configured delete
+      notification if the object was bound.
+    - Calling the binder with ``obj`` returns the stable handle when ``obj`` is
+      bound, otherwise it returns ``obj`` unchanged.
+    - Consumers must not inspect how handles are allocated or stored.
+    - Binding is explicit; consumers must not infer binding from proxy
+      concrete types or private attributes.
+    """
+
+    def bind(self, obj: object) -> None:
+        ...
+
+    def autobind(self, obj: object) -> None:
+        ...
+
+    def unbind(self, obj: object) -> None:
+        ...
+
+    def __call__(self, obj: object) -> Any:
+        ...
+
+
+class ImmutableRegistry(Protocol):
+    """Declare types that cross the boundary unchanged.
+
+    CONTRACT LOCKED:
+    - ``add_immutable_type(cls)`` marks instances of ``cls`` as immutable
+      passthrough values for this runtime.
+    - Consumers must not mutate the registry storage directly.
+    """
+
+    def add_immutable_type(self, cls: type) -> None:
+        ...
+
+    def add_immutable_types(self, *classes: type) -> None:
         ...
 
 
@@ -72,7 +134,10 @@ class ProxyTypeCustomizer(Protocol):
 
 
 __all__ = [
+    "AsyncCapture",
+    "Binder",
     "Checkpoint",
+    "ImmutableRegistry",
     "Patcher",
     "ProxyTypeCustomizer",
     "TraceReader",

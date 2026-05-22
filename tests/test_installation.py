@@ -1,14 +1,53 @@
 import sys
 import types
 import posix
+import enum
+import functools
 
 import retracesoftware.functional as functional
-import retracesoftware.utils as utils
 
 from retracesoftware.install.installation import Installation
 from retracesoftware.install.patcher import patch
 from retracesoftware.install.replace import ModuleRefIndex, restore_module_refs
-from retracesoftware.proxy.system import CallHooks, LifecycleHooks, System
+
+
+class _ContractSystem:
+    def __init__(self):
+        self.patched_types = []
+        self.unpatched_types = []
+        self.patched_functions = []
+        self.bound = []
+        self.immutable_types = set()
+
+    def patch_type(self, cls):
+        self.patched_types.append(cls)
+
+        def unpatch():
+            self.unpatched_types.append(cls)
+
+        return unpatch
+
+    def patch_function(self, fn):
+        self.patched_functions.append(fn)
+
+        @functools.wraps(fn)
+        def wrapped(*args, **kwargs):
+            return fn(*args, **kwargs)
+
+        return wrapped
+
+    def bind(self, obj):
+        self.bound.append(obj)
+
+    def add_immutable_type(self, cls):
+        self.immutable_types.add(cls)
+
+    def disable_for(self, fn, *, unwrap_args=True, retrace=True):
+        @functools.wraps(fn)
+        def wrapped(*args, **kwargs):
+            return fn(*args, **kwargs)
+
+        return wrapped
 
 
 def _wrap_marker(target):
@@ -19,12 +58,7 @@ def _wrap_marker(target):
 
 
 def _system():
-    system = System(on_bind=utils.noop)
-    system.primary_hooks = CallHooks()
-    system.secondary_hooks = CallHooks()
-    system.lifecycle_hooks = LifecycleHooks(on_start=utils.noop, on_end=utils.noop)
-    system.immutable_types.update({int, float, str, bytes, bool, type, type(None)})
-    return system
+    return _ContractSystem()
 
 
 def test_installation_proxy_replaces_function_and_uninstalls():
@@ -52,6 +86,27 @@ def test_installation_proxy_replaces_function_and_uninstalls():
     assert namespace["add"] is add
 
 
+def test_installation_proxy_uses_patcher_contract_for_function():
+    system = _ContractSystem()
+    installation = Installation(system)
+
+    def add(a, b):
+        return a + b
+
+    namespace = {"__name__": "test_installation_proxy_contract", "add": add}
+
+    proxied = installation.proxy(namespace, "add")
+
+    assert system.patched_functions == [add]
+    assert proxied is namespace["add"]
+    assert proxied is not add
+    assert proxied(2, 3) == 5
+
+    installation.uninstall()
+
+    assert namespace["add"] is add
+
+
 def test_installation_patch_type_unpatches_on_uninstall():
     system = _system()
     installation = Installation(system)
@@ -65,13 +120,31 @@ def test_installation_patch_type_unpatches_on_uninstall():
     patched = installation.patch_type(namespace, "Example")
 
     assert patched is Example
-    assert Example in system.patched_types
-    assert getattr(Example, "__retrace_system__", None) is system
+    assert system.patched_types == [Example]
 
     installation.uninstall()
 
-    assert Example not in system.patched_types
-    assert getattr(Example, "__retrace_system__", None) is None
+    assert system.unpatched_types == [Example]
+
+
+def test_installation_patch_type_uses_returned_unpatcher():
+    system = _ContractSystem()
+    installation = Installation(system)
+
+    class Example:
+        pass
+
+    namespace = {"__name__": "test_installation_patch_type_contract", "Example": Example}
+
+    patched = installation.patch_type(namespace, "Example")
+
+    assert patched is Example
+    assert system.patched_types == [Example]
+    assert system.unpatched_types == []
+
+    installation.uninstall()
+
+    assert system.unpatched_types == [Example]
 
 
 def test_installation_proxy_type_tracks_and_unpatches_type():
@@ -87,13 +160,40 @@ def test_installation_proxy_type_tracks_and_unpatches_type():
     proxied = installation.proxy(namespace, "Example")
 
     assert proxied is Example
-    assert Example in system.patched_types
+    assert system.patched_types == [Example]
     assert installation.module_objects[0].name == "Example"
 
     installation.uninstall()
 
-    assert Example not in system.patched_types
-    assert getattr(Example, "__retrace_system__", None) is None
+    assert system.unpatched_types == [Example]
+
+
+def test_patcher_uses_installation_contracts_for_bind_and_immutable():
+    system = _ContractSystem()
+
+    class Immutable:
+        pass
+
+    class Bound(enum.Enum):
+        VALUE = 1
+
+    namespace = {
+        "__name__": "test_patcher_contracts",
+        "Immutable": Immutable,
+        "Bound": Bound,
+    }
+
+    undo = patch(
+        namespace,
+        {"immutable": ["Immutable"], "bind": ["Bound"]},
+        Installation(system),
+    )
+
+    try:
+        assert system.immutable_types == {Immutable}
+        assert system.bound == [Bound.VALUE]
+    finally:
+        undo()
 
 
 def test_installation_can_update_module_refs_and_restore_them_on_uninstall():

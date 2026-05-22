@@ -267,28 +267,35 @@ namespace retracesoftware_stream {
             Py_RETURN_NONE;
         }
 
-        void forget(PyObject * obj) {
+        void forget_bound_entries(PyObject * obj);
+
+        PyObject * forget(PyObject * obj) {
             auto it = bindings.find(obj);
             if (it == bindings.end()) {
                 auto fallback = fallback_bindings.find(obj);
                 if (fallback != fallback_bindings.end()) {
+                    PyObject * binding = Py_NewRef(fallback->second);
                     Py_DECREF(fallback->first);
                     Py_DECREF(fallback->second);
                     fallback_bindings.erase(fallback);
-                    return;
+                    return binding;
                 }
 
                 auto weak = weak_bindings.find(obj);
                 if (weak != weak_bindings.end()) {
+                    PyObject * binding = Py_NewRef(weak->second.binding);
                     Py_DECREF(weak->second.weakref);
                     Py_DECREF(weak->second.binding);
                     weak_bindings.erase(weak);
-                    return;
+                    return binding;
                 }
-                return;
+                Py_RETURN_NONE;
             }
+            PyObject * binding = Py_NewRef(it->second);
             Py_DECREF(it->second);
             bindings.erase(it);
+            forget_bound_entries(obj);
+            return binding;
         }
 
         void emit_delete(uint64_t handle_value) {
@@ -361,7 +368,33 @@ namespace retracesoftware_stream {
             return Py_NewRef(binding);
         }
 
-        PyObject * bind(PyObject * obj);
+        PyObject * new_binding() {
+            return Binding_New(next_binding_handle++);
+        }
+
+        PyObject * bind_plain(PyObject * obj) {
+            PyObject * existing = lookup(obj);
+            if (!existing) {
+                return nullptr;
+            }
+            if (existing != Py_None) {
+                Py_DECREF(existing);
+                PyErr_SetString(PyExc_RuntimeError, "object is already bound");
+                return nullptr;
+            }
+            Py_DECREF(existing);
+
+            PyObject * binding = new_binding();
+            if (!binding) {
+                return nullptr;
+            }
+
+            bindings[obj] = Py_NewRef(binding);
+            Py_DECREF(binding);
+            Py_RETURN_NONE;
+        }
+
+        PyObject * bind_auto(PyObject * obj);
 
         PyObject * bind_fallback(PyObject * obj, PyObject * binding) {
             auto it = fallback_bindings.find(obj);
@@ -375,7 +408,26 @@ namespace retracesoftware_stream {
         }
 
         static PyObject * py_bind(Binder * self, PyObject * obj) {
-            return self->bind(obj);
+            return self->bind_plain(obj);
+        }
+
+        static PyObject * py_autobind(Binder * self, PyObject * obj) {
+            return self->bind_auto(obj);
+        }
+
+        static PyObject * py_unbind(Binder * self, PyObject * obj) {
+            PyObject * binding = self->forget(obj);
+            if (!binding) {
+                return nullptr;
+            }
+            if (binding != Py_None) {
+                uint64_t handle = Binding_Handle(binding);
+                Py_DECREF(binding);
+                self->emit_delete(handle);
+                Py_RETURN_NONE;
+            }
+            Py_DECREF(binding);
+            Py_RETURN_NONE;
         }
 
         static PyObject * py_lookup(Binder * self, PyObject * obj) {
@@ -411,6 +463,29 @@ namespace retracesoftware_stream {
     static identity_map<std::vector<BoundEntry>> bound_entries;
     static uint64_t next_binding_handle = 0;
     static void binder_dealloc(PyObject * obj);
+
+    void Binder::forget_bound_entries(PyObject * obj) {
+        auto entries_it = bound_entries.find(obj);
+        if (entries_it == bound_entries.end()) {
+            return;
+        }
+
+        auto & entries = entries_it->second;
+        for (auto it = entries.begin(); it != entries.end();) {
+            if (it->binder != this) {
+                ++it;
+                continue;
+            }
+
+            Py_DECREF(it->binding);
+            Py_DECREF(reinterpret_cast<PyObject *>(it->binder));
+            it = entries.erase(it);
+        }
+
+        if (entries.empty()) {
+            bound_entries.erase(entries_it);
+        }
+    }
 
     static destructor get_subtype_dealloc() {
         static destructor cached = nullptr;
@@ -559,7 +634,8 @@ namespace retracesoftware_stream {
                     .binding = bound.binding,
                     .handle = Binding_Handle(bound.binding),
                 });
-                bound.binder->forget(obj);
+                PyObject * forgotten = bound.binder->forget(obj);
+                Py_XDECREF(forgotten);
             }
         }
 
@@ -622,7 +698,7 @@ namespace retracesoftware_stream {
         return true;
     }
 
-    PyObject * Binder::bind(PyObject * obj) {
+    PyObject * Binder::bind_auto(PyObject * obj) {
         PyObject * existing = lookup(obj);
         if (!existing) {
             return nullptr;
@@ -634,7 +710,7 @@ namespace retracesoftware_stream {
         }
         Py_DECREF(existing);
 
-        PyObject * binding = Binding_New(next_binding_handle++);
+        PyObject * binding = new_binding();
         if (!binding) {
             return nullptr;
         }
@@ -644,11 +720,17 @@ namespace retracesoftware_stream {
             PyObject * result = bind_with_weakref(obj, binding);
             if (result) {
                 Py_DECREF(binding);
-                return result;
+                Py_DECREF(result);
+                Py_RETURN_NONE;
             }
             if (PyErr_ExceptionMatches(PyExc_TypeError)) {
                 PyErr_Clear();
-                return bind_fallback(obj, binding);
+                PyObject * fallback = bind_fallback(obj, binding);
+                if (!fallback) {
+                    return nullptr;
+                }
+                Py_DECREF(fallback);
+                Py_RETURN_NONE;
             }
             Py_DECREF(binding);
             return nullptr;
@@ -663,11 +745,14 @@ namespace retracesoftware_stream {
         auto & entries = bound_entries[obj];
         Py_INCREF(reinterpret_cast<PyObject *>(this));
         entries.emplace_back(this, Py_NewRef(binding));
-        return binding;
+        Py_DECREF(binding);
+        Py_RETURN_NONE;
     }
 
     static PyMethodDef Binder_methods[] = {
-        {"bind", (PyCFunction)Binder::py_bind, METH_O, "Bind an object and return its handle"},
+        {"bind", (PyCFunction)Binder::py_bind, METH_O, "Bind an object without automatic cleanup tracking"},
+        {"autobind", (PyCFunction)Binder::py_autobind, METH_O, "Bind an object and automatically unbind it when collected"},
+        {"unbind", (PyCFunction)Binder::py_unbind, METH_O, "Remove an object's binding and emit the delete callback"},
         {"lookup", (PyCFunction)Binder::py_lookup, METH_O, "Return the bound handle for an object or None"},
         {nullptr}
     };

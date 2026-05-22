@@ -214,7 +214,8 @@ def test_debug_persister_serializes_binding_objects_as_handle_refs():
 
     binder = stream.Binder()
     obj = object()
-    binding = binder.bind(obj)
+    binder.bind(obj)
+    binding = binder.lookup(obj)
 
     with stream.writer(output=persister, flush_interval=999) as writer:
         writer(binding)

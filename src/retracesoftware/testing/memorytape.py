@@ -89,10 +89,8 @@ class _BindingState:
         return _BindOpenMarker(index)
 
     def bind(self, obj):
-        try:
-            binding = self._binder.bind(obj)
-        except TypeError:
-            return self._bind_fallback(obj)
+        self._binder.autobind(obj)
+        binding = self._binder.lookup(obj)
         return _BindOpenMarker(self._index_for_key(("binding", binding.handle)))
 
     def __call__(self, obj, fallback=None):

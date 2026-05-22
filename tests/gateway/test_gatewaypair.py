@@ -71,6 +71,7 @@ from retracesoftware.gateway import GatewayPair
 import retracesoftware.gateway._dynamicproxy as dynamicproxy
 import retracesoftware.gateway._gatewaypair as gatewaypair_module
 import retracesoftware.gateway._recording as recording
+from retracesoftware.proxy.proxytypefactory2 import ProxyTypeFactory
 
 
 class FreshExternalResult:
@@ -148,7 +149,108 @@ def test_recording_external_call_runs_live_target_and_observes_result(monkeypatc
     assert results == [("wrapped", "external-result")]
     assert errors == []
     assert callbacks == []
-    assert bound
+    assert bound == []
+
+
+def test_unwired_pair_runs_passthrough_before_mode_wiring(monkeypatch):
+    fake_retrace = _fake_retrace()
+    monkeypatch.setattr(gatewaypair_module, "retrace", fake_retrace)
+    monkeypatch.setattr(dynamicproxy, "retrace", fake_retrace)
+
+    pair = GatewayPair.create_unwired()
+
+    assert pair.external(lambda value: f"external:{value}", "x") == "external:x"
+    assert pair.internal(lambda value: f"internal:{value}", "y") == "internal:y"
+
+
+def test_parameterless_gateway_pair_creates_unwired_passthrough_pair(monkeypatch):
+    fake_retrace = _fake_retrace()
+    monkeypatch.setattr(gatewaypair_module, "retrace", fake_retrace)
+    monkeypatch.setattr(dynamicproxy, "retrace", fake_retrace)
+
+    pair = GatewayPair()
+
+    assert pair.sandbox_space is pair._internal_endpoint.space
+    assert pair._external_space is pair._external_endpoint.space
+    assert pair.external(lambda value: f"external:{value}", "x") == "external:x"
+    assert pair.internal(lambda value: f"internal:{value}", "y") == "internal:y"
+
+
+def test_wrap_as_callback_routes_through_internal_gateway_and_binds_wrapper(monkeypatch):
+    fake_retrace = _fake_retrace()
+    monkeypatch.setattr(gatewaypair_module, "retrace", fake_retrace)
+    monkeypatch.setattr(dynamicproxy, "retrace", fake_retrace)
+    bound = []
+    calls = []
+    pair = GatewayPair.create_unwired(bind=bound.append)
+
+    def internal_handler(function, *args, **kwargs):
+        calls.append((function, args, kwargs))
+        return function(*args, **kwargs)
+
+    pair.set_handlers(
+        internal=internal_handler,
+        external=lambda function, *args, **kwargs: function(*args, **kwargs),
+    )
+
+    def callback(value, *, suffix):
+        return f"{value}:{suffix}"
+
+    wrapped = pair.wrap_as_callback(callback)
+
+    assert wrapped("seen", suffix="inside") == "seen:inside"
+    assert bound == [wrapped]
+    assert calls == [(callback, ("seen",), {"suffix": "inside"})]
+
+
+def test_unwired_pair_can_be_wired_for_recording_with_proxy_type_factory(monkeypatch):
+    fake_retrace = _fake_retrace()
+    monkeypatch.setattr(gatewaypair_module, "retrace", fake_retrace)
+    monkeypatch.setattr(dynamicproxy, "retrace", fake_retrace)
+    monkeypatch.setattr(dynamicproxy, "proxy", _tagged_proxy("wrapped"))
+    callbacks = []
+    results = []
+    bound = []
+    pair = GatewayPair.create_unwired()
+    factory = ProxyTypeFactory(
+        gateway_pair=pair,
+        on_new_instance=bound.append,
+    )
+
+    pair.wire_recording(
+        factory,
+        is_passthrough=lambda value: False,
+        on_callback=lambda *args, **kwargs: callbacks.append((args, kwargs)),
+        on_error=lambda *args: None,
+        on_result=results.append,
+    )
+
+    assert pair.external(lambda value: value, "x") == ("wrapped", ("wrapped", "x"))
+    assert results == [("wrapped", ("wrapped", "x"))]
+    assert callbacks == []
+
+
+def test_unwired_pair_can_be_wired_for_replay_with_proxy_type_factory(monkeypatch):
+    fake_retrace = _fake_retrace()
+    monkeypatch.setattr(gatewaypair_module, "retrace", fake_retrace)
+    monkeypatch.setattr(dynamicproxy, "retrace", fake_retrace)
+    monkeypatch.setattr(dynamicproxy, "proxy", _tagged_proxy("wrapped"))
+    bound = []
+    pair = GatewayPair.create_unwired()
+    factory = ProxyTypeFactory(
+        gateway_pair=pair,
+        on_new_instance=bound.append,
+    )
+
+    pair.wire_replay(
+        factory,
+        is_passthrough=lambda value: False,
+        next_result=lambda *args, **kwargs: "recorded",
+    )
+
+    assert pair.external(lambda: "live") == "recorded"
+    with pytest.raises(RuntimeError, match="replay cannot create external proxies"):
+        pair._external_endpoint.proxy(object())
 
 
 def test_recording_passthrough_predicate_decides_whether_result_is_proxied(monkeypatch):
@@ -255,7 +357,7 @@ def test_recording_external_result_uses_real_external_proxy(monkeypatch):
     assert isinstance(result, FreshExternalResult)
     assert isinstance(observed[0], utils.ExternalWrapped)
     assert pair.sandbox_space.apply(observed[0].ping) == "pong"
-    assert any(isinstance(value, type) and issubclass(value, utils.ExternalWrapped) for value in bound)
+    assert bound == []
 
 
 def test_recording_external_proxy_forwards_declared_attrs(monkeypatch):
@@ -429,7 +531,7 @@ def test_recording_pair_recorder_emits_named_events(monkeypatch):
         and recording._resolve(event.value, bindings) == external_result
         for event in events
     )
-    assert any(isinstance(event, recording.Bind) for event in events)
+    assert not any(isinstance(event, recording.Bind) for event in events)
 
     def callback(value):
         return ("callback", value)
@@ -475,16 +577,10 @@ def test_recording_pair_recorder_records_bind_events_and_binding_dict(monkeypatc
 
     pair.external(lambda value: value, token)
 
-    bind_events = [
-        event
-        for event in events
-        if isinstance(event, recording.Bind) and event.value is token
-    ]
-    assert len(bind_events) == 1
-    assert bindings[bind_events[0].handle] is token
+    assert not any(isinstance(event, recording.Bind) for event in events)
     assert any(
         isinstance(event, recording.Result)
-        and _contains(event.value, recording.Bound(bind_events[0].handle))
+        and _contains(event.value, token)
         for event in events
     )
 

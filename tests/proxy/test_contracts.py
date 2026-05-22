@@ -1,7 +1,10 @@
 from typing import get_type_hints
 
 from retracesoftware.proxy.contracts import (
+    AsyncCapture,
+    Binder,
     Checkpoint,
+    ImmutableRegistry,
     Patcher,
     ProxyTypeCustomizer,
     TraceReader,
@@ -19,9 +22,26 @@ def test_patcher_contract_exports_patch_methods():
     assert Unpatcher is not None
 
 
+def test_binder_contract_exports_bind_method():
+    assert hasattr(Binder, "bind")
+
+
+def test_immutable_registry_contract_exports_add_methods():
+    assert hasattr(ImmutableRegistry, "add_immutable_type")
+    assert hasattr(ImmutableRegistry, "add_immutable_types")
+
+
 def test_trace_io_contracts_are_exported_from_contracts_module():
     assert TraceReader is TraceReaderContract
     assert TraceWriter is TraceWriterContract
+
+
+def test_async_capture_defaults_to_thread_switch_only():
+    capture = AsyncCapture()
+
+    assert capture.thread_switch is True
+    assert capture.signal is False
+    assert capture.gc is False
 
 
 def test_proxy_type_customizer_contract_shape():
@@ -44,4 +64,6 @@ def test_system2_declares_patcher_contract_and_checkpoint_member():
     hints = get_type_hints(System2)
 
     assert Patcher in System2.__mro__
+    assert Binder in System2.__mro__
+    assert ImmutableRegistry in System2.__mro__
     assert hints["checkpoint"] is Checkpoint

@@ -7,7 +7,6 @@ import retracesoftware.utils as utils
 import retracesoftware.functional as functional
 import importlib
 from retracesoftware.install.installation import Installation
-from retracesoftware.proxy.patchtype import patch_type
 
 _MISSING_ATTR = object()
 
@@ -20,12 +19,12 @@ _MISSING_ATTR = object()
 #
 # Supported directives:
 #
-#   proxy          types → system.patch_type
-#                  functions → route through the external gate
+#   proxy          types → installation.patch_type / Patcher.patch_type
+#                  functions → Patcher.patch_function
 #   ext_proxy_result
 #                  functions → live-run and ext-proxy the returned object
-#   patch_types    system.patch_type (types only)
-#   immutable      system.immutable_types.add
+#   patch_types    installation.patch_type (types only)
+#   immutable      ImmutableRegistry.add_immutable_type
 #   bind           pre-register objects (enums expanded to members)
 #   disable        system.disable_for, replace in namespace
 #   wrap           resolve dotted path, replace in namespace
@@ -221,7 +220,6 @@ def patch(
         )
 
     system = installation.system
-    install_session = installation.install_session
     if update_refs is None:
         update_refs = installation.update_refs
 
@@ -231,7 +229,7 @@ def patch(
     ns_undos = []       # (name, old_value, new_value, ref_update_mode, module_ref_changes)
     type_attr_undos = []  # (cls, attr, old_value)
     originals = {}      # name → first (pre-patch) value
-    added_immutables = []  # types added to system.immutable_types
+    added_immutables = []  # legacy undo for old System immutable storage
     # Resolve dotted helper imports before mutating the module being patched.
     # This avoids importing support code (for example edgecase wrappers for
     # ``_io``) after core types in that same module have already been live-
@@ -290,14 +288,12 @@ def patch(
                 if not (isinstance(value, type) or callable(value)):
                     continue
                 try:
-                    patched = system.patch(value, install_session=install_session)
+                    patched = installation.patch_value(value)
                 except Exception as exc:
                     module_name = namespace.get('__name__', '<unknown>')
                     raise RuntimeError(
                         f"failed to patch {module_name}.{name}"
                     ) from exc
-                if isinstance(value, type):
-                    installation._track_type(value)
                 _apply(name, value, patched)
 
         elif directive == 'ext_proxy_result':
@@ -314,8 +310,7 @@ def patch(
                     continue
                 value = namespace[name]
                 if isinstance(value, type):
-                    patch_type(system, value, install_session=install_session)
-                    installation._track_type(value)
+                    installation.patch_value(value)
 
         elif directive == 'immutable':
             for name in config:
@@ -323,7 +318,7 @@ def patch(
                     continue
                 value = namespace[name]
                 if isinstance(value, type):
-                    system.immutable_types.add(value)
+                    installation.add_immutable_type(value)
                     added_immutables.append(value)
 
         elif directive == 'bind':
@@ -333,9 +328,9 @@ def patch(
                 value = namespace[name]
                 if isinstance(value, type) and issubclass(value, enum.Enum):
                     for member in value:
-                        system.bind(member)
+                        installation.bind(member)
                 else:
-                    system.bind(value)
+                    installation.bind(value)
 
         elif directive == 'disable':
             for name in config:
@@ -385,7 +380,7 @@ def patch(
                                     value = getattr(cls, attr)
                                     if not callable(value) or isinstance(value, type):
                                         continue
-                                    set_type_attr(attr, system._wrapped_method(value))
+                                    set_type_attr(attr, installation.patch_value(value))
                                 continue
 
                             if sub_directive == 'disable':
@@ -488,7 +483,9 @@ def patch(
                 update(new_value, old_value)
         # Remove types we added to the immutable set.
         for cls in added_immutables:
-            system.immutable_types.discard(cls)
+            immutable_types = getattr(system, "immutable_types", None)
+            if immutable_types is not None:
+                immutable_types.discard(cls)
         for cls, attr, old_value in reversed(type_attr_undos):
             with modify(cls):
                 if old_value is _MISSING_ATTR:

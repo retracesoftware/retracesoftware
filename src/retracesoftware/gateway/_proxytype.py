@@ -4,6 +4,21 @@ import retracesoftware.functional as functional
 class DynamicProxy:
     __slots__ = []
 
+
+def _stored_retrace_binding(instance):
+    try:
+        return object.__getattribute__(instance, "_retrace_binding")
+    except AttributeError:
+        return None
+
+
+def _serialized_external_proxy(instance):
+    return getattr(type(instance), "__retrace_type_binding__", None)
+
+
+def _serialized_bound_proxy(instance):
+    return _stored_retrace_binding(instance)
+
 def superdict(cls):
     result = {}
     for cls in list(reversed(cls.__mro__))[1:]:
@@ -69,10 +84,16 @@ def dynamic_proxytype(handler, cls, wrapped_base = utils.ExternalWrapped):
     # functional.repeatedly(resolved)
 
     # spec['__class__'] = property(target_type)
+    spec['__slots__'] = ('_retrace_binding',)
     spec['__class__'] = property(functional.constantly(target_type))
 
     spec['__name__'] = cls.__name__
     spec['__module__'] = cls.__module__
+    spec['__retrace_binding__'] = _stored_retrace_binding
+    if wrapped_base is utils.ExternalWrapped:
+        spec['__retrace_serialized__'] = _serialized_external_proxy
+    else:
+        spec['__retrace_serialized__'] = _serialized_bound_proxy
     # name = f'retrace.proxied.{cls.__module__}.{cls.__name__}'
 
     return type(cls.__name__, (wrapped_base, DynamicProxy), spec)

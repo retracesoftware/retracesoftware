@@ -2,7 +2,7 @@ from dataclasses import dataclass
 
 from retracesoftware.install.replace import restore_module_refs, update, update_module_refs
 from retracesoftware.install.session import InstallSession
-from retracesoftware.proxy.patchtype import patch_type
+from retracesoftware.proxy.patchtype import patch_type as legacy_patch_type
 
 
 _MISSING = object()
@@ -43,6 +43,7 @@ class Installation:
         "module_refs_only",
         "_changes",
         "_patched_types",
+        "_type_unpatchers",
         "_module_objects",
         "_uninstalled",
     )
@@ -54,6 +55,7 @@ class Installation:
         self.module_refs_only = module_refs_only
         self._changes = []
         self._patched_types = []
+        self._type_unpatchers = []
         self._module_objects = []
         self._uninstalled = False
 
@@ -94,6 +96,40 @@ class Installation:
     def _track_type(self, cls):
         if cls not in self._patched_types:
             self._patched_types.append(cls)
+
+    def _track_type_unpatcher(self, unpatch):
+        self._type_unpatchers.append(unpatch)
+
+    def bind(self, obj):
+        return self.system.bind(obj)
+
+    def add_immutable_type(self, cls):
+        if not isinstance(cls, type):
+            raise TypeError(f"cannot add immutable {type(cls).__name__!r} object")
+        add = getattr(self.system, "add_immutable_type", None)
+        if add is not None:
+            add(cls)
+        else:
+            self.system.immutable_types.add(cls)
+        return cls
+
+    def patch_value(self, value):
+        if isinstance(value, type):
+            unpatch = getattr(self.system, "patch_type", None)
+            if unpatch is None:
+                legacy_patch_type(self.system, value, install_session=self.install_session)
+                self._track_type(value)
+            else:
+                self._track_type_unpatcher(unpatch(value))
+            return value
+
+        if callable(value):
+            patch_function = getattr(self.system, "patch_function", None)
+            if patch_function is not None:
+                return patch_function(value)
+            return self.system.patch(value, install_session=self.install_session)
+
+        raise TypeError(f"cannot patch {type(value).__name__!r} object")
 
     def _resolve_update_refs(self, update_refs, module_refs_only):
         if update_refs is None:
@@ -157,8 +193,7 @@ class Installation:
         if not isinstance(value, type):
             raise TypeError(f"cannot patch_type {type(value).__name__!r} object")
 
-        patch_type(self.system, value, install_session=self.install_session)
-        self._track_type(value)
+        self.patch_value(value)
         self._track_object(namespace, name, value, value)
         return value
 
@@ -169,9 +204,7 @@ class Installation:
             raise KeyError(name)
         update_refs, module_refs_only = self._resolve_update_refs(update_refs, module_refs_only)
 
-        new = self.system.patch(value, install_session=self.install_session)
-        if isinstance(value, type):
-            self._track_type(value)
+        new = self.patch_value(value)
 
         self._track_object(namespace, name, value, new)
 
@@ -221,11 +254,15 @@ class Installation:
                 if not change.module_refs_only:
                     update(change.new, change.old)
 
+        for unpatch in reversed(self._type_unpatchers):
+            unpatch()
+
         for cls in sorted(self._patched_types, key=lambda cls: len(cls.__mro__), reverse=True):
             if getattr(cls, "__retrace_system__", None) is self.system:
                 self.system.unpatch_type(cls)
 
         self._changes.clear()
         self._patched_types.clear()
+        self._type_unpatchers.clear()
         self._module_objects.clear()
         self._uninstalled = True

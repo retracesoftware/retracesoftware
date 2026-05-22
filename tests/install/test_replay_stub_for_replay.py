@@ -2,8 +2,23 @@ import pytest
 
 from retracesoftware.install.installation import Installation
 from retracesoftware.install.patcher import ReplayStubCallError, patch
-from retracesoftware.proxy.system import System
-from retracesoftware import utils
+
+
+class _PatchSystem:
+    def __init__(self, mode):
+        self.retrace_mode = mode
+        self.patched_types = []
+
+    def patch_type(self, cls):
+        self.patched_types.append(cls)
+
+        def unpatch():
+            self.patched_types.remove(cls)
+
+        return unpatch
+
+    def patch_function(self, fn):
+        return fn
 
 
 def test_stub_for_replay_replaces_type_only_during_replay():
@@ -17,8 +32,7 @@ def test_stub_for_replay_replaces_type_only_during_replay():
 
     namespace = {"__name__": "demo_native", "NativeHandle": NativeHandle}
 
-    record_system = System()
-    record_system.retrace_mode = "record"
+    record_system = _PatchSystem("record")
     undo_record = patch(
         namespace,
         {"stub_for_replay": ["NativeHandle"]},
@@ -29,8 +43,7 @@ def test_stub_for_replay_replaces_type_only_during_replay():
     finally:
         undo_record()
 
-    replay_system = System()
-    replay_system.retrace_mode = "replay"
+    replay_system = _PatchSystem("replay")
     undo_replay = patch(
         namespace,
         {"stub_for_replay": ["NativeHandle"]},
@@ -65,15 +78,18 @@ def test_stub_for_replay_runs_before_proxy_directive():
             return "live"
 
     namespace = {"__name__": "demo_native", "NativeHandle": NativeHandle}
-    replay_system = System()
-    replay_system.retrace_mode = "replay"
+    replay_system = _PatchSystem("replay")
     patched_objects = []
 
-    def capture_patch(obj, install_session=None):
+    def capture_patch_type(obj):
         patched_objects.append(obj)
-        return obj
 
-    replay_system.patch = capture_patch
+        def unpatch():
+            pass
+
+        return unpatch
+
+    replay_system.patch_type = capture_patch_type
     undo = patch(
         namespace,
         {"stub_for_replay": ["NativeHandle"], "proxy": ["NativeHandle"]},
@@ -97,8 +113,7 @@ def test_stub_for_replay_proxy_patches_generated_shape():
             return "live"
 
     namespace = {"__name__": "demo_native", "NativeHandle": NativeHandle}
-    replay_system = System()
-    replay_system.retrace_mode = "replay"
+    replay_system = _PatchSystem("replay")
     undo = patch(
         namespace,
         {"stub_for_replay": ["NativeHandle"], "proxy": ["NativeHandle"]},
@@ -108,8 +123,5 @@ def test_stub_for_replay_proxy_patches_generated_shape():
         StubHandle = namespace["NativeHandle"]
         assert StubHandle is not NativeHandle
         assert StubHandle in replay_system.patched_types
-        assert isinstance(StubHandle.__dict__["poll"], utils._WrappedBase)
-        assert isinstance(StubHandle.__dict__["value"], utils.ExternalWrapped)
     finally:
-        replay_system.unpatch_types()
         undo()

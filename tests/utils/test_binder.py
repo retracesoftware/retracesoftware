@@ -23,6 +23,16 @@ def collect_garbage():
         gc.collect()
 
 
+def bind_and_lookup(binder, obj):
+    assert binder.bind(obj) is None
+    return binder.lookup(obj)
+
+
+def autobind_and_lookup(binder, obj):
+    assert binder.autobind(obj) is None
+    return binder.lookup(obj)
+
+
 def test_binding_value_semantics():
     left = utils.Binding(7)
     same = utils.Binding(7)
@@ -44,7 +54,7 @@ def test_binder_bind_raises_for_same_object():
 
     obj = Value()
 
-    first = binder.bind(obj)
+    first = bind_and_lookup(binder, obj)
 
     assert isinstance(first, utils.Binding)
     with pytest.raises(RuntimeError, match="already bound"):
@@ -71,11 +81,11 @@ def test_binder_uses_identity_for_weakrefable_equal_objects():
     left = Value("same")
     right = Value("same")
 
-    left_binding = binder.bind(left)
+    left_binding = bind_and_lookup(binder, left)
     assert binder.lookup(left) is left_binding
     assert binder.lookup(right) is None
 
-    right_binding = binder.bind(right)
+    right_binding = bind_and_lookup(binder, right)
     assert right_binding is not left_binding
     assert binder.lookup(right) is right_binding
 
@@ -83,13 +93,13 @@ def test_binder_uses_identity_for_weakrefable_equal_objects():
 def test_binder_uses_identity_for_equal_builtin_functions():
     binder = utils.Binder()
 
-    left_binding = binder.bind(_thread.allocate)
+    left_binding = bind_and_lookup(binder, _thread.allocate)
 
     assert _thread.allocate == _thread.allocate_lock
     assert _thread.allocate is not _thread.allocate_lock
     assert binder.lookup(_thread.allocate_lock) is None
 
-    right_binding = binder.bind(_thread.allocate_lock)
+    right_binding = bind_and_lookup(binder, _thread.allocate_lock)
     assert right_binding is not left_binding
     assert binder.lookup(_thread.allocate) is left_binding
     assert binder.lookup(_thread.allocate_lock) is right_binding
@@ -113,7 +123,7 @@ def test_binder_callable_returns_binding_when_bound():
         pass
 
     obj = Value()
-    binding = binder.bind(obj)
+    binding = bind_and_lookup(binder, obj)
     looked_up = binder(obj)
 
     assert isinstance(looked_up, utils.Binding)
@@ -142,7 +152,7 @@ def test_binder_emits_delete_for_weakrefable_object_without_keeping_it_alive():
 
     obj = Value()
     obj_ref = weakref.ref(obj)
-    binding = binder.bind(obj)
+    binding = autobind_and_lookup(binder, obj)
 
     del obj
     collect_garbage()
@@ -159,7 +169,7 @@ def test_binder_falls_back_for_non_weakrefable_object_without_bind_support():
         __slots__ = ()
 
     obj = Value()
-    binding = binder.bind(obj)
+    binding = autobind_and_lookup(binder, obj)
 
     assert isinstance(binding, utils.Binding)
     assert binder.lookup(obj) is binding
@@ -172,7 +182,7 @@ def test_binder_falls_back_for_non_weakrefable_object_without_bind_support():
 def test_binder_lookup_does_not_unpack_tuple_after_weakref_fallback_initializes():
     binder = utils.Binder()
 
-    binding = binder.bind("x")
+    binding = bind_and_lookup(binder, "x")
 
     assert isinstance(binding, utils.Binding)
     assert binder.lookup("x") is binding
@@ -188,7 +198,7 @@ def test_binder_callback_receives_binding_and_unbound_objects_do_not_emit_delete
         pass
 
     bound_obj = Value()
-    binding = binder.bind(bound_obj)
+    binding = autobind_and_lookup(binder, bound_obj)
     del bound_obj
     collect_garbage()
 
@@ -207,7 +217,7 @@ def test_binder_emits_delete_for_bind_supported_non_weakrefable_object():
     utils.Binder.add_bind_support(_socket.socket)
 
     sock = _socket.socket(_socket.AF_INET, _socket.SOCK_STREAM)
-    binding = binder.bind(sock)
+    binding = autobind_and_lookup(binder, sock)
 
     sock.close()
     del sock
@@ -226,8 +236,8 @@ def test_multiple_binders_track_same_object_independently():
         pass
 
     obj = Value()
-    left_binding = left.bind(obj)
-    right_binding = right.bind(obj)
+    left_binding = autobind_and_lookup(left, obj)
+    right_binding = autobind_and_lookup(right, obj)
 
     assert left_binding != right_binding
     assert left.lookup(obj) is left_binding
@@ -249,7 +259,7 @@ def test_binder_on_delete_can_be_reassigned():
 
     binder.on_delete = deleted.append
     obj = Value()
-    binding = binder.bind(obj)
+    binding = autobind_and_lookup(binder, obj)
 
     del obj
     collect_garbage()
@@ -264,7 +274,7 @@ def test_binder_swallows_callback_exceptions():
         pass
 
     obj = Value()
-    binder.bind(obj)
+    binder.autobind(obj)
 
     del obj
     collect_garbage()
@@ -309,14 +319,14 @@ def test_binder_composes_with_later_on_alloc_dealloc_wrapper(tmp_path):
             "# Patch binder first so set_on_alloc captures binder_dealloc as the\n"
             "# existing dealloc wrapper, matching the replay socket failure mode.\n"
             "warmup = Value()\n"
-            "binder.bind(warmup)\n"
+            "binder.autobind(warmup)\n"
             "del warmup\n"
             "gc.collect()\n"
             "\n"
             "runtime_utils.set_on_alloc(Value, lambda obj: None)\n"
             "\n"
             "obj = Value()\n"
-            "binder.bind(obj)\n"
+            "binder.autobind(obj)\n"
             "del obj\n"
             "gc.collect()\n"
             "print('ok')\n"
@@ -365,11 +375,11 @@ def test_binder_handles_subclass_then_base_tp_dealloc_chain_without_recursing(tm
                 "fd = raw.detach()\n"
                 "wrapped = socket.socket(_socket.AF_UNIX, _socket.SOCK_STREAM, 0, fd)\n"
             "if bind_order == 'base_first':\n"
-            "    binder.bind(raw)\n"
-            "    binder.bind(wrapped)\n"
+            "    binder.autobind(raw)\n"
+            "    binder.autobind(wrapped)\n"
             "else:\n"
-            "    binder.bind(wrapped)\n"
-            "    binder.bind(raw)\n"
+            "    binder.autobind(wrapped)\n"
+            "    binder.autobind(raw)\n"
             "wrapped.close()\n"
             "del wrapped\n"
             "gc.collect()\n"
@@ -410,7 +420,7 @@ def test_binder_remove_bind_support_falls_back_to_generic_binding():
 
         sock = _socket.socket(_socket.AF_INET, _socket.SOCK_STREAM)
         try:
-            binding = binder.bind(sock)
+            binding = bind_and_lookup(binder, sock)
             assert isinstance(binding, utils.Binding)
             assert binder.lookup(sock) is binding
         finally:

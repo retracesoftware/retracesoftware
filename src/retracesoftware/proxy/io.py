@@ -908,9 +908,13 @@ def call_recorder(
     binder = stream.Binder(
         on_delete=functional.sequence(_binding_handle, writer.binding_delete)
     )
+    def bind_for_record(obj):
+        binder.autobind(obj)
+        writer.new_binding(_binding_handle(binder.lookup(obj)))
+
     system = RecordSystem(
         writer=writer,
-        bind=functional.sequence(binder.bind, _binding_handle, writer.new_binding),
+        bind=bind_for_record,
         internal_space=retrace_space,
     )
 

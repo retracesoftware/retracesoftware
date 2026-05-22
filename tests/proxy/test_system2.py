@@ -8,6 +8,7 @@ import retracesoftware.utils as utils
 import pytest
 
 from retracesoftware.gateway._dynamicproxy import ProxyRef
+from retracesoftware.proxy.contracts import AsyncCapture
 from retracesoftware.proxy.traceio import (
     BindCloseMessage,
     BindOpenMessage,
@@ -23,6 +24,7 @@ from retracesoftware.proxy.traceio import (
 )
 from retracesoftware.install import ReplayDivergence
 from retracesoftware.proxy.system2 import ReplayThreadScheduleError, System2
+from retracesoftware.proxy.typeextender import replay_shape_type
 
 
 def test_thread_cursors_advance_returns_full_cursor():
@@ -147,6 +149,16 @@ class _FakeReader:
         return self.messages.pop(0)
 
 
+class _AutoBindReader:
+    def __init__(self):
+        self.handle = 0
+
+    def __call__(self):
+        handle = self.handle
+        self.handle += 1
+        return BindOpenMessage(handle)
+
+
 def _fake_retrace():
     _FakeSpace.current = None
     _FakeSpace._next_id = 1
@@ -176,6 +188,79 @@ def _install_fake_retrace(monkeypatch, *, patch_proxy=True):
     if patch_proxy:
         monkeypatch.setattr(dynamicproxy, "proxy", _tagged_proxy("wrapped"))
     return fake_retrace
+
+
+def _manual_gateway_system(monkeypatch, *, delete_binding=utils.noop):
+    _install_fake_retrace(monkeypatch)
+    calls = []
+    next_binding = 0
+
+    def bind(_value):
+        nonlocal next_binding
+        binding = f"binding-{next_binding}"
+        next_binding += 1
+        return binding
+
+    def external(target, *args, **kwargs):
+        target = utils.try_unwrap(target)
+        calls.append((target, args, kwargs))
+        args = tuple(utils.try_unwrap(arg) for arg in args)
+        kwargs = {
+            name: utils.try_unwrap(value)
+            for name, value in kwargs.items()
+        }
+        return target(*args, **kwargs)
+
+    def create_gateway_pair(**kwargs):
+        return types.SimpleNamespace(
+            external=external,
+            internal=external,
+            sandbox_space=kwargs["internal_space"],
+            external_space=kwargs["external_space"],
+        )
+
+    return System2(
+        create_gateway_pair=create_gateway_pair,
+        bind=bind,
+        delete_binding=delete_binding,
+    ), calls
+
+
+def _replay_gateway_system(monkeypatch):
+    _install_fake_retrace(monkeypatch)
+    calls = []
+    next_binding = 0
+
+    def bind(_value):
+        nonlocal next_binding
+        binding = f"binding-{next_binding}"
+        next_binding += 1
+        return binding
+
+    def external(target, *args, **kwargs):
+        target = utils.try_unwrap(target)
+        calls.append((target, args, kwargs))
+        if getattr(target, "__name__", None) == "__init__":
+            return None
+        return "recorded"
+
+    def internal(target, *args, **kwargs):
+        target = utils.try_unwrap(target)
+        calls.append((target, args, kwargs))
+        return target(*args, **kwargs)
+
+    def create_gateway_pair(**kwargs):
+        return types.SimpleNamespace(
+            external=external,
+            internal=internal,
+            sandbox_space=kwargs["internal_space"],
+            external_space=kwargs["external_space"],
+        )
+
+    return System2(
+        create_gateway_pair=create_gateway_pair,
+        bind=bind,
+    ), calls
 
 
 def test_record_system_creates_gateway_pair_and_type_patcher(monkeypatch):
@@ -234,6 +319,459 @@ def test_record_system_proxy_type_customizer_sees_generated_external_type(monkey
     assert issubclass(customization["cls"], utils.ExternalWrapped)
 
 
+def test_dynamic_external_proxy_serialized_representation_is_proxy_type(monkeypatch):
+    _install_fake_retrace(monkeypatch, patch_proxy=False)
+    writer = _FakeWriter()
+    customizations = []
+
+    class External:
+        pass
+
+    system = System2.record_system(
+        writer=writer,
+        debug=False,
+        proxy_type_customizer=lambda **kwargs: customizations.append(kwargs),
+    )
+
+    system.gateway_pair.external(lambda: External())
+    proxy_type = customizations[0]["cls"]
+    proxy = ProxyRef(proxy_type)()
+    binding = proxy_type.__retrace_type_binding__
+
+    assert isinstance(proxy, utils.ExternalWrapped)
+    assert isinstance(binding, stream.Binding)
+    assert ("new_binding", binding.handle) in writer.calls
+    assert proxy.__retrace_serialized__() is binding
+
+
+def test_dynamic_internal_proxy_serialized_representation_is_binding(monkeypatch):
+    _install_fake_retrace(monkeypatch, patch_proxy=False)
+    writer = _FakeWriter()
+    seen = []
+
+    class Internal:
+        pass
+
+    system = System2.record_system(writer=writer, debug=False)
+
+    result = system.gateway_pair.external(
+        lambda value: seen.append(value),
+        Internal(),
+    )
+
+    assert result is None
+    assert len(seen) == 1
+
+    proxy = seen[0]
+    binding = proxy.__retrace_binding__()
+
+    assert isinstance(proxy, utils.InternalWrapped)
+    assert isinstance(binding, stream.Binding)
+    assert proxy.__retrace_serialized__() is binding
+
+
+def test_system2_next_thread_counter_tracks_each_thread_independently(monkeypatch):
+    system, _calls = _manual_gateway_system(monkeypatch)
+    current_thread = {"id": "thread-1"}
+    monkeypatch.setattr(
+        system2_module._thread,
+        "get_ident",
+        lambda: current_thread["id"],
+    )
+
+    assert system.next_thread_counter() == ("thread-1", 0)
+    assert system.next_thread_counter() == ("thread-1", 1)
+
+    current_thread["id"] = "thread-2"
+
+    assert system.next_thread_counter() == ("thread-2", 0)
+
+    current_thread["id"] = "thread-1"
+
+    assert system.next_thread_counter() == ("thread-1", 2)
+
+
+def test_extend_type_is_idempotent_and_records_mappings(monkeypatch):
+    system, _calls = _manual_gateway_system(monkeypatch)
+
+    class External:
+        pass
+
+    retrace_type = system.extend_type(External, python_distribution=True)
+
+    assert system.extend_type(External, python_distribution=True) is retrace_type
+    assert not hasattr(system, "type_extender")
+    assert not hasattr(system.proxy_type_factory, "original_to_retrace_type")
+    assert system.retrace_type_for(External) is retrace_type
+    assert system.original_type_for(retrace_type) is External
+    assert system.is_retrace_type(retrace_type)
+    assert system.extended_type_flags[External] == {
+        "kind": "extended",
+        "python_distribution": True,
+    }
+
+
+def test_extend_type_stores_binding_and_unregisters_on_delete(monkeypatch):
+    deleted = []
+    system, _calls = _manual_gateway_system(
+        monkeypatch,
+        delete_binding=deleted.append,
+    )
+
+    class External:
+        pass
+
+    retrace_type = system.extend_type(External, python_distribution=False)
+
+    assert "_retrace_binding" in retrace_type.__slots__
+
+    class PublicExternal(retrace_type):
+        pass
+
+    obj = PublicExternal()
+    binding = obj.__retrace_binding__()
+    serialized = obj.__retrace_serialized__()
+    obj.__del__()
+    obj.__del__()
+
+    assert binding is not None
+    assert serialized == binding
+    assert deleted == [binding]
+    assert obj.__retrace_binding__() is None
+    assert system.original_type_for(PublicExternal) is External
+    assert system.is_retrace_type(PublicExternal)
+    assert system.is_retrace_instance(obj)
+
+
+def test_record_system_typeextender_uses_record_register_path(monkeypatch):
+    _install_fake_retrace(monkeypatch)
+    writer = _FakeWriter()
+    system = System2.record_system(writer=writer, debug=False)
+
+    class External:
+        pass
+
+    retrace_type = system.extend_type(External, python_distribution=False)
+    writer.calls.clear()
+
+    obj = retrace_type()
+    binding = obj.__retrace_binding__()
+
+    assert isinstance(binding, stream.Binding)
+    assert ("new_binding", binding.handle) in writer.calls
+
+    obj.__del__()
+
+    assert ("binding_delete", binding.handle) in writer.calls
+
+
+def test_extend_type_methods_route_through_external_gateway(monkeypatch):
+    system, calls = _manual_gateway_system(monkeypatch)
+
+    class External:
+        def read(self, value):
+            return f"read:{value}"
+
+    retrace_type = system.extend_type(External, python_distribution=False)
+    obj = retrace_type()
+    calls.clear()
+
+    assert obj.read("value") == "read:value"
+    assert calls == [(External.read, (obj, "value"), {})]
+
+
+def test_extend_type_wraps_init_and_tracks_lifecycle_in_new(monkeypatch):
+    system, calls = _manual_gateway_system(monkeypatch)
+
+    class External:
+        pass
+
+    retrace_type = system.extend_type(External, python_distribution=False)
+
+    assert "__init__" in retrace_type.__dict__
+    assert "__new__" in retrace_type.__dict__
+
+    obj = retrace_type()
+
+    assert calls[-1] == (External.__init__, (obj,), {})
+
+
+def test_extend_type_wraps_subclass_overrides_as_callbacks(monkeypatch):
+    _install_fake_retrace(monkeypatch)
+    writer = _FakeWriter()
+    system = System2.record_system(writer=writer, debug=False)
+
+    class External:
+        def read(self):
+            return "base"
+
+    retrace_type = system.extend_type(External, python_distribution=False)
+
+    class PublicExternal(retrace_type):
+        def read(self):
+            return "override"
+
+    obj = PublicExternal()
+    writer.calls.clear()
+
+    assert obj.read() == ("wrapped", "override")
+    binding = obj.__retrace_binding__()
+    assert (
+        "callback",
+        utils.try_unwrap(PublicExternal.__dict__["read"]),
+        (binding,),
+        {},
+    ) in writer.calls
+
+
+def test_extend_type_leaves_new_subclass_methods_unwrapped(monkeypatch):
+    _install_fake_retrace(monkeypatch)
+    writer = _FakeWriter()
+    system = System2.record_system(writer=writer, debug=False)
+
+    class External:
+        def read(self):
+            return "base"
+
+    retrace_type = system.extend_type(External, python_distribution=False)
+
+    class PublicExternal(retrace_type):
+        def extra(self):
+            return "extra"
+
+    obj = PublicExternal()
+    writer.calls.clear()
+
+    assert obj.extra() == "extra"
+    assert not utils.is_wrapped(PublicExternal.__dict__["extra"])
+    assert writer.calls == []
+
+
+def test_replay_shape_type_feeds_extend_type_without_original_inheritance(monkeypatch):
+    system, calls = _replay_gateway_system(monkeypatch)
+
+    class External:
+        def read(self, value):
+            raise AssertionError("shape type should not execute original method")
+
+    shape_type = replay_shape_type(External)
+    with pytest.raises(RuntimeError, match="cannot execute live"):
+        shape_type()
+
+    shape_obj = object.__new__(shape_type)
+    with pytest.raises(RuntimeError, match="cannot execute live"):
+        shape_obj.read("value")
+
+    retrace_type = system.extend_type(shape_type, python_distribution=False)
+    obj = retrace_type("constructor", ignored=True)
+    calls.clear()
+
+    assert system.extend_type(shape_type, python_distribution=False) is retrace_type
+    assert system.retrace_type_for(shape_type) is retrace_type
+    assert system.original_type_for(retrace_type) is shape_type
+    assert system.extended_type_flags[shape_type] == {
+        "kind": "extended",
+        "python_distribution": False,
+    }
+    assert not issubclass(shape_type, External)
+    assert not issubclass(retrace_type, External)
+    assert issubclass(retrace_type, shape_type)
+    assert shape_type.__slots__ == ()
+    assert "_retrace_binding" in retrace_type.__slots__
+    assert retrace_type.__retrace_original_type__ is External
+
+    assert obj.read("value") == "recorded"
+
+    target, args, kwargs = calls[-1]
+    assert target.__retrace_shape_method__ == (External, "read")
+    assert args == (obj, "value")
+    assert kwargs == {}
+
+
+def test_replay_shape_type_subclass_overrides_follow_extend_type_callbacks(monkeypatch):
+    _install_fake_retrace(monkeypatch)
+    writer = _FakeWriter()
+    system = System2.record_system(writer=writer, debug=False)
+
+    class External:
+        def read(self):
+            return "base"
+
+    shape_type = replay_shape_type(External)
+    retrace_type = system.extend_type(shape_type, python_distribution=False)
+
+    class PublicExternal(retrace_type):
+        def read(self):
+            return "override"
+
+        def extra(self):
+            self.seen = True
+            return "extra"
+
+    obj = object.__new__(PublicExternal)
+    writer.calls.clear()
+
+    assert obj.read() == ("wrapped", "override")
+    assert (
+        "callback",
+        utils.try_unwrap(PublicExternal.__dict__["read"]),
+        (obj,),
+        {},
+    ) in writer.calls
+
+    writer.calls.clear()
+
+    assert obj.extra() == "extra"
+    assert obj.seen is True
+    assert not utils.is_wrapped(PublicExternal.__dict__["extra"])
+    assert writer.calls == []
+
+
+def test_replay_system_extend_type_shapes_non_python_distribution(monkeypatch):
+    _install_fake_retrace(monkeypatch)
+    system = System2.replay_system(reader=_AutoBindReader())
+
+    class External:
+        def read(self):
+            return "live"
+
+    retrace_type = system.extend_type(External, python_distribution=False)
+
+    assert system.extend_type(External, python_distribution=False) is retrace_type
+    assert system.retrace_type_for(External) is retrace_type
+    assert system.original_type_for(retrace_type) is External
+    assert system.extended_type_flags[External] == {
+        "kind": "extended",
+        "python_distribution": False,
+    }
+    assert not issubclass(retrace_type, External)
+    assert retrace_type.__bases__[0].__retrace_shape_original_type__ is External
+    assert retrace_type.__retrace_original_type__ is External
+
+
+def test_replay_system_extend_type_extends_python_distribution_types(monkeypatch):
+    _install_fake_retrace(monkeypatch)
+    system = System2.replay_system(reader=_AutoBindReader())
+
+    class External:
+        def read(self):
+            return "live"
+
+    retrace_type = system.extend_type(External, python_distribution=True)
+
+    assert system.extend_type(External, python_distribution=True) is retrace_type
+    assert issubclass(retrace_type, External)
+    assert retrace_type.__retrace_original_type__ is External
+    assert system.retrace_type_for(External) is retrace_type
+    assert system.original_type_for(retrace_type) is External
+    assert system.extended_type_flags[External] == {
+        "kind": "extended",
+        "python_distribution": True,
+    }
+
+
+def test_replay_system_typeextender_uses_counter_register_path(monkeypatch):
+    _install_fake_retrace(monkeypatch)
+    monkeypatch.setattr(system2_module._thread, "get_ident", lambda: "thread-1")
+    system = System2.replay_system(reader=_FakeReader([
+        ResultMessage(None),
+    ]))
+
+    class External:
+        pass
+
+    retrace_type = system.extend_type(External, python_distribution=False)
+    next_counter = system.thread_counters.get("thread-1", 0)
+
+    obj = retrace_type()
+    binding = obj.__retrace_binding__()
+
+    assert binding == ("thread-1", next_counter)
+    assert system.is_bound(obj)
+
+    obj.__del__()
+
+    assert obj.__retrace_binding__() is None
+
+
+def test_wrap_type_is_idempotent_and_constructor_wraps_target(monkeypatch):
+    deleted = []
+    system, calls = _manual_gateway_system(monkeypatch, delete_binding=deleted.append)
+
+    class External:
+        def __init__(self, value):
+            self.value = value
+
+    wrapper_type = system.wrap_type(External)
+    wrapped = wrapper_type("payload")
+    binding = wrapped.__retrace_binding__()
+
+    assert system.wrap_type(External) is wrapper_type
+    assert system.retrace_type_for(External) is wrapper_type
+    assert system.original_type_for(wrapper_type) is External
+    assert system.is_retrace_type(wrapper_type)
+    assert wrapped.__class__ is wrapper_type
+    assert binding is not None
+    assert wrapped.__retrace_serialized__() == binding
+    assert isinstance(wrapped, wrapper_type)
+    assert isinstance(utils.try_unwrap(wrapped), External)
+    assert utils.try_unwrap(wrapped).value == "payload"
+    assert calls == [(External, ("payload",), {})]
+
+    wrapped.__del__()
+    wrapped.__del__()
+
+    assert deleted == [binding]
+    assert wrapped.__retrace_binding__() is None
+
+
+def test_wrap_type_methods_and_properties_route_to_wrapped_target(monkeypatch):
+    system, calls = _manual_gateway_system(monkeypatch)
+
+    class External:
+        def __init__(self, value):
+            self._value = value
+
+        @property
+        def value(self):
+            return self._value
+
+        def read(self, suffix):
+            return f"{self._value}:{suffix}"
+
+    wrapper_type = system.wrap_type(External)
+    wrapped = wrapper_type("payload")
+    calls.clear()
+
+    assert wrapped.read("next") == "payload:next"
+    assert wrapped.value == "payload"
+    assert calls == [
+        (External.read, (wrapped, "next"), {}),
+        (getattr, (wrapped, "value"), {}),
+    ]
+
+
+def test_extend_type_and_wrap_type_do_not_replace_module_bindings(monkeypatch):
+    system, _calls = _manual_gateway_system(monkeypatch)
+
+    class Extensible:
+        pass
+
+    class Wrapped:
+        pass
+
+    module = types.SimpleNamespace(
+        Extensible=Extensible,
+        Wrapped=Wrapped,
+    )
+
+    system.extend_type(Extensible, python_distribution=True)
+    system.wrap_type(Wrapped)
+
+    assert module.Extensible is Extensible
+    assert module.Wrapped is Wrapped
+
+
 def test_record_system_external_call_writes_result(monkeypatch):
     _install_fake_retrace(monkeypatch)
     writer = _FakeWriter()
@@ -244,6 +782,16 @@ def test_record_system_external_call_writes_result(monkeypatch):
 
     assert result == ("wrapped", "result:('wrapped', 'x')")
     assert writer.calls[-1] == ("result", ("wrapped", "result:('wrapped', 'x')"))
+
+
+def test_record_system_external_call_leaves_none_unproxied(monkeypatch):
+    _install_fake_retrace(monkeypatch)
+    writer = _FakeWriter()
+    system = System2.record_system(writer=writer, debug=False)
+    writer.calls.clear()
+
+    assert system.gateway_pair.external(lambda: None) is None
+    assert writer.calls[-1] == ("result", None)
 
 
 def test_record_system_callback_writes_callback(monkeypatch):
@@ -320,6 +868,18 @@ def test_record_system_writes_bound_patched_object_as_binding(monkeypatch):
         assert isinstance(value, stream.Binding)
     finally:
         unpatch()
+
+
+def test_system2_add_immutable_types_updates_passthrough_policy(monkeypatch):
+    _install_fake_retrace(monkeypatch)
+    system = System2.record_system(writer=_FakeWriter(), debug=False)
+
+    system.add_immutable_type(str)
+    system.add_immutable_types(bytes, type(None))
+
+    assert system.is_immutable("value")
+    assert system.is_immutable(b"value")
+    assert system.is_immutable(None)
 
 
 def test_record_system_checkpoint_writes_cursor_delta_and_encoded_value(monkeypatch):
@@ -413,7 +973,7 @@ def test_record_system_capture_signals_records_handler_as_callback(monkeypatch):
     trace = []
     system = System2.record_system(
         writer=DefaultTraceWriter(trace.append),
-        capture_signals=True,
+        async_capture=AsyncCapture(signal=True),
     )
     system.internal_space.thread_delta_value = (0, 4, 5)
     calls = []
@@ -423,16 +983,11 @@ def test_record_system_capture_signals_records_handler_as_callback(monkeypatch):
         calls.append((signum, received_frame))
         return "handled"
 
-    system.on_start()
-    try:
-        assert system2_module._signal.signal(7, handler) == "previous-handler"
-        wrapped_handler = installed[0][1]
-        assert wrapped_handler is not handler
-        assert wrapped_handler(7, frame) == "handled"
-    finally:
-        system.on_end()
+    assert system2_module._signal.signal(7, handler) == "previous-handler"
+    wrapped_handler = installed[0][1]
+    assert wrapped_handler is not handler
+    assert system.internal_space.apply(wrapped_handler, 7, frame) == "handled"
 
-    assert system2_module._signal.signal is signal_signal
     assert calls == [(7, frame)]
 
     callbacks = [
@@ -449,6 +1004,48 @@ def test_record_system_capture_signals_records_handler_as_callback(monkeypatch):
     assert callbacks[0].fn is handler
     assert callbacks[0].args == (7, None)
     assert callbacks[0].kwargs == {}
+
+    del system
+    system2_module.gc.collect()
+    assert system2_module._signal.signal is signal_signal
+
+
+def test_record_system_capture_signals_does_not_record_outside_internal_space(monkeypatch):
+    _install_fake_retrace(monkeypatch)
+    installed = []
+
+    def signal_signal(signum, handler):
+        installed.append((signum, handler))
+        return "previous-handler"
+
+    monkeypatch.setattr(system2_module._signal, "signal", signal_signal)
+    trace = []
+    system = System2.record_system(
+        writer=DefaultTraceWriter(trace.append),
+        async_capture=AsyncCapture(signal=True),
+    )
+    calls = []
+    frame = object()
+
+    def handler(signum, received_frame):
+        calls.append((signum, received_frame))
+        return "handled"
+
+    system2_module._signal.signal(7, handler)
+    wrapped_handler = installed[0][1]
+
+    assert wrapped_handler(7, frame) == "handled"
+    assert system.external_space.apply(wrapped_handler, 8, frame) == "handled"
+
+    assert calls == [(7, frame), (8, frame)]
+    assert not any(
+        isinstance(message, (RunToCoordinateMessage, SignalMessage))
+        for message in trace
+    )
+
+    del system
+    system2_module.gc.collect()
+    assert system2_module._signal.signal is signal_signal
 
 
 def test_replay_system_schedules_signal_callback_at_cursor(monkeypatch):
@@ -487,19 +1084,14 @@ def test_record_system_capture_gc_records_collection_at_coordinate(monkeypatch):
     trace = []
     system = System2.record_system(
         writer=DefaultTraceWriter(trace.append),
-        capture_gc=True,
+        async_capture=AsyncCapture(gc=True),
     )
     system.internal_space.thread_delta_value = (0, 8, 13)
 
-    system.on_start()
-    try:
-        assert len(callbacks) == 1
-        callbacks[0]("start", {"generation": 1})
-        callbacks[0]("stop", {"generation": 1})
-    finally:
-        system.on_end()
+    assert len(callbacks) == 1
+    callbacks[0]("start", {"generation": 1})
+    callbacks[0]("stop", {"generation": 1})
 
-    assert callbacks == []
     run_to = [
         message for message in trace
         if isinstance(message, RunToCoordinateMessage)
@@ -512,6 +1104,10 @@ def test_record_system_capture_gc_records_collection_at_coordinate(monkeypatch):
     assert run_to[0].cursor_delta == (0, 8, 13)
     assert len(gc_messages) == 1
     assert gc_messages[0].generation == 1
+
+    del system
+    system2_module.gc.collect()
+    assert callbacks == []
 
 
 def test_replay_system_schedules_gc_at_coordinate(monkeypatch):
@@ -759,6 +1355,22 @@ def test_record_system_thread_switch_hook_is_internal_space_local(monkeypatch):
         ("run_to_coordinate", previous_delta),
         ("switch_thread", "thread-2"),
     ]
+
+
+def test_record_system_async_capture_can_disable_thread_switch(monkeypatch):
+    _install_fake_retrace(monkeypatch)
+    writer = _FakeWriter()
+    system = System2.record_system(
+        writer=writer,
+        debug=False,
+        async_capture=AsyncCapture(thread_switch=False),
+    )
+    callback = system.internal_space.thread_switch
+    writer.calls.clear()
+
+    callback((1, 2), "thread-2")
+
+    assert writer.calls == []
 
 
 def test_patch_function_returns_external_gateway_wrapper(monkeypatch):

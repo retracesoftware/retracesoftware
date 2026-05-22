@@ -38,6 +38,33 @@ def lookup(module, name):
 _MISSING_ATTR = object()
 
 
+def _stored_retrace_binding(instance):
+    try:
+        return object.__getattribute__(instance, "_retrace_binding")
+    except AttributeError:
+        return None
+
+
+def _set_retrace_binding(instance, binding):
+    try:
+        object.__setattr__(instance, "_retrace_binding", binding)
+    except Exception:
+        pass
+    try:
+        object.__setattr__(instance, "_retrace_deleted", False)
+    except Exception:
+        pass
+    return instance
+
+
+def _serialized_external_proxy(instance):
+    return getattr(type(instance), "__retrace_type_binding__", None)
+
+
+def _serialized_bound_proxy(instance):
+    return _stored_retrace_binding(instance)
+
+
 def _lookup_type_attr(cls, name):
     if not isinstance(cls, type):
         return _MISSING_ATTR
@@ -125,25 +152,32 @@ def _ext_proxytype_from_spec_with(
     for method in methods:
         spec[method] = wrap_ext(proxy_method(method))
 
+    spec['__slots__'] = ('_retrace_binding',)
     spec['__getattr__'] = _generated_proxy_getattr(wrap_ext, cls, attrs, has_custom_getattr)
     spec['__setattr__'] = _generated_proxy_setattr(wrap_ext, cls, attrs, has_instance_dict)
+    spec['__retrace_binding__'] = _stored_retrace_binding
+    spec['__retrace_serialized__'] = _serialized_external_proxy
 
     proxytype = type(name, (utils.ExternalWrapped, DynamicProxy,), spec)
 
     customize_proxy_type(module=module, name=name, cls=proxytype)
-    bind(proxytype)
+    proxytype.__retrace_type_binding__ = bind(proxytype)
     bind(proxy_ref(proxytype))
 
     return proxytype
 
 
 def int_proxy_factory(proxytype, bind):
-    return functional.if_then_else(
-        utils.is_wrapped,
-        functional.identity,
-        functional.compose(
-            proxy(functional.memoize_one_arg(retrace.root_space.wrap(proxytype))),
-            functional.side_effect(bind)))
+    wrap = proxy(functional.memoize_one_arg(retrace.root_space.wrap(proxytype)))
+
+    def create(value):
+        if utils.is_wrapped(value):
+            return value
+
+        proxied = wrap(value)
+        return _set_retrace_binding(proxied, bind(proxied))
+
+    return create
 
 
 class ProxytypeFactory:
@@ -156,6 +190,7 @@ class ProxytypeFactory:
         is_patched_type,
         proxy_ref,
         customize_proxy_type=utils.noop,
+        on_del=utils.noop,
     ):
         self.internal = internal
         self.external = external
@@ -163,6 +198,7 @@ class ProxytypeFactory:
         self.is_patched_type = is_patched_type
         self.proxy_ref = proxy_ref
         self.customize_proxy_type = customize_proxy_type
+        self.on_del = on_del
 
     def _wrapped_function(self, handler, target):
         wrapped = utils.wrapped_function(handler=handler, target=target)
@@ -197,9 +233,35 @@ class ProxytypeFactory:
         if utils.yields_callable_instances(cls):
             spec['__call__'] = self.internal.gateway
 
+        on_del = self.on_del
+
+        def __del__(instance):
+            try:
+                deleted = object.__getattribute__(instance, "_retrace_deleted")
+            except AttributeError:
+                deleted = False
+
+            if deleted:
+                return
+
+            try:
+                object.__setattr__(instance, "_retrace_deleted", True)
+            except Exception:
+                pass
+
+            on_del(instance)
+            try:
+                object.__setattr__(instance, "_retrace_binding", None)
+            except Exception:
+                pass
+
+        spec['__slots__'] = ('_retrace_binding', '_retrace_deleted')
         spec['__class__'] = property(functional.constantly(cls))
         spec['__name__'] = cls.__name__
         spec['__module__'] = cls.__module__
+        spec['__del__'] = __del__
+        spec['__retrace_binding__'] = _stored_retrace_binding
+        spec['__retrace_serialized__'] = _serialized_bound_proxy
 
         proxytype = type(cls.__name__, (utils.InternalWrapped, DynamicProxy), spec)
         self.bind(proxytype)
@@ -265,13 +327,16 @@ def create_ext_proxytype_from_spec(
         for method in methods:
             spec[method] = wrap_ext(proxy_method(method))
 
+        spec['__slots__'] = ('_retrace_binding',)
         spec['__getattr__'] = _generated_proxy_getattr(wrap_ext, cls, attrs, has_custom_getattr)
         spec['__setattr__'] = _generated_proxy_setattr(wrap_ext, cls, attrs, has_instance_dict)
+        spec['__retrace_binding__'] = _stored_retrace_binding
+        spec['__retrace_serialized__'] = _serialized_external_proxy
 
         proxytype = type(name, (utils.ExternalWrapped, DynamicProxy,), spec)
 
         customize_proxy_type(module=module, name=name, cls=proxytype)
-        bind(proxytype)
+        proxytype.__retrace_type_binding__ = bind(proxytype)
         bind(proxy_ref(proxytype))
 
         return proxytype
