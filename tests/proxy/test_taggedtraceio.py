@@ -25,7 +25,6 @@ from retracesoftware.proxy.traceio import (
     SyncMessage,
 )
 
-
 def read_from(values):
     return iter(values).__next__
 
@@ -50,7 +49,6 @@ def test_tagged_trace_writer_methods_emit_wire_tags():
     writer.checkpoint((0, 4), "main", {"state": "ok"})
     writer.stacktrace(stacktrace)
     writer.thread_switch((0, 3), "worker")
-    writer.new_binding(7)
     writer.binding_delete(7)
     writer.call_marker()
     writer.sync()
@@ -68,7 +66,6 @@ def test_tagged_trace_writer_methods_emit_wire_tags():
         ("STACKTRACE", stacktrace),
         ("RUN_TO_COORDINATE", (0, 3)),
         ("SWITCH_THREAD", "worker"),
-        ("NEW_BINDING", 7),
         ("BINDING_DELETE", 7),
         ("CALL",),
         ("SYNC",),
@@ -95,7 +92,6 @@ def test_tagged_trace_writer_function_methods_emit_wire_tags():
     writer.checkpoint((0, 4), "main", {"state": "ok"})
     writer.stacktrace(stacktrace)
     writer.thread_switch((0, 3), "worker")
-    writer.new_binding(7)
     writer.binding_delete(7)
     writer.call_marker()
     writer.sync()
@@ -113,7 +109,6 @@ def test_tagged_trace_writer_function_methods_emit_wire_tags():
         ("STACKTRACE", stacktrace),
         ("RUN_TO_COORDINATE", (0, 3)),
         ("SWITCH_THREAD", "worker"),
-        ("NEW_BINDING", 7),
         ("BINDING_DELETE", 7),
         ("CALL",),
         ("SYNC",),

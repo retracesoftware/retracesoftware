@@ -22,6 +22,7 @@ from retracesoftware.proxy.traceio import (
     SwitchThreadMessage,
     SyncMessage,
     ThreadSwitchMessage,
+    _binding_handle,
 )
 
 
@@ -134,11 +135,8 @@ class JsonTraceWriter:
     def switch_thread(self, thread_id):
         return self._write("switch_thread", thread_id=thread_id)
 
-    def new_binding(self, handle):
-        return self._write("new_binding", handle=handle)
-
-    def binding_delete(self, handle):
-        return self._write("binding_delete", handle=handle)
+    def binding_delete(self, binding):
+        return self._write("binding_delete", handle=_binding_handle(binding))
 
     def call_marker(self):
         return self._write("call_marker")

@@ -220,10 +220,8 @@ class CaptureTraceWriter:
     def switch_thread(self, thread_id):
         self.calls.append(("switch_thread", thread_id))
 
-    def new_binding(self, handle):
-        self.calls.append(("new_binding", handle))
-
-    def binding_delete(self, handle):
+    def binding_delete(self, binding):
+        handle = binding.handle if hasattr(binding, "handle") else binding
         self.calls.append(("binding_delete", handle))
 
     def call_marker(self):

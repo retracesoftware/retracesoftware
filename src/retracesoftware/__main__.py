@@ -47,8 +47,8 @@ import retracesoftware.utils as utils
 
 from retracesoftware.proxy.tape import TapeReader
 from retracesoftware.exceptions import RecordingNotFoundError, VersionMismatchError
-from retracesoftware.proxy.io import recorder, replayer
-from retracesoftware.proxy.taggedtraceio import tagged_trace_writer
+from retracesoftware.proxy.system2 import System2
+from retracesoftware.proxy.taggedtraceio import TaggedTraceReader, tagged_trace_writer
 from retracesoftware.stream.reader import ExpectedBindMarker
 from retracesoftware.run import run_python_command, wait_for_non_daemon_threads
 from retracesoftware.tape import (
@@ -212,12 +212,19 @@ def _setup_runner(runner):
             if strict_bind is not None:
                 runner.system.bind = strict_bind
 
-        if runner.options.mode == "replay":
+        if runner.options.mode == "replay" and getattr(
+            runner.system,
+            "consume_startup_bindings",
+            True,
+        ):
             fork_uninstall = patch_fork_for_replay(runner.system.disable_for)
             uninstall = utils.runall(fork_uninstall, uninstall)
             runner.system._startup_bindings = _consume_replay_startup_bindings(
                 runner.system
             )
+        elif runner.options.mode == "replay":
+            fork_uninstall = patch_fork_for_replay(runner.system.disable_for)
+            uninstall = utils.runall(fork_uninstall, uninstall)
 
         atexit.register(uninstall)
         return uninstall
@@ -320,14 +327,12 @@ def create_record_runner(options):
         # events reach disk before the queue closes.
         atexit.register(close_tape_writer)
 
-    internal_space = _new_internal_retrace_space()
     try:
-        system = recorder(
+        system = System2.record_system(
             writer=tagged_trace_writer(tape_writer),
             debug=options.stacktraces,
-            stacktraces=options.stacktraces,
-            retrace_space=internal_space,
         )
+        internal_space = system.internal_space
         _bind_record_runtime(system, tape_writer)
         if hasattr(tape_writer, "enable_heartbeat"):
             flush_interval = getattr(options, "flush_interval", None)
@@ -387,14 +392,14 @@ def create_replay_runner(options):
         stacktraces = header.get('stacktraces', False)
 
         tape_reader = TapeReaderAdapter(reader, controller_ref)
-        internal_space = _new_internal_retrace_space()
-        system = replayer(
-            next_object=tape_reader.read,
-            close=getattr(tape_reader, "close", None),
+        system = System2.replay_system(
+            reader=TaggedTraceReader(
+                tape_reader,
+                close=getattr(tape_reader, "close", None),
+            ),
             debug=stacktraces,
-            stacktraces=stacktraces,
-            retrace_space=internal_space,
         )
+        internal_space = system.internal_space
         if hasattr(reader, "stub_factory"):
             reader.stub_factory = system.disable_for(reader.stub_factory)
 

@@ -7,6 +7,18 @@ import retracesoftware.utils as utils
 from retracesoftware.gateway._proxytype import DynamicProxy, superdict
 
 
+class ExtendedType:
+    """Marker base for retrace-extended types.
+
+    ``System2.is_passthrough`` is a hot-path type predicate.  Extended
+    instances are already retrace-owned and may cross the boundary as
+    themselves, so generated extended types inherit this marker to make that
+    answer a direct ``issubclass(type(value), ExtendedType)`` check.
+    """
+
+    __slots__ = ()
+
+
 _GENERATED_TYPE_BLACKLIST = frozenset((
     "__class__",
     "__dict__",
@@ -264,7 +276,7 @@ class TypeExtender:
             "__slots__": ("_retrace_binding", "_retrace_deleted"),
         })
 
-        retrace_type = type(cls.__name__, (cls,), spec)
+        retrace_type = type(cls.__name__, (cls, ExtendedType), spec)
         init_subclass_type_ref["type"] = retrace_type
         new_type_ref["type"] = retrace_type
         return retrace_type

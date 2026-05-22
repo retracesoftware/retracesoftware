@@ -910,7 +910,6 @@ def call_recorder(
     )
     def bind_for_record(obj):
         binder.autobind(obj)
-        writer.new_binding(_binding_handle(binder.lookup(obj)))
 
     system = RecordSystem(
         writer=writer,

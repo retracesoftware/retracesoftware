@@ -196,10 +196,7 @@ class TraceWriter(Protocol):
     def thread_switch(self, cursor_delta: object, thread_id: object) -> None:
         ...
 
-    def new_binding(self, handle: object) -> None:
-        ...
-
-    def binding_delete(self, handle: object) -> None:
+    def binding_delete(self, binding: object) -> None:
         ...
 
     def call_marker(self) -> None:
@@ -207,6 +204,10 @@ class TraceWriter(Protocol):
 
     def sync(self) -> None:
         ...
+
+
+def _binding_handle(binding):
+    return binding.handle if hasattr(binding, "handle") else binding
 
 
 class DefaultTraceWriter:
@@ -263,11 +264,8 @@ class DefaultTraceWriter:
     def switch_thread(self, thread_id):
         return self._write(SwitchThreadMessage(thread_id))
 
-    def new_binding(self, handle):
-        return self._write(BindOpenMessage(handle))
-
-    def binding_delete(self, handle):
-        return self._write(BindCloseMessage(handle))
+    def binding_delete(self, binding):
+        return self._write(BindCloseMessage(_binding_handle(binding)))
 
     def call_marker(self):
         return self._write(CallMarkerMessage())

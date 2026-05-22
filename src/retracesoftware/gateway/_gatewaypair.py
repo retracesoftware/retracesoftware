@@ -167,7 +167,7 @@ def _wire_for_replay(
         _space_apply_callable(external.space),
         functional.constantly(next_result),
         rest_transform=external_arg,
-        result_transform=unwrap,
+        result_transform=functional.identity,
     )
 
     internal.gateway[external.space] = functional.transform_call(
@@ -284,48 +284,48 @@ class GatewayPair:
 
         return dynamic_external_type
 
-    def wire_recording(
-        self,
-        proxy_type_factory,
-        *,
-        is_passthrough: PassthroughPredicate,
-        on_callback: CallbackObserver,
-        on_error: ErrorCallback,
-        on_result: ResultCallback,
-    ) -> GatewayPair:
-        """Install record-time dispatch and proxy hooks on an unwired pair."""
-        internal, external = self._require_unwired_endpoints()
+    # def wire_recording(
+    #     self,
+    #     proxy_type_factory,
+    #     *,
+    #     is_passthrough: PassthroughPredicate,
+    #     on_callback: CallbackObserver,
+    #     on_error: ErrorCallback,
+    #     on_result: ResultCallback,
+    # ) -> GatewayPair:
+    #     """Install record-time dispatch and proxy hooks on an unwired pair."""
+    #     internal, external = self._require_unwired_endpoints()
 
-        external = external._replace(
-            proxy=dynamicproxy.proxy(
-                retrace.root_space.wrap(
-                    self._dynamic_external_type_from_internal(proxy_type_factory)
-                )
-            ),
-        )
+    #     external = external._replace(
+    #         proxy=dynamicproxy.proxy(
+    #             retrace.root_space.wrap(
+    #                 self._dynamic_external_type_from_internal(proxy_type_factory)
+    #             )
+    #         ),
+    #     )
 
-        internal_proxy = int_proxy_factory(
-            proxytype=retrace.root_space.wrap(
-                proxy_type_factory.dynamic_internal_type),
-            bind=utils.noop)
-        internal = internal._replace(
-            proxy=functional.if_then_else(
-                is_passthrough,
-                functional.identity,
-                internal_proxy,
-            ),
-        )
+    #     internal_proxy = int_proxy_factory(
+    #         proxytype=retrace.root_space.wrap(
+    #             proxy_type_factory.dynamic_internal_type),
+    #         bind=utils.noop)
+    #     internal = internal._replace(
+    #         proxy=functional.if_then_else(
+    #             is_passthrough,
+    #             functional.identity,
+    #             internal_proxy,
+    #         ),
+    #     )
 
-        self._internal_endpoint = internal
-        self._external_endpoint = external
-        return self.wire_for_record(
-            on_callback=on_callback,
-            on_error=on_error,
-            on_result=on_result,
-            is_passthrough=is_passthrough,
-            int_proxy=internal.proxy,
-            ext_proxy=external.proxy,
-        )
+    #     self._internal_endpoint = internal
+    #     self._external_endpoint = external
+    #     return self.wire_for_record(
+    #         on_callback=on_callback,
+    #         on_error=on_error,
+    #         on_result=on_result,
+    #         is_passthrough=is_passthrough,
+    #         int_proxy=internal.proxy,
+    #         ext_proxy=external.proxy,
+    #     )
 
     def wire_replay(
         self,
@@ -382,20 +382,33 @@ class GatewayPair:
     ):
         """Install record-time dispatch and proxy hooks on an unwired pair."""
         unwrap = functional.walker(utils.try_unwrap)
-        external_arg = functional.if_then_else(
-            utils.is_wrapped,
-            utils.try_unwrap,
-            int_proxy,
-        )
 
-        callback_arg = functional.walker(
-            functional.if_then_else(
-                is_passthrough,
-                functional.identity,
-                ext_proxy,
-            )
-        )
+        # int_proxy = functional.if_then_else(
+        #     is_passthrough,
+        #     functional.identity,
+        #     int_proxy,
+        # )
 
+        # int_proxy = functional.when_not(utils.is_wrapped, int_proxy)
+        # ext_proxy = functional.when_not(utils.is_wrapped, ext_proxy)
+
+        # fastpath common case which is passthrough
+        int_proxy = functional.when_not(
+            is_passthrough,
+            functional.walker(functional.if_then_else(
+                utils.is_wrapped,
+                utils.try_unwrap,
+                functional.when_not(is_passthrough, int_proxy),
+            )))
+
+        ext_proxy = functional.walker(
+            functional.when_not(
+                functional.or_predicate(
+                    is_passthrough,
+                    utils.is_wrapped),
+                ext_proxy))
+        
+        # fastpath common case which is passthrough
         external_result = functional.if_then_else(
             is_passthrough,
             functional.side_effect(on_result),
@@ -403,8 +416,7 @@ class GatewayPair:
                 ext_proxy,
                 functional.side_effect(on_result),
                 unwrap,
-            ),
-        )
+            ))
 
         callback_call = functional.mapargs(
             _space_apply_callable(self._sandbox_space),
@@ -419,61 +431,61 @@ class GatewayPair:
             external=functional.transform_call(
                 _space_apply_callable(self._external_space),
                 utils.try_unwrap,
-                rest_transform=external_arg,
+                rest_transform=int_proxy,
                 result_transform=external_result,
                 on_error=on_error,
             ),
             internal=functional.transform_call(
                 callback_runner,
                 utils.try_unwrap,
-                rest_transform=callback_arg,
+                rest_transform=ext_proxy,
                 result_transform=int_proxy,
             ),
         )
 
         return self
 
-    @staticmethod
-    def create_recording_pair(
-        *,
-        is_passthrough: PassthroughPredicate,
-        on_callback: CallbackObserver,
-        on_error: ErrorCallback,
-        on_result: ResultCallback,
-        bind: BindCallback,
-        proxy_type_customizer: Callable[..., Any] = utils.noop,
-        internal_space=None,
-        external_space=None,
-        gateway_pair: GatewayPair | None = None,
-        proxy_type_factory=None,
-    ) -> GatewayPair:
-        """Create record-time gateways.
+    # @staticmethod
+    # def create_recording_pair(
+    #     *,
+    #     is_passthrough: PassthroughPredicate,
+    #     on_callback: CallbackObserver,
+    #     on_error: ErrorCallback,
+    #     on_result: ResultCallback,
+    #     bind: BindCallback,
+    #     proxy_type_customizer: Callable[..., Any] = utils.noop,
+    #     internal_space=None,
+    #     external_space=None,
+    #     gateway_pair: GatewayPair | None = None,
+    #     proxy_type_factory=None,
+    # ) -> GatewayPair:
+    #     """Create record-time gateways.
 
-        ``is_passthrough`` is a predicate called with values crossing back to
-        external code.  It returns ``True`` when that value is already safe to
-        pass through unchanged, and ``False`` when GatewayPair must proxy it.
-        """
-        pair = gateway_pair or GatewayPair.create_unwired(
-            internal_space=internal_space,
-            external_space=external_space,
-            bind=bind,
-        )
-        pair._bind = bind
-        if proxy_type_factory is None:
-            from retracesoftware.proxy.proxytypefactory2 import ProxyTypeFactory
+    #     ``is_passthrough`` is a predicate called with values crossing back to
+    #     external code.  It returns ``True`` when that value is already safe to
+    #     pass through unchanged, and ``False`` when GatewayPair must proxy it.
+    #     """
+    #     pair = gateway_pair or GatewayPair.create_unwired(
+    #         internal_space=internal_space,
+    #         external_space=external_space,
+    #         bind=bind,
+    #     )
+    #     pair._bind = bind
+    #     if proxy_type_factory is None:
+    #         from retracesoftware.proxy.proxytypefactory2 import ProxyTypeFactory
 
-            proxy_type_factory = ProxyTypeFactory(
-                gateway_pair=pair,
-                proxy_type_customizer=proxy_type_customizer,
-            )
+    #         proxy_type_factory = ProxyTypeFactory(
+    #             gateway_pair=pair,
+    #             proxy_type_customizer=proxy_type_customizer,
+    #         )
 
-        return pair.wire_recording(
-            proxy_type_factory,
-            is_passthrough=is_passthrough,
-            on_callback=on_callback,
-            on_error=on_error,
-            on_result=on_result,
-        )
+    #     return pair.wire_recording(
+    #         proxy_type_factory,
+    #         is_passthrough=is_passthrough,
+    #         on_callback=on_callback,
+    #         on_error=on_error,
+    #         on_result=on_result,
+    #     )
 
     @staticmethod
     def create_replay_pair(

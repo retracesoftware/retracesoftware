@@ -22,6 +22,7 @@ from retracesoftware.proxy.traceio import (
     SwitchThreadMessage,
     SyncMessage,
     ThreadSwitchMessage,
+    _binding_handle,
 )
 
 
@@ -39,9 +40,6 @@ def _read(source):
 
     return next(source)
 
-
-def _binding_handle(binding):
-    return binding.handle if hasattr(binding, "handle") else binding
 
 def tagged_trace_writer(sink):
     def thread_switch(cursor_delta, thread_id):
@@ -68,8 +66,7 @@ def tagged_trace_writer(sink):
         thread_switch=thread_switch,
         run_to_coordinate=functional.partial(sink, "RUN_TO_COORDINATE"),
         switch_thread=functional.partial(sink, "SWITCH_THREAD"),
-        new_binding=functional.partial(sink, "NEW_BINDING"),
-        binding_delete=functional.partial(sink, "BINDING_DELETE"),
+        binding_delete=lambda binding: sink("BINDING_DELETE", _binding_handle(binding)),
         call_marker=functional.partial(sink, "CALL"),
         sync=functional.partial(sink, "SYNC"),
     )
@@ -120,11 +117,8 @@ class TaggedTraceWriter:
     def switch_thread(self, thread_id):
         return self._write("SWITCH_THREAD", thread_id)
 
-    def new_binding(self, handle):
-        return self._write("NEW_BINDING", handle)
-
-    def binding_delete(self, handle):
-        return self._write("BINDING_DELETE", handle)
+    def binding_delete(self, binding):
+        return self._write("BINDING_DELETE", _binding_handle(binding))
 
     def call_marker(self):
         return self._write("CALL")

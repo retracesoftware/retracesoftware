@@ -34,7 +34,6 @@ def test_json_trace_writer_emits_json_lines():
     writer.gc_collect(1)
     writer.checkpoint((0, 2), "main", {"state": "ok"})
     writer.thread_switch((0, 3), "worker")
-    writer.new_binding(7)
     writer.sync()
 
     assert [json.loads(line) for line in sink.getvalue().splitlines()] == [
@@ -55,7 +54,6 @@ def test_json_trace_writer_emits_json_lines():
         },
         {"event": "run_to_coordinate", "cursor_delta": [0, 3]},
         {"event": "switch_thread", "thread_id": "worker"},
-        {"event": "new_binding", "handle": 7},
         {"event": "sync"},
     ]
 

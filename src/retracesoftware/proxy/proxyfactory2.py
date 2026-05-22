@@ -17,10 +17,20 @@ class ProxyFactory:
 
     Keep this constructor and public attributes stable.  ``ProxyFactory`` is
     the single gateway from System2-level wiring into proxy type generation:
-    callers provide a Binder and GatewayPair, then consume ``typefactory``,
-    ``proxy_internal``, ``proxy_external``, and ``proxy_type``.  If surrounding
-    record/replay wiring changes, adapt that wiring to this interface rather
-    than growing new proxy creation backdoors.
+    callers provide a Binder, GatewayPair, and lifecycle callbacks, then
+    consume ``typefactory``, ``proxy_internal``, ``proxy_external``, and
+    ``proxy_type``.
+
+    ``on_new_instance`` is only for retrace-owned instances produced by
+    ``extend_type`` and instantiable external wrappers produced by
+    ``wrap_type``.  Dynamic external/internal proxy creation binds through
+    ``binder`` directly and must not call ``on_new_instance``.
+
+    ``on_del`` is broader: generated owned instances and dynamic internal
+    proxy instances both use ``__del__`` to report that a bound proxy object is
+    going away.  Dynamic external proxy instances do not own deletion; the
+    external object lifetime is represented by the dynamic external proxy type
+    binding instead.
     """
 
     def __init__(
@@ -28,18 +38,27 @@ class ProxyFactory:
         *,
         binder,
         gateway_pair,
+        on_new_instance: Callable[[Any], Any] = utils.noop,
+        on_del: Callable[[Any], Any] = utils.noop,
         proxy_type_customizer: Callable[..., Any] = utils.noop,
     ) -> None:
+        self._dynamic_external_proxy_types = set()
+        self.is_dynamic_external_proxy = utils.FastTypePredicate(
+            lambda cls: cls in self._dynamic_external_proxy_types
+        ).istypeof
+
         self.typefactory = ProxyTypeFactory(
             gateway_pair = gateway_pair,
-            on_new_instance = binder.bind,
-            on_del = binder.unbind,
+            on_new_instance = on_new_instance,
+            on_del = on_del,
             proxy_type_customizer = proxy_type_customizer,
         )
 
         internal_proxy = proxy(self.typefactory.dynamic_internal_type)
 
         def proxy_internal(value):
+            if binder.lookup(value) is not None:
+                return value
             proxied = internal_proxy(value)
             binder.bind(proxied)
             return proxied
@@ -55,9 +74,26 @@ class ProxyFactory:
         from_spec_callback = gateway_pair.wrap_as_callback(from_spec)
 
         def dynamic_external_type(cls):
-            return self.typefactory.dynamic_external_type(cls = cls, from_spec = from_spec_callback)
+            proxytype = self.typefactory.dynamic_external_type(
+                cls = cls,
+                from_spec = from_spec_callback,
+            )
+            self._dynamic_external_proxy_types.add(proxytype)
+            return proxytype
 
-        self.proxy_external = proxy(dynamic_external_type)
+        external_proxy = proxy(dynamic_external_type)
+
+        def proxy_external(value):
+            if utils.is_wrapped(value) or binder.lookup(value) is not None:
+                return value
+            return external_proxy(value)
+
+        self.proxy_external = proxy_external
+
+    def materialize_dynamic_external_proxy(self, value):
+        if isinstance(value, type) and value in self._dynamic_external_proxy_types:
+            return utils.create_wrapped(value, None)
+        return value
 
     def proxy_type(self, cls):
         try:

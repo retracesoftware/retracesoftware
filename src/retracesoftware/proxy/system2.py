@@ -6,6 +6,9 @@ import _signal
 import operator
 import gc
 import weakref
+import sys
+from contextlib import contextmanager
+from typing import NamedTuple, Callable, Any
 
 import retrace
 
@@ -13,7 +16,11 @@ from retracesoftware import functional
 from retracesoftware import stream
 from retracesoftware import utils
 from retracesoftware.gateway import GatewayPair
-from retracesoftware.gateway._gatewaypair import _space_dispatch
+from retracesoftware.gateway._gatewaypair import _space_apply, _space_dispatch, fallback
+from retracesoftware.install.monitoring import (
+    begin_suppress_monitoring,
+    end_suppress_monitoring,
+)
 from retracesoftware.proxy.contracts import (
     AsyncCapture,
     Binder,
@@ -26,7 +33,6 @@ from retracesoftware.proxy.contracts import (
 )
 from retracesoftware.proxy.traceio import (
     BindCloseMessage,
-    BindOpenMessage,
     CallbackMessage,
     CheckpointMessage,
     ErrorMessage,
@@ -38,31 +44,83 @@ from retracesoftware.proxy.traceio import (
 )
 from retracesoftware.proxy.proxyfactory2 import ProxyFactory
 
-from retracesoftware.proxy.typeextender import replay_shape_type
+from retracesoftware.proxy.typeextender import ExtendedType, replay_shape_type
 from retracesoftware.proxy.typepatcher import TypePatcher
+
+wrapped_callable = utils.wrapped_callable
+
+
+class disabled_callable(wrapped_callable):
+    __slots__ = ("_retrace_call",)
+
+    def __new__(cls, wrapped, call):
+        return super().__new__(cls, wrapped)
+
+    def __init__(self, wrapped, call):
+        self._retrace_call = call
+
+    def __call__(self, *args, **kwargs):
+        return self._retrace_call(*args, **kwargs)
+
+
+class LifecycleHooks(NamedTuple):
+    on_start: Callable[..., Any] | None = None
+    on_end: Callable[..., Any] | None = None
+
 
 def _binding_handle(binding):
     return binding.handle if hasattr(binding, "handle") else binding
 
-class _RecordingBinder:
-    def __init__(self, binder, writer) -> None:
-        self.binder = binder
-        self.writer = writer
+def _phase_internal():
+    return "internal"
 
-    def _write_binding(self, value):
-        binding = self.binder.lookup(value)
-        self.writer.new_binding(_binding_handle(binding))
+def _phase_external():
+    return "external"
+
+def _phase_disabled():
+    return None
+
+class _LocalBinder:
+    """Deterministic in-process binding lane.
+
+    This lane is used for objects whose bind points are replayed by the same
+    Python control flow on record and replay.  The trace does not need
+    ``BindOpenMessage``/``BindCloseMessage`` for these objects: both sides call
+    ``bind`` in the same order and therefore allocate the same handles locally.
+    """
+
+    def __init__(self, binder, *, on_bind=utils.noop, on_unbind=utils.noop) -> None:
+        self.binder = binder
+        self.on_bind = on_bind
+        self.on_unbind = on_unbind
 
     def bind(self, value):
         self.binder.bind(value)
-        self._write_binding(value)
+        binding = self.binder.lookup(value)
+        try:
+            object.__setattr__(value, "_retrace_binding", binding)
+        except Exception:
+            pass
+        self.on_bind(value, binding)
 
     def autobind(self, value):
         self.binder.autobind(value)
-        self._write_binding(value)
+        binding = self.binder.lookup(value)
+        try:
+            object.__setattr__(value, "_retrace_binding", binding)
+        except Exception:
+            pass
+        self.on_bind(value, binding)
 
     def unbind(self, value):
+        binding = self.binder.lookup(value)
         self.binder.unbind(value)
+        try:
+            object.__setattr__(value, "_retrace_binding", None)
+        except Exception:
+            pass
+        if binding is not None:
+            self.on_unbind(value, binding)
 
     def lookup(self, value):
         return self.binder.lookup(value)
@@ -70,29 +128,76 @@ class _RecordingBinder:
     def __call__(self, value):
         return self.binder(value)
 
-class _ReplayBinder:
-    def __init__(self, bind_value) -> None:
-        self.bind_value = bind_value
-        self.bindings_by_id = {}
+class _ReplayBinder(_LocalBinder):
+    def __init__(
+        self,
+        binder,
+        *,
+        next_owned_binding,
+        on_bind=utils.noop,
+        on_unbind=utils.noop,
+    ) -> None:
+        super().__init__(binder, on_bind=on_bind, on_unbind=on_unbind)
+        self.next_owned_binding = next_owned_binding
+        self.owned_bindings = {}
 
-    def bind(self, value):
-        binding = self.bind_value(value)
-        self.bindings_by_id[id(value)] = binding
+    def owned_bind(self, value):
+        key = id(value)
+        binding = self.owned_bindings.get(key)
+        if binding is None:
+            binding = self.next_owned_binding()
+            self.owned_bindings[key] = binding
+        try:
+            object.__setattr__(value, "_retrace_binding", binding)
+        except Exception:
+            pass
+        self.on_bind(value, binding)
 
-    autobind = bind
+    def owned_unbind(self, value):
+        binding = self.owned_bindings.pop(id(value), None)
+        try:
+            object.__setattr__(value, "_retrace_binding", None)
+        except Exception:
+            pass
+        if binding is not None:
+            self.on_unbind(value, binding)
 
-    def unbind(self, value):
-        self.bindings_by_id.pop(id(value), None)
+    def is_owned(self, value):
+        return id(value) in self.owned_bindings
 
     def lookup(self, value):
-        return self.bindings_by_id.get(id(value))
+        binding = self.owned_bindings.get(id(value))
+        if binding is not None:
+            return binding
+        return super().lookup(value)
 
     def __call__(self, value):
-        binding = self.lookup(value)
-        if binding is None:
-            return value
-        return binding
+        binding = self.owned_bindings.get(id(value))
+        if binding is not None:
+            return binding
+        return super().__call__(value)
 
+class _MarkingBinder:
+    def __init__(self, binder, mark) -> None:
+        self.binder = binder
+        self.mark = mark
+
+    def bind(self, value):
+        self.mark(value)
+        return self.binder.bind(value)
+
+    def autobind(self, value):
+        self.mark(value)
+        return self.binder.autobind(value)
+
+    def unbind(self, value):
+        return self.binder.unbind(value)
+
+    def lookup(self, value):
+        return self.binder.lookup(value)
+
+    def __call__(self, value):
+        return self.binder(value)
 
 class _PeekableReader:
     def __init__(self, reader: TraceReader) -> None:
@@ -130,6 +235,9 @@ def _raise(error):
 
 class System2(Patcher, Binder, ImmutableRegistry):
     checkpoint: Checkpoint
+    _patch_type_blacklist = frozenset(
+        ["__new__", "__getattribute__", "__del__", "__dict__"]
+    )
 
     def wire_for_record(self, *, on_callback, on_error, on_result):
         self.gateway_pair.wire_for_record(
@@ -152,21 +260,42 @@ class System2(Patcher, Binder, ImmutableRegistry):
         self,
         *,
         binder,
+        on_new_instance: Callable[[Any], Any] | None = None,
+        on_del: Callable[[Any], Any] | None = None,
         proxy_type_customizer: ProxyTypeCustomizer = utils.noop,
     ) -> None:
         self.root_space = retrace.root_space
+        self.disabled_space = getattr(retrace, "disabled_space", retrace.CoordinateSpace())
         self.gateway_pair = GatewayPair()
         self.internal_space = self.gateway_pair.sandbox_space
         self.external_space = self.gateway_pair._external_space
+        self.int_gateway = self.gateway_pair.internal
+        self.ext_gateway = self.gateway_pair.external
         self.immutable_types = {type(None)}
         immutable_types = self.immutable_types
         self.patched = utils.WeakSet()
         self.is_bound = utils.WeakSet()
         self.thread_counters = {}
+        self.lifecycle_hooks = LifecycleHooks()
+        self.consume_startup_bindings = False
+        self.retrace_mode = None
+
+        self_ref = weakref.ref(self)
 
         def bind_and_mark(value):
-            self.is_bound.add(value)
+            current_system = self_ref()
+            if current_system is not None:
+                current_system.is_bound.add(value)
             return binder.bind(value)
+
+        owned_on_new_instance = on_new_instance or binder.bind
+        owned_on_del = on_del or binder.unbind
+
+        def on_owned_new_instance(value):
+            current_system = self_ref()
+            if current_system is not None:
+                current_system.is_bound.add(value)
+            return owned_on_new_instance(value)
 
         self.bind = bind_and_mark
         self.binder = binder
@@ -174,31 +303,47 @@ class System2(Patcher, Binder, ImmutableRegistry):
         self.original_to_retrace_type = {}
         self.retrace_to_original_type = {}
         self.extended_type_flags = {}
+        
+        self.is_immutable = utils.FastTypePredicate(
+            lambda cls: cls in immutable_types).istypeof
 
-        self.is_immutable = utils.FastTypePredicate(lambda cls: cls in immutable_types).istypeof
-        self.is_passthrough = functional.or_predicate(
-            self.is_immutable,
-            self.patched,
-            self.is_bound,
-            utils.is_wrapped,
-            self.is_retrace_instance,
+        self.is_passthrough = utils.FastTypePredicate(
+            lambda cls: cls in immutable_types or issubclass(cls, ExtendedType)).istypeof
+        
+        self._current_phase = _space_dispatch(
+            _phase_disabled,
+            (
+                (self.internal_space, _phase_internal),
+                (self.external_space, _phase_external),
+            ),
         )
 
         self.proxy_factory = ProxyFactory(
-            binder=binder,
+            binder=_MarkingBinder(binder, self.is_bound.add),
             gateway_pair=self.gateway_pair,
+            on_new_instance=on_owned_new_instance,
+            on_del=owned_on_del,
             proxy_type_customizer=proxy_type_customizer,
         )
 
-        on_alloc = utils.runall(self.bind, self.patched.add)
+        def on_alloc(value):
+            current_system = self_ref()
+            if current_system is None:
+                return
+            current_system.bind(value)
+            current_system.patched.add(value)
+
+        self._on_alloc = self.dispatch(
+            internal=on_alloc,
+            external=on_alloc,
+            disabled=utils.noop,
+        )
 
         self.type_patcher = TypePatcher(
             self.gateway_pair,
             bind=self.bind,
-            on_alloc = self.dispatch(
-                internal = on_alloc,
-                external = on_alloc,
-                disabled = utils.noop))
+            on_alloc = self._on_alloc,
+            owner=self)
 
         self.patched_types = self.type_patcher.patched_types
 
@@ -207,6 +352,132 @@ class System2(Patcher, Binder, ImmutableRegistry):
         disp[self.internal_space] = internal
         disp[self.external_space] = external
         return disp
+
+    @property
+    def location(self):
+        return self._current_phase()
+
+    def enabled(self):
+        return self.location is not None
+
+    def _space_for(self, phase):
+        if phase == "internal":
+            return self.internal_space
+        if phase == "external":
+            return self.external_space
+        if phase is None:
+            return self.disabled_space
+        raise ValueError(f"unknown Retrace phase: {phase!r}")
+
+    def apply_with(self, phase, function):
+        return functional.partial(_space_apply, self._space_for(phase), function)
+
+    def run_internal(self, function, *args, **kwargs):
+        return _space_apply(self.internal_space, function, *args, **kwargs)
+
+    @contextmanager
+    def enable(self):
+        gc.collect()
+        try:
+            if callable(self.lifecycle_hooks.on_start):
+                self.lifecycle_hooks.on_start()
+            yield
+        finally:
+            if callable(self.lifecycle_hooks.on_end):
+                self.lifecycle_hooks.on_end()
+
+    def run(self, function, *args, **kwargs):
+        previous_count = begin_suppress_monitoring()
+        try:
+            manager = self.enable()
+            manager.__enter__()
+        finally:
+            end_suppress_monitoring(previous_count)
+
+        try:
+            result = self.run_internal(function, *args, **kwargs)
+        except BaseException:
+            exc_info = sys.exc_info()
+            previous_count = begin_suppress_monitoring()
+            try:
+                suppress = manager.__exit__(*exc_info)
+            finally:
+                end_suppress_monitoring(previous_count)
+            if not suppress:
+                raise
+        else:
+            previous_count = begin_suppress_monitoring()
+            try:
+                manager.__exit__(None, None, None)
+            finally:
+                end_suppress_monitoring(previous_count)
+            return result
+
+    def disable_for(self, function, *, unwrap_args=True, retrace=True):
+        disabled = fallback if unwrap_args else utils.try_unwrap_apply
+        applied = self.apply_with(None, functional.partial(disabled, function))
+        wrapped = disabled_callable(function, applied)
+        if retrace:
+            return globals()["retrace"].disable(wrapped)
+        return wrapped
+
+    def disabled_method_for(self, function, *, retrace=True):
+        disabled_function = self.disable_for(
+            function,
+            unwrap_args=False,
+            retrace=retrace,
+        )
+
+        @functools.wraps(function)
+        def wrapper(*args, **kwargs):
+            return disabled_function(*args, **kwargs)
+
+        return wrapper
+
+    def install(self):
+        def uninstall():
+            if getattr(self, "retrace_mode", None) == "replay":
+                self._replay_trace_active = False
+
+        return uninstall
+
+    def unpatch_type(self, cls):
+        return self.type_patcher.unpatch_type(cls)
+
+    def unpatch_types(self):
+        return self.type_patcher.unpatch_all()
+
+    def patch(self, obj, install_session=None):
+        if isinstance(obj, type):
+            self.type_patcher.patch_type(obj, install_session=install_session)
+            return obj
+        if callable(obj):
+            return self.patch_function(obj)
+        raise TypeError(f"cannot patch {type(obj).__name__!r} object")
+
+    def ext_proxy_result(self, fn):
+        call_real = fn
+        ext_proxy_result = functional.sequence(call_real, self.proxy_factory.proxy_external)
+        wrapped = self.dispatch(
+            disabled=call_real,
+            external=ext_proxy_result,
+            internal=ext_proxy_result,
+        )
+        standalone = wrapped_callable(wrapped)
+        self.bind(standalone)
+        return standalone
+
+    def descriptor_proxytype(self, cls):
+        slots = {}
+
+        for name in ["__get__", "__set__", "__delete__"]:
+            if name in cls.__dict__:
+                slots[name] = self._wrapped_function(
+                    self.gateway_pair.external,
+                    cls.__dict__[name],
+                )
+
+        return type("DescriptorProxy", (utils.ExternalWrapped,), slots)
 
     def _wrapped_function(self, handler, target):
         wrapped = utils.wrapped_function(handler=handler, target=target)
@@ -256,6 +527,15 @@ class System2(Patcher, Binder, ImmutableRegistry):
 
     def is_retrace_type(self, cls):
         return self.original_type_for(cls) is not None
+
+    def is_extended_type(self, cls):
+        original = self.original_type_for(cls)
+        if original is None:
+            return False
+        return self.extended_type_flags.get(original, {}).get("kind") == "extended"
+
+    def is_extended_instance(self, obj):
+        return self.is_extended_type(type(obj))
 
     def is_retrace_instance(self, obj):
         return self.is_retrace_type(type(obj))
@@ -314,6 +594,100 @@ class System2(Patcher, Binder, ImmutableRegistry):
             function = f,
             on_call = on_call))
 
+    def _install_signal_capture(self, *, writer, encode_for_write):
+        system_ref = weakref.ref(self)
+        old_signal = _signal.signal
+        wrapped_handlers = {}
+        active = False
+
+        def wrap_handler(handler):
+            if not callable(handler):
+                return handler
+
+            wrapped = wrapped_handlers.get(handler)
+            if wrapped is not None:
+                return wrapped
+
+            current_system = system_ref()
+            if current_system is None:
+                return handler
+
+            def record_signal(signum, frame):
+                nonlocal active
+                if active:
+                    return handler(signum, frame)
+
+                current_system = system_ref()
+                if current_system is None:
+                    return handler(signum, frame)
+
+                active = True
+                try:
+                    writer.run_to_coordinate(
+                        current_system.internal_space.thread_delta(),
+                    )
+                    writer.signal_callback(
+                        encode_for_write(handler),
+                        encode_for_write((signum, None)),
+                        encode_for_write({}),
+                    )
+                    return handler(signum, frame)
+                finally:
+                    active = False
+
+            signal_dispatch = current_system.dispatch(
+                internal=record_signal,
+                external=handler,
+                disabled=handler,
+            )
+
+            @functools.wraps(handler)
+            def signal_handler(signum, frame):
+                return signal_dispatch(signum, frame)
+
+            wrapped_handlers[handler] = signal_handler
+            return signal_handler
+
+        def signal_signal(signum, handler):
+            return old_signal(signum, wrap_handler(handler))
+
+        def restore_signal():
+            _signal.signal = old_signal
+
+        _signal.signal = signal_signal
+        weakref.finalize(self, restore_signal)
+
+    def _install_gc_capture(self, writer):
+        system_ref = weakref.ref(self)
+        active = False
+
+        def on_gc(phase, info):
+            nonlocal active
+            if active or phase != "start":
+                return
+
+            current_system = system_ref()
+            if current_system is None:
+                return
+
+            active = True
+            try:
+                writer.run_to_coordinate(
+                    current_system.internal_space.thread_delta()
+                )
+                writer.gc_collect(info.get("generation", 2))
+            finally:
+                active = False
+
+        def remove_gc_callback():
+            try:
+                gc.callbacks.remove(on_gc)
+            except ValueError:
+                pass
+
+        gc.callbacks.append(on_gc)
+        weakref.finalize(self, remove_gc_callback)
+
     @staticmethod
     def record_system(
         *,
@@ -323,14 +697,27 @@ class System2(Patcher, Binder, ImmutableRegistry):
         proxy_type_customizer: ProxyTypeCustomizer = utils.noop,
     ) -> System2:
 
-        stream_binder = stream.Binder(
-            on_delete=functional.sequence(_binding_handle, writer.binding_delete)
+        binder = _LocalBinder(
+            stream.Binder(),
+            on_unbind=lambda _value, binding: writer.binding_delete(binding),
         )
-        binder = _RecordingBinder(stream_binder, writer)
-
-        encode_for_write = functional.walker(binder)
 
         system = System2(binder = binder, proxy_type_customizer = proxy_type_customizer)
+        system.retrace_mode = "record"
+        system.lifecycle_hooks = LifecycleHooks(
+            on_start=getattr(writer, "on_start", utils.noop),
+            on_end=None,
+        )
+        
+        dynamic_ext_proxy_to_type = functional.when(
+            system.proxy_factory.is_dynamic_external_proxy,
+            functional.typeof,
+        )
+
+        encode_for_write = functional.if_then_else(
+            system.is_immutable,
+            binder,
+            functional.walker(functional.sequence(dynamic_ext_proxy_to_type, binder)))
 
         def on_callback(fn, *args, **kwargs):
             writer.callback(
@@ -369,98 +756,12 @@ class System2(Patcher, Binder, ImmutableRegistry):
             system.set_on_call(on_call)
 
         if async_capture.signal:
-            system_ref = weakref.ref(system)
-            old_signal = _signal.signal
-            wrapped_handlers = {}
-            active = False
-
-            def wrap_handler(handler):
-                if not callable(handler):
-                    return handler
-
-                wrapped = wrapped_handlers.get(handler)
-                if wrapped is not None:
-                    return wrapped
-
-                current_system = system_ref()
-                if current_system is None:
-                    return handler
-
-                def record_signal(signum, frame):
-                    nonlocal active
-                    if active:
-                        return handler(signum, frame)
-
-                    current_system = system_ref()
-                    if current_system is None:
-                        return handler(signum, frame)
-
-                    active = True
-                    try:
-                        writer.run_to_coordinate(
-                            current_system.internal_space.thread_delta(),
-                        )
-                        writer.signal_callback(
-                            encode_for_write(handler),
-                            encode_for_write((signum, None)),
-                            encode_for_write({}),
-                        )
-                        return handler(signum, frame)
-                    finally:
-                        active = False
-
-                signal_dispatch = current_system.dispatch(
-                    internal=record_signal,
-                    external=handler,
-                    disabled=handler,
-                )
-
-                @functools.wraps(handler)
-                def signal_handler(signum, frame):
-                    return signal_dispatch(signum, frame)
-
-                wrapped_handlers[handler] = signal_handler
-                return signal_handler
-
-            def signal_signal(signum, handler):
-                return old_signal(signum, wrap_handler(handler))
-
-            def restore_signal():
-                _signal.signal = old_signal
-
-            _signal.signal = signal_signal
-            weakref.finalize(system, restore_signal)
+            system._install_signal_capture(
+                writer=writer,
+                encode_for_write=encode_for_write)
 
         if async_capture.gc:
-            system_ref = weakref.ref(system)
-            active = False
-
-            def on_gc(phase, info):
-                nonlocal active
-                if active or phase != "start":
-                    return
-
-                current_system = system_ref()
-                if current_system is None:
-                    return
-
-                active = True
-                try:
-                    writer.run_to_coordinate(
-                        current_system.internal_space.thread_delta()
-                    )
-                    writer.gc_collect(info.get("generation", 2))
-                finally:
-                    active = False
-
-            def remove_gc_callback():
-                try:
-                    gc.callbacks.remove(on_gc)
-                except ValueError:
-                    pass
-
-            gc.callbacks.append(on_gc)
-            weakref.finalize(system, remove_gc_callback)
+            system._install_gc_capture(writer)
 
         return system
 
@@ -476,20 +777,24 @@ class System2(Patcher, Binder, ImmutableRegistry):
         bindings = {}
         cursors = _ThreadCursors()
         system = None
+        materialize_replay_value = functional.identity
 
         resolve = functional.walker(functional.if_then_else(
             functional.isinstanceof(stream.Binding),
             functional.sequence(operator.attrgetter("handle"), bindings.__getitem__),
             functional.identity,
         ))
+
+        def replay_value(value):
+            return materialize_replay_value(resolve(value))
             
         def run_callback(message):
             try:
                 system.internal_space.apply(
                     functional.call,
-                    resolve(message.fn),
-                    resolve(message.args),
-                    resolve(message.kwargs),
+                    replay_value(message.fn),
+                    replay_value(message.args),
+                    replay_value(message.kwargs),
                 )
             except Exception:
                 pass
@@ -556,13 +861,6 @@ class System2(Patcher, Binder, ImmutableRegistry):
 
                 return message
 
-        def bind(value):
-            message = read_message()
-            if not isinstance(message, BindOpenMessage):
-                raise RuntimeError(f"expected replay binding, got {message!r}")
-            bindings[message.handle] = value
-            return stream.Binding(message.handle)
-
         def checkpoint_thread(thread_id):
             current = _thread.get_ident()
             if thread_id != current:
@@ -590,7 +888,7 @@ class System2(Patcher, Binder, ImmutableRegistry):
             checkpoint_thread(message.thread_id)
             checkpoint_cursor(message.cursor_delta)
 
-            record_value = resolve(message.value)
+            record_value = replay_value(message.value)
             if record_value != value:
                 from retracesoftware.install import ReplayDivergence
                 raise ReplayDivergence(
@@ -603,18 +901,42 @@ class System2(Patcher, Binder, ImmutableRegistry):
             message = read_message()
     
             if isinstance(message, ResultMessage):
-                return resolve(message.result)
+                return replay_value(message.result)
                 
             if isinstance(message, ErrorMessage):
-                raise resolve(message.error)
+                raise replay_value(message.error)
                 
             raise RuntimeError(f"expected replay result or error, got {message!r}")
 
-        replay_binder = _ReplayBinder(bind)
+        def on_local_bind(value, binding):
+            bindings[_binding_handle(binding)] = value
+
+        def on_local_unbind(_value, binding):
+            bindings.pop(_binding_handle(binding), None)
+
+        replay_binder = _ReplayBinder(
+            stream.Binder(),
+            next_owned_binding=lambda: system.next_thread_counter(),
+            on_bind=on_local_bind,
+            on_unbind=on_local_unbind,
+        )
+
+        def replay_on_del(value):
+            if replay_binder.is_owned(value):
+                replay_binder.owned_unbind(value)
+                return
+            replay_binder.unbind(value)
+
         system = System2(
             binder=replay_binder,
+            on_new_instance=replay_binder.owned_bind,
+            on_del=replay_on_del,
             proxy_type_customizer=proxy_type_customizer,
         )
+        system.retrace_mode = "replay"
+        system._replay_trace_active = True
+        materialize_replay_value = functional.walker(
+            system.proxy_factory.materialize_dynamic_external_proxy)
         system.wire_for_replay(next_result=next_result)
 
         def replay_extend_type(cls: type, *, python_distribution: bool) -> type:
