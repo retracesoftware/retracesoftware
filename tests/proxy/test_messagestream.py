@@ -114,13 +114,14 @@ def test_next_message_reads_thread_switch():
 
 
 def test_next_message_reads_binding_messages():
-    opened = next_message(read_from(["NEW_BINDING", 7]))
-    closed = next_message(read_from(["BINDING_DELETE", stream.Binding(7)]))
+    binding = stream.Binding(7)
+    opened = next_message(read_from(["NEW_BINDING", binding]))
+    closed = next_message(read_from(["BINDING_DELETE", binding]))
 
     assert isinstance(opened, BindOpenMessage)
-    assert opened.handle == 7
+    assert opened.handle == binding.handle
     assert isinstance(closed, BindCloseMessage)
-    assert closed.handle == 7
+    assert closed.handle == binding.handle
 
 
 def test_peekable_stream_peek_does_not_consume():
@@ -159,11 +160,12 @@ def test_message_stream_peeks_complete_messages():
 
 
 def test_binding_stream_bind_resolves_bound_refs():
+    binding = stream.Binding(7)
     source = PeekableStream(MessageStream(read_from([
         "NEW_BINDING",
-        7,
+        binding,
         "RESULT",
-        {"value": stream.Binding(7)},
+        {"value": binding},
     ])))
     messages = BindingStream(source)
     resolved = object()
@@ -178,7 +180,7 @@ def test_binding_stream_bind_resolves_bound_refs():
 def test_binding_stream_does_not_surface_bind_open():
     messages = BindingStream(PeekableStream(MessageStream(read_from([
         "NEW_BINDING",
-        7,
+        stream.Binding(7),
     ]))))
 
     with pytest.raises(RuntimeError, match="bind marker returned"):
@@ -200,11 +202,12 @@ def test_binding_stream_bind_requires_next_bind_open():
 
 
 def test_binding_stream_peek_skips_bind_closes_without_consuming():
+    binding = stream.Binding(7)
     messages = BindingStream(PeekableStream(MessageStream(read_from([
         "NEW_BINDING",
-        7,
+        binding,
         "BINDING_DELETE",
-        7,
+        binding,
         "RESULT",
         "done",
     ]))))
@@ -215,11 +218,11 @@ def test_binding_stream_peek_skips_bind_closes_without_consuming():
 
     assert isinstance(message, ResultMessage)
     assert message.result == "done"
-    assert messages.lookup_handle(7) is resolved
+    assert messages.lookup_handle(binding.handle) is resolved
 
     assert messages.next().result == "done"
     with pytest.raises(KeyError):
-        messages.lookup_handle(7)
+        messages.lookup_handle(binding.handle)
 
 
 def test_scheduler_stream_consumes_thread_switch_and_arms_checkpoint():

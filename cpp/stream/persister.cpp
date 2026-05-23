@@ -644,7 +644,7 @@ namespace retracesoftware_stream {
         assert(obj);
 
         if (Binding_Check(obj)) {
-            return write_handle_ref(Binding_Handle(obj));
+            return write_handle_ref(Binding_Index(obj));
         } else if (PyMemoryView_Check(obj)) {
             PyObject* bytes = PyObject_Bytes(obj);
             if (!bytes) {

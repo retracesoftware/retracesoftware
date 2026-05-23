@@ -83,16 +83,14 @@ def _phase_external():
 def _phase_disabled():
     return None
 
-class _LocalBinder:
-    """Deterministic in-process binding lane.
-
-    This lane is used for objects whose bind points are replayed by the same
-    Python control flow on record and replay.  The trace does not need
-    ``BindOpenMessage``/``BindCloseMessage`` for these objects: both sides call
-    ``bind`` in the same order and therefore allocate the same handles locally.
-    """
-
-    def __init__(self, binder, *, on_bind=utils.noop, on_unbind=utils.noop) -> None:
+class _ReplayBinder:
+    def __init__(
+        self,
+        binder,
+        *,
+        on_bind=utils.noop,
+        on_unbind=utils.noop,
+    ) -> None:
         self.binder = binder
         self.on_bind = on_bind
         self.on_unbind = on_unbind
@@ -100,28 +98,16 @@ class _LocalBinder:
     def bind(self, value):
         self.binder.bind(value)
         binding = self.binder.lookup(value)
-        try:
-            object.__setattr__(value, "_retrace_binding", binding)
-        except Exception:
-            pass
         self.on_bind(value, binding)
 
     def autobind(self, value):
         self.binder.autobind(value)
         binding = self.binder.lookup(value)
-        try:
-            object.__setattr__(value, "_retrace_binding", binding)
-        except Exception:
-            pass
         self.on_bind(value, binding)
 
     def unbind(self, value):
         binding = self.binder.lookup(value)
         self.binder.unbind(value)
-        try:
-            object.__setattr__(value, "_retrace_binding", None)
-        except Exception:
-            pass
         if binding is not None:
             self.on_unbind(value, binding)
 
@@ -130,55 +116,6 @@ class _LocalBinder:
 
     def __call__(self, value):
         return self.binder(value)
-
-class _ReplayBinder(_LocalBinder):
-    def __init__(
-        self,
-        binder,
-        *,
-        next_owned_binding,
-        on_bind=utils.noop,
-        on_unbind=utils.noop,
-    ) -> None:
-        super().__init__(binder, on_bind=on_bind, on_unbind=on_unbind)
-        self.next_owned_binding = next_owned_binding
-        self.owned_bindings = {}
-
-    def owned_bind(self, value):
-        key = id(value)
-        binding = self.owned_bindings.get(key)
-        if binding is None:
-            binding = self.next_owned_binding()
-            self.owned_bindings[key] = binding
-        try:
-            object.__setattr__(value, "_retrace_binding", binding)
-        except Exception:
-            pass
-        self.on_bind(value, binding)
-
-    def owned_unbind(self, value):
-        binding = self.owned_bindings.pop(id(value), None)
-        try:
-            object.__setattr__(value, "_retrace_binding", None)
-        except Exception:
-            pass
-        if binding is not None:
-            self.on_unbind(value, binding)
-
-    def is_owned(self, value):
-        return id(value) in self.owned_bindings
-
-    def lookup(self, value):
-        binding = self.owned_bindings.get(id(value))
-        if binding is not None:
-            return binding
-        return super().lookup(value)
-
-    def __call__(self, value):
-        binding = self.owned_bindings.get(id(value))
-        if binding is not None:
-            return binding
-        return super().__call__(value)
 
 class _MarkingBinder:
     def __init__(self, binder, mark) -> None:
@@ -278,9 +215,7 @@ class System(ProxyRuntime, Binder, ImmutableRegistry):
         self.immutable_types = {type(None)}
         immutable_types = self.immutable_types
         self.is_bound = utils.WeakSet()
-        self.thread_counters = {}
         self.lifecycle_hooks = LifecycleHooks()
-        self.consume_startup_bindings = False
         self.retrace_mode = None
 
         self_ref = weakref.ref(self)
@@ -291,14 +226,14 @@ class System(ProxyRuntime, Binder, ImmutableRegistry):
                 current_system.is_bound.add(value)
             return binder.bind(value)
 
-        owned_on_new_instance = on_new_instance or binder.bind
-        owned_on_del = on_del or binder.unbind
+        bind_new_instance = on_new_instance or binder.bind
+        unbind_instance = on_del or binder.unbind
 
-        def on_owned_new_instance(value):
+        def on_new_proxy_instance(value):
             current_system = self_ref()
             if current_system is not None:
                 current_system.is_bound.add(value)
-            return owned_on_new_instance(value)
+            return bind_new_instance(value)
 
         self.bind = bind_and_mark
         self.binder = binder
@@ -323,8 +258,8 @@ class System(ProxyRuntime, Binder, ImmutableRegistry):
         self.proxy_factory = ProxyFactory(
             binder=_MarkingBinder(binder, self.is_bound.add),
             gateway_pair=self.gateway_pair,
-            on_new_instance=on_owned_new_instance,
-            on_del=owned_on_del,
+            on_new_instance=on_new_proxy_instance,
+            on_del=unbind_instance,
             proxy_type_customizer=proxy_type_customizer,
         )
 
@@ -436,12 +371,6 @@ class System(ProxyRuntime, Binder, ImmutableRegistry):
         wrapped = utils.wrapped_function(handler=handler, target=target)
         self.bind(wrapped)
         return wrapped
-
-    def next_thread_counter(self):
-        thread_id = _thread.get_ident()
-        counter = self.thread_counters.get(thread_id, 0)
-        self.thread_counters[thread_id] = counter + 1
-        return (thread_id, counter)
 
     def _register_retrace_type(self, original, retrace_type, *, kind, **flags):
         self.original_to_retrace_type[original] = retrace_type
@@ -646,10 +575,7 @@ class System(ProxyRuntime, Binder, ImmutableRegistry):
         proxy_type_customizer: ProxyTypeCustomizer = utils.noop,
     ) -> System:
 
-        binder = _LocalBinder(
-            stream.Binder(),
-            on_unbind=lambda _value, binding: writer.binding_delete(binding),
-        )
+        binder = stream.Binder(on_delete=writer.binding_delete)
 
         system = System(binder = binder, proxy_type_customizer = proxy_type_customizer)
         system.retrace_mode = "record"
@@ -907,22 +833,15 @@ class System(ProxyRuntime, Binder, ImmutableRegistry):
             bindings.pop(_binding_handle(binding), None)
 
         replay_binder = _ReplayBinder(
-            stream.Binder(),
-            next_owned_binding=lambda: system.next_thread_counter(),
+            stream.Binder(
+                on_delete=lambda handle: bindings.pop(_binding_handle(handle), None)
+            ),
             on_bind=on_local_bind,
             on_unbind=on_local_unbind,
         )
 
-        def replay_on_del(value):
-            if replay_binder.is_owned(value):
-                replay_binder.owned_unbind(value)
-                return
-            replay_binder.unbind(value)
-
         system = System(
             binder=replay_binder,
-            on_new_instance=replay_binder.owned_bind,
-            on_del=replay_on_del,
             proxy_type_customizer=proxy_type_customizer,
         )
         system.retrace_mode = "replay"

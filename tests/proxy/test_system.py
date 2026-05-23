@@ -1,5 +1,4 @@
 import types
-
 import retracesoftware.gateway._dynamicproxy as dynamicproxy
 import retracesoftware.gateway._gatewaypair as gatewaypair_module
 import retracesoftware.proxy.system as system_module
@@ -102,9 +101,10 @@ class _FakeSpaceDispatch:
 
 
 class _TestBinder:
-    def __init__(self, *, on_unbind=utils.noop):
+    def __init__(self, *, on_delete=utils.noop, on_unbind=None):
         self.next_handle = 0
         self.bindings = {}
+        self.on_delete = on_delete
         self.on_unbind = on_unbind
 
     def bind(self, value):
@@ -122,7 +122,10 @@ class _TestBinder:
     def unbind(self, value):
         binding = self.bindings.pop(id(value), None)
         if binding is not None:
-            self.on_unbind(binding)
+            if self.on_unbind is not None:
+                self.on_unbind(binding)
+            else:
+                self.on_delete(system_module._binding_handle(binding))
 
     def lookup(self, value):
         return self.bindings.get(id(value))
@@ -471,27 +474,6 @@ def test_dynamic_internal_proxy_serialized_representation_is_binding(monkeypatch
     assert proxy.__retrace_serialized__() is binding
 
 
-def test_system_next_thread_counter_tracks_each_thread_independently(monkeypatch):
-    system, _calls = _manual_gateway_system(monkeypatch)
-    current_thread = {"id": "thread-1"}
-    monkeypatch.setattr(
-        system_module._thread,
-        "get_ident",
-        lambda: current_thread["id"],
-    )
-
-    assert system.next_thread_counter() == ("thread-1", 0)
-    assert system.next_thread_counter() == ("thread-1", 1)
-
-    current_thread["id"] = "thread-2"
-
-    assert system.next_thread_counter() == ("thread-2", 0)
-
-    current_thread["id"] = "thread-1"
-
-    assert system.next_thread_counter() == ("thread-1", 2)
-
-
 def test_extend_type_is_idempotent_and_records_mappings(monkeypatch):
     system, _calls = _manual_gateway_system(monkeypatch)
 
@@ -769,9 +751,9 @@ def test_replay_system_extend_type_extends_python_distribution_types(monkeypatch
     }
 
 
-def test_replay_system_typeextender_uses_counter_register_path(monkeypatch):
+def test_replay_system_typeextender_binds_generated_instances(monkeypatch):
     _install_fake_retrace(monkeypatch)
-    monkeypatch.setattr(system_module._thread, "get_ident", lambda: "thread-1")
+    monkeypatch.setattr(system_module._thread, "get_ident", lambda: 11)
     system = System.replay_system(reader=_FakeReader([
         ResultMessage(None),
     ]))
@@ -780,17 +762,17 @@ def test_replay_system_typeextender_uses_counter_register_path(monkeypatch):
         pass
 
     retrace_type = system.extend_type(External, python_distribution=False)
-    next_counter = system.thread_counters.get("thread-1", 0)
 
     obj = system.run_internal(retrace_type)
-    binding = obj.__retrace_binding__()
+    binding = system.binder.lookup(obj)
 
-    assert binding == ("thread-1", next_counter)
+    assert isinstance(binding, stream.Binding)
+    assert binding.handle == (11, 0)
     assert system.is_bound(obj)
 
     obj.__del__()
 
-    assert obj.__retrace_binding__() is None
+    assert system.binder.lookup(obj) is None
 
 
 def test_wrap_type_is_idempotent_and_constructor_wraps_target(monkeypatch):

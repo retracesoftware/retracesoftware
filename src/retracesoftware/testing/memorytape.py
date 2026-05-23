@@ -18,6 +18,14 @@ from retracesoftware.stream import (
 import retracesoftware.utils as utils
 
 
+def _binding(index):
+    return Binding((0, index))
+
+
+def _binding_handle(index):
+    return (0, index)
+
+
 class _BindOpenMarker:
     __slots__ = ("index",)
 
@@ -98,10 +106,10 @@ class _BindingState:
         if binding is not None:
             index = self._indices.get(("binding", binding.handle))
             if index is not None:
-                return Binding(index)
+                return _binding(index)
         fallback_index = self._fallback_bindings.get(id(obj))
         if fallback_index is not None:
-            return Binding(fallback_index)
+            return _binding(fallback_index)
         return fallback(obj) if fallback else obj
 
 
@@ -160,7 +168,7 @@ class _MemoryTapeReader:
     def _next_visible(self):
         value = self._next_raw()
         while isinstance(value, _BindCloseMarker):
-            self._bindings.pop(value.index, None)
+            self._bindings.pop(_binding_handle(value.index), None)
             value = self._next_raw()
         return value
 
@@ -181,7 +189,7 @@ class _MemoryTapeReader:
         marker = self._next_visible()
         if not isinstance(marker, _BindOpenMarker):
             raise RuntimeError(f"expected bind marker, got {marker!r}")
-        self._bindings[marker.index] = obj
+        self._bindings[_binding_handle(marker.index)] = obj
         return None
 
     def peek(self):
@@ -196,7 +204,7 @@ class _MemoryTapeReader:
             index += 1
 
             if isinstance(value, _BindCloseMarker):
-                shadow_bindings.pop(value.index, None)
+                shadow_bindings.pop(_binding_handle(value.index), None)
                 continue
 
             if isinstance(value, _BindOpenMarker):
@@ -375,7 +383,7 @@ class MemoryWriter:
 
         binding_index = self._binding_state.lookup(value)
         if binding_index is not None:
-            return Binding(binding_index)
+            return _binding(binding_index)
 
         if isinstance(value, list):
             return [self._encode_value(item) for item in value]

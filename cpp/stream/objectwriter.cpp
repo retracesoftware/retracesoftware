@@ -190,7 +190,7 @@ namespace retracesoftware_stream {
             if (is_disabled()) return;
 
             if (Binding_Check(obj)) {
-                disable_if_push_failed(queue->push_ref(Binding_Handle(obj)));
+                disable_if_push_failed(queue->push_ref(Binding_Index(obj)));
             } else if (interned_handles.contains(intern_handle(obj))) {
                 disable_if_push_failed(queue->push_ref(intern_handle(obj)));
             } else {

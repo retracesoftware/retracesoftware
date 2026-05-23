@@ -1,6 +1,7 @@
 #include "stream.h"
 #include <structmember.h>
 #include <cstdint>
+#include <cstddef>
 #include <new>
 #include <vector>
 #include "unordered_dense.h"
@@ -11,70 +12,135 @@ namespace retracesoftware_stream {
 
     static destructor get_subtype_dealloc();
 
-    struct Binding : PyObject {
-        uint64_t handle;
+    static bool current_thread_id(uint64_t * out) {
+        PyObject * module = PyImport_ImportModule("_thread");
+        if (!module) {
+            return false;
+        }
+        PyObject * get_ident = PyObject_GetAttrString(module, "get_ident");
+        Py_DECREF(module);
+        if (!get_ident) {
+            return false;
+        }
+        PyObject * ident = PyObject_CallNoArgs(get_ident);
+        Py_DECREF(get_ident);
+        if (!ident) {
+            return false;
+        }
+        unsigned long long value = PyLong_AsUnsignedLongLong(ident);
+        Py_DECREF(ident);
+        if (PyErr_Occurred()) {
+            return false;
+        }
+        *out = static_cast<uint64_t>(value);
+        return true;
+    }
+
+    static bool uint64_from_object(PyObject * value, uint64_t * out) {
+        unsigned long long parsed = PyLong_AsUnsignedLongLong(value);
+        if (PyErr_Occurred()) {
+            return false;
+        }
+        *out = static_cast<uint64_t>(parsed);
+        return true;
+    }
+
+    static bool handle_from_tuple(PyObject * value, uint64_t * thread_id, uint64_t * index) {
+        if (PyTuple_GET_SIZE(value) != 2) {
+            PyErr_SetString(PyExc_TypeError, "Binding handle tuple must have length 2");
+            return false;
+        }
+        return uint64_from_object(PyTuple_GET_ITEM(value, 0), thread_id)
+            && uint64_from_object(PyTuple_GET_ITEM(value, 1), index);
+    }
+
+    struct Binding : PyTupleObject {
+        static PyObject * from_values(PyTypeObject * type, uint64_t thread_id, uint64_t index) {
+            PyObject * thread_obj = PyLong_FromUnsignedLongLong(thread_id);
+            if (!thread_obj) {
+                return nullptr;
+            }
+            PyObject * index_obj = PyLong_FromUnsignedLongLong(index);
+            if (!index_obj) {
+                Py_DECREF(thread_obj);
+                return nullptr;
+            }
+            PyObject * values = PyTuple_Pack(2, thread_obj, index_obj);
+            Py_DECREF(thread_obj);
+            Py_DECREF(index_obj);
+            if (!values) {
+                return nullptr;
+            }
+            PyObject * tuple_args = PyTuple_Pack(1, values);
+            Py_DECREF(values);
+            if (!tuple_args) {
+                return nullptr;
+            }
+            PyObject * self = PyTuple_Type.tp_new(type, tuple_args, nullptr);
+            Py_DECREF(tuple_args);
+            return self;
+        }
 
         static PyObject * py_new(PyTypeObject * type, PyObject * args, PyObject * kwargs) {
-            static const char * kwlist[] = {"handle", nullptr};
-            unsigned long long handle = 0;
+            static const char * kwlist[] = {"index", nullptr};
+            PyObject * value = nullptr;
 
             if (!PyArg_ParseTupleAndKeywords(
-                    args, kwargs, "K", (char **)kwlist, &handle)) {
+                    args, kwargs, "O", (char **)kwlist, &value)) {
                 return nullptr;
             }
 
-            auto * self = reinterpret_cast<Binding *>(type->tp_alloc(type, 0));
-            if (!self) return nullptr;
-            self->handle = static_cast<uint64_t>(handle);
-            return reinterpret_cast<PyObject *>(self);
+            uint64_t thread_id = 0;
+            uint64_t index = 0;
+            if (PyTuple_Check(value)) {
+                if (!handle_from_tuple(value, &thread_id, &index)) {
+                    return nullptr;
+                }
+            } else {
+                if (!uint64_from_object(value, &index)) {
+                    return nullptr;
+                }
+                if (!current_thread_id(&thread_id)) {
+                    return nullptr;
+                }
+            }
+            return from_values(type, thread_id, index);
         }
 
-        static void dealloc(Binding * self) {
-            Py_TYPE(self)->tp_free(reinterpret_cast<PyObject *>(self));
+        static uint64_t item(Binding * self, Py_ssize_t index) {
+            PyObject * value = PyTuple_GET_ITEM(reinterpret_cast<PyObject *>(self), index);
+            return static_cast<uint64_t>(PyLong_AsUnsignedLongLong(value));
+        }
+
+        static PyObject * handle_get(Binding * self, void *) {
+            return Py_NewRef(reinterpret_cast<PyObject *>(self));
+        }
+
+        static PyObject * thread_id_get(Binding * self, void *) {
+            return Py_NewRef(PyTuple_GET_ITEM(reinterpret_cast<PyObject *>(self), 0));
+        }
+
+        static PyObject * index_get(Binding * self, void *) {
+            return Py_NewRef(PyTuple_GET_ITEM(reinterpret_cast<PyObject *>(self), 1));
         }
 
         static PyObject * repr(Binding * self) {
             return PyUnicode_FromFormat(
-                "Binding(%llu)",
-                static_cast<unsigned long long>(self->handle));
+                "Binding(%llu, %llu)",
+                static_cast<unsigned long long>(item(self, 0)),
+                static_cast<unsigned long long>(item(self, 1)));
         }
 
         static PyObject * int_(Binding * self) {
             return PyLong_FromUnsignedLongLong(
-                static_cast<unsigned long long>(self->handle));
-        }
-
-        static Py_hash_t hash(Binding * self) {
-            Py_hash_t value = static_cast<Py_hash_t>(self->handle);
-            return value == -1 ? -2 : value;
-        }
-
-        static PyObject * richcompare(PyObject * a, PyObject * b, int op) {
-            if (!PyObject_TypeCheck(a, &Binding_Type)
-                || !PyObject_TypeCheck(b, &Binding_Type)) {
-                Py_RETURN_NOTIMPLEMENTED;
-            }
-
-            uint64_t left = reinterpret_cast<Binding *>(a)->handle;
-            uint64_t right = reinterpret_cast<Binding *>(b)->handle;
-
-            bool result = false;
-            switch (op) {
-                case Py_LT: result = left < right; break;
-                case Py_LE: result = left <= right; break;
-                case Py_EQ: result = left == right; break;
-                case Py_NE: result = left != right; break;
-                case Py_GT: result = left > right; break;
-                case Py_GE: result = left >= right; break;
-                default: Py_RETURN_NOTIMPLEMENTED;
-            }
-
-            return PyBool_FromLong(result);
+                static_cast<unsigned long long>(item(self, 1)));
         }
     };
 
-    static PyMemberDef Binding_members[] = {
-        {"handle", T_ULONGLONG, OFFSET_OF_MEMBER(Binding, handle), READONLY, "Opaque binding handle"},
+    static PyGetSetDef Binding_getset[] = {
+        {"handle", (getter)Binding::handle_get, nullptr, "Opaque binding handle", nullptr},
+        {"thread_id", (getter)Binding::thread_id_get, nullptr, "Binding thread id", nullptr},
+        {"index", (getter)Binding::index_get, nullptr, "Per-thread binding index", nullptr},
         {nullptr}
     };
 
@@ -85,14 +151,13 @@ namespace retracesoftware_stream {
     PyTypeObject Binding_Type = {
         .ob_base = PyVarObject_HEAD_INIT(NULL, 0)
         .tp_name = MODULE "Binding",
-        .tp_basicsize = sizeof(Binding),
-        .tp_dealloc = (destructor)Binding::dealloc,
+        .tp_basicsize = offsetof(PyTupleObject, ob_item),
+        .tp_itemsize = sizeof(PyObject *),
         .tp_repr = (reprfunc)Binding::repr,
         .tp_as_number = &Binding_number_methods,
-        .tp_hash = (hashfunc)Binding::hash,
         .tp_flags = Py_TPFLAGS_DEFAULT | Py_TPFLAGS_BASETYPE,
-        .tp_richcompare = Binding::richcompare,
-        .tp_members = Binding_members,
+        .tp_getset = Binding_getset,
+        .tp_base = &PyTuple_Type,
         .tp_new = Binding::py_new,
     };
 
@@ -123,7 +188,7 @@ namespace retracesoftware_stream {
     struct PendingDelete {
         Binder * binder;
         PyObject * binding;
-        uint64_t handle;
+        PyObject * handle;
     };
 
     struct PyObjectIdentityHash {
@@ -147,6 +212,7 @@ namespace retracesoftware_stream {
         identity_map<PyObject *> bindings;
         identity_map<PyObject *> fallback_bindings;
         identity_map<WeakBindingEntry> weak_bindings;
+        map<uint64_t, uint64_t> next_binding_indices;
         PyObject * on_delete = nullptr;
         vectorcallfunc vectorcall = nullptr;
 
@@ -166,6 +232,7 @@ namespace retracesoftware_stream {
                 Py_DECREF(binding);
             }
             self->fallback_bindings.clear();
+            self->next_binding_indices.clear();
             return 0;
         }
 
@@ -174,6 +241,7 @@ namespace retracesoftware_stream {
             self->bindings.~identity_map<PyObject *>();
             self->weak_bindings.~identity_map<WeakBindingEntry>();
             self->fallback_bindings.~identity_map<PyObject *>();
+            self->next_binding_indices.~map<uint64_t, uint64_t>();
             Py_TYPE(self)->tp_free(reinterpret_cast<PyObject *>(self));
         }
 
@@ -183,6 +251,7 @@ namespace retracesoftware_stream {
             new (&self->bindings) identity_map<PyObject *>();
             new (&self->weak_bindings) identity_map<WeakBindingEntry>();
             new (&self->fallback_bindings) identity_map<PyObject *>();
+            new (&self->next_binding_indices) map<uint64_t, uint64_t>();
             self->on_delete = nullptr;
             return reinterpret_cast<PyObject *>(self);
         }
@@ -298,15 +367,8 @@ namespace retracesoftware_stream {
             return binding;
         }
 
-        void emit_delete(uint64_t handle_value) {
+        void emit_delete(PyObject * handle) {
             if (!on_delete || _Py_IsFinalizing()) {
-                return;
-            }
-
-            PyObject * handle = PyLong_FromUnsignedLongLong(
-                static_cast<unsigned long long>(handle_value));
-            if (!handle) {
-                PyErr_Clear();
                 return;
             }
 
@@ -314,7 +376,6 @@ namespace retracesoftware_stream {
             PyErr_Fetch(&exc_type, &exc_value, &exc_tb);
 
             PyObject * result = PyObject_CallOneArg(on_delete, handle);
-            Py_DECREF(handle);
             Py_XDECREF(result);
             if (!result) {
                 PyErr_Clear();
@@ -331,12 +392,17 @@ namespace retracesoftware_stream {
 
             PyObject * weakref = it->second.weakref;
             PyObject * binding = it->second.binding;
-            uint64_t handle = Binding_Handle(binding);
+            PyObject * handle = Binding_Handle(binding);
             weak_bindings.erase(it);
 
             Py_DECREF(weakref);
             Py_DECREF(binding);
-            emit_delete(handle);
+            if (handle) {
+                emit_delete(handle);
+                Py_DECREF(handle);
+            } else {
+                PyErr_Clear();
+            }
         }
 
         PyObject * bind_with_weakref(PyObject * obj, PyObject * binding) {
@@ -369,7 +435,12 @@ namespace retracesoftware_stream {
         }
 
         PyObject * new_binding() {
-            return Binding_New(next_binding_handle++);
+            uint64_t thread_id = 0;
+            if (!current_thread_id(&thread_id)) {
+                return nullptr;
+            }
+            uint64_t index = next_binding_indices[thread_id]++;
+            return Binding_New(thread_id, index);
         }
 
         PyObject * bind_plain(PyObject * obj) {
@@ -421,9 +492,13 @@ namespace retracesoftware_stream {
                 return nullptr;
             }
             if (binding != Py_None) {
-                uint64_t handle = Binding_Handle(binding);
+                PyObject * handle = Binding_Handle(binding);
                 Py_DECREF(binding);
+                if (!handle) {
+                    return nullptr;
+                }
                 self->emit_delete(handle);
+                Py_DECREF(handle);
                 Py_RETURN_NONE;
             }
             Py_DECREF(binding);
@@ -461,7 +536,6 @@ namespace retracesoftware_stream {
     static map<PyTypeObject *, destructor> dealloc_patches;
     static set<PyTypeObject *> bind_supported_types;
     static identity_map<std::vector<BoundEntry>> bound_entries;
-    static uint64_t next_binding_handle = 0;
     static void binder_dealloc(PyObject * obj);
 
     void Binder::forget_bound_entries(PyObject * obj) {
@@ -629,10 +703,15 @@ namespace retracesoftware_stream {
             pending_deletes.reserve(entries.size());
 
             for (auto &bound : entries) {
+                PyObject * handle = Binding_Handle(bound.binding);
+                if (!handle) {
+                    PyErr_Clear();
+                    handle = Py_NewRef(Py_None);
+                }
                 pending_deletes.push_back({
                     .binder = bound.binder,
                     .binding = bound.binding,
-                    .handle = Binding_Handle(bound.binding),
+                    .handle = handle,
                 });
                 PyObject * forgotten = bound.binder->forget(obj);
                 Py_XDECREF(forgotten);
@@ -651,6 +730,7 @@ namespace retracesoftware_stream {
 
         for (auto &pending : pending_deletes) {
             pending.binder->emit_delete(pending.handle);
+            Py_DECREF(pending.handle);
             Py_DECREF(pending.binding);
             Py_DECREF(reinterpret_cast<PyObject *>(pending.binder));
         }
@@ -780,16 +860,23 @@ namespace retracesoftware_stream {
         return PyObject_TypeCheck(obj, &Binding_Type);
     }
 
-    uint64_t Binding_Handle(PyObject * obj) {
+    PyObject * Binding_Handle(PyObject * obj) {
         assert(Binding_Check(obj));
-        return reinterpret_cast<Binding *>(obj)->handle;
+        return Py_NewRef(obj);
     }
 
-    PyObject * Binding_New(uint64_t handle) {
-        auto * self = reinterpret_cast<Binding *>(Binding_Type.tp_alloc(&Binding_Type, 0));
-        if (!self) return nullptr;
-        self->handle = handle;
-        return reinterpret_cast<PyObject *>(self);
+    uint64_t Binding_Index(PyObject * obj) {
+        assert(Binding_Check(obj));
+        return Binding::item(reinterpret_cast<Binding *>(obj), 1);
+    }
+
+    uint64_t Binding_ThreadId(PyObject * obj) {
+        assert(Binding_Check(obj));
+        return Binding::item(reinterpret_cast<Binding *>(obj), 0);
+    }
+
+    PyObject * Binding_New(uint64_t thread_id, uint64_t index) {
+        return Binding::from_values(&Binding_Type, thread_id, index);
     }
 
     PyObject * Binder_Bind(PyObject * binder, PyObject * obj) {
@@ -797,7 +884,7 @@ namespace retracesoftware_stream {
             PyErr_SetString(PyExc_TypeError, "binder must be a Binder");
             return nullptr;
         }
-        return reinterpret_cast<Binder *>(binder)->bind(obj);
+        return reinterpret_cast<Binder *>(binder)->bind_plain(obj);
     }
 
     PyObject * Binder_Lookup(PyObject * binder, PyObject * obj) {

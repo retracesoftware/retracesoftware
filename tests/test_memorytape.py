@@ -55,8 +55,8 @@ def test_memory_tape_uses_tape_local_binding_indices_not_global_binder_handles()
 
     assert tape.tape[0].index == 0
     assert tape.tape[1].index == 1
-    assert repr(tape.tape[2][0]) == "Binding(0)"
-    assert repr(tape.tape[2][1]) == "Binding(1)"
+    assert repr(tape.tape[2][0]) == "Binding(0, 0)"
+    assert repr(tape.tape[2][1]) == "Binding(0, 1)"
 
 
 def test_memory_tape_reader_bind_requires_binding_create_marker():

@@ -52,6 +52,10 @@ def _thread_id():
     return threading.current_thread().ident
 
 
+def _native_binding(index, *, thread_id=0):
+    return stream.Binding((thread_id, index))
+
+
 def _unframe(data: bytes) -> bytes:
     """Strip PID frame headers and return concatenated payloads."""
     out = bytearray()
@@ -483,20 +487,20 @@ def test_tape_reader_roundtrips_protocol_thread_switch_messages(tmp_path):
 def test_tape_reader_uses_binding_stub_records_for_external_bindings(tmp_path):
     reader = iter([
         ("__bind__", 0),
-        stream.Binding(0),
+        _native_binding(0),
         ("__unbind__", 0),
     ]).__next__
 
     assert stream._is_bind_open(reader())
-    assert stream._bind_index(("__bind__", 0)) == 0
+    assert stream._bind_index(("__bind__", 0)) == (0, 0)
 
     lookup = reader()
     assert isinstance(lookup, stream.Binding)
-    assert lookup.handle == 0
+    assert lookup.handle == (0, 0)
 
     delete = reader()
     assert stream._is_bind_close(delete)
-    assert stream._bind_index(delete) == 0
+    assert stream._bind_index(delete) == (0, 0)
 
 
 def test_tape_reader_hydrates_interned_values(tmp_path):
@@ -546,7 +550,7 @@ def test_message_stream_materializes_async_new_patched_tag_before_result():
         list,
         ("__bind__", 0),
         "RESULT",
-        stream.Binding(0),
+        _native_binding(0),
     ])
     messages = ReplayReader(
         native_reader,
@@ -565,7 +569,7 @@ def test_message_stream_resolves_binding_lookup_for_async_new_patched_result():
         list,
         ("__bind__", 0),
         "RESULT",
-        stream.Binding(0),
+        _native_binding(0),
     ])
     messages = ReplayReader(
         native_reader,
@@ -587,7 +591,7 @@ def test_message_stream_ignores_unreturned_async_new_patched_helpers():
         dict,
         ("__bind__", 1),
         "RESULT",
-        stream.Binding(1),
+        _native_binding(1),
         "RESULT",
         None,
     ])
@@ -860,7 +864,7 @@ def test_resolving_reader_resolves_bound_lookups_and_skips_deletes(tmp_path):
             stream.WithThreadReader(
                 iter([
                     ("__bind__", 0),
-                    stream.Binding(0),
+                    _native_binding(0),
                     ("__unbind__", 0),
                     "after",
                 ]).__next__
@@ -879,7 +883,7 @@ def test_resolving_reader_peek_resolves_values_using_binding_table(tmp_path):
         thread_id=lambda: None,
         source=iter([
             ("__bind__", 0),
-            stream.Binding(0),
+            _native_binding(0),
             ("__unbind__", 0),
             "after",
         ]).__next__,

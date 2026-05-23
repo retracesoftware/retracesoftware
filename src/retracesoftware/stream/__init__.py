@@ -88,7 +88,7 @@ def _is_bind_close(value):
 
 
 def _bind_index(value):
-    return value[1]
+    return (0, value[1])
 
 _NATIVE_PERSISTER_TYPES = tuple(
     t for t in (

@@ -118,8 +118,10 @@ namespace retracesoftware_stream {
     FramedWriter* FramedWriter_get(PyObject* obj);
 
     bool Binding_Check(PyObject * obj);
-    uint64_t Binding_Handle(PyObject * obj);
-    PyObject * Binding_New(uint64_t handle);
+    PyObject * Binding_Handle(PyObject * obj);
+    uint64_t Binding_Index(PyObject * obj);
+    uint64_t Binding_ThreadId(PyObject * obj);
+    PyObject * Binding_New(uint64_t thread_id, uint64_t index);
     bool AddBindSupport(PyTypeObject * type);
     bool RemoveBindSupport(PyTypeObject * type);
     bool GetExactBindSupportOriginalDealloc(PyTypeObject * type, destructor * out);

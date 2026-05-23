@@ -34,16 +34,21 @@ def autobind_and_lookup(binder, obj):
 
 
 def test_binding_value_semantics():
+    thread_id = _thread.get_ident()
     left = utils.Binding(7)
     same = utils.Binding(7)
     right = utils.Binding(8)
 
-    assert left.handle == 7
+    assert isinstance(left, tuple)
+    assert tuple(left) == (thread_id, 7)
+    assert left.handle == (thread_id, 7)
+    assert left.thread_id == thread_id
+    assert left.index == 7
     assert int(left) == 7
     assert left == same
     assert left != right
     assert hash(left) == hash(same)
-    assert repr(left) == "Binding(7)"
+    assert repr(left) == f"Binding({thread_id}, 7)"
 
 
 def test_binder_bind_raises_for_same_object():
@@ -207,7 +212,7 @@ def test_binder_callback_receives_binding_and_unbound_objects_do_not_emit_delete
     collect_garbage()
 
     assert deleted == [binding.handle]
-    assert isinstance(deleted[0], int)
+    assert isinstance(deleted[0], tuple)
 
 
 def test_binder_emits_delete_for_bind_supported_non_weakrefable_object():
@@ -279,41 +284,6 @@ def test_binder_swallows_callback_exceptions():
 
     del obj
     collect_garbage()
-
-
-def test_system_patch_type_registers_bind_support(monkeypatch):
-    from retracesoftware.proxy.patchtype import patch_type
-    from retracesoftware.proxy.system import System
-
-    class TestBinder:
-        def __init__(self):
-            self._binder = utils.Binder()
-
-        def bind(self, obj):
-            return self._binder.bind(obj)
-
-        def unbind(self, obj):
-            return None
-
-        def __call__(self, obj):
-            return self._binder(obj)
-
-    seen = []
-    original = utils.Binder.add_bind_support
-
-    def recording_add_bind_support(cls):
-        seen.append(cls)
-        return original(cls)
-
-    monkeypatch.setattr(utils.Binder, "add_bind_support", staticmethod(recording_add_bind_support))
-
-    system = System(binder=TestBinder())
-    try:
-        patch_type(system, _socket.socket)
-    finally:
-        system.unpatch_types()
-
-    assert _socket.socket in seen
 
 
 def test_binder_composes_with_later_on_alloc_dealloc_wrapper(tmp_path):

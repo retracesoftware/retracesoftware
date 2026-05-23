@@ -13,7 +13,7 @@
 namespace retracesoftware_stream {
 
     static PyObject * binding_lookup(uint64_t handle) {
-        return Binding_New(handle);
+        return Binding_New(0, handle);
     }
 
     static size_t checked_size(uint64_t value, const char* label) {

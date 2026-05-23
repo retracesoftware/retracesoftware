@@ -35,6 +35,7 @@ def test_tagged_trace_writer_methods_emit_wire_tags():
     writer = TaggedTraceWriter(lambda *values: writes.append(values))
     error = ValueError("boom")
     stacktrace = (0, ())
+    binding = stream.Binding(7)
 
     def callback():
         return None
@@ -51,7 +52,7 @@ def test_tagged_trace_writer_methods_emit_wire_tags():
     writer.stacktrace(stacktrace)
     writer.thread_switch((0, 3), "worker")
     writer.run_completed()
-    writer.binding_delete(7)
+    writer.binding_delete(binding)
     writer.call_marker()
     writer.sync()
 
@@ -69,7 +70,7 @@ def test_tagged_trace_writer_methods_emit_wire_tags():
         ("RUN_TO_COORDINATE", (0, 3)),
         ("SWITCH_THREAD", "worker"),
         ("RUN_COMPLETED",),
-        ("BINDING_DELETE", 7),
+        ("BINDING_DELETE", binding.handle),
         ("CALL",),
         ("SYNC",),
     ]
@@ -80,6 +81,7 @@ def test_tagged_trace_writer_function_methods_emit_wire_tags():
     writer = tagged_trace_writer(lambda *values: writes.append(values))
     error = ValueError("boom")
     stacktrace = (0, ())
+    binding = stream.Binding(7)
 
     def callback():
         return None
@@ -96,7 +98,7 @@ def test_tagged_trace_writer_function_methods_emit_wire_tags():
     writer.stacktrace(stacktrace)
     writer.thread_switch((0, 3), "worker")
     writer.run_completed()
-    writer.binding_delete(7)
+    writer.binding_delete(binding)
     writer.call_marker()
     writer.sync()
 
@@ -114,7 +116,7 @@ def test_tagged_trace_writer_function_methods_emit_wire_tags():
         ("RUN_TO_COORDINATE", (0, 3)),
         ("SWITCH_THREAD", "worker"),
         ("RUN_COMPLETED",),
-        ("BINDING_DELETE", 7),
+        ("BINDING_DELETE", binding.handle),
         ("CALL",),
         ("SYNC",),
     ]
@@ -122,6 +124,7 @@ def test_tagged_trace_writer_function_methods_emit_wire_tags():
 
 def test_tagged_trace_reader_decodes_wire_tags_to_messages():
     error = ValueError("boom")
+    binding = stream.Binding(7)
 
     def callback():
         return None
@@ -158,9 +161,9 @@ def test_tagged_trace_reader_decodes_wire_tags_to_messages():
         "worker",
         "RUN_COMPLETED",
         "NEW_BINDING",
-        stream.Binding(7),
+        binding,
         "BINDING_DELETE",
-        stream.Binding(7),
+        binding,
         "CALL",
         "SYNC",
     ]))
@@ -221,11 +224,11 @@ def test_tagged_trace_reader_decodes_wire_tags_to_messages():
 
     bind_open = reader.next()
     assert isinstance(bind_open, BindOpenMessage)
-    assert bind_open.handle == 7
+    assert bind_open.handle == binding.handle
 
     bind_close = reader.next()
     assert isinstance(bind_close, BindCloseMessage)
-    assert bind_close.handle == 7
+    assert bind_close.handle == binding.handle
 
     assert isinstance(reader.next(), CallMarkerMessage)
     assert isinstance(reader.next(), SyncMessage)
@@ -236,7 +239,7 @@ def test_next_message_decodes_native_binding_markers_and_unknown_tags():
     closed = next_message(read_from([("__unbind__", 7)]))
 
     assert isinstance(opened, BindOpenMessage)
-    assert opened.handle == 7
+    assert opened.handle == (0, 7)
     assert isinstance(closed, BindCloseMessage)
-    assert closed.handle == 7
+    assert closed.handle == (0, 7)
     assert next_message(read_from(["UNKNOWN"])) == "UNKNOWN"
