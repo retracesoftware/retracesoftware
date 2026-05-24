@@ -7,7 +7,7 @@ Retrace records a Python execution as a `.retrace` artifact. When pytest or CI f
 The same recording model works for Python apps and production crashes. Start with tests today; move to production when the trust is there.
 
 <p align="center">
-  <img src="docs/images/backwards_debugger_demo.gif" alt="Reverse debugging a Python program in VS Code with Retrace: stepping backwards from a crash, locals updating in real time." width="800">
+  <img src="docs/images/docs/images/A_test_fails_in_CI.gif" alt="Failed pytest run replayed in VS Code with Retrace, stepping backwards from the assertion failure to the runtime state that caused it." width="800">
 </p>
 
 ## Why Retrace
