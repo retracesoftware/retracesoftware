@@ -1,4 +1,3 @@
-```markdown
 # Retrace
 
 Turn failed Python tests and CI runs into replayable debug sessions.
@@ -333,4 +332,3 @@ Run Go tests:
 
 Apache-2.0
 ```
-
