@@ -381,6 +381,9 @@ class MemoryWriter:
         if serializer is not None:
             return serializer(value)
 
+        if isinstance(value, Binding):
+            return value
+
         binding_index = self._binding_state.lookup(value)
         if binding_index is not None:
             return _binding(binding_index)

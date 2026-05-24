@@ -71,3 +71,46 @@ def test_writer_output_parameter_still_bypasses_format_selector():
 
     assert ("object", "wrapped-output") in persister.events
     assert ("flush",) in persister.events
+
+
+def test_json_persister_serializes_binding_as_handle_ref(tmp_path):
+    trace_path = tmp_path / "trace.jsonl"
+    binding = stream.Binding(7)
+
+    persister = stream.JsonPersister(trace_path)
+    try:
+        persister.write_object(binding)
+        persister.flush()
+    finally:
+        persister.close()
+
+    events = _read_json_lines(trace_path)
+
+    assert events == [{"event": "handle_ref", "ref": 7}]
+
+
+def test_json_persister_preserves_nested_binding_values(tmp_path):
+    trace_path = tmp_path / "trace.jsonl"
+    binding = stream.Binding(7)
+
+    persister = stream.JsonPersister(trace_path)
+    try:
+        persister.write_object(("callable", binding))
+        persister.flush()
+    finally:
+        persister.close()
+
+    events = _read_json_lines(trace_path)
+
+    assert events == [
+        {
+            "event": "object",
+            "value": {
+                "kind": "tuple",
+                "items": [
+                    "callable",
+                    {"kind": "binding", "index": 7},
+                ],
+            },
+        }
+    ]

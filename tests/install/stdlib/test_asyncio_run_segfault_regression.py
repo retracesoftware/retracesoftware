@@ -11,12 +11,71 @@ So this test isolates to a single retrace component path:
 from __future__ import annotations
 
 import os
+import importlib
 from pathlib import Path
+import socket
+import _socket
 import subprocess
 
 import pytest
 
 from tests.helpers import PYTHON
+from retracesoftware.install import _reload_preexisting_subclass_modules
+from retracesoftware.install.installation import Installation
+from retracesoftware.install.patcher import patch
+from retracesoftware.proxy.system import System
+
+
+class _Writer:
+    def __init__(self):
+        self.calls = []
+
+    def callback(self, fn, args, kwargs):
+        self.calls.append(("callback", fn, args, kwargs))
+
+    def error(self, error):
+        self.calls.append(("error", error))
+
+    def result(self, value):
+        self.calls.append(("result", value))
+
+    def thread_switch(self, cursor_delta, thread_id):
+        self.calls.append(("thread_switch", cursor_delta, thread_id))
+
+    def checkpoint(self, cursor_delta, thread_id, value):
+        self.calls.append(("checkpoint", cursor_delta, thread_id, value))
+
+    def binding_delete(self, binding):
+        self.calls.append(("binding_delete", binding))
+
+
+def test_socket_socketpair_records_after_only_socket_config_is_installed():
+    writer = _Writer()
+    system = System.record_system(writer=writer, debug=False)
+    system.add_immutable_types(int, socket.AddressFamily, socket.SocketKind)
+    installation = Installation(system)
+    undo = patch(
+        _socket,
+        {"proxy": ["socket", "socketpair"]},
+        installation,
+        update_refs=False,
+    )
+    _reload_preexisting_subclass_modules(
+        installation,
+        disable_for=system.disable_for,
+    )
+
+    try:
+        left, right = system.run_internal(socket.socketpair)
+        try:
+            assert isinstance(left, socket.socket)
+            assert isinstance(right, socket.socket)
+        finally:
+            left.close()
+            right.close()
+    finally:
+        undo()
+        importlib.reload(socket)
 
 
 @pytest.mark.parametrize("config_name", ["release", "debug"])

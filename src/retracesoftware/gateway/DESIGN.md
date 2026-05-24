@@ -223,6 +223,7 @@ depending on the production trace format.
 `GatewayPair.create_recording_pair(...)` accepts:
 
 - `is_passthrough(value) -> bool`
+- optional `unwrap(value) -> value` (defaults to `utils.try_unwrap`)
 - `on_callback(function, *args, **kwargs)`
 - `on_error(exc_type, exc_value, traceback)`
 - `on_result(value)`
@@ -239,12 +240,14 @@ boundary unchanged.  It returns `False` when the value must be proxied.
 When sandbox code calls `pair.external(function, *args, **kwargs)`:
 
 1. The first argument, `function`, is unwrapped.
-2. Remaining args and kwargs are transformed through the internal proxy path.
+2. Remaining args and kwargs are unwrapped first, then transformed through the
+   internal proxy path if they still cannot pass through.
 3. The live external function runs in the external coordinate space.
 4. If the call returns:
    - passthrough results are observed unchanged
    - non-passthrough results are converted through the external proxy path, then observed
-5. The value returned to sandbox code is unwrapped as needed.
+5. The observed value is returned to sandbox code; non-passthrough results
+   remain proxied so later use crosses the gateway too.
 6. If the call raises, `on_error` is called as a side effect and the original exception is re-raised.
 
 External call inputs are not observed as trace events by this layer.

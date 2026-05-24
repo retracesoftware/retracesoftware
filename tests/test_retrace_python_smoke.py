@@ -17,7 +17,7 @@ def test_retrace_python_launches_patched_runtime():
                 "    'has_coordinates': hasattr(retrace, 'coordinates'),\n"
                 "    'has_call_at': hasattr(retrace, 'call_at'),\n"
                 "    'has_thread_delta': hasattr(retrace, 'thread_delta'),\n"
-                "    'has_callbacks': hasattr(retrace, 'callbacks'),\n"
+                "    'has_space_dispatch': hasattr(retrace, 'space_dispatch'),\n"
                 "}))\n"
             ),
         ],
@@ -33,4 +33,4 @@ def test_retrace_python_launches_patched_runtime():
     assert payload["has_coordinates"]
     assert payload["has_call_at"]
     assert payload["has_thread_delta"]
-    assert payload["has_callbacks"]
+    assert payload["has_space_dispatch"]

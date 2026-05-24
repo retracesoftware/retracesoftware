@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+import functools
+import threading
 from typing import Any, Callable
 
 import retracesoftware.utils as utils
 
-from retracesoftware.gateway._proxytype import DynamicProxy, Proxy, superdict
+from retracesoftware.gateway._proxytype import Proxy, superdict
 
 
 class ExtendedType(Proxy):
@@ -106,11 +108,17 @@ class TypeExtender:
         self,
         *,
         on_new_instance: Callable[[Any], Any] = utils.noop,
+        on_new_type: Callable[[type], Any] = utils.noop,
+        bind_value: Callable[[Any], Any] = utils.noop,
         on_del: Callable[[Any], Any] = utils.noop,
+        binding_for: Callable[[Any], Any] = utils.noop,
         gateway_pair=None,
     ) -> None:
         self.on_new_instance = on_new_instance
+        self.on_new_type = on_new_type
+        self.bind_value = bind_value
         self.on_del = on_del
+        self.binding_for = binding_for
         self.gateway_pair = gateway_pair
 
     @property
@@ -123,6 +131,7 @@ class TypeExtender:
 
     def _wrapped_function(self, handler, target):
         wrapped = utils.wrapped_function(handler=handler, target=target)
+        self.bind_value(wrapped)
         return wrapped
 
     def _wrap_method_value(self, *, handler, value):
@@ -164,21 +173,43 @@ class TypeExtender:
         on_new_instance = self.on_new_instance
         original_new = getattr(cls, "__new__", object.__new__)
         generated_type_ref = {}
+        context = threading.local()
 
-        def __new__(subtype, *args, **kwargs):
-            allocator = super(generated_type_ref["type"], subtype).__new__
+        def subtype_stack():
+            stack = getattr(context, "subtypes", None)
+            if stack is None:
+                stack = []
+                context.subtypes = stack
+            return stack
+
+        @functools.wraps(original_new)
+        def gateway_new(*args, **kwargs):
+            stack = subtype_stack()
+            if not stack:
+                raise RuntimeError("extended __new__ called without a subtype")
             if original_new is object.__new__:
-                instance = allocator(subtype)
-            else:
-                instance = allocator(subtype, *args, **kwargs)
+                return original_new(stack[-1])
+            return original_new(stack[-1], *args, **kwargs)
 
+        wrapped_new = self._wrapped_function(self.ext_gateway, gateway_new)
+
+        def track_instance(instance, subtype):
             if not isinstance(instance, subtype):
                 return instance
 
-            object.__setattr__(instance, "_retrace_binding", None)
             object.__setattr__(instance, "_retrace_deleted", False)
             on_new_instance(instance)
             return instance
+
+        def __new__(subtype, *args, **kwargs):
+            stack = subtype_stack()
+            stack.append(subtype)
+            try:
+                instance = wrapped_new(*args, **kwargs)
+            finally:
+                stack.pop()
+
+            return track_instance(instance, subtype)
 
         return generated_type_ref, __new__
 
@@ -191,7 +222,9 @@ class TypeExtender:
         spec["__init__"] = self._registering_init(wrapped_init)
 
     def extend_type(self, cls: type) -> type:
+        on_new_type = self.on_new_type
         on_del = self.on_del
+        binding_for = self.binding_for
         init_subclass_type_ref = {}
         new_type_ref, __new__ = self._generated_new(cls)
         original_type = getattr(cls, "__retrace_shape_original_type__", cls)
@@ -218,19 +251,15 @@ class TypeExtender:
 
             on_del(instance)
 
-            try:
-                object.__setattr__(instance, "_retrace_binding", None)
-            except Exception:
-                pass
-
-        def __retrace_binding__(instance):
-            try:
-                return object.__getattribute__(instance, "_retrace_binding")
-            except AttributeError:
-                return None
-
         def __retrace_serialized__(instance):
-            return __retrace_binding__(instance)
+            return binding_for(instance)
+
+        def __retrace_uninitialized__(subtype):
+            try:
+                return object.__new__(subtype)
+            except TypeError:
+                allocator = super(init_subclass_type_ref["type"], subtype).__new__
+                return allocator(subtype)
 
         def __init_subclass__(subtype, **kwargs):
             super(init_subclass_type_ref["type"], subtype).__init_subclass__(**kwargs)
@@ -258,6 +287,8 @@ class TypeExtender:
                         wrapped = self._registering_init(wrapped)
                     setattr(subtype, name, wrapped)
 
+            on_new_type(subtype)
+
         spec = self._generated_method_spec(
             cls,
             handler=self.ext_gateway,
@@ -270,86 +301,14 @@ class TypeExtender:
             "__module__": cls.__module__,
             "__new__": __new__,
             "__qualname__": cls.__qualname__,
-            "__retrace_binding__": __retrace_binding__,
             "__retrace_serialized__": __retrace_serialized__,
+            "__retrace_uninitialized__": classmethod(__retrace_uninitialized__),
             "__retrace_original_type__": original_type,
-            "__slots__": ("_retrace_binding", "_retrace_deleted"),
+            "__slots__": ("_retrace_deleted",),
         })
 
         retrace_type = type(cls.__name__, (cls, ExtendedType), spec)
         init_subclass_type_ref["type"] = retrace_type
         new_type_ref["type"] = retrace_type
+        on_new_type(retrace_type)
         return retrace_type
-
-    def wrap_type(self, cls: type) -> type:
-        wrapper_type_ref = {}
-        on_new_instance = self.on_new_instance
-        on_del = self.on_del
-
-        def __new__(wrapper_cls, *args, **kwargs):
-            target = self.ext_gateway(cls, *args, **kwargs)
-            target = utils.try_unwrap(target)
-            instance = utils.create_wrapped(wrapper_cls, target)
-            object.__setattr__(instance, "_retrace_binding", None)
-            object.__setattr__(instance, "_retrace_deleted", False)
-            on_new_instance(instance)
-            return instance
-
-        def __init__(instance, *args, **kwargs):
-            pass
-
-        def reported_class(instance):
-            return wrapper_type_ref["type"]
-
-        def __del__(instance):
-            try:
-                deleted = object.__getattribute__(instance, "_retrace_deleted")
-            except AttributeError:
-                deleted = False
-
-            if deleted:
-                return
-
-            try:
-                object.__setattr__(instance, "_retrace_deleted", True)
-            except Exception:
-                pass
-
-            on_del(instance)
-
-            try:
-                object.__setattr__(instance, "_retrace_binding", None)
-            except Exception:
-                pass
-
-        def __retrace_binding__(instance):
-            try:
-                return object.__getattribute__(instance, "_retrace_binding")
-            except AttributeError:
-                return None
-
-        def __retrace_serialized__(instance):
-            return __retrace_binding__(instance)
-
-        spec = self._generated_method_spec(
-            cls,
-            handler=self.ext_gateway,
-        )
-        spec.update({
-            "__class__": property(reported_class),
-            "__del__": __del__,
-            "__init__": __init__,
-            "__module__": cls.__module__,
-            "__new__": __new__,
-            "__qualname__": cls.__qualname__,
-            "__retrace_binding__": __retrace_binding__,
-            "__retrace_serialized__": __retrace_serialized__,
-            "__retrace_original_type__": cls,
-            "__slots__": ("_retrace_binding", "_retrace_deleted"),
-            "__getattr__": self._wrapped_function(self.ext_gateway, getattr),
-            "__setattr__": self._wrapped_function(self.ext_gateway, setattr),
-        })
-
-        wrapper_type = type(cls.__name__, (utils.ExternalWrapped, DynamicProxy), spec)
-        wrapper_type_ref["type"] = wrapper_type
-        return wrapper_type

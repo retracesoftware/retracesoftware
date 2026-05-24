@@ -16,6 +16,7 @@ BindCallback = Callable[[Any], Any]
 ResultCallback = Callable[[Any], Any]
 ErrorCallback = Callable[[type, BaseException, Any], Any]
 NextResult = Callable[..., Any]
+UnwrapCallback = Callable[[Any], Any]
 
 
 class CallbackObserver(Protocol):
@@ -29,7 +30,13 @@ class Endpoint(NamedTuple):
     proxy: Callable[..., Any] | None = None
 
 
-fallback = functional.mapargs(transform=functional.walker(utils.try_unwrap), function=functional.apply)
+def _gateway_unwrap(value):
+    if isinstance(value, type):
+        return getattr(value, "__retrace_target_class__", value)
+    return utils.try_unwrap(value)
+
+
+fallback = functional.mapargs(transform=functional.walker(_gateway_unwrap), function=functional.apply)
 _active_space = threading.local()
 
 
@@ -102,13 +109,15 @@ def _wire_for_observation(
     on_error: ErrorCallback,
     on_result: ResultCallback,
     is_passthrough: PassthroughPredicate,
+    unwrap: UnwrapCallback = utils.try_unwrap,
 ) -> None:
-    unwrap = functional.walker(utils.try_unwrap)
-    external_arg = functional.if_then_else(
-        utils.is_wrapped,
-        utils.try_unwrap,
-        internal.proxy,
-    )
+    unwrap_tree = functional.walker(unwrap)
+
+    def external_arg(value):
+        unwrapped = unwrap(value)
+        if unwrapped is not value:
+            return unwrapped
+        return internal.proxy(value)
 
     ext_proxy = functional.walker(
         functional.if_then_else(
@@ -122,12 +131,11 @@ def _wire_for_observation(
         functional.side_effect(on_result),
         functional.sequence(
             external.proxy,
-            functional.side_effect(on_result),
-            unwrap))
+            functional.side_effect(on_result)))
 
     callback_call = functional.mapargs(
         _space_apply_callable(internal.space),
-        unwrap,
+        unwrap_tree,
     )
     callback_runner = utils.observer(
         callback_call,
@@ -136,7 +144,7 @@ def _wire_for_observation(
 
     external.gateway[internal.space] = functional.transform_call(
         _space_apply_callable(external.space),
-        utils.try_unwrap,
+        unwrap,
         rest_transform=external_arg,
         result_transform=ext_result,
         on_error=on_error,
@@ -144,7 +152,7 @@ def _wire_for_observation(
 
     internal.gateway[external.space] = functional.transform_call(
         callback_runner,
-        utils.try_unwrap,
+        unwrap,
         rest_transform=ext_proxy,
         result_transform=internal.proxy,
     )
@@ -379,9 +387,10 @@ class GatewayPair:
         on_result: ResultCallback,
         int_proxy: Callable[..., Any],
         ext_proxy: Callable[..., Any],
+        unwrap: UnwrapCallback = utils.try_unwrap,
     ):
         """Install record-time dispatch and proxy hooks on an unwired pair."""
-        unwrap = functional.walker(utils.try_unwrap)
+        unwrap_tree = functional.walker(unwrap)
 
         # int_proxy = functional.if_then_else(
         #     is_passthrough,
@@ -393,13 +402,17 @@ class GatewayPair:
         # ext_proxy = functional.when_not(utils.is_wrapped, ext_proxy)
 
         # fastpath common case which is passthrough
-        int_proxy = functional.when_not(
-            is_passthrough,
-            functional.walker(functional.if_then_else(
-                utils.is_wrapped,
-                utils.try_unwrap,
-                functional.when_not(is_passthrough, int_proxy),
-            )))
+        proxy_internal_arg = int_proxy
+
+        def int_proxy_arg(value):
+            unwrapped = unwrap(value)
+            if unwrapped is not value:
+                return unwrapped
+            if is_passthrough(value):
+                return value
+            return proxy_internal_arg(value)
+
+        int_proxy = functional.walker(int_proxy_arg)
 
         ext_proxy = functional.walker(
             functional.when_not(
@@ -415,12 +428,11 @@ class GatewayPair:
             functional.sequence(
                 ext_proxy,
                 functional.side_effect(on_result),
-                unwrap,
             ))
 
         callback_call = functional.mapargs(
             _space_apply_callable(self._sandbox_space),
-            unwrap,
+            unwrap_tree,
         )
         callback_runner = utils.observer(
             callback_call,
@@ -430,14 +442,14 @@ class GatewayPair:
         self.set_handlers(
             external=functional.transform_call(
                 _space_apply_callable(self._external_space),
-                utils.try_unwrap,
+                unwrap,
                 rest_transform=int_proxy,
                 result_transform=external_result,
                 on_error=on_error,
             ),
             internal=functional.transform_call(
                 callback_runner,
-                utils.try_unwrap,
+                unwrap,
                 rest_transform=ext_proxy,
                 result_transform=int_proxy,
             ),

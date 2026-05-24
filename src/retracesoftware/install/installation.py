@@ -40,16 +40,25 @@ class Installation:
         "install_session",
         "update_refs",
         "module_refs_only",
+        "_type_replacements",
         "_changes",
         "_module_objects",
         "_uninstalled",
     )
 
-    def __init__(self, system, install_session=None, *, update_refs=False, module_refs_only=False):
+    def __init__(
+        self,
+        system,
+        install_session=None,
+        *,
+        update_refs=False,
+        module_refs_only=False,
+    ):
         self.system = system
         self.install_session = InstallSession() if install_session is None else install_session
         self.update_refs = update_refs
         self.module_refs_only = module_refs_only
+        self._type_replacements = []
         self._changes = []
         self._module_objects = []
         self._uninstalled = False
@@ -64,6 +73,14 @@ class Installation:
     @property
     def module_objects(self):
         return tuple(self._module_objects)
+
+    @property
+    def type_replacements(self):
+        return tuple(self._type_replacements)
+
+    def record_type_replacement(self, old, new):
+        if old is not new and isinstance(old, type) and isinstance(new, type):
+            self._type_replacements.append((old, new))
 
     def _namespace(self, module):
         if isinstance(module, dict):
@@ -141,6 +158,7 @@ class Installation:
             return new
 
         namespace[name] = new
+        self.record_type_replacement(old, new)
         self._changes.append(
             _NamespaceChange(
                 namespace=namespace,
@@ -189,6 +207,7 @@ class Installation:
 
         if new is not value:
             namespace[name] = new
+            self.record_type_replacement(value, new)
             self._changes.append(
                 _NamespaceChange(
                     namespace=namespace,
@@ -235,4 +254,5 @@ class Installation:
 
         self._changes.clear()
         self._module_objects.clear()
+        self._type_replacements.clear()
         self._uninstalled = True

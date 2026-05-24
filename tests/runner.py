@@ -241,14 +241,14 @@ class Runner:
         )
 
         def checkpoint_monitor(value):
-            if system.location == "internal":
-                write_monitor_disabled(value)
+            write_monitor_disabled(value)
 
         uninstall_monitor = (
             system.root_space.wrap(install_monitoring)(
                 checkpoint_monitor,
                 settings["monitor"],
                 disable_for=root_disable_for(system),
+                monitoring=system.internal_space.monitoring,
             )
             if settings["monitor"] > 0
             else None
@@ -341,14 +341,14 @@ class Runner:
         verify_monitor_disabled = system.disable_for(verify_monitor)
 
         def checkpoint_monitor(value):
-            if system.location == "internal":
-                verify_monitor_disabled(value)
+            verify_monitor_disabled(value)
 
         uninstall_monitor = (
             system.root_space.wrap(install_monitoring)(
                 checkpoint_monitor,
                 settings["monitor"],
                 disable_for=root_disable_for(system),
+                monitoring=system.internal_space.monitoring,
             )
             if settings["monitor"] > 0
             else None

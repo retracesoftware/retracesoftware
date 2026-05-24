@@ -9,6 +9,14 @@ TIMEOUT = 30
 _REPO_ROOT = Path(__file__).resolve().parents[1]
 _PYTHON_TAGS = {}
 _PYTEST_REEXECED = "RETRACE_PYTEST_REEXECED"
+_RETRACE_RUNTIME_NAMES = (
+    "call_at",
+    "CoordinateSpace",
+    "coordinates",
+    "disabled_space",
+    "space_dispatch",
+    "thread_delta",
+)
 
 
 def is_retrace_python():
@@ -16,15 +24,26 @@ def is_retrace_python():
         import retrace
     except ImportError:
         return False
-    return all(
-        hasattr(retrace, name)
-        for name in (
-            "callbacks",
-            "call_at",
-            "coordinates",
-            "thread_delta",
-        )
+    return all(hasattr(retrace, name) for name in _RETRACE_RUNTIME_NAMES)
+
+
+def is_retrace_python_executable(python):
+    proc = subprocess.run(
+        [
+            os.fspath(python),
+            "-c",
+            (
+                "import retrace, sys\n"
+                f"names = {tuple(_RETRACE_RUNTIME_NAMES)!r}\n"
+                "missing = [name for name in names if not hasattr(retrace, name)]\n"
+                "raise SystemExit(1 if missing else 0)\n"
+            ),
+        ],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        timeout=10,
     )
+    return proc.returncode == 0
 
 
 def packaged_retrace_python():
@@ -54,27 +73,37 @@ def local_retrace_python():
     return None
 
 
+def local_retrace_python_builds():
+    root = Path(__file__).resolve().parents[2] / "retrace-cpython"
+    return [
+        str(path)
+        for path in sorted(root.glob("build/install/*/bin/python3.12"), reverse=True)
+        if path.is_file()
+    ]
+
+
 def retrace_python():
     python = os.environ.get("RETRACE_PYTHON")
     if python:
+        if not is_retrace_python_executable(python):
+            raise RuntimeError(
+                "RETRACE_PYTHON does not satisfy current retrace-python runtime contract"
+            )
         return python
 
     if is_retrace_python():
         return sys.executable
 
-    python = (
-        packaged_retrace_python()
-        or local_retrace_python()
-        or shutil.which("retrace-python")
-    )
-    if python:
-        return python
+    for python in (
+        packaged_retrace_python(),
+        local_retrace_python(),
+        shutil.which("retrace-python"),
+        *local_retrace_python_builds(),
+    ):
+        if python and is_retrace_python_executable(python):
+            return python
 
-    try:
-        import retrace  # noqa: F401
-    except ImportError as exc:
-        raise RuntimeError("retrace-python not found; set RETRACE_PYTHON") from exc
-    return sys.executable
+    raise RuntimeError("current retrace-python not found; set RETRACE_PYTHON")
 
 
 def ensure_pytest_runs_under_retrace_python():

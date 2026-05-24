@@ -12,19 +12,9 @@ class DynamicProxy(Proxy):
     __slots__ = []
 
 
-def _stored_retrace_binding(instance):
-    try:
-        return object.__getattribute__(instance, "_retrace_binding")
-    except AttributeError:
-        return None
-
-
 def _serialized_external_proxy(instance):
     return getattr(type(instance), "__retrace_type_binding__", None)
 
-
-def _serialized_bound_proxy(instance):
-    return _stored_retrace_binding(instance)
 
 def superdict(cls):
     result = {}
@@ -38,7 +28,12 @@ def method_names(cls):
         if utils.is_method_descriptor(value):
             yield name
 
-def dynamic_proxytype(handler, cls, wrapped_base = utils.ExternalWrapped):
+def dynamic_proxytype(
+    handler,
+    cls,
+    wrapped_base=utils.ExternalWrapped,
+    binding_for=utils.noop,
+):
 
     if cls.__module__.startswith('retracesoftware'):
         print(cls)
@@ -91,22 +86,26 @@ def dynamic_proxytype(handler, cls, wrapped_base = utils.ExternalWrapped):
     # functional.repeatedly(resolved)
 
     # spec['__class__'] = property(target_type)
-    spec['__slots__'] = ('_retrace_binding',)
+    spec['__slots__'] = ()
     spec['__class__'] = property(functional.constantly(target_type))
 
     spec['__name__'] = cls.__name__
     spec['__module__'] = cls.__module__
-    spec['__retrace_binding__'] = _stored_retrace_binding
     if wrapped_base is utils.ExternalWrapped:
         spec['__retrace_serialized__'] = _serialized_external_proxy
     else:
-        spec['__retrace_serialized__'] = _serialized_bound_proxy
+        spec['__retrace_serialized__'] = binding_for
     # name = f'retrace.proxied.{cls.__module__}.{cls.__name__}'
 
     return type(cls.__name__, (wrapped_base, DynamicProxy), spec)
 
-def dynamic_int_proxytype(handler, cls, bind, checkpoint = None):
-    proxytype = dynamic_proxytype(handler = handler, cls = cls, wrapped_base = utils.InternalWrapped)
+def dynamic_int_proxytype(handler, cls, bind, checkpoint = None, binding_for=utils.noop):
+    proxytype = dynamic_proxytype(
+        handler=handler,
+        cls=cls,
+        wrapped_base=utils.InternalWrapped,
+        binding_for=binding_for,
+    )
     proxytype.__retrace_source__ = 'internal'
 
     bound = []

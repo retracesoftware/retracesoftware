@@ -39,7 +39,7 @@ def _make_counter(installs):
             state['n'] += 1
             return state['n']
 
-        holder['patched'] = system.patch(_next)
+        holder['patched'] = system.patch_function(_next)
 
     installs.append(install)
 
@@ -54,7 +54,7 @@ def _make_patch(installs, fn):
     holder = {'patched': None}
 
     def install(system):
-        holder['patched'] = system.patch(fn)
+        holder['patched'] = system.patch_function(fn)
 
     installs.append(install)
 

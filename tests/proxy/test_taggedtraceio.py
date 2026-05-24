@@ -1,5 +1,6 @@
 import retracesoftware.stream as stream
 
+from retracesoftware.testing.memorytape import IOMemoryTape
 from retracesoftware.proxy.taggedtraceio import (
     TaggedTraceReader,
     TaggedTraceWriter,
@@ -243,3 +244,23 @@ def test_next_message_decodes_native_binding_markers_and_unknown_tags():
     assert isinstance(closed, BindCloseMessage)
     assert closed.handle == (0, 7)
     assert next_message(read_from(["UNKNOWN"])) == "UNKNOWN"
+
+
+def test_io_memory_tape_preserves_binding_checkpoint_values():
+    binder = stream.Binder()
+
+    def callback():
+        return None
+
+    binder.bind(callback)
+    binding = binder.lookup(callback)
+
+    tape = IOMemoryTape()
+    writer = tagged_trace_writer(tape.writer().write)
+    writer.checkpoint((0, 4), "main", binding)
+
+    message = TaggedTraceReader(tape.reader().read).read()
+
+    assert isinstance(message, CheckpointMessage)
+    assert message.value == binding
+    assert isinstance(message.value, stream.Binding)

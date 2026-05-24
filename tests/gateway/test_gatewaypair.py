@@ -1,4 +1,3 @@
-import sys
 import types
 
 import pytest
@@ -64,8 +63,6 @@ def _fake_retrace():
         space_dispatch=lambda default, cases=(): _FakeSpaceDispatch(default, cases),
     )
 
-
-sys.modules["retrace"] = _fake_retrace()
 
 from retracesoftware.gateway import GatewayPair
 import retracesoftware.gateway._dynamicproxy as dynamicproxy
@@ -220,6 +217,40 @@ def test_recording_external_call_runs_live_target_and_observes_result(monkeypatc
     assert errors == []
     assert callbacks == []
     assert bound == []
+
+
+def test_recording_external_args_unwrap_before_passthrough(monkeypatch):
+    fake_retrace = _fake_retrace()
+    monkeypatch.setattr(gatewaypair_module, "retrace", fake_retrace)
+    seen = []
+
+    class SandboxType:
+        pass
+
+    class ExternalType:
+        pass
+
+    def unwrap(value):
+        if value is SandboxType:
+            return ExternalType
+        return utils.try_unwrap(value)
+
+    pair = GatewayPair.create_unwired()
+    pair.wire_for_record(
+        is_passthrough=lambda value: value is None or isinstance(value, type),
+        on_callback=lambda *args, **kwargs: None,
+        on_error=lambda *args: None,
+        on_result=lambda value: None,
+        int_proxy=lambda value: pytest.fail(f"unexpected proxy for {value!r}"),
+        ext_proxy=lambda value: value,
+        unwrap=unwrap,
+    )
+
+    def external_target(cls):
+        seen.append(cls)
+
+    assert _external_call(pair, external_target, SandboxType) is None
+    assert seen == [ExternalType]
 
 
 def test_unwired_pair_runs_passthrough_before_mode_wiring(monkeypatch):
@@ -432,10 +463,41 @@ def test_recording_external_result_uses_real_external_proxy(monkeypatch):
 
     result = _external_call(pair, lambda: FreshExternalResult())
 
-    assert isinstance(result, FreshExternalResult)
-    assert isinstance(observed[0], utils.ExternalWrapped)
-    assert pair.sandbox_space.apply(observed[0].ping) == "pong"
+    assert isinstance(result, utils.ExternalWrapped)
+    assert isinstance(utils.try_unwrap(result), FreshExternalResult)
+    assert observed == [result]
+    assert pair.sandbox_space.apply(result.ping) == "pong"
     assert bound == []
+
+
+def test_dynamic_external_constructor_uses_target_class_in_fallback(monkeypatch):
+    fake_retrace = _fake_retrace()
+    monkeypatch.setattr(gatewaypair_module, "retrace", fake_retrace)
+    monkeypatch.setattr(dynamicproxy, "retrace", fake_retrace)
+
+    class External:
+        def __new__(cls):
+            if cls is not External:
+                raise TypeError("allocator requires native target class")
+            return object.__new__(cls)
+
+    pair = GatewayPair.create_unwired()
+    factory = ProxyTypeFactory(gateway_pair=pair)
+    proxy_type = factory.dynamic_external_type(External)
+
+    pair.wire_for_record(
+        is_passthrough=_is_passthrough,
+        on_callback=lambda *args, **kwargs: None,
+        on_error=lambda *args: None,
+        on_result=lambda value: None,
+        int_proxy=lambda value: value,
+        ext_proxy=lambda value: value,
+    )
+
+    result = proxy_type()
+
+    assert type(result) is proxy_type
+    assert isinstance(utils.try_unwrap(result), External)
 
 
 def test_recording_external_proxy_forwards_declared_attrs(monkeypatch):

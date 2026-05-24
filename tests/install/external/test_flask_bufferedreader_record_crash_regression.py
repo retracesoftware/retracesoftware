@@ -2,7 +2,7 @@
 
 Root component focus:
 - `install` module interception config for `_io`
-- `proxy.patch_type()` descriptor wrapping on `_io.BufferedReader`
+- generated proxy type descriptor wrapping on `_io.BufferedReader`
 - native `utils.wrapped_member` / `WrappedFunction` recursion on Python 3.12
 
 Observed ownership signal:

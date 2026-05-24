@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Callable
 
+from retracesoftware import utils
 from retracesoftware.gateway import _gatewaypair
 
 
@@ -91,6 +92,7 @@ def create_recording_pair_recorder(
     record: Callable[[RecordingEvent], Any],
     is_passthrough: _gatewaypair.PassthroughPredicate,
     bindings: dict[int, Any] | None = None,
+    unwrap: _gatewaypair.UnwrapCallback = utils.try_unwrap,
 ) -> _gatewaypair.GatewayPair:
     """Create a recording pair that emits typed events to ``record``.
 
@@ -131,6 +133,7 @@ def create_recording_pair_recorder(
         on_result=lambda value: record(Result(_encode(value, handles_by_id))),
         int_proxy=proxy_value,
         ext_proxy=proxy_value,
+        unwrap=unwrap,
     )
 
 

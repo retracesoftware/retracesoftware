@@ -109,13 +109,8 @@ class _TestBinder:
 
     def bind(self, value):
         if id(value) not in self.bindings:
-            self.bindings[id(value)] = stream.Binding(self.next_handle)
+            self.bindings[id(value)] = stream.Binding((0, self.next_handle))
             self.next_handle += 1
-        binding = self.bindings[id(value)]
-        try:
-            object.__setattr__(value, "_retrace_binding", binding)
-        except Exception:
-            pass
 
     autobind = bind
 
@@ -242,21 +237,7 @@ def _install_fake_retrace(monkeypatch, *, patch_proxy=True):
     def init_with_test_immutables(self, *args, **kwargs):
         original_init(self, *args, **kwargs)
         self.immutable_types.update({str, int, bool, type})
-        immutable_types = self.immutable_types
-        system_ref = system_module.weakref.ref(self)
-        self.is_immutable = utils.FastTypePredicate(
-            lambda cls: cls in immutable_types
-        ).istypeof
-
-        def is_extended_type(cls):
-            current_system = system_ref()
-            if current_system is None:
-                return False
-            return current_system.is_extended_type(cls)
-
-        self.is_passthrough = utils.FastTypePredicate(
-            lambda cls: cls in immutable_types or is_extended_type(cls)
-        ).istypeof
+        self._refresh_type_predicates()
 
     monkeypatch.setattr(System, "__init__", init_with_test_immutables)
     if patch_proxy:
@@ -267,13 +248,31 @@ def _install_fake_retrace(monkeypatch, *, patch_proxy=True):
 def _manual_gateway_system(monkeypatch, *, delete_binding=utils.noop):
     _install_fake_retrace(monkeypatch)
     calls = []
+    system = None
+
+    def unwrap(value):
+        if isinstance(value, type):
+            original = system.original_type_for(value) if system is not None else None
+            if original is not None:
+                return original
+            return getattr(value, "__retrace_target_class__", value)
+        return utils.try_unwrap(value)
+
+    def observed(value):
+        if isinstance(value, type):
+            return unwrap(value)
+        return value
 
     def external(target, *args, **kwargs):
-        target = utils.try_unwrap(target)
-        calls.append((target, args, kwargs))
-        args = tuple(utils.try_unwrap(arg) for arg in args)
+        target = unwrap(target)
+        calls.append((
+            target,
+            tuple(observed(arg) for arg in args),
+            {name: observed(value) for name, value in kwargs.items()},
+        ))
+        args = tuple(unwrap(arg) for arg in args)
         kwargs = {
-            name: utils.try_unwrap(value)
+            name: unwrap(value)
             for name, value in kwargs.items()
         }
         return target(*args, **kwargs)
@@ -290,6 +289,8 @@ def _replay_gateway_system(monkeypatch):
     def external(target, *args, **kwargs):
         target = utils.try_unwrap(target)
         calls.append((target, args, kwargs))
+        if getattr(target, "__name__", None) == "__new__":
+            return target(*args, **kwargs)
         if getattr(target, "__name__", None) == "__init__":
             return None
         return "recorded"
@@ -467,7 +468,7 @@ def test_dynamic_internal_proxy_serialized_representation_is_binding(monkeypatch
     assert len(seen) == 1
 
     proxy = seen[0]
-    binding = proxy.__retrace_binding__()
+    binding = system.binder.lookup(proxy)
 
     assert isinstance(proxy, utils.InternalWrapped)
     assert isinstance(binding, stream.Binding)
@@ -506,21 +507,27 @@ def test_extend_type_stores_binding_and_unregisters_on_delete(monkeypatch):
 
     retrace_type = system.extend_type(External, python_distribution=False)
 
-    assert "_retrace_binding" in retrace_type.__slots__
+    assert "_retrace" + "_binding" not in retrace_type.__slots__
+    assert "_retrace_deleted" in retrace_type.__slots__
 
     class PublicExternal(retrace_type):
         pass
 
+    type_binding = system.binder.lookup(retrace_type)
+    subtype_binding = system.binder.lookup(PublicExternal)
     obj = PublicExternal()
-    binding = obj.__retrace_binding__()
+    binding = system.binder.lookup(obj)
     serialized = obj.__retrace_serialized__()
     obj.__del__()
     obj.__del__()
 
+    assert type_binding is not None
+    assert subtype_binding is not None
+    assert subtype_binding != type_binding
     assert binding is not None
     assert serialized == binding
     assert deleted == [binding]
-    assert obj.__retrace_binding__() is None
+    assert system.binder.lookup(obj) is None
     assert system.original_type_for(PublicExternal) is External
     assert system.is_retrace_type(PublicExternal)
     assert system.is_retrace_instance(obj)
@@ -535,12 +542,17 @@ def test_record_system_typeextender_uses_record_register_path(monkeypatch):
         pass
 
     retrace_type = system.extend_type(External, python_distribution=False)
+    type_binding = system.binder.lookup(retrace_type)
     writer.calls.clear()
 
     obj = system.run_internal(retrace_type)
-    binding = obj.__retrace_binding__()
+    binding = system.binder.lookup(obj)
+    results = [call[1] for call in writer.calls if call[0] == "result"]
 
+    assert isinstance(type_binding, stream.Binding)
     assert isinstance(binding, stream.Binding)
+    assert binding != type_binding
+    assert results[0] == type_binding
     obj.__del__()
 
     assert ("binding_delete", binding.handle) in writer.calls
@@ -577,6 +589,34 @@ def test_extend_type_wraps_init_and_tracks_lifecycle_in_new(monkeypatch):
     assert calls[-1] == (External.__init__, (obj,), {})
 
 
+def test_extend_type_dynamic_companion_constructor_unwraps_proxy_class(monkeypatch):
+    system, calls = _manual_gateway_system(monkeypatch)
+
+    class External:
+        def __new__(cls, value):
+            instance = object.__new__(cls)
+            instance.value = f"new:{value}"
+            return instance
+
+        def __init__(self, value):
+            self.value = f"init:{value}"
+
+    retrace_type = system.extend_type(External, python_distribution=False)
+    companion_type = system.proxy_factory.typefactory.dynamic_external_type(External)
+    calls.clear()
+
+    obj = system.run_internal(companion_type, "payload")
+
+    assert obj.__class__ is retrace_type
+    assert isinstance(obj, retrace_type)
+    assert isinstance(utils.try_unwrap(obj), External)
+    assert utils.try_unwrap(obj).value == "init:payload"
+    assert calls == [
+        (External.__new__, (External, "payload"), {}),
+        (External.__init__, (obj, "payload"), {}),
+    ]
+
+
 def test_extend_type_wraps_subclass_overrides_as_callbacks(monkeypatch):
     _install_fake_retrace(monkeypatch)
     writer = _FakeWriter()
@@ -596,7 +636,7 @@ def test_extend_type_wraps_subclass_overrides_as_callbacks(monkeypatch):
     writer.calls.clear()
 
     assert system_module._space_apply(system.external_space, obj.read) == "override"
-    binding = obj.__retrace_binding__()
+    binding = system.binder.lookup(obj)
     assert (
         "callback",
         utils.try_unwrap(PublicExternal.__dict__["read"]),
@@ -658,7 +698,8 @@ def test_replay_shape_type_feeds_extend_type_without_original_inheritance(monkey
     assert not issubclass(retrace_type, External)
     assert issubclass(retrace_type, shape_type)
     assert shape_type.__slots__ == ()
-    assert "_retrace_binding" in retrace_type.__slots__
+    assert "_retrace" + "_binding" not in retrace_type.__slots__
+    assert "_retrace_deleted" in retrace_type.__slots__
     assert retrace_type.__retrace_original_type__ is External
 
     assert system.run_internal(obj.read, "value") == "recorded"
@@ -693,10 +734,11 @@ def test_replay_shape_type_subclass_overrides_follow_extend_type_callbacks(monke
     writer.calls.clear()
 
     assert system_module._space_apply(system.external_space, obj.read) == "override"
+    subtype_binding = system.binder.lookup(PublicExternal)
     assert (
         "callback",
         utils.try_unwrap(PublicExternal.__dict__["read"]),
-        (obj,),
+        (subtype_binding,),
         {},
     ) in writer.calls
 
@@ -754,20 +796,36 @@ def test_replay_system_extend_type_extends_python_distribution_types(monkeypatch
 def test_replay_system_typeextender_binds_generated_instances(monkeypatch):
     _install_fake_retrace(monkeypatch)
     monkeypatch.setattr(system_module._thread, "get_ident", lambda: 11)
-    system = System.replay_system(reader=_FakeReader([
-        ResultMessage(None),
-    ]))
+    reader = _FakeReader([])
+    system = System.replay_system(reader=reader)
 
     class External:
         pass
 
     retrace_type = system.extend_type(External, python_distribution=False)
+    companion_type = system.proxy_factory.typefactory.dynamic_external_type(External)
+    companion_ref = system.proxy_factory.typefactory.proxy_ref(companion_type)
+    companion_binding = system.binder.lookup(companion_type)
+    companion_ref_binding = system.binder.lookup(companion_ref)
+
+    assert isinstance(companion_binding, stream.Binding)
+    assert isinstance(companion_ref_binding, stream.Binding)
+    assert companion_binding != companion_ref_binding
+
+    type_binding = system.binder.lookup(retrace_type)
+    assert isinstance(type_binding, stream.Binding)
+    assert type_binding not in (companion_binding, companion_ref_binding)
+
+    reader.messages.extend([
+        ResultMessage(type_binding),
+        ResultMessage(None),
+    ])
 
     obj = system.run_internal(retrace_type)
     binding = system.binder.lookup(obj)
 
     assert isinstance(binding, stream.Binding)
-    assert binding.handle == (11, 0)
+    assert binding not in (type_binding, companion_binding, companion_ref_binding)
     assert system.is_bound(obj)
 
     obj.__del__()
@@ -780,12 +838,17 @@ def test_wrap_type_is_idempotent_and_constructor_wraps_target(monkeypatch):
     system, calls = _manual_gateway_system(monkeypatch, delete_binding=deleted.append)
 
     class External:
+        def __new__(cls, value):
+            instance = object.__new__(cls)
+            instance.value = f"new:{value}"
+            return instance
+
         def __init__(self, value):
-            self.value = value
+            self.value = f"init:{value}"
 
     wrapper_type = system.wrap_type(External)
     wrapped = system.run_internal(wrapper_type, "payload")
-    binding = wrapped.__retrace_binding__()
+    binding = system.binder.lookup(wrapper_type)
 
     assert system.wrap_type(External) is wrapper_type
     assert system.retrace_type_for(External) is wrapper_type
@@ -794,24 +857,33 @@ def test_wrap_type_is_idempotent_and_constructor_wraps_target(monkeypatch):
     assert wrapped.__class__ is wrapper_type
     assert binding is not None
     assert wrapped.__retrace_serialized__() == binding
+    assert system.binder.lookup(wrapped) is None
     assert isinstance(wrapped, wrapper_type)
     assert isinstance(utils.try_unwrap(wrapped), External)
-    assert utils.try_unwrap(wrapped).value == "payload"
-    assert calls == [(External, ("payload",), {})]
+    assert utils.try_unwrap(wrapped).value == "init:payload"
+    assert calls == [
+        (External.__new__, (External, "payload"), {}),
+        (External.__init__, (wrapped, "payload"), {}),
+    ]
 
-    wrapped.__del__()
-    wrapped.__del__()
+    calls.clear()
+    system.run_internal(wrapped.__init__, "manual")
 
-    assert deleted == [binding]
-    assert wrapped.__retrace_binding__() is None
+    assert utils.try_unwrap(wrapped).value == "init:manual"
+    assert calls == [(External.__init__, (wrapped, "manual"), {})]
+
+    assert deleted == []
+    assert system.binder.lookup(wrapped) is None
 
 
 def test_wrap_type_methods_and_properties_route_to_wrapped_target(monkeypatch):
     system, calls = _manual_gateway_system(monkeypatch)
 
     class External:
-        def __init__(self, value):
-            self._value = value
+        def __new__(cls, value):
+            instance = object.__new__(cls)
+            instance._value = value
+            return instance
 
         @property
         def value(self):
@@ -1032,6 +1104,75 @@ def test_record_system_encodes_dynamic_external_proxy_in_containers(monkeypatch)
     ]
 
 
+def test_record_system_external_result_uses_extended_dynamic_companion(monkeypatch):
+    _install_fake_retrace(monkeypatch, patch_proxy=False)
+    writer = _FakeWriter()
+    system = System.record_system(writer=writer, debug=False)
+
+    class External:
+        def read(self):
+            return "value"
+
+    retrace_type = system.extend_type(External, python_distribution=False)
+    companion_type = system.proxy_factory.typefactory.dynamic_external_type(External)
+    external = External()
+
+    assert companion_type.__retrace_type_binding__ is not None
+
+    writer.calls.clear()
+
+    result = _external_call(system, lambda: external)
+    proxied = system.proxy_factory.proxy_external(external)
+
+    assert type(proxied) is companion_type
+    assert proxied.__class__ is retrace_type
+    assert isinstance(proxied, retrace_type)
+    assert utils.try_unwrap(proxied) is external
+    assert type(result) is companion_type
+    assert result.__class__ is retrace_type
+    assert isinstance(result, retrace_type)
+    assert utils.try_unwrap(result) is external
+    assert system.binder.lookup(proxied) is None
+    assert system.binder.lookup(companion_type) == companion_type.__retrace_type_binding__
+    assert system.binder.lookup(External) is None
+    assert writer.calls == [("result", companion_type.__retrace_type_binding__)]
+
+
+def test_record_system_external_result_proxy_records_later_attr_read(monkeypatch):
+    _install_fake_retrace(monkeypatch, patch_proxy=False)
+    writer = _FakeWriter()
+    system = System.record_system(writer=writer, debug=False)
+
+    class External:
+        __slots__ = ("value",)
+
+        def __init__(self):
+            self.value = "recorded"
+
+    proxy_type = system.proxy_factory.typefactory.dynamic_external_type(External)
+    external = External()
+    writer.calls.clear()
+
+    seen = []
+
+    def work():
+        result = system.gateway_pair.external(lambda: external)
+        seen.append(result)
+        return result.value
+
+    value = system.run_internal(work)
+    result = seen[0]
+
+    assert type(result) is proxy_type
+    assert utils.try_unwrap(result) is external
+    assert value == "recorded"
+    assert system.binder.lookup(External) is None
+    assert writer.calls == [
+        ("result", proxy_type.__retrace_type_binding__),
+        ("result", "recorded"),
+    ]
+
+
 def test_record_system_passes_dynamic_external_proxy_argument_through(monkeypatch):
     _install_fake_retrace(monkeypatch, patch_proxy=False)
     writer = _FakeWriter()
@@ -1073,9 +1214,23 @@ def test_system_add_immutable_types_updates_passthrough_policy(monkeypatch):
     _install_fake_retrace(monkeypatch)
     system = System.record_system(writer=_FakeWriter(), debug=False)
 
+    class LaterImmutable:
+        pass
+
+    class ImmutableSubclass(LaterImmutable):
+        pass
+
+    value = LaterImmutable()
+    subclass_value = ImmutableSubclass()
+    assert not system.is_immutable(value)
+    assert not system.is_immutable(subclass_value)
+
+    system.add_immutable_type(LaterImmutable)
     system.add_immutable_type(str)
     system.add_immutable_types(bytes, type(None))
 
+    assert system.is_immutable(value)
+    assert system.is_immutable(subclass_value)
     assert system.is_immutable("value")
     assert system.is_immutable(b"value")
     assert system.is_immutable(None)
@@ -1434,6 +1589,36 @@ def test_replay_system_checkpoint_raises_on_thread_difference(monkeypatch):
         system.checkpoint({"state": "ok"})
 
 
+def test_replay_system_checkpoint_tolerates_unresolved_binding_payload(monkeypatch):
+    _install_fake_retrace(monkeypatch)
+    monkeypatch.setattr(system_module._thread, "get_ident", lambda: "main")
+    system = System.replay_system(reader=_FakeReader([
+        CheckpointMessage((0, 1, 2), stream.Binding((0, 99)), thread_id="main"),
+    ]))
+    system.internal_space.coordinates_value = (1, 2)
+
+    system.checkpoint(object())
+
+
+def test_replay_system_materializes_unresolved_dynamic_external_constructor_result(monkeypatch):
+    _install_fake_retrace(monkeypatch)
+    monkeypatch.setattr(system_module._thread, "get_ident", lambda: "main")
+    system = System.replay_system(reader=_FakeReader([
+        CheckpointMessage((0, 1, 2), stream.Binding((0, 10)), thread_id="main"),
+        ResultMessage(stream.Binding((0, 11))),
+    ]), debug=True)
+    system.internal_space.coordinates_value = (1, 2)
+
+    class External:
+        pass
+
+    proxy_type = system.proxy_factory.dynamic_external_type(External)
+    obj = system.run_internal(proxy_type)
+
+    assert type(obj) is proxy_type
+    assert utils.try_unwrap(obj) is None
+
+
 def test_replay_system_consumes_binding_delete_before_result(monkeypatch):
     _install_fake_retrace(monkeypatch)
     obj = object()
@@ -1713,6 +1898,29 @@ def test_patch_function_returns_external_gateway_wrapper(monkeypatch):
     assert writer.calls[-1] == ("result", "external:x")
 
 
+def test_patch_function_for_type_preregisters_external_type_materialization(monkeypatch):
+    _install_fake_retrace(monkeypatch)
+    reader = _FakeReader([])
+    system = System.replay_system(reader=reader)
+
+    class External:
+        pass
+
+    system.patch_function(External)
+    external_type_binding = system.binder.lookup(External)
+    proxy_type = system.retrace_type_for(External)
+
+    assert external_type_binding is not None
+    assert proxy_type is not None
+
+    reader.messages.append(ResultMessage(external_type_binding))
+
+    result = _external_call(system, lambda: "live")
+
+    assert type(result) is proxy_type
+    assert utils.try_unwrap(result) is None
+
+
 def test_proxy_type_generates_retrace_type(monkeypatch):
     _install_fake_retrace(monkeypatch)
     system = System.record_system(writer=_FakeWriter(), debug=False)
@@ -1795,6 +2003,19 @@ def test_replay_system_consumes_lifecycle_markers_around_run(monkeypatch):
     _install_fake_retrace(monkeypatch)
     reader = _FakeReader([
         OnStartMessage(),
+        RunCompletedMessage(),
+    ])
+    system = System.replay_system(reader=reader)
+
+    assert system.run(lambda: "done") == "done"
+    assert reader.messages == []
+
+
+def test_replay_system_consumes_binding_delete_before_run_completed_marker(monkeypatch):
+    _install_fake_retrace(monkeypatch)
+    reader = _FakeReader([
+        OnStartMessage(),
+        BindCloseMessage(0),
         RunCompletedMessage(),
     ])
     system = System.replay_system(reader=reader)

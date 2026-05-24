@@ -1,9 +1,12 @@
 """sys.monitoring hooks for fine-grained divergence detection.
 
-Uses Python 3.12+ ``sys.monitoring`` to checkpoint Python function
-calls and returns inside the sandbox.  During recording, each event
-writes a compact MONITOR message to the trace stream.  During replay,
-the same events fire and verify the messages match.
+Uses Python 3.12+ monitoring hooks to checkpoint Python function calls
+and returns inside the sandbox.  By default this uses ``sys.monitoring``;
+callers that own a retrace ``CoordinateSpace`` can pass
+``space.monitoring`` to register hooks on that space while the callback
+runs in root space.  During recording, each event writes a compact
+MONITOR message to the trace stream.  During replay, the same events
+fire and verify the messages match.
 
 Granularity levels control which ``sys.monitoring`` events are enabled:
 
@@ -70,22 +73,10 @@ def suppress_monitoring():
         end_suppress_monitoring(count)
 
 if sys.version_info < (3, 12):
-    def install_monitoring(checkpoint_fn, level, *, disable_for=None):
+    def install_monitoring(checkpoint_fn, level, *, disable_for=None, monitoring=None):
         raise RuntimeError(
             f"--monitor requires Python 3.12+ (have {sys.version})")
 else:
-    _TOOL_ID = sys.monitoring.PROFILER_ID
-
-    MONITOR_LEVELS = {
-        1: sys.monitoring.events.PY_START | sys.monitoring.events.PY_RETURN,
-        2: (sys.monitoring.events.PY_START | sys.monitoring.events.PY_RETURN |
-            sys.monitoring.events.CALL | sys.monitoring.events.C_RETURN |
-            sys.monitoring.events.C_RAISE),
-        3: (sys.monitoring.events.PY_START | sys.monitoring.events.PY_RETURN |
-            sys.monitoring.events.CALL | sys.monitoring.events.C_RETURN |
-            sys.monitoring.events.C_RAISE | sys.monitoring.events.LINE),
-    }
-
     def _build_retrace_dirs(*, realpath=os.path.realpath, isdir=os.path.isdir):
         """Collect filesystem prefixes for all retracesoftware sub-packages."""
         dirs = set()
@@ -118,7 +109,19 @@ else:
             return False
         return realpath(filename).startswith(retrace_dirs)
 
-    def install_monitoring(checkpoint_fn, level, *, disable_for=None):
+    def _monitor_levels(monitoring):
+        events = monitoring.events
+        return {
+            1: events.PY_START | events.PY_RETURN,
+            2: (events.PY_START | events.PY_RETURN |
+                events.CALL | events.C_RETURN |
+                events.C_RAISE),
+            3: (events.PY_START | events.PY_RETURN |
+                events.CALL | events.C_RETURN |
+                events.C_RAISE | events.LINE),
+        }
+
+    def install_monitoring(checkpoint_fn, level, *, disable_for=None, monitoring=None):
         """Register ``sys.monitoring`` callbacks for divergence detection.
 
         Parameters
@@ -136,10 +139,20 @@ else:
         callable
             An uninstall function that tears down all monitoring state.
         """
-        if level not in MONITOR_LEVELS:
+        if monitoring is None:
+            monitoring = sys.monitoring
+            wrap_callback = _disable_retrace_callback
+        else:
+            wrap_callback = lambda callback: callback
+
+        monitor_levels = _monitor_levels(monitoring)
+        if level not in monitor_levels:
             raise ValueError(f"monitor level must be 1–3, got {level}")
 
-        events = MONITOR_LEVELS[level]
+        tool_id = monitoring.PROFILER_ID
+        disable_event = monitoring.DISABLE
+        event_set = monitor_levels[level]
+        event_names = monitoring.events
         realpath = os.path.realpath
         isdir = os.path.isdir
         if disable_for is not None:
@@ -182,7 +195,7 @@ else:
             _monitor_state.active = True
             try:
                 if _is_retrace(code.co_filename):
-                    return sys.monitoring.DISABLE
+                    return disable_event
                 checkpoint_fn('S:' + code.co_qualname)
             finally:
                 _monitor_state.active = False
@@ -193,7 +206,7 @@ else:
             _monitor_state.active = True
             try:
                 if _is_retrace(code.co_filename):
-                    return sys.monitoring.DISABLE
+                    return disable_event
                 checkpoint_fn('R:' + code.co_qualname)
             finally:
                 _monitor_state.active = False
@@ -241,53 +254,47 @@ else:
             _monitor_state.active = True
             try:
                 if _is_retrace(code.co_filename):
-                    return sys.monitoring.DISABLE
+                    return disable_event
                 checkpoint_fn('L:' + code.co_qualname + ':' + str(line_number))
             finally:
                 _monitor_state.active = False
 
         # ── Register ──────────────────────────────────────────────
 
-        sys.monitoring.use_tool_id(_TOOL_ID, "retrace_monitor")
+        monitoring.use_tool_id(tool_id, "retrace_monitor")
 
-        if events & sys.monitoring.events.PY_START:
-            sys.monitoring.register_callback(
-                _TOOL_ID, sys.monitoring.events.PY_START,
-                _disable_retrace_callback(_py_start))
-        if events & sys.monitoring.events.PY_RETURN:
-            sys.monitoring.register_callback(
-                _TOOL_ID, sys.monitoring.events.PY_RETURN,
-                _disable_retrace_callback(_py_return))
-        if events & sys.monitoring.events.CALL:
-            sys.monitoring.register_callback(
-                _TOOL_ID, sys.monitoring.events.CALL,
-                _disable_retrace_callback(_call))
-        if events & sys.monitoring.events.C_RETURN:
-            sys.monitoring.register_callback(
-                _TOOL_ID, sys.monitoring.events.C_RETURN,
-                _disable_retrace_callback(_c_return))
-        if events & sys.monitoring.events.C_RAISE:
-            sys.monitoring.register_callback(
-                _TOOL_ID, sys.monitoring.events.C_RAISE,
-                _disable_retrace_callback(_c_raise))
-        if events & sys.monitoring.events.LINE:
-            sys.monitoring.register_callback(
-                _TOOL_ID, sys.monitoring.events.LINE,
-                _disable_retrace_callback(_line))
+        if event_set & event_names.PY_START:
+            monitoring.register_callback(
+                tool_id, event_names.PY_START, wrap_callback(_py_start))
+        if event_set & event_names.PY_RETURN:
+            monitoring.register_callback(
+                tool_id, event_names.PY_RETURN, wrap_callback(_py_return))
+        if event_set & event_names.CALL:
+            monitoring.register_callback(
+                tool_id, event_names.CALL, wrap_callback(_call))
+        if event_set & event_names.C_RETURN:
+            monitoring.register_callback(
+                tool_id, event_names.C_RETURN, wrap_callback(_c_return))
+        if event_set & event_names.C_RAISE:
+            monitoring.register_callback(
+                tool_id, event_names.C_RAISE, wrap_callback(_c_raise))
+        if event_set & event_names.LINE:
+            monitoring.register_callback(
+                tool_id, event_names.LINE, wrap_callback(_line))
 
-        sys.monitoring.set_events(_TOOL_ID, events)
+        monitoring.set_events(tool_id, event_set)
 
         # ── Uninstall ─────────────────────────────────────────────
 
         def uninstall():
-            sys.monitoring.set_events(_TOOL_ID, 0)
-            for evt in (sys.monitoring.events.PY_START,
-                        sys.monitoring.events.PY_RETURN,
-                        sys.monitoring.events.CALL,
-                        sys.monitoring.events.C_RETURN,
-                        sys.monitoring.events.C_RAISE,
-                        sys.monitoring.events.LINE):
-                sys.monitoring.register_callback(_TOOL_ID, evt, None)
-            sys.monitoring.free_tool_id(_TOOL_ID)
+            monitoring.set_events(tool_id, 0)
+            for evt in (event_names.PY_START,
+                        event_names.PY_RETURN,
+                        event_names.CALL,
+                        event_names.C_RETURN,
+                        event_names.C_RAISE,
+                        event_names.LINE):
+                monitoring.register_callback(tool_id, evt, None)
+            monitoring.free_tool_id(tool_id)
 
         return uninstall

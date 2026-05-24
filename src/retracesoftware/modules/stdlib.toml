@@ -299,6 +299,9 @@ recvfrom_into = "retracesoftware.install.edgecases.recvfrom_into"
 recv_into = "retracesoftware.install.edgecases.recv_into"
 recvmsg_into = "retracesoftware.install.edgecases.recvmsg_into"
 
+[socket]
+immutable = ["AddressFamily", "SocketKind"]
+
 [select]
 proxy = ["kevent", "kqueue", "poll", "epoll", "select"]
 

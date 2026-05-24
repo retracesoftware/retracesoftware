@@ -30,7 +30,7 @@ def test_urandom():
     state = {}
 
     def configure_system(system):
-        state["urandom"] = system.patch(os.urandom)
+        state["urandom"] = system.patch_function(os.urandom)
 
     runner = Runner(configure_system=configure_system)
 

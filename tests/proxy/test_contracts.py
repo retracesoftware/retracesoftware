@@ -1,10 +1,14 @@
-from typing import get_type_hints
+from collections.abc import Callable as CallableABC
+from typing import get_args, get_origin, get_type_hints
 
+import retracesoftware.proxy.contracts as contracts
+from retracesoftware.gateway._proxytype import Proxy
 from retracesoftware.proxy.contracts import (
     AsyncCapture,
     Binder,
     Checkpoint,
     ImmutableRegistry,
+    ProxyConstructor,
     ProxyRuntime,
     ProxyTypeCustomizer,
     TraceReader,
@@ -18,6 +22,16 @@ from retracesoftware.proxy.traceio import TraceWriter as TraceWriterContract
 def test_proxy_runtime_contract_exports_generation_methods():
     assert hasattr(ProxyRuntime, "proxy_type")
     assert hasattr(ProxyRuntime, "patch_function")
+
+
+def test_proxy_constructor_contract_shape():
+    args, return_type = get_args(ProxyConstructor)
+
+    assert contracts.ProxyConstructor is ProxyConstructor
+    assert "ProxyConstructor" in contracts.__all__
+    assert get_origin(ProxyConstructor) is CallableABC
+    assert args == [object]
+    assert return_type is Proxy
 
 
 def test_binder_contract_exports_bind_method():

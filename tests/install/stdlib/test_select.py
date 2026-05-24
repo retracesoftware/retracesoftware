@@ -113,7 +113,6 @@ def test_preloaded_pollselector_factory_is_retraced():
         assert system.run(work)
     finally:
         uninstall()
-        system.unpatch_types()
 
 
 def test_select_writable():

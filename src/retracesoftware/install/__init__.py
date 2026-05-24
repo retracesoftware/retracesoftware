@@ -4,6 +4,7 @@ import importlib
 import importlib.resources
 import atexit
 import os
+import sys
 from pathlib import Path
 import tomllib
 from retracesoftware import functional
@@ -60,6 +61,7 @@ def install_retrace(*, system, retrace_file_patterns=None, monitor_level=0, verb
                 system.checkpoint,
                 monitor_level,
                 disable_for=root_disable_for(system),
+                monitoring=system.internal_space.monitoring,
             )
         )
 
@@ -146,6 +148,10 @@ def install_retrace(*, system, retrace_file_patterns=None, monitor_level=0, verb
                 patch_undos.append(undo)
 
     patch_already_loaded(module_patcher, module_config)
+    _reload_preexisting_subclass_modules(
+        installation,
+        disable_for=system.disable_for,
+    )
     uninstallers.append(install_import_hooks(system.disable_for, module_patcher))
 
     uninstalled = False
@@ -155,13 +161,90 @@ def install_retrace(*, system, retrace_file_patterns=None, monitor_level=0, verb
         if uninstalled:
             return
         uninstalled = True
+        reload_module_names = _module_names_with_replacement_subclasses(
+            installation.type_replacements
+        )
         for undo in reversed(patch_undos):
             undo()
         installation.uninstall()
         for uninstall_one in reversed(uninstallers):
             uninstall_one()
+        _reload_module_names(
+            reload_module_names,
+            disable_for=system.disable_for,
+        )
 
     return uninstall
+
+
+def _module_names_with_direct_subclasses(type_replacements):
+    module_names = set()
+    replaced_module_names = {
+        getattr(new_type, "__module__", None)
+        for _old_type, new_type in type_replacements
+    }
+
+    for old_type, _new_type in type_replacements:
+        for subclass in old_type.__subclasses__():
+            module_name = getattr(subclass, "__module__", None)
+            if (
+                not module_name
+                or module_name in replaced_module_names
+                or module_name.startswith("retracesoftware.")
+                or module_name not in sys.modules
+            ):
+                continue
+            module = sys.modules.get(module_name)
+            if getattr(module, "__spec__", None) is None:
+                continue
+            module_names.add(module_name)
+
+    return tuple(sorted(module_names))
+
+
+def _module_names_with_replacement_subclasses(type_replacements):
+    module_names = set()
+    replaced_module_names = {
+        getattr(new_type, "__module__", None)
+        for _old_type, new_type in type_replacements
+    }
+
+    for _old_type, new_type in type_replacements:
+        for subclass in new_type.__subclasses__():
+            module_name = getattr(subclass, "__module__", None)
+            if (
+                not module_name
+                or module_name in replaced_module_names
+                or module_name.startswith("retracesoftware.")
+                or module_name not in sys.modules
+            ):
+                continue
+            module = sys.modules.get(module_name)
+            if getattr(module, "__spec__", None) is None:
+                continue
+            module_names.add(module_name)
+
+    return tuple(sorted(module_names))
+
+
+def _reload_module_names(module_names, *, disable_for):
+    reload_module = disable_for(importlib.reload, retrace=False)
+    for module_name in module_names:
+        module = sys.modules.get(module_name)
+        if module is None:
+            continue
+        reload_module(module)
+
+
+def _reload_preexisting_subclass_modules(
+    installation,
+    *,
+    disable_for,
+):
+    _reload_module_names(
+        _module_names_with_direct_subclasses(installation.type_replacements),
+        disable_for=disable_for,
+    )
 
 def install_and_run(*, system, options, function, args = (), kwargs = {}, post_install = None):
     uninstall = install_retrace(

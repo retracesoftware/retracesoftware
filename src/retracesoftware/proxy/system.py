@@ -72,6 +72,8 @@ class LifecycleHooks(NamedTuple):
 
 
 def _binding_handle(binding):
+    if isinstance(binding, stream.Binding):
+        return stream.Binding((0, int(binding.index)))
     return binding.handle if hasattr(binding, "handle") else binding
 
 def _phase_internal():
@@ -180,14 +182,43 @@ def _raise(error):
 class System(ProxyRuntime, Binder, ImmutableRegistry):
     checkpoint: Checkpoint
 
-    def wire_for_record(self, *, on_callback, on_error, on_result):
+    def wire_for_record(
+        self,
+        *,
+        on_callback,
+        on_error,
+        on_result,
+    ):
+        system_ref = weakref.ref(self)
+
+        def original_type_for(cls):
+            current_system = system_ref()
+            if current_system is None:
+                return None
+            return current_system.original_type_for(cls)
+
+        def dynamic_proxy_target(cls):
+            return getattr(cls, "__retrace_target_class__", None)
+
+        unwrap_type = functional.firstof(
+            original_type_for,
+            dynamic_proxy_target,
+            functional.identity,
+        )
+        unwrap = functional.if_then_else(
+            functional.isinstanceof(type),
+            unwrap_type,
+            utils.try_unwrap
+        )
+
         self.gateway_pair.wire_for_record(
             is_passthrough = self.is_passthrough,
             on_callback = on_callback,
             on_error = on_error,
             on_result = on_result,
             int_proxy = self.proxy_factory.proxy_internal,
-            ext_proxy = self.proxy_factory.proxy_external)
+            ext_proxy = self.proxy_factory.proxy_external,
+            unwrap = unwrap)
 
     def wire_for_replay(self, *, next_result):
         self.gateway_pair.wire_replay(
@@ -201,7 +232,6 @@ class System(ProxyRuntime, Binder, ImmutableRegistry):
         self,
         *,
         binder,
-        on_new_instance: Callable[[Any], Any] | None = None,
         on_del: Callable[[Any], Any] | None = None,
         proxy_type_customizer: ProxyTypeCustomizer = utils.noop,
     ) -> None:
@@ -213,12 +243,27 @@ class System(ProxyRuntime, Binder, ImmutableRegistry):
         self.int_gateway = self.gateway_pair.internal
         self.ext_gateway = self.gateway_pair.external
         self.immutable_types = {type(None)}
-        immutable_types = self.immutable_types
         self.is_bound = utils.WeakSet()
         self.lifecycle_hooks = LifecycleHooks()
         self.retrace_mode = None
-
+        self._is_immutable_predicate = utils.noop
+        self._is_passthrough_predicate = utils.noop
         self_ref = weakref.ref(self)
+
+        def is_immutable(value):
+            current_system = self_ref()
+            if current_system is None:
+                return False
+            return current_system._is_immutable_predicate(value)
+
+        def is_passthrough(value):
+            current_system = self_ref()
+            if current_system is None:
+                return False
+            return current_system._is_passthrough_predicate(value)
+
+        self.is_immutable = is_immutable
+        self.is_passthrough = is_passthrough
 
         def bind_and_mark(value):
             current_system = self_ref()
@@ -226,14 +271,7 @@ class System(ProxyRuntime, Binder, ImmutableRegistry):
                 current_system.is_bound.add(value)
             return binder.bind(value)
 
-        bind_new_instance = on_new_instance or binder.bind
         unbind_instance = on_del or binder.unbind
-
-        def on_new_proxy_instance(value):
-            current_system = self_ref()
-            if current_system is not None:
-                current_system.is_bound.add(value)
-            return bind_new_instance(value)
 
         self.bind = bind_and_mark
         self.binder = binder
@@ -241,11 +279,7 @@ class System(ProxyRuntime, Binder, ImmutableRegistry):
         self.retrace_to_original_type = {}
         self.extended_type_flags = {}
         
-        self.is_immutable = utils.FastTypePredicate(
-            lambda cls: cls in immutable_types).istypeof
-
-        self.is_passthrough = utils.FastTypePredicate(
-            lambda cls: cls in immutable_types or issubclass(cls, ExtendedType)).istypeof
+        self._refresh_type_predicates()
         
         self._current_phase = _space_dispatch(
             _phase_disabled,
@@ -258,18 +292,23 @@ class System(ProxyRuntime, Binder, ImmutableRegistry):
         self.proxy_factory = ProxyFactory(
             binder=_MarkingBinder(binder, self.is_bound.add),
             gateway_pair=self.gateway_pair,
-            on_new_instance=on_new_proxy_instance,
             on_del=unbind_instance,
             proxy_type_customizer=proxy_type_customizer,
         )
-
-        self.proxy_type = self.proxy_factory.proxy_type
 
     def dispatch(self, *, internal, external, disabled):
         disp = _space_dispatch(disabled)
         disp[self.internal_space] = internal
         disp[self.external_space] = external
         return disp
+
+    def _refresh_type_predicates(self):
+        immutable_type_tuple = tuple(self.immutable_types)
+        is_immutable_type = lambda cls: issubclass(cls, immutable_type_tuple)
+        self._is_immutable_predicate = utils.FastTypePredicate(is_immutable_type).istypeof
+
+        self._is_passthrough_predicate = utils.FastTypePredicate(
+            lambda cls: is_immutable_type(cls) or issubclass(cls, ExtendedType)).istypeof
 
     @property
     def location(self):
@@ -442,15 +481,23 @@ class System(ProxyRuntime, Binder, ImmutableRegistry):
     def _generate_extended_type(self, cls: type) -> type:
         return self.proxy_factory.typefactory.extended_type(cls)
 
+    def proxy_type(self, cls: type) -> type:
+        try:
+            return self.extend_type(cls, python_distribution=True)
+        except TypeError:
+            return self.wrap_type(cls)
+
     def wrap_type(self, cls: type) -> type:
         existing = self._existing_retrace_type(cls, kind="wrapped")
         if existing is not None:
             return existing
 
-        retrace_type = self.proxy_factory.typefactory.instantiable_external_type(cls)
+        retrace_type = self.proxy_factory.dynamic_external_type(cls)
         return self._register_retrace_type(cls, retrace_type, kind="wrapped")
 
     def patch_function(self, fn):
+        if isinstance(fn, type) and self.retrace_type_for(fn) is None:
+            self.wrap_type(fn)
         if not self.is_bound(fn):
             self.bind(fn)
         wrapped = self._wrapped_function(self.gateway_pair.external, fn)
@@ -460,17 +507,25 @@ class System(ProxyRuntime, Binder, ImmutableRegistry):
 
     def add_immutable_type(self, cls):
         self.immutable_types.add(cls)
+        self._refresh_type_predicates()
 
     def add_immutable_types(self, *classes):
         self.immutable_types.update(classes)
+        self._refresh_type_predicates()
 
     def update_external(self, f):
         self.gateway_pair.external = f(self.gateway_pair.external)
 
     def set_on_call(self, on_call):
-        self.update_external(lambda f: utils.observer(
-            function = f,
-            on_call = on_call))
+        external = self.gateway_pair.external
+        observed = utils.observer(
+            function=external,
+            on_call=on_call,
+        )
+        self.gateway_pair.external = _space_dispatch(
+            external,
+            ((self.internal_space, observed),),
+        )
 
     def _install_signal_capture(self, *, writer, encode_for_write):
         system_ref = weakref.ref(self)
@@ -595,10 +650,27 @@ class System(ProxyRuntime, Binder, ImmutableRegistry):
             functional.typeof,
         )
 
+        extended_instance_to_type = functional.when(
+            functional.and_predicate(
+                functional.sequence(binder.lookup, operator.not_),
+                functional.sequence(system.is_immutable, operator.not_),
+                functional.sequence(
+                    system.proxy_factory.is_dynamic_external_proxy,
+                    operator.not_,
+                ),
+                functional.isinstanceof(ExtendedType),
+            ),
+            functional.typeof,
+        )
+
         encode_for_write = functional.if_then_else(
             system.is_immutable,
             binder,
-            functional.walker(functional.sequence(dynamic_ext_proxy_to_type, binder)))
+            functional.walker(functional.sequence(
+                dynamic_ext_proxy_to_type,
+                extended_instance_to_type,
+                binder,
+            )))
 
         def on_callback(fn, *args, **kwargs):
             writer.callback(
@@ -659,15 +731,42 @@ class System(ProxyRuntime, Binder, ImmutableRegistry):
         cursors = _ThreadCursors()
         system = None
         materialize_replay_value = functional.identity
+        unresolved_checkpoint_binding = object()
 
         resolve = functional.walker(functional.if_then_else(
             functional.isinstanceof(stream.Binding),
-            functional.sequence(operator.attrgetter("handle"), bindings.__getitem__),
+            functional.sequence(_binding_handle, bindings.__getitem__),
             functional.identity,
         ))
 
         def replay_value(value):
             return materialize_replay_value(resolve(value))
+
+        def checkpoint_value(value):
+            def resolve_checkpoint_binding(value):
+                if not isinstance(value, stream.Binding):
+                    return value
+                return bindings.get(
+                    _binding_handle(value),
+                    unresolved_checkpoint_binding,
+                )
+
+            return materialize_replay_value(
+                functional.walker(resolve_checkpoint_binding)(value)
+            )
+
+        def contains_unresolved_checkpoint_binding(value):
+            if value is unresolved_checkpoint_binding:
+                return True
+            if isinstance(value, tuple | list):
+                return any(contains_unresolved_checkpoint_binding(item) for item in value)
+            if isinstance(value, dict):
+                return any(
+                    contains_unresolved_checkpoint_binding(item)
+                    for pair in value.items()
+                    for item in pair
+                )
+            return False
             
         def run_callback(message):
             try:
@@ -771,13 +870,18 @@ class System(ProxyRuntime, Binder, ImmutableRegistry):
                 return message
 
         def consume_lifecycle_marker(message_type):
-            try:
-                message = reader.peek()
-            except (LookupError, RuntimeError, StopIteration):
+            while True:
+                try:
+                    message = reader.peek()
+                except (LookupError, RuntimeError, StopIteration):
+                    return None
+                if isinstance(message, BindCloseMessage):
+                    message = reader()
+                    bindings.pop(message.handle, None)
+                    continue
+                if isinstance(message, message_type):
+                    return reader()
                 return None
-            if isinstance(message, message_type):
-                return reader()
-            return None
 
         def checkpoint_thread(thread_id):
             current = _thread.get_ident()
@@ -806,19 +910,36 @@ class System(ProxyRuntime, Binder, ImmutableRegistry):
             checkpoint_thread(message.thread_id)
             checkpoint_cursor(message.cursor_delta)
 
-            record_value = replay_value(message.value)
+            record_value = checkpoint_value(message.value)
+            if contains_unresolved_checkpoint_binding(record_value):
+                return None
             if record_value != value:
                 from retracesoftware.install import ReplayDivergence
                 raise ReplayDivergence(
                     f"checkpoint difference: {record_value!r} was expecting {value!r}"
                 )
 
+        def bind_unresolved_dynamic_external_result(value, args):
+            if not isinstance(value, stream.Binding):
+                return value
+            handle = _binding_handle(value)
+            if handle in bindings or not args:
+                return value
+            constructor_type = args[0]
+            if (
+                isinstance(constructor_type, type)
+                and system.proxy_factory.is_dynamic_external_proxy_type(constructor_type)
+            ):
+                bindings[handle] = constructor_type
+            return value
+
         @utils.striptraceback
-        def next_result(*_args, **_kwargs):
+        def next_result(*args, **_kwargs):
             
             message = read_message()
     
             if isinstance(message, ResultMessage):
+                bind_unresolved_dynamic_external_result(message.result, args)
                 return replay_value(message.result)
                 
             if isinstance(message, ErrorMessage):
@@ -849,8 +970,14 @@ class System(ProxyRuntime, Binder, ImmutableRegistry):
             on_start=functional.partial(consume_lifecycle_marker, OnStartMessage),
             on_end=functional.partial(consume_lifecycle_marker, RunCompletedMessage),
         )
-        materialize_replay_value = functional.walker(
-            system.proxy_factory.materialize_dynamic_external_proxy)
+
+        def materialize_external_type_token(value):
+            if isinstance(value, type) and system.retrace_type_for(value) is not None:
+                proxy_type = system.proxy_factory.typefactory.dynamic_external_type(value)
+                return utils.create_wrapped(proxy_type, None)
+            return system.proxy_factory.materialize_dynamic_external_proxy(value)
+
+        materialize_replay_value = functional.walker(materialize_external_type_token)
         system.wire_for_replay(next_result=next_result)
 
         def replay_extend_type(cls: type, *, python_distribution: bool) -> type:

@@ -83,13 +83,102 @@ def test_materialize_dynamic_external_proxy_hydrates_proxy_type():
     assert factory.materialize_dynamic_external_proxy(External) is External
 
 
+def test_materialize_dynamic_external_proxy_hydrates_extended_type_token():
+    binder = _Binder()
+    factory = ProxyFactory(binder=binder, gateway_pair=_gateway_pair())
+
+    class External:
+        def __init__(self):
+            raise AssertionError("materialization should not call __init__")
+
+    retrace_type = factory.typefactory.extended_type(External)
+    materialized = factory.materialize_dynamic_external_proxy(retrace_type)
+
+    assert type(materialized) is retrace_type
+    assert binder.lookup(materialized) is None
+
+
+def test_proxy_external_reports_registered_proxy_type_without_source_type():
+    binder = _Binder()
+    factory = ProxyFactory(binder=binder, gateway_pair=_gateway_pair())
+
+    class External:
+        pass
+
+    retrace_type = factory.typefactory.dynamic_external_type(External)
+    assert binder.lookup(External) is None
+    assert binder.lookup(retrace_type) == retrace_type.__retrace_type_binding__
+
+    proxied = factory.proxy_external(External())
+    proxy_type = type(proxied)
+
+    assert proxy_type is retrace_type
+    assert proxied.__class__ is retrace_type
+    assert isinstance(proxied, retrace_type)
+    assert binder(proxy_type) == proxy_type.__retrace_type_binding__
+    assert binder.lookup(proxied) is None
+    assert proxied.__retrace_serialized__() == proxy_type.__retrace_type_binding__
+
+
+def test_proxy_external_reports_registered_extended_companion_without_source_type():
+    binder = _Binder()
+    factory = ProxyFactory(binder=binder, gateway_pair=_gateway_pair())
+
+    class External:
+        pass
+
+    retrace_type = factory.typefactory.extended_type(External)
+    companion_type = factory.typefactory.dynamic_external_type(External)
+    assert binder.lookup(External) is None
+    assert binder.lookup(retrace_type) is not None
+    assert binder.lookup(companion_type) == companion_type.__retrace_type_binding__
+
+    class PublicExternal(retrace_type):
+        pass
+
+    assert binder.lookup(PublicExternal) is not None
+
+    proxied = factory.proxy_external(External())
+    proxy_type = type(proxied)
+
+    assert proxy_type is companion_type
+    assert proxy_type is not retrace_type
+    assert proxied.__class__ is retrace_type
+    assert isinstance(proxied, retrace_type)
+    assert binder(proxy_type) == proxy_type.__retrace_type_binding__
+
+
+def test_generated_instances_bind_through_binder_before_on_new_instance():
+    binder = _Binder()
+    calls = []
+    factory = ProxyFactory(
+        binder=binder,
+        gateway_pair=_gateway_pair(),
+        on_new_instance=lambda value: calls.append(
+            ("on_new_instance", value, binder.lookup(value))
+        ),
+    )
+
+    class External:
+        pass
+
+    proxy_type = factory.proxy_type(External)
+    obj = proxy_type()
+    binding = binder.lookup(obj)
+
+    assert binding is not None
+    assert calls == [("on_new_instance", obj, binding)]
+    assert obj.__retrace_serialized__() == binding
+    assert not hasattr(obj, "__retrace" + "_binding__")
+
+
 def test_dynamic_proxy_creation_does_not_call_on_new_instance():
     binder = _Binder()
     calls = []
     factory = ProxyFactory(
         binder=binder,
         gateway_pair=_gateway_pair(),
-        on_new_instance=lambda value: calls.append(("on_new_instance", value)),
+        on_new_instance=lambda value: calls.append(value),
     )
 
     class External:

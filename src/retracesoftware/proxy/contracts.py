@@ -14,7 +14,13 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Callable, Protocol
 
+from retracesoftware.gateway._proxytype import Proxy
 from retracesoftware.proxy.traceio import TraceReader, TraceWriter
+
+
+# Callable returned by proxy-constructor factories; this is not a proxy type
+# registry or a type-to-type factory.
+ProxyConstructor = Callable[[object], Proxy]
 
 
 @dataclass(frozen=True)
@@ -136,6 +142,7 @@ __all__ = [
     "Binder",
     "Checkpoint",
     "ImmutableRegistry",
+    "ProxyConstructor",
     "ProxyRuntime",
     "ProxyTypeCustomizer",
     "TraceReader",

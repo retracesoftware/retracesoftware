@@ -249,6 +249,7 @@ def patch(
         """Replace *name* in the namespace and optionally update refs."""
         if old is not new:
             namespace[name] = new
+            installation.record_type_replacement(old, new)
             module_ref_changes = []
             if update_refs:
                 module_ref_changes = (
@@ -486,6 +487,9 @@ def patch(
             immutable_types = getattr(system, "immutable_types", None)
             if immutable_types is not None:
                 immutable_types.discard(cls)
+        refresh_type_predicates = getattr(system, "_refresh_type_predicates", None)
+        if refresh_type_predicates is not None:
+            refresh_type_predicates()
         for cls, attr, old_value in reversed(type_attr_undos):
             with modify(cls):
                 if old_value is _MISSING_ATTR:

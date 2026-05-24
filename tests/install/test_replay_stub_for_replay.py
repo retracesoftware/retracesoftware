@@ -7,15 +7,11 @@ from retracesoftware.install.patcher import ReplayStubCallError, patch
 class _PatchSystem:
     def __init__(self, mode):
         self.retrace_mode = mode
-        self.patched_types = []
+        self.proxied_types = []
 
-    def patch_type(self, cls):
-        self.patched_types.append(cls)
-
-        def unpatch():
-            self.patched_types.remove(cls)
-
-        return unpatch
+    def proxy_type(self, cls):
+        self.proxied_types.append(cls)
+        return cls
 
     def patch_function(self, fn):
         return fn
@@ -79,17 +75,13 @@ def test_stub_for_replay_runs_before_proxy_directive():
 
     namespace = {"__name__": "demo_native", "NativeHandle": NativeHandle}
     replay_system = _PatchSystem("replay")
-    patched_objects = []
+    proxied_types = []
 
-    def capture_patch_type(obj):
-        patched_objects.append(obj)
+    def capture_proxy_type(obj):
+        proxied_types.append(obj)
+        return obj
 
-        def unpatch():
-            pass
-
-        return unpatch
-
-    replay_system.patch_type = capture_patch_type
+    replay_system.proxy_type = capture_proxy_type
     undo = patch(
         namespace,
         {"stub_for_replay": ["NativeHandle"], "proxy": ["NativeHandle"]},
@@ -98,7 +90,7 @@ def test_stub_for_replay_runs_before_proxy_directive():
     try:
         StubHandle = namespace["NativeHandle"]
         assert StubHandle is not NativeHandle
-        assert patched_objects == [StubHandle]
+        assert proxied_types == [StubHandle]
     finally:
         undo()
 
@@ -122,6 +114,6 @@ def test_stub_for_replay_proxy_patches_generated_shape():
     try:
         StubHandle = namespace["NativeHandle"]
         assert StubHandle is not NativeHandle
-        assert StubHandle in replay_system.patched_types
+        assert StubHandle in replay_system.proxied_types
     finally:
         undo()

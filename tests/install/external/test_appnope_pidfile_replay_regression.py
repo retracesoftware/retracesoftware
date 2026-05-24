@@ -17,44 +17,10 @@ import textwrap
 
 import pytest
 
-from tests.helpers import PYTHON
+from tests.helpers import PYTHON, retrace_env
 
 
-_ROOT = Path(__file__).resolve().parents[3]
 _ATTEMPTS = 10
-
-
-def _local_pythonpath() -> str:
-    build_tag = (
-        f"cp{sys.version_info.major}{sys.version_info.minor}"
-        f"{getattr(sys, 'abiflags', '')}"
-    )
-    entries = [str((_ROOT / "src").resolve())]
-    for rel in (
-        f"build/{build_tag}/cpp/utils",
-        f"build/{build_tag}/cpp/stream",
-        f"build/{build_tag}/cpp/functional",
-        f"build/{build_tag}/cpp/cursor",
-    ):
-        path = _ROOT / rel
-        if path.exists():
-            entries.append(str(path.resolve()))
-    return os.pathsep.join(entries)
-
-
-def _editable_skip() -> str:
-    build_tag = (
-        f"cp{sys.version_info.major}{sys.version_info.minor}"
-        f"{getattr(sys, 'abiflags', '')}"
-    )
-    entries = []
-    local_build = _ROOT / "build" / build_tag
-    if local_build.exists():
-        entries.append(str(local_build.resolve()))
-    utils_build = _ROOT.parent / "utils" / "build" / build_tag
-    if utils_build.exists():
-        entries.append(str(utils_build.resolve()))
-    return os.pathsep.join(entries)
 
 
 def _completed_process_error(
@@ -88,10 +54,8 @@ def test_appnope_pidfile_replay_does_not_read_past_trace_at_finalize(
 ):
     pytest.importorskip("appnope")
 
-    env = os.environ.copy()
-    env["MESONPY_EDITABLE_SKIP"] = _editable_skip()
+    env = retrace_env(os.environ, PYTHON)
     env["PYTHONFAULTHANDLER"] = "1"
-    env["PYTHONPATH"] = _local_pythonpath()
     env["RETRACE_CONFIG"] = "debug"
 
     replay_env = env.copy()

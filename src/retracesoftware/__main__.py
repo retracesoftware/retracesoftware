@@ -22,7 +22,6 @@ def _require_retrace_python():
         raise SystemExit(1)
 
     required = (
-        "callbacks",
         "call_at",
         "CoordinateSpace",
         "coordinates",
@@ -81,10 +80,6 @@ def diff_dicts(recorded, current, path=""):
     
     return diffs
 
-class _ReplayStartupBinding:
-    __slots__ = ()
-
-
 def _bind_stream_chain(system, stream_obj, seen):
     current = stream_obj
     while current is not None and id(current) not in seen:
@@ -121,28 +116,6 @@ def _bind_record_runtime(system, tape_writer):
 
     output_stream = getattr(getattr(tape_writer, "_output", None), "_stream", None)
     _bind_stream_chain(system, output_stream, seen)
-
-
-def _consume_replay_startup_bindings(system):
-    """Consume CLI startup bind markers before ON_START.
-
-    CLI recording binds a number of interpreter/runtime helper objects before
-    entering ``System.run()``. Replay needs to consume those leading binding
-    records so lifecycle hooks start aligned at ``ON_START``.
-    """
-
-    sentinels = []
-
-    while True:
-        sentinel = _ReplayStartupBinding()
-        try:
-            system.bind(sentinel)
-        except ExpectedBindMarker:
-            break
-        else:
-            sentinels.append(sentinel)
-
-    return sentinels
 
 
 @dataclass(frozen=True)
@@ -212,17 +185,7 @@ def _setup_runner(runner):
             if strict_bind is not None:
                 runner.system.bind = strict_bind
 
-        if runner.options.mode == "replay" and getattr(
-            runner.system,
-            "consume_startup_bindings",
-            True,
-        ):
-            fork_uninstall = patch_fork_for_replay(runner.system.disable_for)
-            uninstall = utils.runall(fork_uninstall, uninstall)
-            runner.system._startup_bindings = _consume_replay_startup_bindings(
-                runner.system
-            )
-        elif runner.options.mode == "replay":
+        if runner.options.mode == "replay":
             fork_uninstall = patch_fork_for_replay(runner.system.disable_for)
             uninstall = utils.runall(fork_uninstall, uninstall)
 

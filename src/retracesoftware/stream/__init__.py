@@ -90,6 +90,15 @@ def _is_bind_close(value):
 def _bind_index(value):
     return (0, value[1])
 
+
+def _is_binding(value):
+    binding_type = globals().get("Binding")
+    return binding_type is not None and isinstance(value, binding_type)
+
+
+def _binding_index(value):
+    return int(value)
+
 _NATIVE_PERSISTER_TYPES = tuple(
     t for t in (
         getattr(_backend_mod, "Persister", None),
@@ -264,11 +273,15 @@ class DebugPersister:
 
     @staticmethod
     def _ref_key(ref):
+        if _is_binding(ref):
+            return _binding_index(ref)
         if isinstance(ref, int):
             return ref
         return id(ref)
 
     def write_object(self, obj):
+        if _is_binding(obj):
+            return self.write_handle_ref(obj)
         index = self._bound_ref_index(obj)
         if index is not None:
             return self._index_event("bound_ref", index)
@@ -415,6 +428,8 @@ class JsonPersister:
 
     @staticmethod
     def _ref_key(ref):
+        if _is_binding(ref):
+            return _binding_index(ref)
         if isinstance(ref, int):
             return ref
         return id(ref)
@@ -422,6 +437,11 @@ class JsonPersister:
     def _encode_value(self, value, use_serializer=True):
         if value is None or isinstance(value, (bool, int, float, str)):
             return value
+        if _is_binding(value):
+            return {
+                "kind": "binding",
+                "index": _binding_index(value),
+            }
         if isinstance(value, (bytes, bytearray, memoryview)):
             return _encode_bytes_payload(value)
         if isinstance(value, list):
@@ -479,6 +499,8 @@ class JsonPersister:
         self._next_binding_index = 0
 
     def write_object(self, obj):
+        if _is_binding(obj):
+            return self.write_handle_ref(obj)
         index = self._bound_ref_index(obj)
         if index is not None:
             self._write_event("bound_ref", index=index)

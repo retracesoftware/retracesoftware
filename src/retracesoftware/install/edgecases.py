@@ -191,11 +191,12 @@ def asyncio_write_to_self(target, *, system=None):
     @functools.wraps(raw_target)
     @utils.exclude_from_stacktrace
     def wrapper(self, *args, **kwargs):
+        result = target(self, *args, **kwargs)
+
         replaying = getattr(system, "retrace_mode", None) == "replay"
         if not replaying:
-            return target(self, *args, **kwargs)
+            return result
 
-        defer_schedule = getattr(system, "defer_replay_thread_schedule", None)
         handoff_schedule_to = getattr(
             system,
             "handoff_replay_thread_schedule_to",
@@ -206,9 +207,6 @@ def asyncio_write_to_self(target, *, system=None):
             if system is not None
             else raw_target
         )
-
-        with defer_schedule() if defer_schedule is not None else nullcontext():
-            result = target(self, *args, **kwargs)
 
         loop_thread_id = getattr(self, "_thread_id", None)
         if handoff_schedule_to is not None and loop_thread_id is not None:
