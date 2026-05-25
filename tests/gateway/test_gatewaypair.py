@@ -161,6 +161,7 @@ def _create_recording_pair(
     on_callback,
     on_error,
     on_result,
+    unwrap=utils.try_unwrap,
 ):
     pair = GatewayPair.create_unwired()
     factory = ProxyFactory(
@@ -174,6 +175,7 @@ def _create_recording_pair(
         on_result=on_result,
         int_proxy=factory.proxy_internal,
         ext_proxy=factory.proxy_external,
+        unwrap=unwrap,
     )
 
 
@@ -470,6 +472,63 @@ def test_recording_external_result_uses_real_external_proxy(monkeypatch):
     assert bound == []
 
 
+def test_recording_external_result_proxy_type_creation_emits_callback_before_result(monkeypatch):
+    fake_retrace = _fake_retrace()
+    monkeypatch.setattr(gatewaypair_module, "retrace", fake_retrace)
+    monkeypatch.setattr(dynamicproxy, "retrace", fake_retrace)
+    events = []
+    callbacks = []
+    observed = []
+
+    pair = _create_recording_pair(
+        is_passthrough=_is_passthrough,
+        on_callback=lambda *args, **kwargs: (
+            events.append("callback"),
+            callbacks.append((args, kwargs)),
+        ),
+        on_error=lambda *args: None,
+        on_result=lambda value: (
+            events.append("result"),
+            observed.append(value),
+        ),
+    )
+
+    result = _external_call(pair, lambda: FreshExternalResult())
+
+    assert isinstance(result, utils.ExternalWrapped)
+    assert events[:2] == ["callback", "result"]
+    assert len(callbacks) == 1
+    assert isinstance(callbacks[0][0][0], utils.wrapped_function)
+    assert observed == [result]
+
+
+def test_recording_external_result_proxy_type_callback_return_survives_type_unwrap(monkeypatch):
+    fake_retrace = _fake_retrace()
+    monkeypatch.setattr(gatewaypair_module, "retrace", fake_retrace)
+    monkeypatch.setattr(dynamicproxy, "retrace", fake_retrace)
+    callbacks = []
+
+    def unwrap(value):
+        if isinstance(value, type):
+            return getattr(value, "__retrace_target_class__", value)
+        return utils.try_unwrap(value)
+
+    pair = _create_recording_pair(
+        is_passthrough=_is_passthrough,
+        on_callback=lambda *args, **kwargs: callbacks.append((args, kwargs)),
+        on_error=lambda *args: None,
+        on_result=lambda value: None,
+        unwrap=unwrap,
+    )
+
+    result = _external_call(pair, lambda: FreshExternalResult())
+
+    assert isinstance(result, utils.ExternalWrapped)
+    assert isinstance(utils.try_unwrap(result), FreshExternalResult)
+    assert len(callbacks) == 1
+    assert isinstance(callbacks[0][0][0], utils.wrapped_function)
+
+
 def test_dynamic_external_constructor_uses_target_class_in_fallback(monkeypatch):
     fake_retrace = _fake_retrace()
     monkeypatch.setattr(gatewaypair_module, "retrace", fake_retrace)
@@ -599,6 +658,30 @@ def test_replay_external_call_uses_next_result_and_does_not_run_live_target(monk
     assert result == "recorded-result"
     assert seen[0][:2] == (("wrapped", "arg"), ("wrapped", "kw"))
     assert seen[0][2] is not None
+
+
+def test_replay_external_call_walks_container_inputs_like_recording(monkeypatch):
+    fake_retrace = _fake_retrace()
+    monkeypatch.setattr(gatewaypair_module, "retrace", fake_retrace)
+    monkeypatch.setattr(dynamicproxy, "retrace", fake_retrace)
+    monkeypatch.setattr(dynamicproxy, "proxy", _tagged_proxy("wrapped"))
+    seen = []
+
+    def next_result(arg):
+        seen.append(arg)
+        return "recorded-result"
+
+    pair = GatewayPair.create_replay_pair(
+        is_passthrough=lambda value: False,
+        next_result=next_result,
+        bind=lambda value: None,
+    )
+
+    def live_target(*args, **kwargs):
+        raise AssertionError("replay must not call live external target")
+
+    assert _external_call(pair, live_target, ["arg", ("nested",)]) == "recorded-result"
+    assert seen == [[("wrapped", "arg"), (("wrapped", "nested"),)]]
 
 
 def test_replay_callback_runs_internal_callback_and_proxies_result(monkeypatch):

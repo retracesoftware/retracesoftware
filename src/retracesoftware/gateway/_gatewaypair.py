@@ -170,11 +170,12 @@ def _wire_for_replay(
         utils.try_unwrap,
         internal.proxy,
     )
+    external_args = functional.walker(external_arg)
 
     external.gateway[internal.space] = functional.transform_call(
         _space_apply_callable(external.space),
         functional.constantly(next_result),
-        rest_transform=external_arg,
+        rest_transform=external_args,
         result_transform=functional.identity,
     )
 
@@ -390,8 +391,6 @@ class GatewayPair:
         unwrap: UnwrapCallback = utils.try_unwrap,
     ):
         """Install record-time dispatch and proxy hooks on an unwired pair."""
-        unwrap_tree = functional.walker(unwrap)
-
         # int_proxy = functional.if_then_else(
         #     is_passthrough,
         #     functional.identity,
@@ -413,6 +412,16 @@ class GatewayPair:
             return proxy_internal_arg(value)
 
         int_proxy = functional.walker(int_proxy_arg)
+        callback_result = functional.walker(
+            functional.if_then_else(
+                utils.is_wrapped,
+                utils.try_unwrap,
+                functional.if_then_else(
+                    is_passthrough,
+                    functional.identity,
+                    proxy_internal_arg,
+                ),
+            ))
 
         ext_proxy = functional.walker(
             functional.when_not(
@@ -429,10 +438,17 @@ class GatewayPair:
                 ext_proxy,
                 functional.side_effect(on_result),
             ))
+        external_call = functional.partial(
+            _space_apply,
+            self._external_space,
+            functional.sequence(functional.apply, external_result),
+        )
 
-        callback_call = functional.mapargs(
+        callback_call = functional.transform_call(
             _space_apply_callable(self._sandbox_space),
-            unwrap_tree,
+            unwrap,
+            rest_transform=functional.identity,
+            result_transform=functional.identity,
         )
         callback_runner = utils.observer(
             callback_call,
@@ -441,17 +457,17 @@ class GatewayPair:
 
         self.set_handlers(
             external=functional.transform_call(
-                _space_apply_callable(self._external_space),
+                external_call,
                 unwrap,
                 rest_transform=int_proxy,
-                result_transform=external_result,
+                result_transform=functional.identity,
                 on_error=on_error,
             ),
             internal=functional.transform_call(
                 callback_runner,
-                unwrap,
+                functional.identity,
                 rest_transform=ext_proxy,
-                result_transform=int_proxy,
+                result_transform=callback_result,
             ),
         )
 

@@ -103,8 +103,10 @@ Some files have a much wider blast radius than their local tests suggest.
 If a diff touches any of these files:
 
 - `src/retracesoftware/proxy/system.py`
-- `src/retracesoftware/proxy/gateway.py`
-- `src/retracesoftware/proxy/patchtype.py`
+- `src/retracesoftware/gateway/_gatewaypair.py`
+- `src/retracesoftware/proxy/proxyfactory2.py`
+- `src/retracesoftware/proxy/proxytypefactory2.py`
+- `src/retracesoftware/proxy/typeextender.py`
 - `src/retracesoftware/proxy/io.py`
 - `src/retracesoftware/proxy/proxyfactory2.py`
 - `src/retracesoftware/proxy/tape.py`

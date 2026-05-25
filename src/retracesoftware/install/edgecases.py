@@ -1,10 +1,10 @@
-from contextlib import nullcontext
 import functools
 import gc
 import inspect
 import os
 import sys
 
+import retracesoftware.functional as functional
 from retracesoftware.install import globals
 import retracesoftware.utils as utils
 
@@ -16,7 +16,6 @@ def recvfrom_into(target):
         buffer[0:len(data)] = data
         return len(data), address
     return wrapper
-
 def recv_into(target):
     @functools.wraps(target)
     @utils.exclude_from_stacktrace
@@ -145,44 +144,119 @@ def subprocess_internal_poll(target):
     return wrapper
 
 
-def semaphore_acquire_trylock(target, *, system=None):
+def pthread_sigmask(target):
     raw_target = utils.try_unwrap(target)
-    signature = inspect.signature(raw_target)
+
+    @functools.wraps(raw_target)
+    @utils.exclude_from_stacktrace
+    def wrapper(how, mask):
+        mask = utils.try_unwrap(mask)
+        if isinstance(mask, set):
+            mask = tuple(mask)
+        result = target(how, mask)
+        result_unwrapped = utils.try_unwrap(result)
+        if isinstance(result_unwrapped, set):
+            return tuple(result_unwrapped)
+        return result
+
+    return wrapper
+
+
+def _sync_truthy_result(result_reader, sync):
+    def synced(*args, **kwargs):
+        result = result_reader(*args, **kwargs)
+        if result:
+            sync(*args, **kwargs)
+        return result
+
+    return synced
+
+
+def _record_result(target, writer):
+    return functional.sequence(
+        target,
+        functional.side_effect(writer.result),
+    )
+
+
+def _replay_result_with_truthy_sync(target, reader):
+    return _sync_truthy_result(reader.result, target)
+
+
+def _signature_or_none(target):
+    try:
+        return inspect.signature(target)
+    except (TypeError, ValueError):
+        return None
+
+
+def _acquire_args(signature, self, args, kwargs):
+    if signature is not None:
+        try:
+            bound = signature.bind(self, *args, **kwargs)
+        except TypeError:
+            return None
+        return (
+            bound.arguments.get("blocking", True),
+            bound.arguments.get("timeout", None),
+        )
+
+    if len(args) > 2:
+        return None
+    if any(name not in {"blocking", "timeout"} for name in kwargs):
+        return None
+    if args and "blocking" in kwargs:
+        return None
+    if len(args) > 1 and "timeout" in kwargs:
+        return None
+
+    blocking = args[0] if args else kwargs.get("blocking", True)
+    timeout = args[1] if len(args) > 1 else kwargs.get("timeout", None)
+    return blocking, timeout
+
+
+def _in_internal_space(system):
+    return getattr(system, "location", "internal") == "internal"
+
+
+def acquire_trylock(target, *, system=None):
+    raw_target = utils.try_unwrap(target)
+    signature = _signature_or_none(raw_target)
+    trylock = None
+    if system is not None:
+        record_replay_operation = getattr(system, "record_replay_operation", None)
+        if record_replay_operation is not None:
+            trylock = record_replay_operation(
+                functional.partial(_record_result, raw_target),
+                functional.partial(_replay_result_with_truthy_sync, raw_target),
+            )
 
     @functools.wraps(raw_target)
     @utils.exclude_from_stacktrace
     def wrapper(self, *args, **kwargs):
-        try:
-            bound = signature.bind(self, *args, **kwargs)
-        except TypeError:
+        acquire_args = _acquire_args(signature, self, args, kwargs)
+        if acquire_args is None:
             return raw_target(self, *args, **kwargs)
 
-        blocking = bound.arguments.get("blocking", True)
-        timeout = bound.arguments.get("timeout", None)
+        blocking, timeout = acquire_args
         if blocking is False and timeout is not None:
             return raw_target(self, *args, **kwargs)
 
         if blocking is False or timeout == 0:
-            replaying = getattr(system, "retrace_mode", None) == "replay"
-            defer_schedule = (
-                getattr(system, "defer_replay_thread_schedule", None)
-                if replaying
-                else None
+            operation = (
+                trylock
+                if trylock is not None and _in_internal_space(system)
+                else raw_target
             )
-            with defer_schedule() if defer_schedule is not None else nullcontext():
-                result = target(self, *args, **kwargs)
-                if result and replaying:
-                    consume = (
-                        system.disable_for(raw_target, unwrap_args=False)
-                        if system is not None
-                        else raw_target
-                    )
-                    consume(self)
-            return result
+            return operation(self, *args, **kwargs)
 
         return raw_target(self, *args, **kwargs)
 
     return wrapper
+
+
+def semaphore_acquire_trylock(target, *, system=None):
+    return acquire_trylock(target, system=system)
 
 
 def asyncio_write_to_self(target, *, system=None):
@@ -326,104 +400,3 @@ def fsspec_cached_call(target):
         return obj
 
     return wrapper
-
-
-typewrappers = {
-    '_socket': {
-        'socket': {
-            'recvfrom_into': recvfrom_into,
-            'recv_into': recv_into,
-            'recvmsg_into': recvmsg_into
-        }
-    },
-    'socket': {
-        'SocketIO': {
-            'readinto': readinto
-        }
-    },
-    '_ssl': {
-        '_SSLSocket': {
-            'read': read,
-            # 'write': write
-        }
-    },
-    'io': {
-        'FileIO': {
-            'readinto': readinto
-        },
-        'BufferedReader': {
-            'readinto': readinto,
-            'readinto1': readinto1
-        },
-        'BufferedRandom': {
-            'readinto': readinto,
-            'readinto1': readinto1
-        },
-        'BufferedRWPair': {
-            'readinto': readinto,
-            'readinto1': readinto1
-        }
-    },
-    'mmap': {
-        'mmap': {
-            'readinto': mmap_readinto
-        }
-    }
-}
-
-def patchtype(module, name, cls : type):
-    if module in typewrappers:
-        if name in typewrappers[module]:
-            for method,patcher in typewrappers[module][name].items():
-                setattr(cls, method, patcher(getattr(cls, method)))
-
-def typepatcher(cls : type):
-
-    # print(f'!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!! type: {cls} created')
-    # traceback.print_stack()
-    
-    return typewrappers.get(cls.__module__, {}).get(cls.__name__, {})
-
-    # if cls.__module__ in typewrappers:
-    #     # print(f'!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!! TYPEWRAPPER for {cls}')
-
-    #     mod = typewrappers[cls.__module__]
-
-    #     return mod.get(cls.__name__, {})
-    
-    #     if cls.__name__ in mod:
-    #         # if cls.__name__ == '_SSLSocket':
-    #         #     breakpoint()
-
-    #         log.info("Applying specialized typewrapper to %s, updated slots: %s", cls, list(mod[cls.__name__].keys()))
-
-    #         for name,value in mod[cls.__name__].items():
-    #             setattr(cls, name, value(getattr(cls, name)))
-
-    #         # slots = {'__module__': cls.__module__, '__slots__': ()}
-    #         # slots.update(mod[cls.__name__])
-    #         # return type(cls.__name__, (cls, ), slots)
-
-    # return cls
-
-def typewrapper(cls : type):
-
-    # print(f'!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!! type: {cls} created')
-    # traceback.print_stack()
-    
-    if cls.__module__ in typewrappers:
-        # print(f'!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!! TYPEWRAPPER for {cls}')
-
-        mod = typewrappers[cls.__module__]
-
-        if cls.__name__ in mod:
-            # if cls.__name__ == '_SSLSocket':
-            #     breakpoint()
-
-            log.info("Applying specialized typewrapper to %s, updated slots: %s", classname(cls), list(mod[cls.__name__].keys()))
-
-            slots = {'__module__': cls.__module__, '__slots__': ()}
-            slots.update(mod[cls.__name__])
-            return type(cls.__name__, (cls, ), slots)
-
-    return cls

@@ -85,6 +85,17 @@ def _phase_external():
 def _phase_disabled():
     return None
 
+def _unwired_record_replay_operation(_recorder, _replayer):
+    raise RuntimeError(
+        "record_replay_operation requires an active record or replay system"
+    )
+
+class _RecordReplayOperationWriter(NamedTuple):
+    result: Callable[[Any], Any]
+
+class _RecordReplayOperationReader(NamedTuple):
+    result: Callable[..., Any]
+
 class _ReplayBinder:
     def __init__(
         self,
@@ -246,6 +257,7 @@ class System(ProxyRuntime, Binder, ImmutableRegistry):
         self.is_bound = utils.WeakSet()
         self.lifecycle_hooks = LifecycleHooks()
         self.retrace_mode = None
+        self._record_replay_operation = _unwired_record_replay_operation
         self._is_immutable_predicate = utils.noop
         self._is_passthrough_predicate = utils.noop
         self_ref = weakref.ref(self)
@@ -328,6 +340,9 @@ class System(ProxyRuntime, Binder, ImmutableRegistry):
 
     def apply_with(self, phase, function):
         return functional.partial(_space_apply, self._space_for(phase), function)
+
+    def record_replay_operation(self, recorder, replayer):
+        return self._record_replay_operation(recorder, replayer)
 
     def run_internal(self, function, *args, **kwargs):
         return _space_apply(self.internal_space, function, *args, **kwargs)
@@ -672,6 +687,15 @@ class System(ProxyRuntime, Binder, ImmutableRegistry):
                 binder,
             )))
 
+        operation_writer = _RecordReplayOperationWriter(
+            result=functional.sequence(encode_for_write, writer.result),
+        )
+
+        def record_replay_operation(recorder, _replayer):
+            return system.apply_with("external", recorder(operation_writer))
+
+        system._record_replay_operation = record_replay_operation
+
         def on_callback(fn, *args, **kwargs):
             writer.callback(
                 encode_for_write(fn),
@@ -784,13 +808,13 @@ class System(ProxyRuntime, Binder, ImmutableRegistry):
                 message = reader.peek()
             except (LookupError, RuntimeError, StopIteration):
                 return None
-            if isinstance(message, (CallbackResultMessage, ResultMessage)):
+            if isinstance(message, CallbackResultMessage):
                 message = reader()
                 result = message.result
                 if isinstance(result, stream.Binding):
                     bindings[_binding_handle(result)] = callback_result
                 return message
-            if isinstance(message, (CallbackErrorMessage, ErrorMessage)):
+            if isinstance(message, CallbackErrorMessage):
                 return reader()
             return None
 
@@ -935,7 +959,6 @@ class System(ProxyRuntime, Binder, ImmutableRegistry):
 
         @utils.striptraceback
         def next_result(*args, **_kwargs):
-            
             message = read_message()
     
             if isinstance(message, ResultMessage):
@@ -946,6 +969,8 @@ class System(ProxyRuntime, Binder, ImmutableRegistry):
                 raise replay_value(message.error)
                 
             raise RuntimeError(f"expected replay result or error, got {message!r}")
+
+        operation_reader = _RecordReplayOperationReader(result=next_result)
 
         def on_local_bind(value, binding):
             bindings[_binding_handle(binding)] = value
@@ -966,6 +991,10 @@ class System(ProxyRuntime, Binder, ImmutableRegistry):
             proxy_type_customizer=proxy_type_customizer,
         )
         system.retrace_mode = "replay"
+        def record_replay_operation(_recorder, replayer):
+            return system.apply_with("external", replayer(operation_reader))
+
+        system._record_replay_operation = record_replay_operation
         system.lifecycle_hooks = LifecycleHooks(
             on_start=functional.partial(consume_lifecycle_marker, OnStartMessage),
             on_end=functional.partial(consume_lifecycle_marker, RunCompletedMessage),

@@ -20,12 +20,8 @@ disable = ["print"]
 immutable = ["BaseException", "memoryview", "int", "float", "complex", "str", "bytes", "bool", "bytearray",
             "type", "slice"]
 
-[threading.type_attributes.Thread]
-disable = ["start"]
-
 [threading.type_attributes.Semaphore]
-proxy = ["acquire"]
-wrap = { acquire = "retracesoftware.install.edgecases.semaphore_acquire_trylock" }
+wrap = { acquire = "retracesoftware.install.edgecases.acquire_trylock" }
 
 [_queue.type_attributes.SimpleQueue]
 disable = ["put", "put_nowait"]
@@ -265,6 +261,7 @@ proxy = ["setlocale", "localeconv", "nl_langinfo"]
 proxy = ["tcgetattr", "tcsetattr", "tcsendbreak", "tcdrain", "tcflush", "tcflow"]
 
 [_signal]
+wrap = { pthread_sigmask = "retracesoftware.install.edgecases.pthread_sigmask" }
 proxy = [
     "alarm",
     "getitimer",

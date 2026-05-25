@@ -28,8 +28,9 @@ re-derive the contract from this file.
    thread scheduler events. Replay alignment is a hard invariant.
    See `DESIGN.md` -> "Record Versus Replay" and "Important Invariants".
 4. **Prefer the narrowest fix in the responsible handler.** If a single diff
-   touches more than one of `system.py`, `gateway.py`, `patchtype.py`,
-   `io.py`, or `proxytype.py`, stop and re-read `DESIGN.md` before continuing.
+   touches more than one of `system.py`, `GatewayPair`, `proxyfactory2.py`,
+   `proxytypefactory2.py`, `typeextender.py`, or `io.py`, stop and re-read
+   `DESIGN.md` before continuing.
    See `DESIGN.md` -> "Main Pieces".
 5. **Do not backdoor proxy semantics through concrete implementation checks.**
    Boundary classification belongs to the proxy contract. Outside the owning
@@ -110,10 +111,11 @@ Before editing proxy-layer code, read these in order:
    - `src/retracesoftware/proxy/taggedtraceio.py`
    - `src/retracesoftware/proxy/io.py`
    - `src/retracesoftware/proxy/system.py`
-   - `src/retracesoftware/proxy/gateway.py`
-   - `src/retracesoftware/proxy/patchtype.py`
-   - `src/retracesoftware/proxy/proxytype.py`
-   - `src/retracesoftware/proxy/typeutils.py` (reached via `patchtype.py`)
+   - `src/retracesoftware/gateway/_gatewaypair.py`
+   - `src/retracesoftware/proxy/proxyfactory2.py`
+   - `src/retracesoftware/proxy/proxytypefactory2.py`
+   - `src/retracesoftware/proxy/typeextender.py`
+   - `src/retracesoftware/proxy/typeutils.py`
    - `src/retracesoftware/install/` (`patcher.py`, `edgecases.py`)
 
 ## Live Files
@@ -130,12 +132,13 @@ notes.
 | File | One-line role | Authoritative section |
 |---|---|---|
 | `system.py` | Owns `System`, the phase gate thread-local, gateway factories, `run()`, `disable`, `disable_for`, `patch`, `patch_function`. | `DESIGN.md` -> "Main Pieces", "Threads" |
-| `gateway.py` | Pure factories: `ext_gateway`, `int_gateway`, `ext_replay_gateway`, `int_replay_gateway`, plus `ext_runner`, `int_runner`, `unproxy_ext`, `unproxy_int`. Zero proxy-internal deps. | `DESIGN.md` -> "How The Two Gateways Interact" |
-| `patchtype.py` | In-place type-patching: `patch_type`, `unpatch_type`, subclass walk, alloc-hook installation, `__init_subclass__` rewriting. | `DESIGN.md` -> "Object Categories At The Boundary" -> "Patched objects and patched types" |
+| `src/retracesoftware/gateway/_gatewaypair.py` | Current paired record/replay gateway wiring for internal/external crossings. | `DESIGN.md` -> "How The Two Gateways Interact" |
+| `proxyfactory2.py` | System-facing proxy factory: internal/external proxy construction, `from_spec` callback binding, replay materialization. | `DESIGN.md` -> "Main Pieces" |
+| `proxytypefactory2.py` | Dynamic internal/external proxy type generation and extended-type companions. | `DESIGN.md` -> "Internal Retrace: Using The Boundary On Ourselves" |
+| `typeextender.py` | Retrace-owned extended types, generated `__new__`/`__init__`, subclass callback override handling. | `DESIGN.md` -> "Object Categories At The Boundary" |
 | `io.py` / `messagestream.py` / `traceio.py` / `taggedtraceio.py` | `recorder()` / `replayer()` builders plus semantic trace messages, tagged trace encoding/decoding, replay parsing, binding resolution, scheduler ordering, and disabled-context real-object support. | `DESIGN.md` -> "Record Versus Replay" and "Allocation And Materialization" |
 | `tape.py` (proxy) | `Tape` / `TapeReader` / `TapeWriter` `Protocol` declarations only (~40 lines). | n/a — interface declarations |
-| `proxytype.py` | `DynamicProxy`, `superdict`, `dynamic_proxytype`, `dynamic_int_proxytype`. Reached via `system.py` and `patchtype.py`. | `DESIGN.md` -> "Internal Retrace: Using The Boundary On Ourselves" -> "Proxy generation through retrace" |
-| `typeutils.py` | `WithoutFlags`, `modify`. Used by `patchtype.py` and `install/patcher.py`. | n/a — utility |
+| `typeutils.py` | `WithoutFlags`, `modify`. Used by install/type utility paths. | n/a — utility |
 | `stubfactory.py` | Replay-time stub generation. Reached only via `proxytype.py`. | `DESIGN.md` -> "Allocation And Materialization" |
 
 Top-level files reached from `__main__.py`:
@@ -260,12 +263,13 @@ yet understand the bug. Stop and re-trace.
    prove the divergent contract directly, not merely assert the high-level
    library scenario still fails.
 4. **Trace the CLI runtime path before editing.** `__main__.py` ->
-   `proxy/io.py` -> `proxy/system.py` -> `proxy/gateway.py` (with
-   `proxy/patchtype.py`, `proxy/proxytype.py`, and `install/`). For
-   "what does the boundary actually do to arguments and hooks?",
-   `gateway.py` is the source of truth. For "how do types get patched?",
-   `patchtype.py` is. For "how is the kernel wired and how does `run()`
-   install gateways?", `system.py` is.
+   tape/trace I/O -> `proxy/system.py` -> `GatewayPair` ->
+   `proxyfactory2.py` / `proxytypefactory2.py` / `typeextender.py` ->
+   `install/`. For "what does the boundary actually do to arguments and
+   hooks?", `GatewayPair` is the source of truth. For "how do types get
+   extended or wrapped?", `proxytypefactory2.py` and `typeextender.py` are.
+   For "how is the kernel wired and how does `run()` enter the internal
+   space?", `system.py` is.
 5. **Pick the narrowest fix layer.** Module config (`modules/*.toml`) ->
    install patcher -> gateway pipeline / `io.py` hook -> kernel
    (`system.py`). Move outward only when the inner layer cannot express
@@ -337,7 +341,7 @@ the right place to fix a record/replay or boundary bug:
 
 - `proxytype.py` — Proxy *type construction*. Editing it has historically
   broken serialization while a one-line fix in the responsible gateway
-  pipeline (`gateway.py`) or `io.py` hook would have been correct. If a
+  pipeline (`GatewayPair`) or `io.py` hook would have been correct. If a
   fix lands here, justify why type construction itself is wrong rather
   than the per-call wrapping or message flow.
 - `stubfactory.py` — Replay-time stub generation. Reached via
@@ -380,8 +384,8 @@ patch done.
 | If you change... | Re-run |
 |---|---|
 | `system.py` (`run`, `disable`, `disable_for`, `bind`, `patch_function`, `wrap_async`, `disabled_callable`/`wrapped_callable`) | `tests/proxy/test_system_io_tape.py`, `tests/install/stdlib/test_threading_lock_replay_regression.py`, `tests/install/external/test_anyio_from_thread_replay_dispatcher_regression.py`, `tests/test_record_replay.py::test_record_then_replay_asyncio_run_coroutine_threadsafe` |
-| `gateway.py` (any factory, `ext_runner`/`int_runner`, `unproxy_*`, passthrough predicates) | `tests/proxy/test_system_io_tape.py`, `tests/proxy/test_proxy_runtime.py`, `tests/test_main_memory_tape.py` |
-| `patchtype.py` (subclass walk, `__init_subclass__`, alloc hook, idempotency) | `tests/install/test_hash_patching.py`, `tests/proxy/test_proxy_runtime.py::test_patch_type_is_idempotent_for_subtypes_patched_through_base` |
+| `GatewayPair` (record/replay gateway wiring, passthrough predicates, argument/result transforms) | `tests/gateway/test_gatewaypair.py`, `tests/proxy/test_system.py`, `tests/test_main_memory_tape.py` |
+| `proxytypefactory2.py` / `typeextender.py` (dynamic proxy types, extended types, subclass callbacks, constructor/bind behavior) | `tests/proxy/test_proxytypefactory2.py`, `tests/proxy/test_proxyfactory2.py`, `tests/proxy/test_system.py` |
 | `io.py` / `messagestream.py` replay parsing, scheduler/binding streams, `equal()` markers, `bind_replay_object`, `consume_callback_completion`, disabled-context live-call bypass | `tests/proxy/test_system_io_tape.py`, `tests/proxy/test_proxy_runtime.py`, `tests/install/stdlib/test_threading_lock_replay_regression.py` |
 | `proxytype.py` / `stubfactory.py` (type construction, stub generation) | `tests/proxy/test_proxy_runtime.py`, `tests/proxy/test_system_io_tape.py` |
 | Monitoring or compatibility replay-reader behavior | `tests/proxy/test_monitoring.py`, plus inspect `src/retracesoftware/protocol/replay.py` |
@@ -403,10 +407,11 @@ Live CLI runtime path (verified by import graph):
 - `src/retracesoftware/proxy/taggedtraceio.py`
 - `src/retracesoftware/proxy/io.py`
 - `src/retracesoftware/proxy/system.py`
-- `src/retracesoftware/proxy/gateway.py`
-- `src/retracesoftware/proxy/patchtype.py`
-- `src/retracesoftware/proxy/proxytype.py`
-- `src/retracesoftware/proxy/typeutils.py` (reached via `patchtype.py`)
+- `src/retracesoftware/gateway/_gatewaypair.py`
+- `src/retracesoftware/proxy/proxyfactory2.py`
+- `src/retracesoftware/proxy/proxytypefactory2.py`
+- `src/retracesoftware/proxy/typeextender.py`
+- `src/retracesoftware/proxy/typeutils.py`
 - `src/retracesoftware/proxy/stubfactory.py` (reached via `proxytype.py`)
 - `src/retracesoftware/install/` (`patcher.py`, `edgecases.py`)
 

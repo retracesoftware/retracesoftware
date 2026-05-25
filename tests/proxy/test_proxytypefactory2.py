@@ -92,6 +92,24 @@ def test_proxy_type_factory_dynamic_external_type_accepts_from_spec():
     )
 
 
+def test_proxy_type_factory_dynamic_external_type_caches_from_spec_result():
+    factory, _calls = _factory()
+    calls = []
+
+    class External:
+        pass
+
+    def from_spec(**kwargs):
+        calls.append(kwargs)
+        return factory.dynamic_external_type_from_spec(**kwargs)
+
+    proxy_type = factory.dynamic_external_type(External, from_spec=from_spec)
+    again = factory.dynamic_external_type(External, from_spec=from_spec)
+
+    assert again is proxy_type
+    assert len(calls) == 1
+
+
 def test_proxy_type_factory_binds_dynamic_external_method_wrappers():
     bound = []
     gateway_pair = SimpleNamespace(

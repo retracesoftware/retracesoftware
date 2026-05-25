@@ -2,6 +2,7 @@ from types import SimpleNamespace
 
 import retracesoftware.utils as utils
 
+from retracesoftware.gateway._dynamicproxy import ProxyRef
 from retracesoftware.proxy.proxyfactory2 import ProxyFactory
 
 
@@ -81,6 +82,19 @@ def test_materialize_dynamic_external_proxy_hydrates_proxy_type():
     assert type(materialized) is proxy_type
     assert utils.try_unwrap(materialized) is None
     assert factory.materialize_dynamic_external_proxy(External) is External
+
+
+def test_materialize_dynamic_external_proxy_hydrates_proxy_ref():
+    binder = _Binder()
+    factory = ProxyFactory(binder=binder, gateway_pair=_gateway_pair())
+
+    class ExternalProxy(utils.ExternalWrapped):
+        pass
+
+    materialized = factory.materialize_dynamic_external_proxy(ProxyRef(ExternalProxy))
+
+    assert type(materialized) is ExternalProxy
+    assert utils.try_unwrap(materialized) is None
 
 
 def test_materialize_dynamic_external_proxy_hydrates_extended_type_token():

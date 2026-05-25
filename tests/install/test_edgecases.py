@@ -1,8 +1,193 @@
+import _thread
 import inspect
 from contextlib import contextmanager
 from types import SimpleNamespace
 
 from retracesoftware.install import edgecases
+
+
+class _TrylockWriter:
+    def __init__(self):
+        self.results = []
+
+    def result(self, value):
+        self.results.append(value)
+
+
+class _TrylockReader:
+    def __init__(self, result):
+        self._result = result
+        self.calls = []
+
+    def result(self, *args, **kwargs):
+        self.calls.append((args, kwargs))
+        return self._result
+
+
+class _TrylockSystem:
+    def __init__(self, mode, *, result=None):
+        self._mode = mode
+        self.writer = _TrylockWriter()
+        self.reader = _TrylockReader(result)
+        self.factories = []
+        self.calls = []
+        self.location = "internal"
+
+    @property
+    def retrace_mode(self):
+        raise AssertionError("try-lock wrapper should not inspect mode")
+
+    def record_replay_operation(self, recorder, replayer):
+        if self._mode == "record":
+            self.factories.append("recorder")
+            operation = recorder(self.writer)
+        else:
+            self.factories.append("replayer")
+            operation = replayer(self.reader)
+
+        def wrapped(*args, **kwargs):
+            self.calls.append((args, kwargs))
+            return operation(*args, **kwargs)
+
+        return wrapped
+
+
+class _Semaphore:
+    def __init__(self, count):
+        self.count = count
+
+
+def _try_acquire(target_calls):
+    def target(self, blocking=True, timeout=None):
+        target_calls.append((blocking, timeout))
+        if self.count > 0:
+            self.count -= 1
+            return True
+        return False
+
+    return target
+
+
+def test_pthread_sigmask_converts_set_mask_to_tuple_before_target_call():
+    calls = []
+
+    def target(how, mask):
+        calls.append((how, mask))
+        return {1, 2}
+
+    wrapped = edgecases.pthread_sigmask(target)
+
+    assert sorted(wrapped("setmask", {2, 15})) == [1, 2]
+    assert calls[0][0] == "setmask"
+    assert sorted(calls[0][1]) == [2, 15]
+
+
+def test_semaphore_trylock_record_writes_result_without_mode_branch():
+    target_calls = []
+    system = _TrylockSystem("record")
+    semaphore = _Semaphore(1)
+    wrapped = edgecases.semaphore_acquire_trylock(
+        _try_acquire(target_calls),
+        system=system,
+    )
+
+    assert wrapped(semaphore, timeout=0) is True
+
+    assert semaphore.count == 0
+    assert target_calls == [(True, 0)]
+    assert system.factories == ["recorder"]
+    assert system.writer.results == [True]
+
+
+def test_semaphore_trylock_replay_syncs_state_when_recorded_true():
+    target_calls = []
+    system = _TrylockSystem("replay", result=True)
+    semaphore = _Semaphore(1)
+    wrapped = edgecases.semaphore_acquire_trylock(
+        _try_acquire(target_calls),
+        system=system,
+    )
+
+    assert wrapped(semaphore, timeout=0) is True
+
+    assert semaphore.count == 0
+    assert target_calls == [(True, 0)]
+    assert system.factories == ["replayer"]
+    assert system.reader.calls == [((semaphore,), {"timeout": 0})]
+
+
+def test_semaphore_trylock_replay_leaves_state_when_recorded_false():
+    target_calls = []
+    system = _TrylockSystem("replay", result=False)
+    semaphore = _Semaphore(1)
+    wrapped = edgecases.semaphore_acquire_trylock(
+        _try_acquire(target_calls),
+        system=system,
+    )
+
+    assert wrapped(semaphore, timeout=0) is False
+
+    assert semaphore.count == 1
+    assert target_calls == []
+    assert system.factories == ["replayer"]
+    assert system.reader.calls == [((semaphore,), {"timeout": 0})]
+
+
+def test_native_lock_trylock_record_writes_result_without_signature():
+    system = _TrylockSystem("record")
+    lock = _thread.allocate_lock()
+    wrapped = edgecases.acquire_trylock(_thread.LockType.acquire, system=system)
+
+    assert wrapped(lock, False) is True
+
+    assert lock.locked() is True
+    assert system.factories == ["recorder"]
+    assert system.writer.results == [True]
+
+    lock.release()
+
+
+def test_native_lock_trylock_replay_syncs_state_when_recorded_true():
+    system = _TrylockSystem("replay", result=True)
+    lock = _thread.allocate_lock()
+    wrapped = edgecases.acquire_trylock(_thread.LockType.acquire, system=system)
+
+    assert wrapped(lock, False) is True
+
+    assert lock.locked() is True
+    assert system.factories == ["replayer"]
+    assert system.reader.calls == [((lock, False), {})]
+
+    lock.release()
+
+
+def test_native_lock_trylock_replay_leaves_state_when_recorded_false():
+    system = _TrylockSystem("replay", result=False)
+    lock = _thread.allocate_lock()
+    wrapped = edgecases.acquire_trylock(_thread.LockType.acquire, system=system)
+
+    assert wrapped(lock, False) is False
+
+    assert lock.locked() is False
+    assert system.factories == ["replayer"]
+    assert system.reader.calls == [((lock, False), {})]
+
+
+def test_trylock_external_space_uses_raw_target_without_recording_result():
+    target_calls = []
+    system = _TrylockSystem("record")
+    system.location = "external"
+    semaphore = _Semaphore(1)
+    wrapped = edgecases.acquire_trylock(
+        _try_acquire(target_calls),
+        system=system,
+    )
+
+    assert wrapped(semaphore, timeout=0) is True
+
+    assert semaphore.count == 0
+    assert target_calls == [(True, 0)]
+    assert system.writer.results == []
 
 
 def test_asyncio_write_to_self_calls_target_from_same_site_on_record_and_replay():

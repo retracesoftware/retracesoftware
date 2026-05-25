@@ -2,6 +2,7 @@ from typing import Any, Callable
 
 import retracesoftware.functional as functional
 import retracesoftware.utils as utils
+from retracesoftware.gateway._dynamicproxy import ProxyRef
 from retracesoftware.proxy.proxytypefactory2 import ProxyTypeFactory
 
 def proxy(type_to_proxytype):
@@ -87,6 +88,7 @@ class ProxyFactory:
             return self.typefactory.dynamic_external_type_from_spec(*args, **kwargs)
 
         from_spec_callback = gateway_pair.wrap_as_callback(from_spec)
+        bind_retrace_type_value(from_spec_callback)
 
         def dynamic_external_proxy(cls):
             proxytype = self.typefactory.dynamic_external_type(
@@ -107,6 +109,8 @@ class ProxyFactory:
         return cls in self._dynamic_external_proxy_types
 
     def materialize_dynamic_external_proxy(self, value):
+        if isinstance(value, ProxyRef):
+            return value()
         if isinstance(value, type):
             if value in self._dynamic_external_proxy_types:
                 return utils.create_wrapped(value, None)

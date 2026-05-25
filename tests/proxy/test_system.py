@@ -401,6 +401,126 @@ def test_system_phase_dispatch_uses_retrace_space_dispatch(monkeypatch):
     assert system.apply_with(None, dispatch)() == "disabled"
 
 
+def test_system_record_replay_operation_requires_active_mode(monkeypatch):
+    _install_fake_retrace(monkeypatch)
+    system = System(binder=_TestBinder())
+
+    with pytest.raises(RuntimeError, match="record_replay_operation"):
+        system.record_replay_operation(
+            lambda writer: lambda: writer.result("record"),
+            lambda reader: lambda: reader.result(),
+        )
+
+
+def test_record_system_record_replay_operation_selects_recorder(monkeypatch):
+    _install_fake_retrace(monkeypatch)
+    trace = []
+    system = System.record_system(writer=DefaultTraceWriter(trace.append))
+    calls = []
+
+    def recorder(writer):
+        calls.append("recorder")
+
+        def operation(value):
+            calls.append(("operation", system.location, value))
+            writer.result(value)
+            return "record-return"
+
+        return operation
+
+    def replayer(_reader):
+        raise AssertionError("record mode should not build the replay callable")
+
+    operation = system.record_replay_operation(recorder, replayer)
+
+    assert operation("value") == "record-return"
+    assert calls == ["recorder", ("operation", "external", "value")]
+
+    results = [
+        message for message in trace
+        if isinstance(message, ResultMessage)
+    ]
+    assert len(results) == 1
+    assert results[0].result == "value"
+
+
+def test_record_system_record_replay_operation_writer_encodes_result(monkeypatch):
+    _install_fake_retrace(monkeypatch, patch_proxy=False)
+    trace = []
+    system = System.record_system(writer=DefaultTraceWriter(trace.append))
+
+    class External:
+        pass
+
+    proxy = system.proxy_factory.proxy_external(External())
+    binding = type(proxy).__retrace_type_binding__
+    trace.clear()
+
+    def recorder(writer):
+        return lambda: writer.result([proxy, {"value": proxy}])
+
+    def replayer(_reader):
+        raise AssertionError("record mode should not build the replay callable")
+
+    system.record_replay_operation(recorder, replayer)()
+
+    results = [
+        message for message in trace
+        if isinstance(message, ResultMessage)
+    ]
+    assert len(results) == 1
+    assert results[0].result == [binding, {"value": binding}]
+
+
+def test_replay_system_record_replay_operation_selects_replayer(monkeypatch):
+    _install_fake_retrace(monkeypatch)
+    system = System.replay_system(reader=_FakeReader([
+        ResultMessage("recorded"),
+    ]))
+    calls = []
+
+    def recorder(_writer):
+        raise AssertionError("replay mode should not build the record callable")
+
+    def replayer(reader):
+        calls.append("replayer")
+
+        def operation(value):
+            calls.append(("operation", system.location, value))
+            return reader.result()
+
+        return operation
+
+    operation = system.record_replay_operation(recorder, replayer)
+
+    assert operation("value") == "recorded"
+    assert calls == ["replayer", ("operation", "external", "value")]
+
+
+def test_replay_system_record_replay_operation_reader_materializes_result(monkeypatch):
+    _install_fake_retrace(monkeypatch)
+    reader = _FakeReader([])
+    system = System.replay_system(reader=reader)
+
+    class External:
+        pass
+
+    proxied = system.proxy_factory.proxy_external(External())
+    proxy_type = type(proxied)
+    reader.messages.append(ResultMessage(system.binder.lookup(proxy_type)))
+
+    def recorder(_writer):
+        raise AssertionError("replay mode should not build the record callable")
+
+    def replayer(reader):
+        return lambda: reader.result()
+
+    result = system.record_replay_operation(recorder, replayer)()
+
+    assert type(result) is proxy_type
+    assert utils.try_unwrap(result) is None
+
+
 def test_record_system_proxy_type_customizer_sees_generated_external_type(monkeypatch):
     _install_fake_retrace(monkeypatch, patch_proxy=False)
     writer = _FakeWriter()
@@ -637,9 +757,10 @@ def test_extend_type_wraps_subclass_overrides_as_callbacks(monkeypatch):
 
     assert system_module._space_apply(system.external_space, obj.read) == "override"
     binding = system.binder.lookup(obj)
+    callback_binding = system.binder.lookup(PublicExternal.__dict__["read"])
     assert (
         "callback",
-        utils.try_unwrap(PublicExternal.__dict__["read"]),
+        callback_binding,
         (binding,),
         {},
     ) in writer.calls
@@ -735,9 +856,10 @@ def test_replay_shape_type_subclass_overrides_follow_extend_type_callbacks(monke
 
     assert system_module._space_apply(system.external_space, obj.read) == "override"
     subtype_binding = system.binder.lookup(PublicExternal)
+    callback_binding = system.binder.lookup(PublicExternal.__dict__["read"])
     assert (
         "callback",
-        utils.try_unwrap(PublicExternal.__dict__["read"]),
+        callback_binding,
         (subtype_binding,),
         {},
     ) in writer.calls
@@ -945,6 +1067,33 @@ def test_record_system_external_call_leaves_none_unproxied(monkeypatch):
 
     assert _external_call(system, lambda: None) is None
     assert writer.calls[-1] == ("result", None)
+
+
+def test_record_system_external_result_proxy_type_callback_records_bound_wrapper(monkeypatch):
+    _install_fake_retrace(monkeypatch, patch_proxy=False)
+    writer = _FakeWriter()
+    system = System.record_system(writer=writer, debug=False)
+    writer.calls.clear()
+
+    result = _external_call(system, lambda: set())
+    callbacks = [call for call in writer.calls if call[0] == "callback"]
+
+    assert isinstance(result, utils.ExternalWrapped)
+    assert callbacks
+    assert isinstance(callbacks[0][1], stream.Binding)
+    assert callbacks[0][2] == ()
+    assert callbacks[0][3]["name"] == "set"
+
+
+def test_record_system_external_set_proxy_iterates_underlying_set(monkeypatch):
+    _install_fake_retrace(monkeypatch, patch_proxy=False)
+    writer = _FakeWriter()
+    system = System.record_system(writer=writer, debug=False)
+    writer.calls.clear()
+
+    result = _external_call(system, lambda: {1, 2})
+
+    assert sorted(result) == [1, 2]
 
 
 def test_record_system_callback_writes_callback(monkeypatch):
@@ -1512,10 +1661,10 @@ def test_replay_system_schedules_gc_at_coordinate(monkeypatch):
 def test_replay_system_resolves_bound_result(monkeypatch):
     _install_fake_retrace(monkeypatch)
     obj = object()
-    system = System.replay_system(reader=_FakeReader([
-        ResultMessage(stream.Binding(0)),
-    ]))
+    reader = _FakeReader([])
+    system = System.replay_system(reader=reader)
     system.bind(obj)
+    reader.messages.append(ResultMessage(system.binder.lookup(obj)))
 
     def live_target():
         raise AssertionError("live target should not run")
@@ -1655,7 +1804,6 @@ def test_replay_system_runs_callback_before_result(monkeypatch):
 
     system = System.replay_system(reader=_FakeReader([
         CallbackMessage(callback, ("x",), {}),
-        ResultMessage(None),
         ResultMessage("ok"),
     ]))
 
@@ -1689,7 +1837,7 @@ def test_replay_system_binds_callback_completion_result(monkeypatch):
 
     system = System.replay_system(reader=_FakeReader([
         CallbackMessage(callback, (), {}),
-        ResultMessage(stream.Binding(0)),
+        CallbackResultMessage(stream.Binding(0)),
         ResultMessage(stream.Binding(0)),
     ]))
 
@@ -1758,12 +1906,14 @@ def test_replay_system_resolves_callback_bindings(monkeypatch):
     def callback(value):
         calls.append(value)
 
-    system = System.replay_system(reader=_FakeReader([
-        CallbackMessage(callback, (stream.Binding(0),), {}),
-        ResultMessage(None),
-        ResultMessage("ok"),
-    ]))
+    reader = _FakeReader([])
+    system = System.replay_system(reader=reader)
     system.bind(obj)
+    binding = system.binder.lookup(obj)
+    reader.messages.extend([
+        CallbackMessage(callback, (binding,), {}),
+        ResultMessage("ok"),
+    ])
 
     assert _external_call(system, lambda: "live") == "ok"
     assert calls == [obj]

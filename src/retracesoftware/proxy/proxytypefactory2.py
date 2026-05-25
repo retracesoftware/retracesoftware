@@ -79,8 +79,7 @@ class ProxyTypeFactory:
             source_cls=source_cls or cls,
             from_spec=from_spec,
         )
-        if from_spec is None:
-            self._dynamic_external_types[cls] = retrace_type
+        self._dynamic_external_types[cls] = retrace_type
         return retrace_type
 
     def _create_dynamic_external_type(
