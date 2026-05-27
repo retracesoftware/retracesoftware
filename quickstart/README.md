@@ -317,6 +317,11 @@ checkout breakdown: `subtotal_cents`, `item_discount_cents`,
 `total_cents`. Then step forward, step backward, and continue through the
 recorded failed execution.
 
+`build_receipt` is called by several tests, so VS Code may stop at this
+breakpoint more than once. Continue until the call stack includes
+`test_total_taxes_discounted_amount_once`, then inspect the calculation that
+leads to the failing assertion.
+
 You are done when VS Code stops at your breakpoint and the replay reaches the
 same failing pytest assertion without rerunning the test live.
 
