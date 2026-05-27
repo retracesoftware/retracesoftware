@@ -121,9 +121,9 @@ That matters because AI agents often infer what happened from partial context. A
 
 CLI access and AI-agent workflows are arriving alongside the VS Code path.
 
-## Quick Start: Replay a Python App
+## Full Quickstart
 
-The pytest workflow is the fastest way to try Retrace. The full quickstart includes a small failing pytest demo, a replay bundle helper, and the older Flask app demo showing the same recording and replay model on a running Python application.
+The full quickstart includes a small failing pytest demo, a replay bundle helper, terminal replay, and VS Code replay debugging.
 
 Clone the repo and enter the quickstart directory:
 
@@ -149,10 +149,6 @@ Record the pytest demo:
 
     PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 python -m retracesoftware --recording recordings/pytest.retrace -- -m pytest pytest_demo -q --tb=short
 
-Or record the Flask demo:
-
-    RETRACE_RECORDING=recordings/flask.retrace python examples/flask_demo.py
-
 Open the project in VS Code:
 
     code .
@@ -162,12 +158,12 @@ In VS Code:
 1. Install the `Retrace Debug Extension` from the Marketplace.
 2. Open the Retrace sidebar.
 3. Choose `Open Recording...`.
-4. Select `recordings/flask.retrace`.
-5. Open `examples/flask_demo.py`.
-6. Set a breakpoint inside a route handler or inside `main()`.
+4. Select `recordings/pytest.retrace`.
+5. Open `pytest_demo/checkout.py`.
+6. Set a breakpoint inside `build_receipt`.
 7. Start replay from the Retrace view.
 
-The replay should stop at your breakpoint inside the recorded execution. You can inspect variables, continue, step forward, and step backward without running the Flask demo live again.
+The replay should stop at your breakpoint inside the recorded execution. You can inspect variables, continue, step forward, and step backward without running pytest live again.
 
 For the full walkthrough, see [quickstart/README.md](quickstart/README.md).
 

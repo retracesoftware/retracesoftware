@@ -46,9 +46,6 @@ auto-enable hook. This avoids child Python subprocesses inheriting
 
 ```
 quickstart/
-  examples/
-    flask_demo.py
-    simple_demo.py
   pytest_demo/
     checkout.py
     tests/test_checkout.py
@@ -64,11 +61,14 @@ The main demo is:
 pytest_demo/tests/test_checkout.py
 ```
 
-It has two passing tests and one intentional failing test. The failure comes
-from `pytest_demo/checkout.py`, where the checkout total accidentally adds tax
-twice. The function also uses values that normally change between runs, such as
-time, UUIDs, and random numbers, so replay demonstrates Retrace returning the
-recorded runtime values instead of touching the live world again.
+It has a small checkout pipeline with inventory validation, promo rules loaded
+from JSON, loyalty discounts, shipping, tax, and audit fields. Twelve tests
+pass and one test intentionally fails. The failure comes from
+`pytest_demo/checkout.py`, where tax is calculated before the loyalty discount
+is removed from the taxable base. The code also uses values that normally
+change between runs, such as time, UUIDs, and random numbers, so replay
+demonstrates Retrace returning the recorded runtime values instead of touching
+the live world again.
 
 ## 1. Clone The Repo
 
@@ -151,8 +151,7 @@ Install the quickstart dependencies:
 python -m pip install -r requirements.txt
 ```
 
-This installs `pytest` for the main quickstart and `flask` for the optional app
-demo at the bottom of this file.
+This installs `pytest` for the quickstart demo.
 
 ## 5. Run The Failing pytest Demo Normally
 
@@ -165,7 +164,7 @@ PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 python -m pytest pytest_demo -q --tb=short
 You should see one intentional failure:
 
 ```
-FAILED pytest_demo/tests/test_checkout.py::test_total_applies_tax_and_discount_once
+FAILED pytest_demo/tests/test_checkout.py::test_total_taxes_discounted_amount_once
 ```
 
 This is a normal pytest run. Nothing has been recorded yet.
@@ -278,9 +277,10 @@ build_receipt
 
 Then use the Retrace sidebar to start replaying the recorded process.
 
-During replay, VS Code should stop on your breakpoint. You can inspect local
-variables such as `subtotal_cents`, `tax_cents`, `discount_cents`, and
-`total_cents`, then step forward, step backward, and continue through the
+During replay, VS Code should stop on your breakpoint. You can inspect the
+checkout breakdown: `subtotal_cents`, `item_discount_cents`,
+`loyalty_discount_cents`, `shipping_cents`, `taxable_cents`, `tax_cents`, and
+`total_cents`. Then step forward, step backward, and continue through the
 recorded failed execution.
 
 You are done when VS Code stops at your breakpoint and the replay reaches the
@@ -332,75 +332,6 @@ Explain:
 Today, this gives the AI a deterministic failed execution to rerun and inspect
 alongside the source and pytest output. A future interface can expose structured
 locals, call stack, and reverse-debugging state directly to agents.
-
-## Optional: Replay The Flask App Demo
-
-The Flask demo shows the same recording and replay model on a small Python
-application.
-
-Run normally:
-
-```
-python examples/flask_demo.py
-```
-
-Record:
-
-```
-RETRACE_RECORDING=recordings/flask.retrace python examples/flask_demo.py
-```
-
-Extract:
-
-```
-./recordings/flask.retrace --extract
-```
-
-Find the process id:
-
-```
-ROOT_PID=$(python -m retracesoftware --recording recordings/flask.retrace --list_pids | head -1)
-echo "ROOT_PID=$ROOT_PID"
-```
-
-Replay:
-
-```
-./recordings/flask.d/${ROOT_PID}.bin
-```
-
-## Optional: Try The Smaller Demo
-
-Run normally:
-
-```
-python examples/simple_demo.py
-```
-
-Record:
-
-```
-RETRACE_RECORDING=recordings/simple.retrace python examples/simple_demo.py
-```
-
-Extract:
-
-```
-./recordings/simple.retrace --extract
-```
-
-Find the process id:
-
-```
-ROOT_PID=$(python -m retracesoftware --recording recordings/simple.retrace --list_pids | head -1)
-echo "ROOT_PID=$ROOT_PID"
-```
-
-Replay:
-
-```
-./recordings/simple.d/${ROOT_PID}.bin
-```
 
 ## Reset Recordings
 
