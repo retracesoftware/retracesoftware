@@ -42,6 +42,40 @@ The quickstart also uses the explicit Retrace runner instead of the `.pth`
 auto-enable hook. This avoids child Python subprocesses inheriting
 `RETRACE_RECORDING` and accidentally changing the recording shape.
 
+## What This Preview Shows
+
+This preview shows the core product shape:
+
+```
+failed pytest run
+-> .retrace artifact
+-> terminal replay
+-> VS Code replay debugging
+-> replay bundle for a human or AI agent
+```
+
+The demo is deliberately small, but it is not a single assertion toy. It
+includes filesystem reads through `tmp_path`, validation branches, calculated
+discounts, shipping, tax, UUIDs, time, random values, structured receipt data,
+and a realistic failure where one calculation happens in the wrong order.
+
+## What We Are Hardening Next
+
+The next hardening pass is focused on real-world pytest suites:
+
+- pytest plugin autoload without `PYTEST_DISABLE_PLUGIN_AUTOLOAD=1`
+- `pytest-cov` / coverage
+- `pytest-xdist` parallel workers
+- timeout-driven failures
+- broader async plugin combinations
+- safer defaults around `.pth` auto-enable and child Python subprocesses
+- richer AI-facing replay context, such as structured locals, stack, and
+  failure-state summaries
+
+Those are outside this controlled quickstart. The point here is to validate the
+first user-visible loop: record a failed pytest run once, replay it locally,
+and inspect the same execution instead of rerunning the test live.
+
 ## What Is In This Folder
 
 ```
