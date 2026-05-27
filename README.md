@@ -10,6 +10,8 @@ The same recording model works for Python apps and production crashes. Start wit
   <img src="docs/images/A_test_fails_in_CI.gif" alt="Failed pytest run replayed in VS Code with Retrace, stepping backwards from the assertion failure to the runtime state that caused it." width="800">
 </p>
 
+**Start here:** [Replay a failed pytest run with the full quickstart](quickstart/README.md).
+
 ## Why Retrace
 
 Most failed test and CI artifacts are logs, tracebacks, screenshots, or partial traces. They show symptoms. They do not preserve the execution.
@@ -37,7 +39,7 @@ Run pytest through Retrace's explicit runner:
 
 If pytest fails, Retrace leaves behind a `.retrace` artifact for that exact failed run.
 
-This is the recommended preview command for pytest. It disables pytest's automatic third-party plugin loading so the first-run demo records the failing test itself rather than every plugin installed in the environment. It also avoids the `.pth` auto-enable hook, which can be inherited by child Python subprocesses.
+This is the recommended preview command for pytest. It keeps pytest plugin loading explicit so the first-run demo stays focused, repeatable, and easy to inspect.
 
 Open the same project in VS Code:
 

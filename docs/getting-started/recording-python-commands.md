@@ -1,7 +1,8 @@
 # Recording Python Commands
 
-Retrace records Python executions. Use the same Python command you would
-normally run, and put `RETRACE_RECORDING=...` before it.
+Retrace records Python executions. For ordinary scripts and app commands, use
+the same Python command you would normally run and put `RETRACE_RECORDING=...`
+before it.
 
 First enable auto-recording in the active virtual environment:
 
@@ -38,12 +39,21 @@ For a Flask app that you normally run through Flask's module CLI:
 RETRACE_RECORDING=recordings/server.retrace python -m flask --app app run
 ```
 
-## Pytest Or Other Python Tools
+## Pytest
+
+For pytest, use the explicit runner from the quickstart:
+
+```
+PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 \
+python -m retracesoftware --recording recordings/pytest.retrace -- -m pytest tests/ -q --tb=short
+```
+
+## Other Python Tools
 
 If the tool is normally run through Python, record it the same way:
 
 ```
-RETRACE_RECORDING=recordings/pytest.retrace python -m pytest tests/
+RETRACE_RECORDING=recordings/tool.retrace python -m your_tool --input examples/input.json
 ```
 
 ## Inline Python

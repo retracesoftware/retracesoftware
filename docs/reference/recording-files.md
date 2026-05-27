@@ -8,19 +8,20 @@ files.
 When you run:
 
 ```
-RETRACE_RECORDING=recordings/flask.retrace python examples/flask_demo.py
+PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 \
+python -m retracesoftware --recording recordings/pytest.retrace -- -m pytest pytest_demo -q --tb=short
 ```
 
 Retrace creates:
 
 ```
-recordings/flask.retrace
+recordings/pytest.retrace
 ```
 
 The name is just a path. You can choose another name:
 
 ```
-RETRACE_RECORDING=recordings/my-debug-run.retrace python examples/flask_demo.py
+python -m retracesoftware --recording recordings/my-debug-run.retrace -- app.py
 ```
 
 If the parent directory does not exist, Retrace creates it.
@@ -33,20 +34,20 @@ replay binary used for extraction and replay tooling.
 Extract a recording:
 
 ```
-./recordings/flask.retrace --extract
+./recordings/pytest.retrace --extract
 ```
 
-For `recordings/flask.retrace`, extraction creates:
+For `recordings/pytest.retrace`, extraction creates:
 
 ```
-recordings/flask.d/
+recordings/pytest.d/
 ```
 
 Inside that directory:
 
 ```
-recordings/flask.d/index.json
-recordings/flask.d/<PID>.bin
+recordings/pytest.d/index.json
+recordings/pytest.d/<PID>.bin
 ```
 
 `index.json` describes the recorded process tree. Each `<PID>.bin` file is a
@@ -57,14 +58,14 @@ PidFile for one recorded process.
 Find the root process id:
 
 ```
-ROOT_PID=$(python -m retracesoftware --recording recordings/flask.retrace --list_pids | head -1)
+ROOT_PID=$(python -m retracesoftware --recording recordings/pytest.retrace --list_pids | head -1)
 echo "ROOT_PID=$ROOT_PID"
 ```
 
 Replay it:
 
 ```
-./recordings/flask.d/${ROOT_PID}.bin
+./recordings/pytest.d/${ROOT_PID}.bin
 ```
 
 ## Git Hygiene

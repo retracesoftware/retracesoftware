@@ -104,7 +104,7 @@ def write_manifest(
         },
         "notes": [
             "Environment variables are intentionally not captured by this manifest.",
-            "This quickstart disables pytest plugin autoload to keep the preview deterministic.",
+            "This quickstart keeps pytest plugin loading explicit for a small, repeatable preview run.",
         ],
     }
     MANIFEST.write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")

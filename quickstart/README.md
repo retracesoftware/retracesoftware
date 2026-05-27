@@ -18,29 +18,18 @@ Make sure you have:
 
 See [../COMPATIBILITY.md](../COMPATIBILITY.md) for current platform details.
 
-## Current Preview Scope
+## Recommended Preview Command
 
-This quickstart intentionally uses a narrow pytest setup:
+This quickstart keeps pytest plugin loading explicit so the run is small,
+repeatable, and easy to inspect:
 
 ```
 PYTEST_DISABLE_PLUGIN_AUTOLOAD=1
 python -m retracesoftware --recording ... -- -m pytest ...
 ```
 
-`PYTEST_DISABLE_PLUGIN_AUTOLOAD=1` prevents pytest from automatically loading
-every third-party pytest plugin installed in the environment. That keeps the
-preview focused on the core Retrace workflow: recording and replaying the
-failed test execution.
-
-The weak side is that this is not the same as a full plugin-heavy production
-pytest suite. Some teams rely on auto-loaded plugins such as `pytest-cov`,
-`pytest-xdist`, `pytest-timeout`, `pytest-asyncio`, or internal plugins. Those
-paths are still being hardened. For this preview, use the command shape shown
-below.
-
-The quickstart also uses the explicit Retrace runner instead of the `.pth`
-auto-enable hook. This avoids child Python subprocesses inheriting
-`RETRACE_RECORDING` and accidentally changing the recording shape.
+That command shape focuses the preview on Retrace's core loop: record a failed
+pytest execution once, replay it locally, and inspect the same runtime state.
 
 ## What This Preview Shows
 
@@ -59,22 +48,21 @@ includes filesystem reads through `tmp_path`, validation branches, calculated
 discounts, shipping, tax, UUIDs, time, random values, structured receipt data,
 and a realistic failure where one calculation happens in the wrong order.
 
-## What We Are Hardening Next
+## What We Want To Add Next
 
-The next hardening pass is focused on real-world pytest suites:
+The next pass is focused on making this workflow feel even more natural in
+everyday pytest and CI use:
 
-- pytest plugin autoload without `PYTEST_DISABLE_PLUGIN_AUTOLOAD=1`
-- `pytest-cov` / coverage
-- `pytest-xdist` parallel workers
-- timeout-driven failures
-- broader async plugin combinations
-- safer defaults around `.pth` auto-enable and child Python subprocesses
+- a first-class `retrace pytest -- ...` command
+- a built-in replay bundle command for CI artifacts
+- broader pytest plugin coverage, including coverage, parallel workers,
+  timeout handling, and async combinations
 - richer AI-facing replay context, such as structured locals, stack, and
   failure-state summaries
 
-Those are outside this controlled quickstart. The point here is to validate the
-first user-visible loop: record a failed pytest run once, replay it locally,
-and inspect the same execution instead of rerunning the test live.
+The point here is to validate the first user-visible loop: record a failed
+pytest run once, replay it locally, and inspect the same execution instead of
+rerunning the test live.
 
 ## What Is In This Folder
 
@@ -424,13 +412,12 @@ python -m retracesoftware --recording recordings/pytest.retrace -- -m pytest pyt
 
 ### A pytest plugin is missing
 
-This quickstart disables pytest plugin autoload on purpose. If your own suite
-needs a plugin, explicitly enable it after confirming the basic preview works.
-For example:
+This quickstart keeps pytest plugin loading explicit. If your own suite needs a
+plugin, enable it directly after confirming the basic preview works. For
+example:
 
 ```
 PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 python -m pytest -p anyio tests
 ```
 
-Plugin-heavy suites are part of the next hardening pass for Retrace's pytest
-workflow.
+Broader plugin coverage is part of the pytest workflow roadmap.
