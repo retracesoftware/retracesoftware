@@ -6,5 +6,6 @@ __pycache__/
 /recordings/*.retrace
 /recordings/*.d/
 /recordings/*.log
+/recordings/*/
 
 .DS_Store

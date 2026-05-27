@@ -29,14 +29,15 @@ The failed execution becomes something you can inspect, replay, and share.
 
 Install Retrace in your virtual environment:
 
-    python -m pip install retracesoftware
-    python -m retracesoftware install
+    python -m pip install retracesoftware pytest
 
-Run pytest with a recording path:
+Run pytest through Retrace's explicit runner:
 
-    RETRACE_RECORDING=recordings/pytest.retrace python -m pytest
+    PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 python -m retracesoftware --recording recordings/pytest.retrace -- -m pytest tests -q --tb=short
 
 If pytest fails, Retrace leaves behind a `.retrace` artifact for that exact failed run.
+
+This is the recommended preview command for pytest. It disables pytest's automatic third-party plugin loading so the first-run demo records the failing test itself rather than every plugin installed in the environment. It also avoids the `.pth` auto-enable hook, which can be inherited by child Python subprocesses.
 
 Open the same project in VS Code:
 
@@ -63,7 +64,11 @@ For example, in GitHub Actions:
     - name: Run pytest with Retrace
       run: |
         mkdir -p recordings
-        RETRACE_RECORDING=recordings/pytest.retrace python -m pytest
+        set +e
+        PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 \
+          python -m retracesoftware --recording recordings/pytest.retrace -- -m pytest tests -q --tb=short
+        PYTEST_STATUS=$?
+        exit "$PYTEST_STATUS"
 
     - name: Upload Retrace recording
       if: failure()
@@ -80,7 +85,7 @@ No hosted trace service or GitHub App is required.
 
 A test fails:
 
-    RETRACE_RECORDING=recordings/failure.retrace python -m pytest tests/test_checkout.py
+    PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 python -m retracesoftware --recording recordings/failure.retrace -- -m pytest tests/test_checkout.py -q --tb=short
 
 Instead of rerunning and guessing, open `recordings/failure.retrace` in VS Code. Replay the exact failed execution, inspect locals and call stack, and step backwards from the failing assertion to the state that caused it.
 
@@ -118,7 +123,7 @@ CLI access and AI-agent workflows are arriving alongside the VS Code path.
 
 ## Quick Start: Replay a Python App
 
-The pytest workflow is the fastest way to try Retrace. The included Flask demo shows the same recording and replay model on a running Python application.
+The pytest workflow is the fastest way to try Retrace. The full quickstart includes a small failing pytest demo, a replay bundle helper, and the older Flask app demo showing the same recording and replay model on a running Python application.
 
 Clone the repo and enter the quickstart directory:
 
@@ -138,10 +143,13 @@ Install Retrace and the demo dependencies:
 
     python -m pip install --upgrade pip
     python -m pip install retracesoftware
-    python -m retracesoftware install
     python -m pip install -r requirements.txt
 
-Record the Flask demo:
+Record the pytest demo:
+
+    PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 python -m retracesoftware --recording recordings/pytest.retrace -- -m pytest pytest_demo -q --tb=short
+
+Or record the Flask demo:
 
     RETRACE_RECORDING=recordings/flask.retrace python examples/flask_demo.py
 
@@ -215,7 +223,7 @@ Record an ordinary Python file:
 
 Record a pytest run:
 
-    RETRACE_RECORDING=recordings/tests.retrace python -m pytest tests/
+    PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 python -m retracesoftware --recording recordings/tests.retrace -- -m pytest tests/ -q --tb=short
 
 Record a module-based CLI:
 
