@@ -77,14 +77,12 @@ def replay_shape_type(cls: type) -> type:
     Replay for non-core external types should stay on the same ``extend_type``
     path as record where possible, but it does not need to inherit from the
     real third-party type.  This shape class is the input to that path: it has
-    the same method names, but every shaped method including ``__init__`` raises
-    if it is ever executed live.  During replay, the generated extended type
-    wraps these methods and consumes recorded results instead of calling the
-    raising bodies.
+    the same method names, but every shaped method raises if it is ever
+    executed live.  During replay, the generated extended type wraps these
+    methods and consumes recorded results instead of calling the raising bodies.
     """
 
     spec = {
-        "__init__": _replay_shape_method(cls, "__init__"),
         "__module__": cls.__module__,
         "__qualname__": cls.__qualname__,
         "__retrace_original_type__": cls,
@@ -94,7 +92,7 @@ def replay_shape_type(cls: type) -> type:
 
     for name, _value in _method_items(
         cls,
-        blacklist=_GENERATED_TYPE_BLACKLIST | {"__del__", "__init__"},
+        blacklist=_GENERATED_TYPE_BLACKLIST | {"__del__"},
     ):
         spec[name] = _replay_shape_method(cls, name)
 
@@ -163,12 +161,6 @@ class TypeExtender:
 
         return spec
 
-    def _registering_init(self, wrapped_init):
-        def __init__(instance, *args, **kwargs):
-            return wrapped_init(instance, *args, **kwargs)
-
-        return __init__
-
     def _generated_new(self, cls):
         on_new_instance = self.on_new_instance
         original_new = getattr(cls, "__new__", object.__new__)
@@ -212,14 +204,6 @@ class TypeExtender:
             return track_instance(instance, subtype)
 
         return generated_type_ref, __new__
-
-    def _wrap_required_init(self, cls, *, handler, spec):
-        value = _method_value(getattr(cls, "__init__"))
-        if value is None:
-            return
-
-        wrapped_init = self._wrapped_function(handler, value)
-        spec["__init__"] = self._registering_init(wrapped_init)
 
     def extend_type(self, cls: type) -> type:
         on_new_type = self.on_new_type
@@ -283,8 +267,6 @@ class TypeExtender:
                     value=value,
                 )
                 if wrapped is not None:
-                    if name == "__init__":
-                        wrapped = self._registering_init(wrapped)
                     setattr(subtype, name, wrapped)
 
             on_new_type(subtype)
@@ -292,9 +274,8 @@ class TypeExtender:
         spec = self._generated_method_spec(
             cls,
             handler=self.ext_gateway,
-            blacklist=_GENERATED_TYPE_BLACKLIST | {"__del__", "__init__"},
+            blacklist=_GENERATED_TYPE_BLACKLIST | {"__del__"},
         )
-        self._wrap_required_init(cls, handler=self.ext_gateway, spec=spec)
         spec.update({
             "__del__": __del__,
             "__init_subclass__": classmethod(__init_subclass__),

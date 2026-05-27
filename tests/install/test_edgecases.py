@@ -86,7 +86,7 @@ def test_semaphore_trylock_record_writes_result_without_mode_branch():
     target_calls = []
     system = _TrylockSystem("record")
     semaphore = _Semaphore(1)
-    wrapped = edgecases.semaphore_acquire_trylock(
+    wrapped = edgecases.trylock(
         _try_acquire(target_calls),
         system=system,
     )
@@ -103,7 +103,7 @@ def test_semaphore_trylock_replay_syncs_state_when_recorded_true():
     target_calls = []
     system = _TrylockSystem("replay", result=True)
     semaphore = _Semaphore(1)
-    wrapped = edgecases.semaphore_acquire_trylock(
+    wrapped = edgecases.trylock(
         _try_acquire(target_calls),
         system=system,
     )
@@ -120,7 +120,7 @@ def test_semaphore_trylock_replay_leaves_state_when_recorded_false():
     target_calls = []
     system = _TrylockSystem("replay", result=False)
     semaphore = _Semaphore(1)
-    wrapped = edgecases.semaphore_acquire_trylock(
+    wrapped = edgecases.trylock(
         _try_acquire(target_calls),
         system=system,
     )
@@ -136,7 +136,7 @@ def test_semaphore_trylock_replay_leaves_state_when_recorded_false():
 def test_native_lock_trylock_record_writes_result_without_signature():
     system = _TrylockSystem("record")
     lock = _thread.allocate_lock()
-    wrapped = edgecases.acquire_trylock(_thread.LockType.acquire, system=system)
+    wrapped = edgecases.trylock(_thread.LockType.acquire, system=system)
 
     assert wrapped(lock, False) is True
 
@@ -150,7 +150,7 @@ def test_native_lock_trylock_record_writes_result_without_signature():
 def test_native_lock_trylock_replay_syncs_state_when_recorded_true():
     system = _TrylockSystem("replay", result=True)
     lock = _thread.allocate_lock()
-    wrapped = edgecases.acquire_trylock(_thread.LockType.acquire, system=system)
+    wrapped = edgecases.trylock(_thread.LockType.acquire, system=system)
 
     assert wrapped(lock, False) is True
 
@@ -164,11 +164,51 @@ def test_native_lock_trylock_replay_syncs_state_when_recorded_true():
 def test_native_lock_trylock_replay_leaves_state_when_recorded_false():
     system = _TrylockSystem("replay", result=False)
     lock = _thread.allocate_lock()
-    wrapped = edgecases.acquire_trylock(_thread.LockType.acquire, system=system)
+    wrapped = edgecases.trylock(_thread.LockType.acquire, system=system)
 
     assert wrapped(lock, False) is False
 
     assert lock.locked() is False
+    assert system.factories == ["replayer"]
+    assert system.reader.calls == [((lock, False), {})]
+
+
+def test_native_rlock_trylock_record_writes_result_without_signature():
+    system = _TrylockSystem("record")
+    lock = _thread.RLock()
+    wrapped = edgecases.trylock(_thread.RLock.acquire, system=system)
+
+    assert wrapped(lock, False) is True
+
+    assert lock._is_owned() is True
+    assert system.factories == ["recorder"]
+    assert system.writer.results == [True]
+
+    lock.release()
+
+
+def test_native_rlock_trylock_replay_syncs_state_when_recorded_true():
+    system = _TrylockSystem("replay", result=True)
+    lock = _thread.RLock()
+    wrapped = edgecases.trylock(_thread.RLock.acquire, system=system)
+
+    assert wrapped(lock, False) is True
+
+    assert lock._is_owned() is True
+    assert system.factories == ["replayer"]
+    assert system.reader.calls == [((lock, False), {})]
+
+    lock.release()
+
+
+def test_native_rlock_trylock_replay_leaves_state_when_recorded_false():
+    system = _TrylockSystem("replay", result=False)
+    lock = _thread.RLock()
+    wrapped = edgecases.trylock(_thread.RLock.acquire, system=system)
+
+    assert wrapped(lock, False) is False
+
+    assert lock._is_owned() is False
     assert system.factories == ["replayer"]
     assert system.reader.calls == [((lock, False), {})]
 
@@ -178,7 +218,7 @@ def test_trylock_external_space_uses_raw_target_without_recording_result():
     system = _TrylockSystem("record")
     system.location = "external"
     semaphore = _Semaphore(1)
-    wrapped = edgecases.acquire_trylock(
+    wrapped = edgecases.trylock(
         _try_acquire(target_calls),
         system=system,
     )

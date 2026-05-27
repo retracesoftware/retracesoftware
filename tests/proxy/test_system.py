@@ -30,6 +30,9 @@ from retracesoftware.proxy.system import ReplayThreadScheduleError, System
 from retracesoftware.proxy.typeextender import replay_shape_type
 
 
+_MISSING = object()
+
+
 def test_thread_cursors_advance_returns_full_cursor():
     cursors = system_module._ThreadCursors()
 
@@ -50,6 +53,7 @@ class _FakeSpace:
         self.call_at_calls = []
         self.thread_delta_value = (0,)
         self.coordinates_value = ()
+        self.thread_switch_checks = 0
 
     @property
     def apply(self):
@@ -66,6 +70,24 @@ class _FakeSpace:
     def wrap(self, function):
         def wrapped(*args, **kwargs):
             return self.apply(function, *args, **kwargs)
+
+        return wrapped
+
+    def check_for_thread_switch(self, function=_MISSING, /):
+        if function is _MISSING:
+            self.thread_switch_checks += 1
+            return None
+
+        if not callable(function):
+            raise TypeError(
+                "thread switch check wrapper argument must be callable"
+            )
+
+        def wrapped(*args, **kwargs):
+            try:
+                return function(*args, **kwargs)
+            finally:
+                self.check_for_thread_switch()
 
         return wrapped
 
@@ -313,6 +335,10 @@ def _internal_call(system, *args, **kwargs):
     return system_module._space_apply(system.external_space, system.gateway_pair.internal, *args, **kwargs)
 
 
+def _start_replay(system):
+    return system.lifecycle_hooks.on_start()
+
+
 def test_record_system_creates_gateway_pair_and_proxy_factory(monkeypatch):
     _install_fake_retrace(monkeypatch)
     writer = _FakeWriter()
@@ -470,6 +496,23 @@ def test_record_system_record_replay_operation_writer_encodes_result(monkeypatch
     ]
     assert len(results) == 1
     assert results[0].result == [binding, {"value": binding}]
+
+
+def test_record_system_record_replay_operation_writer_checks_thread_switch(monkeypatch):
+    _install_fake_retrace(monkeypatch)
+    trace = []
+    system = System.record_system(writer=DefaultTraceWriter(trace.append))
+    system.internal_space.thread_switch_checks = 0
+
+    def recorder(writer):
+        return lambda: writer.result("record")
+
+    def replayer(_reader):
+        raise AssertionError("record mode should not build the replay callable")
+
+    system.record_replay_operation(recorder, replayer)()
+
+    assert system.internal_space.thread_switch_checks == 1
 
 
 def test_replay_system_record_replay_operation_selects_replayer(monkeypatch):
@@ -693,11 +736,12 @@ def test_extend_type_methods_route_through_external_gateway(monkeypatch):
     assert calls == [(External.read, (obj, "value"), {})]
 
 
-def test_extend_type_wraps_init_and_tracks_lifecycle_in_new(monkeypatch):
+def test_extend_type_wraps_explicit_init_and_tracks_lifecycle_in_new(monkeypatch):
     system, calls = _manual_gateway_system(monkeypatch)
 
     class External:
-        pass
+        def __init__(self):
+            self.ready = True
 
     retrace_type = system.extend_type(External, python_distribution=False)
 
@@ -707,6 +751,23 @@ def test_extend_type_wraps_init_and_tracks_lifecycle_in_new(monkeypatch):
     obj = system.run_internal(retrace_type)
 
     assert calls[-1] == (External.__init__, (obj,), {})
+    assert obj.ready is True
+
+
+def test_extend_type_does_not_force_inherited_object_init(monkeypatch):
+    system, calls = _manual_gateway_system(monkeypatch)
+
+    class External:
+        pass
+
+    retrace_type = system.extend_type(External, python_distribution=False)
+
+    assert "__init__" not in retrace_type.__dict__
+
+    obj = system.run_internal(retrace_type)
+
+    assert isinstance(obj, retrace_type)
+    assert all(getattr(target, "__name__", None) != "__init__" for target, _args, _kwargs in calls)
 
 
 def test_extend_type_dynamic_companion_constructor_unwraps_proxy_class(monkeypatch):
@@ -797,8 +858,15 @@ def test_replay_shape_type_feeds_extend_type_without_original_inheritance(monkey
             raise AssertionError("shape type should not execute original method")
 
     shape_type = replay_shape_type(External)
+    assert "__init__" not in shape_type.__dict__
+
+    class ExternalWithInit:
+        def __init__(self):
+            raise AssertionError("shape type should not execute original init")
+
+    init_shape_type = replay_shape_type(ExternalWithInit)
     with pytest.raises(RuntimeError, match="cannot execute live"):
-        shape_type()
+        init_shape_type()
 
     shape_obj = object.__new__(shape_type)
     with pytest.raises(RuntimeError, match="cannot execute live"):
@@ -1059,6 +1127,18 @@ def test_record_system_external_call_writes_result(monkeypatch):
     assert writer.calls[-1] == ("result", "result:x")
 
 
+def test_record_system_external_call_checks_thread_switch_before_result(monkeypatch):
+    _install_fake_retrace(monkeypatch)
+    writer = _FakeWriter()
+    system = System.record_system(writer=writer, debug=False)
+    system.internal_space.thread_switch_checks = 0
+
+    assert _external_call(system, lambda: "recorded") == "recorded"
+
+    assert system.internal_space.thread_switch_checks == 1
+    assert writer.calls[-1] == ("result", "recorded")
+
+
 def test_record_system_external_call_leaves_none_unproxied(monkeypatch):
     _install_fake_retrace(monkeypatch)
     writer = _FakeWriter()
@@ -1142,6 +1222,21 @@ def test_record_system_external_call_error_records_and_preserves_exception(monke
         _external_call(system, target, "arg")
 
     assert ("error", raised.value) in writer.calls
+
+
+def test_record_system_external_call_error_checks_thread_switch(monkeypatch):
+    _install_fake_retrace(monkeypatch)
+    writer = _FakeWriter()
+    system = System.record_system(writer=writer, debug=False)
+    system.internal_space.thread_switch_checks = 0
+
+    def target():
+        raise ValueError("boom")
+
+    with pytest.raises(ValueError, match="boom"):
+        _external_call(system, target)
+
+    assert system.internal_space.thread_switch_checks == 1
 
 
 def test_record_system_bind_encodes_result(monkeypatch):
@@ -1583,12 +1678,13 @@ def test_replay_system_schedules_signal_callback_at_cursor(monkeypatch):
         calls.append((signum, frame))
 
     system = System.replay_system(reader=_FakeReader([
+        OnStartMessage(),
         RunToCoordinateMessage((0, 4, 5)),
         SignalMessage(handler, (7, None), {}),
         ResultMessage("ok"),
     ]))
 
-    assert _external_call(system, lambda: "live") == "ok"
+    _start_replay(system)
     assert calls == []
     assert len(system.internal_space.call_at_calls) == 1
 
@@ -1599,6 +1695,7 @@ def test_replay_system_schedules_signal_callback_at_cursor(monkeypatch):
     assert calls == [(7, None)]
     with pytest.raises(ReplayThreadScheduleError):
         on_missed()
+    assert _external_call(system, lambda: "live") == "ok"
 
 
 def test_record_system_capture_gc_records_collection_at_coordinate(monkeypatch):
@@ -1640,12 +1737,13 @@ def test_replay_system_schedules_gc_at_coordinate(monkeypatch):
     collects = []
     monkeypatch.setattr(system_module.gc, "collect", lambda generation: collects.append(generation))
     system = System.replay_system(reader=_FakeReader([
+        OnStartMessage(),
         RunToCoordinateMessage((0, 8, 13)),
         GCMessage(1),
         ResultMessage("ok"),
     ]))
 
-    assert _external_call(system, lambda: "live") == "ok"
+    _start_replay(system)
     assert collects == []
     assert len(system.internal_space.call_at_calls) == 1
 
@@ -1656,6 +1754,7 @@ def test_replay_system_schedules_gc_at_coordinate(monkeypatch):
     assert collects == [1]
     with pytest.raises(ReplayThreadScheduleError):
         on_missed()
+    assert _external_call(system, lambda: "live") == "ok"
 
 
 def test_replay_system_resolves_bound_result(monkeypatch):
@@ -1923,12 +2022,13 @@ def test_replay_system_schedules_thread_switch_before_result(monkeypatch):
     _install_fake_retrace(monkeypatch)
     monkeypatch.setattr(system_module._thread, "get_ident", lambda: 1)
     system = System.replay_system(reader=_FakeReader([
+        OnStartMessage(),
         RunToCoordinateMessage((0, 3, 5)),
         SwitchThreadMessage("worker"),
         ResultMessage("ok"),
     ]))
 
-    assert _external_call(system, lambda: "live") == "ok"
+    _start_replay(system)
 
     assert len(system.internal_space.call_at_calls) == 1
     cursor, on_hit, on_missed = system.internal_space.call_at_calls[0]
@@ -1940,28 +2040,37 @@ def test_replay_system_schedules_thread_switch_before_result(monkeypatch):
     assert system.handoff.to_calls == ["worker"]
     with pytest.raises(ReplayThreadScheduleError):
         on_missed()
+    assert _external_call(system, lambda: "live") == "ok"
 
 
-def test_replay_system_schedules_thread_switch_delta_from_current_thread(monkeypatch):
+def test_replay_system_arms_thread_switch_after_each_read(monkeypatch):
     _install_fake_retrace(monkeypatch)
     monkeypatch.setattr(system_module._thread, "get_ident", lambda: 1)
     system = System.replay_system(reader=_FakeReader([
+        ResultMessage("first"),
         RunToCoordinateMessage((0, 1, 2)),
         SwitchThreadMessage("worker"),
+        ResultMessage("second"),
         RunToCoordinateMessage((1, 7)),
         SwitchThreadMessage("main"),
         ResultMessage("ok"),
     ]))
 
-    assert _external_call(system, lambda: "live") == "ok"
+    assert _external_call(system, lambda: "live") == "first"
 
-    first, second = system.internal_space.call_at_calls
+    first = system.internal_space.call_at_calls[0]
     assert first[0] == (1, 2)
-    assert second[0] == (1, 7)
     assert system.handoff.to_calls == []
     first[1]()
+    assert system.handoff.to_calls == ["worker"]
+
+    assert _external_call(system, lambda: "live") == "second"
+
+    second = system.internal_space.call_at_calls[1]
+    assert second[0] == (1, 7)
     second[1]()
     assert system.handoff.to_calls == ["worker", "main"]
+    assert _external_call(system, lambda: "live") == "ok"
 
 
 def test_recorded_thread_switch_replays_as_scheduled_handoff(monkeypatch):
@@ -1986,9 +2095,9 @@ def test_recorded_thread_switch_replays_as_scheduled_handoff(monkeypatch):
     assert len(switches) == 1
     assert switches[0].thread_id == "worker"
 
-    replay = System.replay_system(reader=_FakeReader(trace))
+    replay = System.replay_system(reader=_FakeReader([OnStartMessage(), *trace]))
 
-    assert _external_call(replay, lambda: "live") == "recorded"
+    _start_replay(replay)
     assert len(replay.internal_space.call_at_calls) == 1
     cursor, on_hit, on_missed = replay.internal_space.call_at_calls[0]
     assert cursor == (3,)
@@ -1998,6 +2107,7 @@ def test_recorded_thread_switch_replays_as_scheduled_handoff(monkeypatch):
     assert replay.handoff.to_calls == ["worker"]
     with pytest.raises(ReplayThreadScheduleError):
         on_missed()
+    assert _external_call(replay, lambda: "live") == "recorded"
 
 
 def test_record_system_thread_switch_hook_is_internal_space_local(monkeypatch):
@@ -2137,6 +2247,7 @@ def test_replay_system_skips_run_completed_marker(monkeypatch):
 def test_replay_system_continues_after_run_to_completed_marker(monkeypatch):
     _install_fake_retrace(monkeypatch)
     system = System.replay_system(reader=_FakeReader([
+        OnStartMessage(),
         RunToCoordinateMessage(None),
         RunCompletedMessage(),
         ResultMessage("recorded"),
@@ -2145,8 +2256,12 @@ def test_replay_system_continues_after_run_to_completed_marker(monkeypatch):
     def live_target():
         raise AssertionError("live target should not run")
 
+    _start_replay(system)
+    assert len(system.internal_space.call_at_calls) == 1
+    _cursor, on_hit = system.internal_space.call_at_calls[0]
+    on_hit()
+
     assert _external_call(system, live_target) == "recorded"
-    assert len(system.internal_space.call_at_calls) == 0
 
 
 def test_replay_system_consumes_lifecycle_markers_around_run(monkeypatch):

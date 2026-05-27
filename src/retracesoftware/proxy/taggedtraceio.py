@@ -1,5 +1,7 @@
 """Tagged wire-format implementation of the proxy trace I/O interfaces."""
 
+import operator
+
 import retracesoftware.stream as stream
 import retracesoftware.functional as functional
 from types import SimpleNamespace
@@ -43,32 +45,52 @@ def _read(source):
 
 
 def tagged_trace_writer(sink):
-    def thread_switch(cursor_delta, thread_id):
-        sink("RUN_TO_COORDINATE", cursor_delta)
-        return sink("SWITCH_THREAD", thread_id)
-
-    def checkpoint(cursor_delta, thread_id, value):
-        return sink("CHECKPOINT", thread_id, cursor_delta, value)
-
-    def signal_callback(fn, args, kwargs):
-        return sink("SIGNAL", fn, args, kwargs)
+    run_to_coordinate = functional.partial(sink, "RUN_TO_COORDINATE")
+    switch_thread = functional.partial(sink, "SWITCH_THREAD")
 
     return SimpleNamespace(
         on_start=functional.partial(sink, "ON_START"),
         result=functional.partial(sink, "RESULT"),
         error=functional.partial(sink, "ERROR"),
         callback=functional.partial(sink, "CALLBACK"),
-        signal_callback=signal_callback,
+        signal_callback=functional.spread(
+            sink,
+            functional.constantly("SIGNAL"),
+            functional.positional_param(0),
+            functional.positional_param(1),
+            functional.positional_param(2),
+        ),
         gc_collect=functional.partial(sink, "GC"),
         callback_result=functional.partial(sink, "CALLBACK_RESULT"),
         callback_error=functional.partial(sink, "CALLBACK_ERROR"),
-        checkpoint=checkpoint,
+        checkpoint=functional.spread(
+            sink,
+            functional.constantly("CHECKPOINT"),
+            functional.positional_param(1),
+            functional.positional_param(0),
+            functional.positional_param(2),
+        ),
         stacktrace=functional.partial(sink, "STACKTRACE"),
-        thread_switch=thread_switch,
-        run_to_coordinate=functional.partial(sink, "RUN_TO_COORDINATE"),
+        thread_switch=functional.sequence(
+            functional.juxt(
+                functional.spread(
+                    run_to_coordinate,
+                    functional.positional_param(0),
+                ),
+                functional.spread(
+                    switch_thread,
+                    functional.positional_param(1),
+                ),
+            ),
+            operator.itemgetter(1),
+        ),
+        run_to_coordinate=run_to_coordinate,
         run_completed=functional.partial(sink, "RUN_COMPLETED"),
-        switch_thread=functional.partial(sink, "SWITCH_THREAD"),
-        binding_delete=lambda binding: sink("BINDING_DELETE", _binding_handle(binding)),
+        switch_thread=switch_thread,
+        binding_delete=functional.sequence(
+            _binding_handle,
+            functional.partial(sink, "BINDING_DELETE"),
+        ),
         call_marker=functional.partial(sink, "CALL"),
         sync=functional.partial(sink, "SYNC"),
     )

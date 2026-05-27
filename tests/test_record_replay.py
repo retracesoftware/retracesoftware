@@ -289,6 +289,63 @@ print("done", flush=True)
     assert replay.stdout == record.stdout
 
 
+def test_record_then_replay_native_lock_trylock_outcomes(tmpdir):
+    trace_file = os.path.join(tmpdir, "native_lock_trylock_outcomes.retrace")
+    script_file = Path(tmpdir) / "native_lock_trylock_outcomes.py"
+    script_file.write_text(
+        """\
+import _thread
+
+
+def plain_lock():
+    lock = _thread.allocate_lock()
+    lock.acquire()
+    print("lock-held", lock.acquire(False), flush=True)
+    lock.release()
+    print("lock-free", lock.acquire(False), flush=True)
+    lock.release()
+
+
+def recursive_lock():
+    lock = _thread.RLock()
+    print("rlock-free", lock.acquire(False), flush=True)
+    lock.release()
+    lock.acquire()
+    print("rlock-owned", lock.acquire(False), flush=True)
+    lock.release()
+    lock.release()
+
+
+plain_lock()
+recursive_lock()
+""",
+        encoding="utf-8",
+    )
+
+    expected = (
+        "lock-held False\n"
+        "lock-free True\n"
+        "rlock-free True\n"
+        "rlock-owned True\n"
+    )
+
+    record = run_record(script_file, trace_file)
+    assert record.returncode == 0, (
+        f"Record failed (exit {record.returncode}):\n"
+        f"stdout:\n{record.stdout}\n"
+        f"stderr:\n{record.stderr}"
+    )
+    assert record.stdout == expected
+
+    replay = run_replay(trace_file)
+    assert replay.returncode == 0, (
+        f"Replay failed (exit {replay.returncode}):\n"
+        f"stdout:\n{replay.stdout}\n"
+        f"stderr:\n{replay.stderr}"
+    )
+    assert replay.stdout == expected
+
+
 def test_record_then_replay_asyncio_stop_join_minimal(tmpdir):
     trace_file = os.path.join(tmpdir, "asyncio_stop_join_minimal.retrace")
     script_file = Path(tmpdir) / "asyncio_stop_join_minimal.py"

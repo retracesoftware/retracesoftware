@@ -20,8 +20,17 @@ disable = ["print"]
 immutable = ["BaseException", "memoryview", "int", "float", "complex", "str", "bytes", "bool", "bytearray",
             "type", "slice"]
 
+[_thread.type_attributes.LockType]
+wrap = { acquire = "retracesoftware.install.edgecases.trylock" }
+
+[_thread.type_attributes.RLock]
+wrap = { acquire = "retracesoftware.install.edgecases.trylock" }
+
+[threading.type_attributes.Condition]
+disable = ["_is_owned"]
+
 [threading.type_attributes.Semaphore]
-wrap = { acquire = "retracesoftware.install.edgecases.acquire_trylock" }
+wrap = { acquire = "retracesoftware.install.edgecases.trylock" }
 
 [_queue.type_attributes.SimpleQueue]
 disable = ["put", "put_nowait"]

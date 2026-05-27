@@ -5,6 +5,9 @@ import pytest
 import retracesoftware.utils as utils
 
 
+_MISSING = object()
+
+
 class _FakeSpace:
     current = None
     _next_id = 1
@@ -13,6 +16,7 @@ class _FakeSpace:
         self.id = _FakeSpace._next_id
         _FakeSpace._next_id += 1
         self.apply_calls = 0
+        self.thread_switch_checks = 0
 
     @property
     def apply(self):
@@ -30,6 +34,24 @@ class _FakeSpace:
     def wrap(self, function):
         def wrapped(*args, **kwargs):
             return self.apply(function, *args, **kwargs)
+
+        return wrapped
+
+    def check_for_thread_switch(self, function=_MISSING, /):
+        if function is _MISSING:
+            self.thread_switch_checks += 1
+            return None
+
+        if not callable(function):
+            raise TypeError(
+                "thread switch check wrapper argument must be callable"
+            )
+
+        def wrapped(*args, **kwargs):
+            try:
+                return function(*args, **kwargs)
+            finally:
+                self.check_for_thread_switch()
 
         return wrapped
 
@@ -219,6 +241,74 @@ def test_recording_external_call_runs_live_target_and_observes_result(monkeypatc
     assert errors == []
     assert callbacks == []
     assert bound == []
+
+
+def test_recording_external_call_wrapper_runs_after_target_before_result(monkeypatch):
+    fake_retrace = _fake_retrace()
+    monkeypatch.setattr(gatewaypair_module, "retrace", fake_retrace)
+    events = []
+
+    def wrap_external_call(function):
+        def wrapped(*args, **kwargs):
+            try:
+                return function(*args, **kwargs)
+            finally:
+                events.append("after")
+
+        return wrapped
+
+    pair = GatewayPair.create_unwired()
+    pair.wire_for_record(
+        is_passthrough=lambda value: True,
+        on_callback=lambda *args, **kwargs: None,
+        on_error=lambda *args: events.append("error"),
+        on_result=lambda value: events.append("result"),
+        int_proxy=lambda value: value,
+        ext_proxy=lambda value: value,
+        wrap_external_call=wrap_external_call,
+    )
+
+    def external_target():
+        events.append("target")
+        return "value"
+
+    assert _external_call(pair, external_target) == "value"
+    assert events == ["target", "after", "result"]
+
+
+def test_recording_external_call_wrapper_runs_after_target_error(monkeypatch):
+    fake_retrace = _fake_retrace()
+    monkeypatch.setattr(gatewaypair_module, "retrace", fake_retrace)
+    events = []
+
+    def wrap_external_call(function):
+        def wrapped(*args, **kwargs):
+            try:
+                return function(*args, **kwargs)
+            finally:
+                events.append("after")
+
+        return wrapped
+
+    pair = GatewayPair.create_unwired()
+    pair.wire_for_record(
+        is_passthrough=lambda value: True,
+        on_callback=lambda *args, **kwargs: None,
+        on_error=lambda *args: events.append("error"),
+        on_result=lambda value: events.append("result"),
+        int_proxy=lambda value: value,
+        ext_proxy=lambda value: value,
+        wrap_external_call=wrap_external_call,
+    )
+
+    def external_target():
+        events.append("target")
+        raise ValueError("boom")
+
+    with pytest.raises(ValueError, match="boom"):
+        _external_call(pair, external_target)
+
+    assert events == ["target", "after", "error"]
 
 
 def test_recording_external_args_unwrap_before_passthrough(monkeypatch):

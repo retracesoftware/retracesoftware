@@ -1076,9 +1076,25 @@ Record writes one unified stream. To make that stream replayable:
 - replay mode uses the coordinate instruction as the scheduling point; the
   following message decides whether replay should switch thread, deliver a
   signal/callback, or continue to the next result/error/bind instruction
+- replay has exactly one runnable logical application thread at a time while
+  thread scheduling is active. Other replay threads must remain blocked until
+  a scheduler checkpoint fires and performs the recorded handoff.
 - replay arms scheduling checkpoints with `retrace.call_at(cursor, callback)`
   in the current thread's coordinate space; retrace-python no longer accepts a
   thread id there
+- arming a scheduling checkpoint is a lookahead operation. It may peek at the
+  pending `RUN_TO_COORDINATE` and its following scheduler instruction to build
+  the `call_at(...)` callback, but it must not remove those messages from the
+  replay stream.
+- if `RUN_TO_COORDINATE` is next in the trace, replay must run the current
+  logical thread to that coordinate before consuming any later user-visible
+  protocol message. With correct scheduling, that coordinate always belongs to
+  the current replay thread, and the `call_at(...)` callback is the only normal
+  path that consumes the pending `RUN_TO_COORDINATE`.
+- encountering a proxied boundary call before the pending `RUN_TO_COORDINATE`
+  fires is replay divergence. Ordinary result/error/bind/checkpoint reads must
+  never consume `RUN_TO_COORDINATE`; only the scheduler callback may do that
+  after the coordinate has been reached.
 - a thread switch cursor delta of `None` means the previous thread completed
   naturally, not the root cursor. Replay must preserve that terminal cursor
   state and must use `retrace.call_at(None, callback)` only when waiting for

@@ -160,6 +160,37 @@ def test_proxy_type_factory_binds_extended_method_wrappers():
     assert External.read in targets
 
 
+def test_proxy_type_factory_extended_type_wraps_base_getattr():
+    gateway_calls = []
+
+    def external(target, *args, **kwargs):
+        target = utils.try_unwrap(target)
+        gateway_calls.append((target, args, kwargs))
+        return target(*args, **kwargs)
+
+    factory = ProxyTypeFactory(
+        gateway_pair=SimpleNamespace(
+            external=external,
+            internal=lambda target, *args, **kwargs: target(*args, **kwargs),
+        ),
+    )
+
+    class Base:
+        def __getattr__(self, name):
+            if name == "close":
+                return lambda: "closed"
+            raise AttributeError(name)
+
+    class External(Base):
+        pass
+
+    proxy_type = factory.extended_type(External)
+    obj = proxy_type()
+
+    assert obj.close() == "closed"
+    assert any(call[0] is Base.__getattr__ for call in gateway_calls)
+
+
 def test_proxy_type_factory_dynamic_external_type_reuses_registered_wrapper_type():
     factory, _calls = _factory()
     received = {}

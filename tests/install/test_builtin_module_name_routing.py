@@ -92,10 +92,23 @@ def test_module_directives_include_ext_proxy_result():
     assert "ext_proxy_result" in DIRECTIVE_KEYS
 
 
-def test_thread_module_has_no_builtin_lock_config():
-    assert "_thread" not in ModuleConfigResolver()
+def test_thread_module_wires_native_lock_trylock_config():
+    cfg = ModuleConfigResolver()["_thread"]
+
+    assert cfg["type_attributes"]["LockType"]["wrap"]["acquire"] == (
+        "retracesoftware.install.edgecases.trylock"
+    )
+    assert cfg["type_attributes"]["RLock"]["wrap"]["acquire"] == (
+        "retracesoftware.install.edgecases.trylock"
+    )
     assert "replay_materialize" not in DIRECTIVE_KEYS
     assert "sync" not in DIRECTIVE_KEYS
+
+
+def test_threading_condition_ownership_probe_is_disabled():
+    cfg = ModuleConfigResolver()["threading"]
+
+    assert cfg["type_attributes"]["Condition"]["disable"] == ["_is_owned"]
 
 
 def test_install_import_hooks_disables_imports_without_unwrapping_args():

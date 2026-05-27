@@ -157,10 +157,10 @@ class _PeekableReader:
         self.reader = reader
         self.buffer = []
 
-    def peek(self):
-        if not self.buffer:
+    def peek(self, offset=0):
+        while len(self.buffer) <= offset:
             self.buffer.append(self.reader())
-        return self.buffer[0]
+        return self.buffer[offset]
 
     def __call__(self):
         if self.buffer:
@@ -171,16 +171,22 @@ class _ThreadCursors:
     def __init__(self) -> None:
         self.cursors = {}
 
-    def advance(self, thread_id, delta):
+    def after(self, thread_id, delta):
         if delta is None:
-            self.cursors[thread_id] = None
             return None
 
         cursor = list(self.cursors.get(thread_id, ()))
         common = delta[0] if delta else 0
         del cursor[common:]
         cursor.extend(delta[1:])
-        cursor = tuple(cursor)
+        return tuple(cursor)
+
+    def advance(self, thread_id, delta):
+        if delta is None:
+            self.cursors[thread_id] = None
+            return None
+
+        cursor = self.after(thread_id, delta)
         self.cursors[thread_id] = cursor
         return cursor
 
@@ -199,6 +205,7 @@ class System(ProxyRuntime, Binder, ImmutableRegistry):
         on_callback,
         on_error,
         on_result,
+        wrap_external_call=functional.identity,
     ):
         system_ref = weakref.ref(self)
 
@@ -229,7 +236,8 @@ class System(ProxyRuntime, Binder, ImmutableRegistry):
             on_result = on_result,
             int_proxy = self.proxy_factory.proxy_internal,
             ext_proxy = self.proxy_factory.proxy_external,
-            unwrap = unwrap)
+            unwrap = unwrap,
+            wrap_external_call = wrap_external_call)
 
     def wire_for_replay(self, *, next_result):
         self.gateway_pair.wire_replay(
@@ -687,8 +695,17 @@ class System(ProxyRuntime, Binder, ImmutableRegistry):
                 binder,
             )))
 
+        on_result = functional.sequence(encode_for_write, writer.result)
+
+        if async_capture.thread_switch:
+            operation_result = system.internal_space.check_for_thread_switch(on_result)
+            wrap_external_call = system.internal_space.check_for_thread_switch
+        else:
+            operation_result = on_result
+            wrap_external_call = functional.identity
+
         operation_writer = _RecordReplayOperationWriter(
-            result=functional.sequence(encode_for_write, writer.result),
+            result=operation_result,
         )
 
         def record_replay_operation(recorder, _replayer):
@@ -713,7 +730,8 @@ class System(ProxyRuntime, Binder, ImmutableRegistry):
         system.wire_for_record(
             on_callback = on_callback,
             on_error = on_error,
-            on_result = functional.sequence(encode_for_write, writer.result),
+            on_result = on_result,
+            wrap_external_call = wrap_external_call,
         )
 
         if async_capture.thread_switch:
@@ -753,6 +771,7 @@ class System(ProxyRuntime, Binder, ImmutableRegistry):
         handoff = retrace.ThreadHandoff()
         bindings = {}
         cursors = _ThreadCursors()
+        pending_coordinate_thread_id = [None]
         system = None
         materialize_replay_value = functional.identity
         unresolved_checkpoint_binding = object()
@@ -822,53 +841,112 @@ class System(ProxyRuntime, Binder, ImmutableRegistry):
             callback_result = run_callback(message)
             consume_callback_completion(callback_result)
 
-        def advance_to_coordinate(result=None):
-            while isinstance(reader.peek(), RunToCoordinateMessage):
-                message = reader()
-                thread_id = _thread.get_ident()
-                cursor = cursors.advance(thread_id, message.cursor_delta)
-                instruction = reader.peek()
+        def consume_armed_coordinate(expected_type=None):
+            message = reader()
+            if not isinstance(message, RunToCoordinateMessage):
+                raise ReplayThreadScheduleError(
+                    f"expected replay scheduler coordinate, got {message!r}"
+                )
+            pending_coordinate_thread_id[0] = None
+            cursors.advance(_thread.get_ident(), message.cursor_delta)
 
-                if isinstance(instruction, SwitchThreadMessage):
-                    instruction = reader()
-                    on_hit = functional.repeatedly(handoff.to, instruction.thread_id)
-                    error = ReplayThreadScheduleError(
-                        f"overshot replay thread switch to {instruction.thread_id!r}"
-                    )
-                elif isinstance(instruction, SignalMessage):
-                    instruction = reader()
-                    on_hit = functional.repeatedly(run_callback, instruction)
-                    error = ReplayThreadScheduleError("overshot replay signal")
-                elif isinstance(instruction, GCMessage):
-                    instruction = reader()
-                    on_hit = functional.repeatedly(gc.collect, instruction.generation)
-                    error = ReplayThreadScheduleError("overshot replay gc")
-                elif isinstance(instruction, CallbackMessage):
-                    instruction = reader()
-                    on_hit = functional.repeatedly(run_callback_envelope, instruction)
-                    error = ReplayThreadScheduleError("overshot replay callback")
-                elif isinstance(instruction, RunCompletedMessage):
-                    reader()
-                    continue
-                else:
-                    on_hit = utils.noop
-                    error = ReplayThreadScheduleError(
-                        f"overshot replay coordinate {cursor!r}"
-                    )
+            if expected_type is None:
+                return message
 
-                if cursor is None:
-                    system.internal_space.call_at(cursor, on_hit)
-                else:
-                    system.internal_space.call_at(
-                        cursor,
-                        on_hit,
-                        functional.repeatedly(_raise, error),
-                    )
-            return result
+            instruction = reader()
+            if not isinstance(instruction, expected_type):
+                raise ReplayThreadScheduleError(
+                    f"expected replay scheduler instruction {expected_type!r}, "
+                    f"got {instruction!r}"
+                )
+            return instruction
+
+        def arm_next_coordinate():
+            try:
+                message = reader.peek()
+            except (LookupError, RuntimeError, StopIteration):
+                return False
+            if not isinstance(message, RunToCoordinateMessage):
+                return False
+
+            thread_id = _thread.get_ident()
+            cursor = cursors.after(thread_id, message.cursor_delta)
+            pending_coordinate_thread_id[0] = thread_id
+            instruction = reader.peek(1)
+
+            if isinstance(instruction, SwitchThreadMessage):
+                on_hit = functional.sequence(
+                    functional.repeatedly(
+                        consume_armed_coordinate,
+                        SwitchThreadMessage,
+                    ),
+                    operator.attrgetter("thread_id"),
+                    functional.partial(handoff.to),
+                )
+                error = ReplayThreadScheduleError(
+                    f"overshot replay thread switch to {instruction.thread_id!r}"
+                )
+            elif isinstance(instruction, SignalMessage):
+                on_hit = functional.sequence(
+                    functional.repeatedly(consume_armed_coordinate, SignalMessage),
+                    run_callback,
+                )
+                error = ReplayThreadScheduleError("overshot replay signal")
+            elif isinstance(instruction, GCMessage):
+                on_hit = functional.sequence(
+                    functional.repeatedly(consume_armed_coordinate, GCMessage),
+                    operator.attrgetter("generation"),
+                    functional.partial(gc.collect),
+                )
+                error = ReplayThreadScheduleError("overshot replay gc")
+            elif isinstance(instruction, CallbackMessage):
+                on_hit = functional.sequence(
+                    functional.repeatedly(consume_armed_coordinate, CallbackMessage),
+                    run_callback_envelope,
+                )
+                error = ReplayThreadScheduleError("overshot replay callback")
+            elif isinstance(instruction, RunCompletedMessage):
+                on_hit = functional.repeatedly(
+                    consume_armed_coordinate,
+                    RunCompletedMessage,
+                )
+                error = ReplayThreadScheduleError("overshot replay completion")
+            else:
+                on_hit = functional.repeatedly(consume_armed_coordinate)
+                error = ReplayThreadScheduleError(
+                    f"overshot replay coordinate {cursor!r}"
+                )
+
+            if cursor is None:
+                system.internal_space.call_at(cursor, on_hit)
+            else:
+                system.internal_space.call_at(
+                    cursor,
+                    on_hit,
+                    functional.repeatedly(_raise, error),
+                )
+            return True
 
         def read_message():
             while True:
-                advance_to_coordinate()
+                try:
+                    next_message = reader.peek()
+                except (LookupError, RuntimeError, StopIteration):
+                    raise
+                if isinstance(next_message, RunToCoordinateMessage):
+                    current_thread_id = _thread.get_ident()
+                    scheduled_thread_id = pending_coordinate_thread_id[0]
+                    if (
+                        scheduled_thread_id is not None
+                        and current_thread_id != scheduled_thread_id
+                    ):
+                        handoff.to(scheduled_thread_id)
+                        continue
+                    raise ReplayThreadScheduleError(
+                        "replay reached a proxy boundary before the pending "
+                        "scheduler coordinate fired"
+                    )
+
                 message = reader()
                 if isinstance(message, BindCloseMessage):
                     bindings.pop(message.handle, None)
@@ -891,6 +969,7 @@ class System(ProxyRuntime, Binder, ImmutableRegistry):
                     run_callback_envelope(message)
                     continue
 
+                arm_next_coordinate()
                 return message
 
         def consume_lifecycle_marker(message_type):
@@ -995,10 +1074,15 @@ class System(ProxyRuntime, Binder, ImmutableRegistry):
             return system.apply_with("external", replayer(operation_reader))
 
         system._record_replay_operation = record_replay_operation
+        def replay_start():
+            consume_lifecycle_marker(OnStartMessage)
+            arm_next_coordinate()
+
         system.lifecycle_hooks = LifecycleHooks(
-            on_start=functional.partial(consume_lifecycle_marker, OnStartMessage),
+            on_start=replay_start,
             on_end=functional.partial(consume_lifecycle_marker, RunCompletedMessage),
         )
+        system._arm_next_coordinate = arm_next_coordinate
 
         def materialize_external_type_token(value):
             if isinstance(value, type) and system.retrace_type_for(value) is not None:

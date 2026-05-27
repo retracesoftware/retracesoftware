@@ -2,10 +2,8 @@ import functools
 import gc
 import inspect
 import os
-import sys
 
 import retracesoftware.functional as functional
-from retracesoftware.install import globals
 import retracesoftware.utils as utils
 
 def recvfrom_into(target):
@@ -57,6 +55,7 @@ def read(target):
                 return len(data)
     return wrapper
 
+
 def write(target):
     @functools.wraps(target)
     @utils.exclude_from_stacktrace
@@ -64,6 +63,7 @@ def write(target):
         return target(byteslike.tobytes())
 
     return wrapper
+
 
 def readinto(target):
     @functools.wraps(target)
@@ -74,6 +74,7 @@ def readinto(target):
         return len(bytes)
     return wrapper
 
+
 def readinto1(target):
     @functools.wraps(target)
     @utils.exclude_from_stacktrace
@@ -83,6 +84,7 @@ def readinto1(target):
         return len(bytes)
     return wrapper
 
+
 def mmap_readinto(target):
     @functools.wraps(target)
     @utils.exclude_from_stacktrace
@@ -91,6 +93,7 @@ def mmap_readinto(target):
         buffer[:len(data)] = data
         return len(data)
     return wrapper
+
 
 def openssl_set_verify(target):
     target = utils.try_unwrap(target)
@@ -219,14 +222,14 @@ def _in_internal_space(system):
     return getattr(system, "location", "internal") == "internal"
 
 
-def acquire_trylock(target, *, system=None):
+def trylock(target, *, system=None):
     raw_target = utils.try_unwrap(target)
     signature = _signature_or_none(raw_target)
-    trylock = None
+    trylock_operation = None
     if system is not None:
         record_replay_operation = getattr(system, "record_replay_operation", None)
         if record_replay_operation is not None:
-            trylock = record_replay_operation(
+            trylock_operation = record_replay_operation(
                 functional.partial(_record_result, raw_target),
                 functional.partial(_replay_result_with_truthy_sync, raw_target),
             )
@@ -244,8 +247,8 @@ def acquire_trylock(target, *, system=None):
 
         if blocking is False or timeout == 0:
             operation = (
-                trylock
-                if trylock is not None and _in_internal_space(system)
+                trylock_operation
+                if trylock_operation is not None and _in_internal_space(system)
                 else raw_target
             )
             return operation(self, *args, **kwargs)
@@ -253,10 +256,6 @@ def acquire_trylock(target, *, system=None):
         return raw_target(self, *args, **kwargs)
 
     return wrapper
-
-
-def semaphore_acquire_trylock(target, *, system=None):
-    return acquire_trylock(target, system=system)
 
 
 def asyncio_write_to_self(target, *, system=None):
@@ -289,55 +288,6 @@ def asyncio_write_to_self(target, *, system=None):
         return result
 
     return wrapper
-
-
-def concurrent_futures_threadpool_shutdown_sentinel(*args, **kwargs):
-    if len(args) < 2 or args[1] is not None:
-        return False
-
-    frame = sys._getframe()
-    while frame is not None:
-        if (
-            frame.f_globals.get("__name__") == "concurrent.futures.thread"
-            and frame.f_code.co_name in {"_worker", "shutdown"}
-        ):
-            return True
-        frame = frame.f_back
-    return False
-
-
-def openssl_connection_class(cls):
-    class Connection(cls):
-        __module__ = cls.__module__
-        __qualname__ = cls.__qualname__
-
-        def close(self):
-            try:
-                sock = object.__getattribute__(self, "_socket")
-            except AttributeError:
-                return None
-            if sock is None:
-                return None
-
-            import _socket
-
-            if isinstance(sock, _socket.socket):
-                try:
-                    sock._closed = True
-                except Exception:
-                    pass
-                try:
-                    io_refs = sock._io_refs
-                except Exception:
-                    io_refs = 0
-                if io_refs <= 0:
-                    return utils.try_unwrap_apply(_socket.socket.close, sock)
-                return None
-
-            return utils.try_unwrap_apply(getattr(sock, "close"))
-
-    Connection.__name__ = cls.__name__
-    return Connection
 
 
 def fsspec_cached_call(target):

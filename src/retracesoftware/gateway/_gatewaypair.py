@@ -17,6 +17,7 @@ ResultCallback = Callable[[Any], Any]
 ErrorCallback = Callable[[type, BaseException, Any], Any]
 NextResult = Callable[..., Any]
 UnwrapCallback = Callable[[Any], Any]
+CallWrapper = Callable[[Callable[..., Any]], Callable[..., Any]]
 
 
 class CallbackObserver(Protocol):
@@ -389,6 +390,7 @@ class GatewayPair:
         int_proxy: Callable[..., Any],
         ext_proxy: Callable[..., Any],
         unwrap: UnwrapCallback = utils.try_unwrap,
+        wrap_external_call: CallWrapper = functional.identity,
     ):
         """Install record-time dispatch and proxy hooks on an unwired pair."""
         # int_proxy = functional.if_then_else(
@@ -438,10 +440,11 @@ class GatewayPair:
                 ext_proxy,
                 functional.side_effect(on_result),
             ))
+        run_external = wrap_external_call(functional.apply)
         external_call = functional.partial(
             _space_apply,
             self._external_space,
-            functional.sequence(functional.apply, external_result),
+            functional.sequence(run_external, external_result),
         )
 
         callback_call = functional.transform_call(

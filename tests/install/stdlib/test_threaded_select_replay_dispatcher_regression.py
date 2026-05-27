@@ -96,6 +96,74 @@ def test_replay_child_thread_select_does_not_diverge(tmp_path: Path):
 
 
 @pytest.mark.skipif(
+    not hasattr(__import__("select"), "kqueue"),
+    reason="select.kqueue is required for this regression test",
+)
+def test_replay_child_thread_kqueue_constructor_does_not_diverge(tmp_path: Path):
+    script = tmp_path / "thread_kqueue_repro.py"
+    script.write_text(
+        (
+            "import select\n"
+            "import threading\n"
+            "\n"
+            "box = {}\n"
+            "\n"
+            "def worker():\n"
+            "    try:\n"
+            "        kq = select.kqueue()\n"
+            "        box['type'] = type(kq).__name__\n"
+            "        kq.close()\n"
+            "    except BaseException as exc:\n"
+            "        box['error'] = f'{type(exc).__name__}: {exc}'\n"
+            "\n"
+            "def main():\n"
+            "    thread = threading.Thread(target=worker)\n"
+            "    thread.start()\n"
+            "    thread.join()\n"
+            "    assert box.get('error') is None, box['error']\n"
+            "    assert box.get('type') == 'kqueue', box\n"
+            "    print('ok', flush=True)\n"
+            "\n"
+            "if __name__ == '__main__':\n"
+            "    main()\n"
+        ),
+        encoding="utf-8",
+    )
+
+    modules_dir = tmp_path / "modules"
+    modules_dir.mkdir()
+    (modules_dir / "select.toml").write_text(
+        'proxy = ["kqueue"]\n',
+        encoding="utf-8",
+    )
+
+    recording = tmp_path / "trace.retrace"
+
+    env = os.environ.copy()
+    env["PYTHONFAULTHANDLER"] = "1"
+    env["RETRACE_CONFIG"] = "debug"
+    env["RETRACE_RECORDING"] = str(recording)
+    env["RETRACE_MODULES_PATH"] = str(modules_dir)
+
+    record = run_record(str(script), str(recording), env=env)
+    assert record.returncode == 0, (
+        "record failed for child-thread kqueue constructor reproducer\n"
+        f"exit: {record.returncode}\n"
+        f"stdout:\n{record.stdout}\n"
+        f"stderr:\n{record.stderr}"
+    )
+
+    replay = run_replay(str(recording), env=env)
+    assert replay.returncode == 0, (
+        "replay diverged for child-thread kqueue constructor reproducer\n"
+        f"exit: {replay.returncode}\n"
+        f"stdout:\n{replay.stdout}\n"
+        f"stderr:\n{replay.stderr}"
+    )
+    assert replay.stdout == record.stdout
+
+
+@pytest.mark.skipif(
     sys.platform == "win32" or not hasattr(os, "pipe"),
     reason="selectable pipe file descriptors are required for this regression test",
 )
