@@ -2,10 +2,11 @@
 
 These guides cover the public workflow for a new Retrace user.
 
-The included Flask quickstart takes about 5 minutes. Before starting it, check
-that Python 3.12, Go 1.25 or newer, Git, and VS Code are installed. The guide
-also shows how to confirm the Retrace package is installed and that the
-`.retrace` recording was created before opening VS Code.
+The included pytest quickstart takes about 5 minutes. Before starting it,
+check that Python 3.12, Go 1.25 or newer, Git, and VS Code are installed. The
+guide also shows how to confirm the Retrace package is installed, record a
+failed pytest run, create a preview replay bundle, and open the `.retrace`
+recording in VS Code.
 
 Read them in order:
 
@@ -17,13 +18,15 @@ Read them in order:
 The current recommended flow is:
 
 ```
+git clone https://github.com/retracesoftware/retracesoftware.git
+cd retracesoftware/quickstart
 go version
 python3.12 -m venv .venv
 source .venv/bin/activate
 python -m pip install retracesoftware
 python -m pip show retracesoftware
-python -m retracesoftware install
-RETRACE_RECORDING=recordings/run.retrace python your_script.py
+python -m pip install -r requirements.txt
+PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 python -m retracesoftware --recording recordings/pytest.retrace -- -m pytest pytest_demo -q --tb=short
 code .
 ```
 
@@ -34,7 +37,7 @@ start the Retrace debug configuration to replay the recorded execution.
 Terminal replay is also available when you want a quick sanity check:
 
 ```
-./recordings/run.retrace --extract
-ROOT_PID=$(python -m retracesoftware --recording recordings/run.retrace --list_pids | head -1)
-./recordings/run.d/${ROOT_PID}.bin
+./recordings/pytest.retrace --extract
+ROOT_PID=$(python -m retracesoftware --recording recordings/pytest.retrace --list_pids | head -1)
+./recordings/pytest.d/${ROOT_PID}.bin
 ```

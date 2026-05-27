@@ -10,8 +10,9 @@ recording workflow.
 3. [Recording Python Commands](getting-started/recording-python-commands.md)
 4. [VS Code Extension](getting-started/vscode-extension.md)
 
-That path gets a user from a clean Python environment to a recorded Flask demo,
-real application command examples, and VS Code replay debugging.
+That path gets a user from a clean Python environment to a recorded failed
+pytest run, a preview replay bundle, real application command examples, and VS
+Code replay debugging.
 
 ## User Guides
 

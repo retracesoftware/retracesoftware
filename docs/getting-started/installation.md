@@ -99,7 +99,8 @@ You can also record explicitly:
 python -m retracesoftware --recording recordings/example.retrace -- your_script.py
 ```
 
-The quickstart uses the auto-enable hook because it is the normal user workflow.
+Auto-recording remains the standard environment-variable workflow for ordinary
+scripts and application commands.
 
 For examples beyond a single `.py` file, see
 [Recording Python Commands](recording-python-commands.md).

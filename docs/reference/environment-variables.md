@@ -11,10 +11,10 @@ Retrace environment variables are uppercase. Lowercase names such as
 | `RETRACE_CONFIG` | record | Bundled config preset name or path to a config file |
 | `RETRACE_SKIP_CHECKSUMS` | replay | Debug escape hatch for checksum/version validation |
 
-The normal quickstart recording command is:
+For commands that use the auto-enable hook, a typical recording command is:
 
 ```
-RETRACE_RECORDING=recordings/flask.retrace python examples/flask_demo.py
+RETRACE_RECORDING=recordings/example.retrace python app.py
 ```
 
 ## Auto-Enable Behavior
@@ -40,7 +40,7 @@ recording = "{script}.retrace"
 That means this also records:
 
 ```
-RETRACE_CONFIG=debug python examples/flask_demo.py
+RETRACE_CONFIG=debug python app.py
 ```
 
 If both are set, `RETRACE_RECORDING` overrides the recording path from the

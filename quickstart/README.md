@@ -1,9 +1,15 @@
-# Retrace Quickstart
+# Retrace Pytest Quickstart
 
-This is a minimal quickstart for trying Retrace with a small Flask example. It
-takes about 5 minutes.
+This is a controlled preview of the pytest workflow for Retrace. It takes
+about 5 minutes.
 
-Before you start, make sure you have:
+By the end you will have a failing pytest run recorded as a `.retrace` file, a
+small replay bundle, and a VS Code replay that can stop at a breakpoint inside
+the code that caused the failure.
+
+## Before You Start
+
+Make sure you have:
 
 1. Python 3.12 (`python3.12 --version`)
 2. Go 1.25 or newer (`go version`)
@@ -12,15 +18,79 @@ Before you start, make sure you have:
 
 See [../COMPATIBILITY.md](../COMPATIBILITY.md) for current platform details.
 
-By the end you will have a `.retrace` recording of a small Flask app and a VS
-Code session that can step backward from a breakpoint inside that recording.
+## Recommended Preview Command
 
-## Requirements
+This quickstart keeps pytest plugin loading explicit so the run is small,
+repeatable, and easy to inspect:
 
-- Python 3.12
-- Go 1.25 or newer
-- Git
-- VS Code
+```
+PYTEST_DISABLE_PLUGIN_AUTOLOAD=1
+python -m retracesoftware --recording ... -- -m pytest ...
+```
+
+That command shape focuses the preview on Retrace's core loop: record a failed
+pytest execution once, replay it locally, and inspect the same runtime state.
+
+## What This Preview Shows
+
+This preview shows the core product shape:
+
+```
+failed pytest run
+-> .retrace artifact
+-> terminal replay
+-> VS Code replay debugging
+-> replay bundle for a human or AI agent
+```
+
+The demo is deliberately small, but it is not a single assertion toy. It
+includes filesystem reads through `tmp_path`, validation branches, calculated
+discounts, shipping, tax, UUIDs, time, random values, structured receipt data,
+and a realistic failure where one calculation happens in the wrong order.
+
+## What We Want To Add Next
+
+The next pass is focused on making this workflow feel even more natural in
+everyday pytest and CI use:
+
+- a first-class `retrace pytest -- ...` command
+- a built-in replay bundle command for CI artifacts
+- broader pytest plugin coverage, including coverage, parallel workers,
+  timeout handling, and async combinations
+- richer AI-facing replay context, such as structured locals, stack, and
+  failure-state summaries
+
+The point here is to validate the first user-visible loop: record a failed
+pytest run once, replay it locally, and inspect the same execution instead of
+rerunning the test live.
+
+## What Is In This Folder
+
+```
+quickstart/
+  pytest_demo/
+    checkout.py
+    tests/test_checkout.py
+  recordings/
+  make_pytest_bundle.py
+  README.md
+  requirements.txt
+```
+
+The main demo is:
+
+```
+pytest_demo/tests/test_checkout.py
+```
+
+It has a small checkout pipeline with inventory validation, promo rules loaded
+from JSON, loyalty discounts, shipping, tax, and audit fields. Twelve tests
+pass and one test intentionally fails. The failure comes from
+`pytest_demo/checkout.py`, where tax is calculated before the loyalty discount
+is removed from the taxable base. The code also uses values that normally
+change between runs, such as time, UUIDs, and random numbers, so replay
+demonstrates Retrace returning the recorded runtime values instead of touching
+the live world again.
 
 ## 1. Clone The Repo
 
@@ -49,36 +119,6 @@ brew install go
 On Linux, install Go 1.25 or newer from your distro packages or from
 [go.dev/dl](https://go.dev/dl/).
 
-## What Is In This Folder
-
-```
-quickstart/
-  examples/
-    flask_demo.py
-    simple_demo.py
-  recordings/
-  README.md
-  requirements.txt
-```
-
-The main demo is:
-
-```
-examples/flask_demo.py
-```
-
-It defines a small Flask app, calls it with Flask's in-process test client, and
-prints the responses. It does not start a real network server, so there is no
-port to manage.
-
-The demo intentionally uses values that normally change between runs:
-
-- current time
-- UUIDs
-- random numbers
-
-That makes it easy to see what Retrace records and replays.
-
 ## 3. Create A Python 3.12 Virtual Environment
 
 Check that Python 3.12 is available:
@@ -105,7 +145,7 @@ After activation, your terminal prompt should start with:
 (.venv)
 ```
 
-## 4. Install Retrace
+## 4. Install Retrace And The Demo Dependencies
 
 Install Retrace from PyPI:
 
@@ -113,8 +153,6 @@ Install Retrace from PyPI:
 python -m pip install --upgrade pip
 python -m pip install retracesoftware
 ```
-
-That installs the Retrace Python package into this virtual environment.
 
 Check that the installation worked before continuing:
 
@@ -129,105 +167,87 @@ Name: retracesoftware
 Version: ...
 ```
 
-## 5. Enable Auto-Recording In This Virtual Environment
-
-Install Retrace's auto-enable hook:
-
-```
-python -m retracesoftware install
-```
-
-This adds a small `.pth` file to the active virtual environment. After that,
-fresh Python processes can start under Retrace automatically when you provide
-the `RETRACE_RECORDING` environment variable.
-
-This command does not record anything by itself.
-
-## 6. Install The Flask Demo Dependency
-
-Install the demo dependency from `requirements.txt`:
+Install the quickstart dependencies:
 
 ```
 python -m pip install -r requirements.txt
 ```
 
-The quickstart app dependency is intentionally separate from Retrace so the
-Retrace install stays obvious:
+This installs `pytest` for the quickstart demo.
+
+## 5. Run The Failing pytest Demo Normally
+
+Run the demo without Retrace first:
 
 ```
-flask>=3.0
+PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 python -m pytest pytest_demo -q --tb=short
 ```
 
-## 7. Run The Flask Demo Normally
+You should see one intentional failure:
 
 ```
-python examples/flask_demo.py
+FAILED pytest_demo/tests/test_checkout.py::test_total_taxes_discounted_amount_once
 ```
 
-You should see output like:
+This is a normal pytest run. Nothing has been recorded yet.
+
+## 6. Record The Failed pytest Run With Retrace
+
+Run the same pytest command through Retrace's explicit runner:
 
 ```
-=== Retrace Flask demo ===
-GET /health: status=200 body=...
-POST /users Ada: status=201 body=...
-POST /users Grace: status=201 body=...
-GET /users/1: status=200 body=...
-GET /summary: status=200 body=...
-Flask demo complete.
+PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 \
+python -m retracesoftware --recording recordings/pytest.retrace -- -m pytest pytest_demo -q --tb=short
 ```
 
-This is a normal Python run. Nothing has been recorded yet.
-
-## 8. Record The Flask Demo With Retrace
-
-Run the same Python file, but put `RETRACE_RECORDING=...` before the command:
+The command exits nonzero because the test is supposed to fail. That is okay.
+The important output is the recording:
 
 ```
-RETRACE_RECORDING=recordings/flask.retrace python examples/flask_demo.py
+recordings/pytest.retrace
+```
+
+Check that the recording was written:
+
+```
+ls -lh recordings/pytest.retrace
+```
+
+## 7. Replay The Failed pytest Run In The Terminal
+
+Terminal replay is the fastest way to confirm the recording is useful.
+
+Extract the replay files:
+
+```
+./recordings/pytest.retrace --extract
 ```
 
 This creates:
 
 ```
-recordings/flask.retrace
+recordings/pytest.d/
 ```
 
-That `.retrace` file is the recording.
-
-Check that the recording was written:
+Find the recorded process id:
 
 ```
-ls -lh recordings/flask.retrace
+ROOT_PID=$(python -m retracesoftware --recording recordings/pytest.retrace --list_pids | head -1)
+echo "ROOT_PID=$ROOT_PID"
 ```
 
-`recordings/` is just the folder where this quickstart stores generated
-recordings. Retrace creates the folder automatically if it does not already
-exist. `flask.retrace` is just the filename we chose for the Flask demo.
-
-Use uppercase `RETRACE_RECORDING`. Lowercase `retrace_recording` will not enable
-recording on macOS or Linux.
-
-## 9. Install The VS Code Extension
-
-Open VS Code.
-
-Go to the Extensions sidebar and search for:
+Replay the recorded process:
 
 ```
-Retrace Debug Extension
+./recordings/pytest.d/${ROOT_PID}.bin
 ```
 
-Install the extension published by:
+You should see the same pytest failure replay locally. Retrace is not running a
+fresh live pytest attempt here; it is replaying the recorded failed execution.
 
-```
-RetraceSoftware
-```
+## 8. Open The Recording In VS Code
 
-Restart VS Code if it asks you to.
-
-## 10. Open This Folder In VS Code
-
-From this folder:
+Open this folder:
 
 ```
 code .
@@ -241,24 +261,20 @@ File -> Open Folder...
 
 Then select the `quickstart` folder.
 
-## 11. Open The Recording In VS Code
+Install the Retrace extension:
 
-Make sure this file exists first:
+1. Open the Extensions sidebar.
+2. Search for `Retrace Debug Extension`.
+3. Install the extension published by `RetraceSoftware`.
 
-```
-recordings/flask.retrace
-```
-
-If it does not exist, run the recording command from step 8 again.
-
-Then in VS Code:
+Open the recording:
 
 1. Open the Retrace sidebar.
 2. Click `Open Recording...`.
 3. Select:
 
 ```
-recordings/flask.retrace
+recordings/pytest.retrace
 ```
 
 You can also right-click the `.retrace` file in the Explorer and choose:
@@ -267,101 +283,89 @@ You can also right-click the `.retrace` file in the Explorer and choose:
 Open as Retrace Recording
 ```
 
-## 12. Replay And Debug
+## 9. Replay And Debug In VS Code
 
 Open the source file:
 
 ```
-examples/flask_demo.py
+pytest_demo/checkout.py
 ```
 
-Add a breakpoint in one of these places:
+Add a breakpoint inside:
 
-- inside the `/health` route
-- inside the `/users` route
-- inside `main()`
+```
+build_receipt
+```
 
 Then use the Retrace sidebar to start replaying the recorded process.
 
-During replay, VS Code should stop on your breakpoint. You can inspect local
-variables, step forward, step backward, and continue through the recorded
-execution.
+During replay, VS Code should stop on your breakpoint. You can inspect the
+checkout breakdown: `subtotal_cents`, `item_discount_cents`,
+`loyalty_discount_cents`, `shipping_cents`, `taxable_cents`, `tax_cents`, and
+`total_cents`. Then step forward, step backward, and continue through the
+recorded failed execution.
 
-You are done when VS Code stops at your breakpoint, the Retrace sidebar shows
-the recorded process tree, and the Step Back button moves backward through the
-recording. From there you can inspect variables, continue, step backward and
-forward, reverse, and restart without rerunning the Flask demo live.
+`build_receipt` is called by several tests, so VS Code may stop at this
+breakpoint more than once. Continue until the call stack includes
+`test_total_taxes_discounted_amount_once`, then inspect the calculation that
+leads to the failing assertion.
 
-## Optional: Replay The Recording In The Terminal
+You are done when VS Code stops at your breakpoint and the replay reaches the
+same failing pytest assertion without rerunning the test live.
 
-Terminal replay is useful as a quick check that the recording itself is good.
+## 10. Optional: Create A Replay Bundle
 
-First extract the replay files:
-
-```
-./recordings/flask.retrace --extract
-```
-
-This creates:
+The helper script creates the artifact shape used by the pytest/CI preview:
 
 ```
-recordings/flask.d/
+python make_pytest_bundle.py
 ```
 
-Find the recorded process id:
+The script exits nonzero because the demo test fails. That is expected. It
+writes:
 
 ```
-ROOT_PID=$(python -m retracesoftware --recording recordings/flask.retrace --list_pids | head -1)
-echo "ROOT_PID=$ROOT_PID"
+recordings/pytest-failed-run/
+  trace.retrace
+  retrace-manifest.json
+  pytest.xml
+  stdout.log
+  replay.md
+  pip-freeze.txt
 ```
 
-Replay the recorded process:
+`replay.md` contains copy-paste replay commands for a human or an AI agent. The
+manifest intentionally does not capture environment variables.
+
+If pytest passes, the helper discards the recording because there is no failed
+execution to debug.
+
+## Optional: AI-Assisted Debugging
+
+Give an AI agent this prompt:
 
 ```
-./recordings/flask.d/${ROOT_PID}.bin
+A failed pytest run was recorded with Retrace.
+
+Use recordings/pytest-failed-run/replay.md to replay the recorded failure.
+Do not start by rerunning pytest live.
+Read stdout.log, pytest.xml, and the source code.
+Explain:
+1. what failed,
+2. why it failed,
+3. the smallest code change that would fix it.
 ```
 
-The replay should print the same recorded Flask responses. Values like time,
-UUIDs, and random numbers should match the recording instead of changing live.
-
-## Optional: Try The Smaller Demo
-
-Run normally:
-
-```
-python examples/simple_demo.py
-```
-
-Record:
-
-```
-RETRACE_RECORDING=recordings/simple.retrace python examples/simple_demo.py
-```
-
-Extract:
-
-```
-./recordings/simple.retrace --extract
-```
-
-Find the process id:
-
-```
-ROOT_PID=$(python -m retracesoftware --recording recordings/simple.retrace --list_pids | head -1)
-echo "ROOT_PID=$ROOT_PID"
-```
-
-Replay:
-
-```
-./recordings/simple.d/${ROOT_PID}.bin
-```
+Today, this gives the AI a deterministic failed execution to rerun and inspect
+alongside the source and pytest output. A future interface can expose structured
+locals, call stack, and reverse-debugging state directly to agents.
 
 ## Reset Recordings
 
 ```
 rm -f recordings/*.retrace
 rm -rf recordings/*.d
+rm -rf recordings/pytest-failed-run
 ```
 
 ## Troubleshooting
@@ -387,7 +391,7 @@ File -> Open Folder...
 Run:
 
 ```
-chmod +x recordings/flask.retrace
+chmod +x recordings/pytest.retrace
 ```
 
 Then try the replay command again.
@@ -399,14 +403,21 @@ Python 3.12, replay with the same Python 3.12 environment.
 
 ### Recording did not create a `.retrace` file
 
-Make sure you already ran:
+Use the explicit Retrace runner for this pytest preview:
 
 ```
-python -m retracesoftware install
+PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 \
+python -m retracesoftware --recording recordings/pytest.retrace -- -m pytest pytest_demo -q --tb=short
 ```
 
-Then record with uppercase `RETRACE_RECORDING`:
+### A pytest plugin is missing
+
+This quickstart keeps pytest plugin loading explicit. If your own suite needs a
+plugin, enable it directly after confirming the basic preview works. For
+example:
 
 ```
-RETRACE_RECORDING=recordings/flask.retrace python examples/flask_demo.py
+PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 python -m pytest -p anyio tests
 ```
+
+Broader plugin coverage is part of the pytest workflow roadmap.

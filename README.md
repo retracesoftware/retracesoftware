@@ -10,6 +10,8 @@ The same recording model works for Python apps and production crashes. Start wit
   <img src="docs/images/A_test_fails_in_CI.gif" alt="Failed pytest run replayed in VS Code with Retrace, stepping backwards from the assertion failure to the runtime state that caused it." width="800">
 </p>
 
+**Start here:** [Replay a failed pytest run with the full quickstart](quickstart/README.md).
+
 ## Why Retrace
 
 Most failed test and CI artifacts are logs, tracebacks, screenshots, or partial traces. They show symptoms. They do not preserve the execution.
@@ -29,14 +31,15 @@ The failed execution becomes something you can inspect, replay, and share.
 
 Install Retrace in your virtual environment:
 
-    python -m pip install retracesoftware
-    python -m retracesoftware install
+    python -m pip install retracesoftware pytest
 
-Run pytest with a recording path:
+Run pytest through Retrace's explicit runner:
 
-    RETRACE_RECORDING=recordings/pytest.retrace python -m pytest
+    PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 python -m retracesoftware --recording recordings/pytest.retrace -- -m pytest tests -q --tb=short
 
 If pytest fails, Retrace leaves behind a `.retrace` artifact for that exact failed run.
+
+This is the recommended preview command for pytest. It keeps pytest plugin loading explicit so the first-run demo stays focused, repeatable, and easy to inspect.
 
 Open the same project in VS Code:
 
@@ -63,7 +66,11 @@ For example, in GitHub Actions:
     - name: Run pytest with Retrace
       run: |
         mkdir -p recordings
-        RETRACE_RECORDING=recordings/pytest.retrace python -m pytest
+        set +e
+        PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 \
+          python -m retracesoftware --recording recordings/pytest.retrace -- -m pytest tests -q --tb=short
+        PYTEST_STATUS=$?
+        exit "$PYTEST_STATUS"
 
     - name: Upload Retrace recording
       if: failure()
@@ -80,7 +87,7 @@ No hosted trace service or GitHub App is required.
 
 A test fails:
 
-    RETRACE_RECORDING=recordings/failure.retrace python -m pytest tests/test_checkout.py
+    PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 python -m retracesoftware --recording recordings/failure.retrace -- -m pytest tests/test_checkout.py -q --tb=short
 
 Instead of rerunning and guessing, open `recordings/failure.retrace` in VS Code. Replay the exact failed execution, inspect locals and call stack, and step backwards from the failing assertion to the state that caused it.
 
@@ -116,9 +123,9 @@ That matters because AI agents often infer what happened from partial context. A
 
 CLI access and AI-agent workflows are arriving alongside the VS Code path.
 
-## Quick Start: Replay a Python App
+## Full Quickstart
 
-The pytest workflow is the fastest way to try Retrace. The included Flask demo shows the same recording and replay model on a running Python application.
+The full quickstart includes a small failing pytest demo, a replay bundle helper, terminal replay, and VS Code replay debugging.
 
 Clone the repo and enter the quickstart directory:
 
@@ -138,12 +145,11 @@ Install Retrace and the demo dependencies:
 
     python -m pip install --upgrade pip
     python -m pip install retracesoftware
-    python -m retracesoftware install
     python -m pip install -r requirements.txt
 
-Record the Flask demo:
+Record the pytest demo:
 
-    RETRACE_RECORDING=recordings/flask.retrace python examples/flask_demo.py
+    PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 python -m retracesoftware --recording recordings/pytest.retrace -- -m pytest pytest_demo -q --tb=short
 
 Open the project in VS Code:
 
@@ -154,12 +160,12 @@ In VS Code:
 1. Install the `Retrace Debug Extension` from the Marketplace.
 2. Open the Retrace sidebar.
 3. Choose `Open Recording...`.
-4. Select `recordings/flask.retrace`.
-5. Open `examples/flask_demo.py`.
-6. Set a breakpoint inside a route handler or inside `main()`.
+4. Select `recordings/pytest.retrace`.
+5. Open `pytest_demo/checkout.py`.
+6. Set a breakpoint inside `build_receipt`.
 7. Start replay from the Retrace view.
 
-The replay should stop at your breakpoint inside the recorded execution. You can inspect variables, continue, step forward, and step backward without running the Flask demo live again.
+The replay should stop at your breakpoint inside the recorded execution. You can inspect variables, continue, step forward, and step backward without running pytest live again.
 
 For the full walkthrough, see [quickstart/README.md](quickstart/README.md).
 
@@ -215,7 +221,7 @@ Record an ordinary Python file:
 
 Record a pytest run:
 
-    RETRACE_RECORDING=recordings/tests.retrace python -m pytest tests/
+    PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 python -m retracesoftware --recording recordings/tests.retrace -- -m pytest tests/ -q --tb=short
 
 Record a module-based CLI:
 
