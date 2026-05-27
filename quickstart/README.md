@@ -49,7 +49,7 @@ Make sure you have:
 
 - VS Code for replay debugging
 
-See `[../COMPATIBILITY.md](https://github.com/retracesoftware/retracesoftware/blob/codex/pytest-quickstart-preview/COMPATIBILITY.md)` for current platform details.
+See the [Retrace compatibility guide](../COMPATIBILITY.md) for current platform details.
 
 ---
 
