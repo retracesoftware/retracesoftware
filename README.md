@@ -386,22 +386,22 @@ go test ./...
 
 ## Repository Layout
 
-```text
-quickstart/                         first-run demo and public quickstart flow
-src/retracesoftware/__main__.py      CLI record/replay entrypoint
-src/retracesoftware/autoenable.py    .pth startup hook implementation
-src/retracesoftware/tape.py          recording file setup, checksums, and tape I/O
-src/retracesoftware/install/         runtime patching and import hooks
-src/retracesoftware/proxy/           record/replay boundary semantics
-src/retracesoftware/modules/         stdlib and third-party interception config
-src/retracesoftware/stream/          trace serialization
-cpp/stream/                          native trace serialization support
-src/retracesoftware/dap/             Python debugger protocol pieces
-go/                                  replay extraction, indexing, and debug adapter tooling
-vscode/                              VS Code extension
-tests/ and dockertests/              unit, replay, and scenario tests
-docs/                                user and maintainer documentation
-```
+| Path | Purpose |
+| --- | --- |
+| [`quickstart/`](quickstart/) | First-run demo and public quickstart flow |
+| [`src/retracesoftware/__main__.py`](src/retracesoftware/__main__.py) | CLI record/replay entrypoint |
+| [`src/retracesoftware/autoenable.py`](src/retracesoftware/autoenable.py) | `.pth` startup hook implementation |
+| [`src/retracesoftware/tape.py`](src/retracesoftware/tape.py) | Recording file setup, checksums, and tape I/O |
+| [`src/retracesoftware/install/`](src/retracesoftware/install/) | Runtime patching and import hooks |
+| [`src/retracesoftware/proxy/`](src/retracesoftware/proxy/) | Record/replay boundary semantics |
+| [`src/retracesoftware/modules/`](src/retracesoftware/modules/) | Standard-library and third-party interception config |
+| [`src/retracesoftware/stream/`](src/retracesoftware/stream/) | Python trace serialization |
+| [`cpp/stream/`](cpp/stream/) | Native trace serialization support |
+| [`src/retracesoftware/dap/`](src/retracesoftware/dap/) | Python debugger protocol pieces |
+| [`go/`](go/) | Replay extraction, indexing, and debug adapter tooling |
+| [`vscode/`](vscode/) | VS Code extension |
+| [`tests/`](tests/) and [`dockertests/`](dockertests/) | Unit, replay, and scenario tests |
+| [`docs/`](docs/) | User and maintainer documentation |
 
 ---
 
