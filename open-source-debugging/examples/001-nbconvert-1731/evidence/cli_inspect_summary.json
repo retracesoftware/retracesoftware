@@ -1,0 +1,16 @@
+{
+  "failure": {
+    "reason": "exception",
+    "exception_type": "KeyError",
+    "exception_message": "'state'",
+    "application_frame": {
+      "function": "choose_output_format",
+      "file": "reproduce_nbconvert_1731.py",
+      "line": 22
+    }
+  },
+  "cursor_available": true,
+  "locals_available": true,
+  "exception_available": true,
+  "application_frame_confidence": "high"
+}

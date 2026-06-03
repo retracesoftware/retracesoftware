@@ -1,0 +1,80 @@
+diff --git a/nbconvert/filters/widgetsdatatypefilter.py b/nbconvert/filters/widgetsdatatypefilter.py
+index 01da1888..f9e47f08 100644
+--- a/nbconvert/filters/widgetsdatatypefilter.py
++++ b/nbconvert/filters/widgetsdatatypefilter.py
+@@ -54,11 +54,8 @@ class WidgetsDataTypeFilter(NbConvertBase):
+ 
+         """
+         metadata = self.metadata.get(self.notebook_path, {})
+-        widgets_state = (
+-            metadata["widgets"][WIDGET_STATE_MIMETYPE]["state"]
+-            if metadata.get("widgets") is not None
+-            else {}
+-        )
++        widgets_metadata = (metadata.get("widgets") or {}).get(WIDGET_STATE_MIMETYPE) or {}
++        widgets_state = widgets_metadata.get("state", {})
+         for fmt in self.display_data_priority:
+             if fmt in output:
+                 # If there is no widget state available, we skip this mimetype
+diff --git a/tests/filters/test_widgetsdatatypefilter.py b/tests/filters/test_widgetsdatatypefilter.py
+new file mode 100644
+index 00000000..2ec5e7af
+--- /dev/null
++++ b/tests/filters/test_widgetsdatatypefilter.py
+@@ -0,0 +1,56 @@
++"""Tests for the widget-aware data type filter."""
++
++from nbconvert.filters.widgetsdatatypefilter import (
++    WIDGET_STATE_MIMETYPE,
++    WIDGET_VIEW_MIMETYPE,
++    WidgetsDataTypeFilter,
++)
++
++
++def test_widget_metadata_without_state_falls_back_to_plain_text():
++    """Missing widget state should behave like unavailable widget state."""
++    filter_ = WidgetsDataTypeFilter(
++        notebook_metadata={
++            "": {
++                "widgets": {
++                    WIDGET_STATE_MIMETYPE: {
++                        "version_major": 2,
++                        "version_minor": 0,
++                    }
++                }
++            }
++        }
++    )
++    filter_.display_data_priority = [WIDGET_VIEW_MIMETYPE, "text/plain"]
++
++    assert filter_(
++        {
++            WIDGET_VIEW_MIMETYPE: {"model_id": "missing-widget-model"},
++            "text/plain": "widget fallback",
++        }
++    ) == ["text/plain"]
++
++
++def test_widget_metadata_with_matching_state_prefers_widget_view():
++    """Available widget state should still allow the widget view mimetype."""
++    filter_ = WidgetsDataTypeFilter(
++        notebook_metadata={
++            "": {
++                "widgets": {
++                    WIDGET_STATE_MIMETYPE: {
++                        "state": {
++                            "available-widget-model": {},
++                        },
++                    }
++                }
++            }
++        }
++    )
++    filter_.display_data_priority = [WIDGET_VIEW_MIMETYPE, "text/plain"]
++
++    assert filter_(
++        {
++            WIDGET_VIEW_MIMETYPE: {"model_id": "available-widget-model"},
++            "text/plain": "widget fallback",
++        }
++    ) == [WIDGET_VIEW_MIMETYPE]
