@@ -1,0 +1,17 @@
+{
+  "recorded": true,
+  "cursor_available": true,
+  "locals_available": true,
+  "selected_exception": {
+    "type": "TypeError",
+    "message": "unhashable type: 'Not'",
+    "location": "<string>:3",
+    "function": "__hash__"
+  },
+  "useful_final_exception": {
+    "type": "KeyError",
+    "message": "'TestEnum'",
+    "location": "dmr/openapi/core/registry.py:112"
+  },
+  "verdict": "CLI/agent inspect did not expose the useful final failure state; manual VS Code replay did."
+}
