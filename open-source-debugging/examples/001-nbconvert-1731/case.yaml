@@ -34,7 +34,7 @@ status:
   recorded: true
   cli_inspect_verified: true
   vscode_replay_verified: true
-  replay_gif_available: false
+  replay_gif_available: true
   patch_candidate: true
   focused_tests_passed: true
   broader_tests_passed: true
@@ -56,8 +56,8 @@ evidence:
     cursor_available: true
     locals_available: true
   replay_gif:
-    path: null
-    caption: null
+    path: "evidence/replay.gif"
+    caption: "VS Code replay stopped at the failing call. The runtime metadata contains the widget-state mimetype object, but the nested state key is absent."
   key_runtime_fact: >
     metadata.widgets contains application/vnd.jupyter.widget-state+json,
     but that object has version_major and version_minor only and lacks state.
