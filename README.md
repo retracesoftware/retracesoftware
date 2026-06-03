@@ -132,10 +132,6 @@ Clone the repo and enter the quickstart directory:
     git clone https://github.com/retracesoftware/retracesoftware.git
     cd retracesoftware/quickstart
 
-Check Go is installed:
-
-    go version
-
 Create and activate a virtual environment:
 
     python3.12 -m venv .venv
@@ -192,16 +188,9 @@ Retrace is not `rr` for Python. It does not record an entire machine process at 
 - CPython 3.11 or 3.12
 - macOS or Linux, 64-bit
 - `pip`
-- Go 1.25 or newer on `PATH`
 - VS Code for the current replay/debugging workflow
 
-Retrace installs with `pip`, but replay extraction and VS Code replay/debugging use Retrace's Go replay tool. If `go version` does not work, install Go before recording/replaying.
-
-On macOS with Homebrew:
-
-    brew install go
-
-On Linux, install Go 1.25 or newer from your distro packages or from [go.dev/dl](https://go.dev/dl/).
+Supported PyPI wheels include Retrace's replay binary, so normal `pip install retracesoftware` users do not need Go installed. Go is only required when building Retrace from source or on unsupported platforms where `pip` has to build from source.
 
 ## Recording Python Commands
 
@@ -307,7 +296,13 @@ Install from this checkout:
 
 The package includes Python code, native extensions built by Meson, module interception config, and the Go replay tooling used for extraction, terminal replay, and VS Code replay/debugging.
 
-Supported wheels include the replay binary. Source/development installs can build it lazily if it is missing, which is why Go is required on `PATH`.
+Supported wheels include the replay binary. Source/development installs build the replay binary locally, so Go 1.25 or newer must be available on `PATH`.
+
+On macOS with Homebrew:
+
+    brew install go
+
+On Linux, install Go 1.25 or newer from your distro packages or from [go.dev/dl](https://go.dev/dl/).
 
 Run Python tests:
 

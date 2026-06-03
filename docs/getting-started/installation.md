@@ -9,16 +9,18 @@ obvious.
 - CPython 3.11 or 3.12
 - macOS or Linux
 - `pip`
-- Go 1.25 or newer on `PATH`
 
-Retrace installs with `pip`, but replay extraction and VS Code replay/debugging
-use Retrace's Go replay tool. Check Go before recording:
+Supported PyPI wheels include Retrace's replay binary, so normal
+`pip install retracesoftware` users do not need Go installed. Go is only
+required when building Retrace from source or on unsupported platforms where
+`pip` has to build from source.
 
-```
-go version
-```
+## Source Builds
 
-If Go is missing, install it before continuing. On macOS with Homebrew:
+If you are installing from a source checkout, make sure Go 1.25 or newer is on
+`PATH` before building.
+
+On macOS with Homebrew:
 
 ```
 brew install go

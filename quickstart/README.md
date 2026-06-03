@@ -12,9 +12,11 @@ the code that caused the failure.
 Make sure you have:
 
 1. Python 3.12 (`python3.12 --version`)
-2. Go 1.25 or newer (`go version`)
-3. Git
-4. VS Code for replay debugging
+2. Git
+3. VS Code for replay debugging
+
+Supported PyPI wheels include Retrace's replay binary, so this quickstart does
+not require Go.
 
 See [../COMPATIBILITY.md](../COMPATIBILITY.md) for current platform details.
 
@@ -99,27 +101,7 @@ git clone https://github.com/retracesoftware/retracesoftware.git
 cd retracesoftware/quickstart
 ```
 
-## 2. Check Go
-
-Retrace installs with `pip`, but replay extraction and VS Code
-replay/debugging use Retrace's Go replay tool. Check that Go is available:
-
-```
-go version
-```
-
-If that command fails, install Go before continuing.
-
-On macOS with Homebrew:
-
-```
-brew install go
-```
-
-On Linux, install Go 1.25 or newer from your distro packages or from
-[go.dev/dl](https://go.dev/dl/).
-
-## 3. Create A Python 3.12 Virtual Environment
+## 2. Create A Python 3.12 Virtual Environment
 
 Check that Python 3.12 is available:
 
@@ -145,7 +127,7 @@ After activation, your terminal prompt should start with:
 (.venv)
 ```
 
-## 4. Install Retrace And The Demo Dependencies
+## 3. Install Retrace And The Demo Dependencies
 
 Install Retrace from PyPI:
 
@@ -175,7 +157,7 @@ python -m pip install -r requirements.txt
 
 This installs `pytest` for the quickstart demo.
 
-## 5. Run The Failing pytest Demo Normally
+## 4. Run The Failing pytest Demo Normally
 
 Run the demo without Retrace first:
 
@@ -191,7 +173,7 @@ FAILED pytest_demo/tests/test_checkout.py::test_total_taxes_discounted_amount_on
 
 This is a normal pytest run. Nothing has been recorded yet.
 
-## 6. Record The Failed pytest Run With Retrace
+## 5. Record The Failed pytest Run With Retrace
 
 Run the same pytest command through Retrace's explicit runner:
 
@@ -213,7 +195,7 @@ Check that the recording was written:
 ls -lh recordings/pytest.retrace
 ```
 
-## 7. Replay The Failed pytest Run In The Terminal
+## 6. Replay The Failed pytest Run In The Terminal
 
 Terminal replay is the fastest way to confirm the recording is useful.
 
@@ -245,7 +227,7 @@ Replay the recorded process:
 You should see the same pytest failure replay locally. Retrace is not running a
 fresh live pytest attempt here; it is replaying the recorded failed execution.
 
-## 8. Open The Recording In VS Code
+## 7. Open The Recording In VS Code
 
 Open this folder:
 
@@ -283,7 +265,7 @@ You can also right-click the `.retrace` file in the Explorer and choose:
 Open as Retrace Recording
 ```
 
-## 9. Replay And Debug In VS Code
+## 8. Replay And Debug In VS Code
 
 Open the source file:
 
@@ -313,7 +295,7 @@ leads to the failing assertion.
 You are done when VS Code stops at your breakpoint and the replay reaches the
 same failing pytest assertion without rerunning the test live.
 
-## 10. Optional: Create A Replay Bundle
+## 9. Optional: Create A Replay Bundle
 
 The helper script creates the artifact shape used by the pytest/CI preview:
 

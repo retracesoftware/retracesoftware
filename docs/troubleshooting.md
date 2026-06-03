@@ -2,16 +2,19 @@
 
 Start with the smallest check that matches your symptom.
 
-## `go: command not found`
+## Replay Binary Missing
 
-Retrace installs with `pip`, but replay extraction and VS Code
-replay/debugging use Retrace's Go replay tool. Check:
+Supported PyPI wheels include Retrace's replay binary. If replay tooling reports
+that the binary is missing, first confirm you installed a wheel for a supported
+platform rather than building from source:
 
 ```
-go version
+python -m pip show retracesoftware
+python -c "from retracesoftware.replay import binary_path; print(binary_path())"
 ```
 
-If that fails, install Go 1.25 or newer.
+If you are installing from source or on an unsupported platform where `pip` has
+to build from source, install Go 1.25 or newer before rebuilding.
 
 On macOS with Homebrew:
 

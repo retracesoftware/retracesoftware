@@ -3,7 +3,7 @@
 These guides cover the public workflow for a new Retrace user.
 
 The included pytest quickstart takes about 5 minutes. Before starting it,
-check that Python 3.12, Go 1.25 or newer, Git, and VS Code are installed. The
+check that Python 3.12, Git, and VS Code are installed. The
 guide also shows how to confirm the Retrace package is installed, record a
 failed pytest run, create a preview replay bundle, and open the `.retrace`
 recording in VS Code.
@@ -20,7 +20,6 @@ The current recommended flow is:
 ```
 git clone https://github.com/retracesoftware/retracesoftware.git
 cd retracesoftware/quickstart
-go version
 python3.12 -m venv .venv
 source .venv/bin/activate
 python -m pip install retracesoftware
