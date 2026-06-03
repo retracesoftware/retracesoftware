@@ -218,8 +218,11 @@ go/cmd/replay/replay
 
 # Trace recordings
 *.retrace
+*.retrace.d/
+*.d/
 benchmarks/results/
 *.bin
+.DS_Store
 examples/*.d/
 examples/*.code-workspace
 test/recording_otel/

@@ -1,0 +1,17 @@
+{
+  "variable": {
+    "name": "metadata",
+    "type": "dict",
+    "container_size": 1,
+    "truncated": false,
+    "value_preview": {
+      "widgets": {
+        "application/vnd.jupyter.widget-state+json": {
+          "version_major": 2,
+          "version_minor": 0
+        }
+      }
+    }
+  },
+  "key_runtime_fact": "widget-state mimetype object is present but nested state key is absent"
+}

@@ -1,0 +1,72 @@
+schema_version: 0.1
+
+case:
+  id: "001-nbconvert-1731"
+  title: "nbconvert KeyError 'state' when widget metadata lacks nested state"
+  status: "private_pipeline_case"
+  public_role: "workflow_demo_only"
+  added: "2026-06-03"
+  added_by: "Henry"
+
+bug:
+  project: "jupyter/nbconvert"
+  issue_url: "https://github.com/jupyter/nbconvert/issues/1731"
+  issue_title: "\"KeyError: 'state'\" when trying to convert a notebook from Google Colab"
+  related_issues:
+    - "https://github.com/jupyter/nbconvert/issues/2127"
+  upstream_status_checked: "2026-06-03"
+  upstream_status: "open; related issue #2127 also open; origin/main still contains unconditional state lookup"
+  commit: "78ed30837a607deab7cf0a12dca072bf3f63417a"
+  version: "v7.17.1"
+  project_license: "BSD-3-Clause"
+  category:
+    - "runtime-input-shape"
+    - "notebook-metadata"
+    - "KeyError"
+
+environment:
+  python: "Python 3.11.9 validation venv; original Retrace recording used Python 3.12.12"
+  package_version: "nbconvert 7.17.1"
+  repro_cmd: "python repro/reproduce_nbconvert_1731.py"
+
+status:
+  reproduced: true
+  recorded: true
+  cli_inspect_verified: true
+  vscode_replay_verified: true
+  replay_gif_available: false
+  patch_candidate: true
+  focused_tests_passed: true
+  broader_tests_passed: true
+  full_suite_passed: true
+  upstream_pr_opened: false
+  upstream_merged: false
+
+evidence:
+  recording:
+    url: null
+    sha256: null
+    size_bytes: null
+    note: "Recording not stored in git. Host externally only after secrets scan and public-release decision."
+  cli_inspect:
+    available: true
+    failure_reason: "exception"
+    exception_type: "KeyError"
+    exception_message: "'state'"
+    cursor_available: true
+    locals_available: true
+  replay_gif:
+    path: null
+    caption: null
+  key_runtime_fact: >
+    metadata.widgets contains application/vnd.jupyter.widget-state+json,
+    but that object has version_major and version_minor only and lacks state.
+
+fix:
+  state: "candidate"
+  patch: "fix/patch.diff"
+  pr_url: null
+  tests:
+    focused: "5 passed in 3.29s"
+    broader: "54 passed, 5 skipped in 5.51s"
+    full_suite: "290 passed, 41 skipped in 120.08s"
