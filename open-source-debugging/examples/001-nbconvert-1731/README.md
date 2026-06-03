@@ -36,6 +36,11 @@ metadata["widgets"][WIDGET_STATE_MIMETYPE]["state"]
 
 and raises `KeyError: 'state'`.
 
+![VS Code replay showing the runtime metadata shape](evidence/replay.gif)
+
+VS Code replay stopped at the failing call. The runtime metadata contains the
+widget-state mimetype object, but the nested `state` key is absent.
+
 ## Contents
 
 - `case.yaml`: case metadata and validation status

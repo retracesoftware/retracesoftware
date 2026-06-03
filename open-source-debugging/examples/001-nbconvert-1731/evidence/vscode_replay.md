@@ -28,4 +28,13 @@ Current local workflow:
 Before public release, replace local/private paths with portable replay
 instructions or link to a hosted recording after secrets scan.
 
-GIF pending.
+## Replay GIF
+
+A short replay GIF is included at:
+
+```text
+evidence/replay.gif
+```
+
+It shows VS Code replay stopped at the failing call, with the runtime metadata
+visible.
