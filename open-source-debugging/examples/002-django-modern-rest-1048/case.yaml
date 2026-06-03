@@ -42,6 +42,7 @@ failure:
 retrace:
   recorded: true
   vscode_replay_verified: true
+  replay_gif_available: true
   cli_agent_inspect_verified: false
   cli_agent_limitation: >
     retrace-agent inspect stopped on an earlier internal generated TypeError
@@ -51,6 +52,11 @@ retrace:
     sha256: null
     size_bytes: null
     note: "Recording not stored in git."
+
+evidence:
+  replay_gif:
+    path: "evidence/replay.gif"
+    caption: "VS Code replay showing the StrEnum schema reference and missing registry entry."
 
 fix:
   state: "local_patch_prepared"
