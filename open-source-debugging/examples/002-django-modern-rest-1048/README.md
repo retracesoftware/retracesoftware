@@ -20,6 +20,11 @@ KeyError: 'TestEnum'
 
 Manual VS Code replay showed the relevant caller/failing-frame chain:
 
+![VS Code replay showing the StrEnum schema reference and missing registry entry](evidence/replay.gif)
+
+The replay shows the `StrEnum` schema reference being carried into parameter
+metadata while the later registry lookup has no `TestEnum` entry.
+
 ```text
 dmr/openapi/generators/parameter.py:73
 property_schema = Reference(ref="#/components/schemas/TestEnum")

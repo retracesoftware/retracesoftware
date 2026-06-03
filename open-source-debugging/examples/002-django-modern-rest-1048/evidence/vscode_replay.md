@@ -19,6 +19,18 @@ resolution_context = None
 self.schemas lacks "TestEnum"
 ```
 
+## Replay GIF
+
+A short replay GIF is included at:
+
+```text
+evidence/replay.gif
+```
+
+It shows manual VS Code replay reaching the useful schema-generation frames:
+the query parameter metadata references `#/components/schemas/TestEnum`, while
+the registry lookup later fails because `TestEnum` is not registered.
+
 Conclusion:
 
 The recording is replay-capable and the runtime state is inspectable manually
