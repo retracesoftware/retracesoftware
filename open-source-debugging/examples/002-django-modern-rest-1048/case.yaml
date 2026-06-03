@@ -1,0 +1,70 @@
+schema_version: 0.1
+
+case:
+  id: "002-django-modern-rest-1048"
+  title: "django-modern-rest OpenAPI KeyError for StrEnum query schema"
+  status: "internal_example_case"
+  public_role: "workflow_demo_only"
+  inspection_mode: "manual_vscode_replay"
+  added: "2026-06-03"
+  added_by: "Henry"
+
+bug:
+  project: "wemake-services/django-modern-rest"
+  issue_url: "https://github.com/wemake-services/django-modern-rest/issues/1048"
+  issue_title: "`enum.StrEnum` fails in Query with KeyError during OpenAPI schema generation"
+  issue_status_checked: "2026-06-03"
+  issue_status: "open"
+  tested_commit: "746a6070e3d0caae49d795794b95a13241a6cdef"
+  category:
+    - "openapi"
+    - "schema-generation"
+    - "runtime-schema-registry"
+    - "KeyError"
+
+failure:
+  exception_type: "KeyError"
+  exception_message: "'TestEnum'"
+  final_failing_frame:
+    file: "dmr/openapi/core/registry.py"
+    line: 112
+    function: "maybe_resolve_reference"
+  useful_caller_frame:
+    file: "dmr/openapi/generators/parameter.py"
+    line: 73
+    function: "_compute_metadata"
+  key_runtime_fact: >
+    Parameter metadata contains property_schema =
+    Reference(ref="#/components/schemas/TestEnum"), but the schema registry
+    lookup tries to resolve schema_name = "TestEnum" while self.schemas does
+    not contain "TestEnum".
+
+retrace:
+  recorded: true
+  vscode_replay_verified: true
+  cli_agent_inspect_verified: false
+  cli_agent_limitation: >
+    retrace-agent inspect stopped on an earlier internal generated TypeError
+    ("unhashable type: 'Not'") rather than the final useful KeyError.
+  recording:
+    url: null
+    sha256: null
+    size_bytes: null
+    note: "Recording not stored in git."
+
+fix:
+  state: "local_patch_prepared"
+  branch: "fix-strenum-query-openapi-schema"
+  commit: "6a107c4e4d1e9d4bbdea2347b1e23a856b65a19f"
+  patch: "fix/patch.diff"
+  upstream_pr_url: null
+  tests:
+    focused: "1 passed"
+    msgspec_schema: "31 passed"
+    relevant_slice: "666 passed, 1814 deselected"
+    full_suite_excluding_redis: "2443 passed, 11 skipped"
+    full_suite: "Attempted; Redis-backed throttling tests failed due local Redis/socket unavailable."
+
+validation:
+  repro_before: "KeyError: 'TestEnum'"
+  repro_after: "passes schema generation; reaches normal Django command help"
