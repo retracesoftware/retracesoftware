@@ -30,6 +30,7 @@ def _clean_env(tmp_path: Path, extra: dict[str, str] | None = None) -> dict[str,
         "RETRACE_INODE",
         "RETRACE_RECORDING",
         "RETRACE_SKIP_CHECKSUMS",
+        "PYTEST_DISABLE_PLUGIN_AUTOLOAD",
     ):
         env.pop(key, None)
     if extra:
@@ -63,8 +64,6 @@ def _record_extract_replay_pytest(
             "retracesoftware",
             "--recording",
             str(recording),
-            "--format",
-            "unframed_binary",
             "--stacktraces",
             "--",
             "-m",
@@ -139,11 +138,13 @@ def _assert_successful_replay(record, replay, expected: str) -> None:
 
 @pytest.mark.xfail(
     strict=True,
-    reason="pytest plugin autoload currently diverges in importlib.metadata",
+    reason="pytest plugin autoload currently leaks plugin control-plane thread state into replay",
 )
-def test_pytest_plugin_autoload_replay_keeps_importlib_metadata_aligned(
+def test_pytest_plugin_autoload_replay_handles_plugin_control_plane_threads(
     tmp_path: Path,
 ) -> None:
+    pytest.importorskip("pytest_rerunfailures")
+
     files = {
         "pytest_fake_retrace_plugin.py": """
             def pytest_configure(config):
@@ -166,7 +167,13 @@ def test_pytest_plugin_autoload_replay_keeps_importlib_metadata_aligned(
     record, replay = _record_extract_replay_pytest(
         tmp_path,
         files=files,
-        pytest_args=["tests/test_sample.py::test_sample_passes", "-q", "-p", "no:cacheprovider"],
+        pytest_args=[
+            "tests/test_sample.py::test_sample_passes",
+            "-q",
+            "--capture=sys",
+            "-p",
+            "no:cacheprovider",
+        ],
     )
 
     _assert_successful_replay(record, replay, "1 passed")
@@ -188,7 +195,7 @@ def test_pytest_default_cacheprovider_replay_finishes_after_passing_test(
     record, replay = _record_extract_replay_pytest(
         tmp_path,
         files=files,
-        pytest_args=["tests/test_sample.py::test_sample_passes", "-q"],
+        pytest_args=["tests/test_sample.py::test_sample_passes", "-q", "-s"],
         env={"PYTEST_DISABLE_PLUGIN_AUTOLOAD": "1"},
     )
 
@@ -223,6 +230,7 @@ def test_pytest_cov_replay_keeps_coverage_path_state_aligned(tmp_path: Path) -> 
         pytest_args=[
             "tests/test_sample.py::test_add",
             "-q",
+            "-s",
             "--cov=samplepkg",
             "-p",
             "no:cacheprovider",
@@ -285,7 +293,15 @@ def test_pytest_xdist_multi_worker_replay_completes_external_work(tmp_path: Path
     record, replay = _record_extract_replay_pytest(
         tmp_path,
         files=files,
-        pytest_args=["tests/test_sample.py", "-q", "-n", "2", "-p", "no:cacheprovider"],
+        pytest_args=[
+            "tests/test_sample.py",
+            "-q",
+            "--capture=sys",
+            "-n",
+            "2",
+            "-p",
+            "no:cacheprovider",
+        ],
         env={
             "PYTEST_DISABLE_PLUGIN_AUTOLOAD": "1",
             "PYTEST_PLUGINS": "xdist.plugin",
@@ -315,6 +331,7 @@ def test_pytest_forked_replay_finishes_child_isolated_test(tmp_path: Path) -> No
         pytest_args=[
             "tests/test_sample.py::test_forked_passes",
             "-q",
+            "--capture=sys",
             "--forked",
             "-p",
             "no:cacheprovider",
@@ -350,6 +367,7 @@ def test_pytest_timeout_signal_failure_replays_same_timeout(tmp_path: Path) -> N
         pytest_args=[
             "tests/test_sample.py::test_times_out",
             "-q",
+            "-s",
             "--tb=line",
             "--timeout=0.2",
             "-p",
