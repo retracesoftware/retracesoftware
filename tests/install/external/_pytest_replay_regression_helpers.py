@@ -126,3 +126,14 @@ def assert_successful_replay(record, replay, expected: str) -> None:
     assert "Checkpoint difference:" not in combined
     assert "Could not read:" not in combined
     assert "bind marker returned" not in combined
+
+
+def assert_replay_does_not_contain_signature(record, replay, *needles: str) -> None:
+    combined = replay.stdout + replay.stderr
+    assert not all(needle in combined for needle in needles), (
+        f"pytest replay hit the documented Retrace signature: {needles!r}\n"
+        f"record stdout:\n{tail(record.stdout)}\n"
+        f"record stderr:\n{tail(record.stderr)}\n"
+        f"replay stdout:\n{tail(replay.stdout)}\n"
+        f"replay stderr:\n{tail(replay.stderr)}"
+    )

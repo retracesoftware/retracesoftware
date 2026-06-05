@@ -7,6 +7,7 @@ from pathlib import Path
 import pytest
 
 from tests.install.external._pytest_replay_regression_helpers import (
+    assert_replay_does_not_contain_signature,
     record_extract_replay_pytest,
 )
 
@@ -47,6 +48,12 @@ def test_pytest_timeout_signal_failure_replays_same_timeout(tmp_path: Path) -> N
 
     assert record.returncode != 0
     combined = replay.stdout + replay.stderr
+    assert_replay_does_not_contain_signature(
+        record,
+        replay,
+        "Checkpoint difference:",
+        "_signal.setitimer",
+    )
     assert replay.returncode != 0
     assert "Timeout" in combined
     assert "Checkpoint difference:" not in combined

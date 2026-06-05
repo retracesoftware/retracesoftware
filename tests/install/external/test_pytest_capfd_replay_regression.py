@@ -7,6 +7,7 @@ from pathlib import Path
 import pytest
 
 from tests.install.external._pytest_replay_regression_helpers import (
+    assert_replay_does_not_contain_signature,
     assert_successful_replay,
     record_extract_replay_pytest,
 )
@@ -42,4 +43,10 @@ def test_pytest_capfd_replay_keeps_fd_capture_and_summary_ordered(
         env={"PYTEST_DISABLE_PLUGIN_AUTOLOAD": "1"},
     )
 
+    assert_replay_does_not_contain_signature(
+        record,
+        replay,
+        "wrapped_function:posix.write",
+        "b'blat'",
+    )
     assert_successful_replay(record, replay, "1 passed")

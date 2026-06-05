@@ -7,6 +7,7 @@ from pathlib import Path
 import pytest
 
 from tests.install.external._pytest_replay_regression_helpers import (
+    assert_replay_does_not_contain_signature,
     assert_successful_replay,
     record_extract_replay_pytest,
 )
@@ -77,4 +78,10 @@ def test_pytest_xdist_multi_worker_replay_completes_external_work(tmp_path: Path
         timeout=35,
     )
 
+    assert_replay_does_not_contain_signature(
+        record,
+        replay,
+        "wrapped_function:posix.write",
+        "b'blat'",
+    )
     assert_successful_replay(record, replay, "2 passed")
