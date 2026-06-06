@@ -104,6 +104,8 @@ def build_failed_test_manifest(
     traceback_summary: str = "",
     recording_placeholder: bool = True,
     recording_capture_method: str = "placeholder",
+    recording_capture_scope: str = "",
+    recording_failure_selection: str = "",
     recording_available: bool | None = None,
     recording_failure_reason: str | None = None,
     cwd: str | Path | None = None,
@@ -127,6 +129,8 @@ def build_failed_test_manifest(
         "recording": {
             "placeholder": recording_placeholder,
             "capture_method": recording_capture_method,
+            "capture_scope": recording_capture_scope,
+            "failure_selection": recording_failure_selection,
             "available": real_recording_available,
             "failure_reason": recording_failure_reason,
         },

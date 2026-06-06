@@ -43,7 +43,9 @@ def test_write_and_read_failed_test_manifest(tmp_path):
     assert manifest["recording"] == {
         "available": False,
         "capture_method": "placeholder",
+        "capture_scope": "",
         "failure_reason": None,
+        "failure_selection": "",
         "placeholder": True,
     }
     assert manifest["safety"]["env_values_included"] is False

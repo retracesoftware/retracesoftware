@@ -152,6 +152,9 @@ def _assert_failed_run_artifacts(project: Path, pytest_result: subprocess.Comple
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     assert manifest["recording"]["available"] is True
     assert manifest["recording"]["placeholder"] is False
+    assert manifest["recording"]["capture_method"] == "full-session-clean-subprocess"
+    assert manifest["recording"]["capture_scope"] == "full_session"
+    assert manifest["recording"]["failure_selection"] == "first_failure"
     manifest_recording_path = Path(manifest["recording_path"])
     if not manifest_recording_path.is_absolute():
         manifest_recording_path = project / manifest_recording_path
@@ -207,6 +210,9 @@ def test_pytest_agent_workflow_source_tree_dev_mode_with_path_spaces(tmp_path):
     assert agent_context.returncode == 0, agent_context.stderr
     assert "test_fails" in agent_context.stdout
     assert "recording_available: yes" in agent_context.stdout
+    assert "recording_capture_method: full-session-clean-subprocess" in agent_context.stdout
+    assert "capture_scope: full_session" in agent_context.stdout
+    assert "failure_selection: first_failure" in agent_context.stdout
 
     inspect = _run_source_tree_cli(
         python,
@@ -294,6 +300,9 @@ def test_pytest_agent_workflow_editable_install_with_path_spaces(tmp_path):
     assert agent_context.returncode == 0, agent_context.stderr
     assert "test_fails" in agent_context.stdout
     assert "recording_available: yes" in agent_context.stdout
+    assert "recording_capture_method: full-session-clean-subprocess" in agent_context.stdout
+    assert "capture_scope: full_session" in agent_context.stdout
+    assert "failure_selection: first_failure" in agent_context.stdout
 
     inspect = _run([retrace_bin, "inspect", "--latest"], cwd=project, timeout=60)
     assert inspect.returncode in {0, 1}

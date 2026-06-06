@@ -9,9 +9,11 @@ PYTEST: add failed-test recording workflow for agent inspection
 This adds an opt-in pytest workflow for failed-test debugging with Retrace:
 
 - Adds pytest plugin support via `--retrace`.
+- Re-execs the pytest session under the existing Retrace recorder so the
+  recording corresponds to the run that actually failed.
 - Captures failed-test artifacts under `.retrace/runs/<run-id>/`.
 - Writes `recording.bin`, `manifest.json`, and `failure.txt`.
-- Adds failed-test manifest and failure context metadata.
+- Adds first-failure manifest and failure context metadata.
 - Adds `retrace runs`.
 - Adds `retrace inspect --latest`.
 - Adds `retrace agent-context --latest`.
@@ -23,7 +25,9 @@ This adds an opt-in pytest workflow for failed-test debugging with Retrace:
 - Documents the current Meson editable-install blocker.
 
 The intent is to give agents and humans a local, deterministic handoff after a
-pytest failure without changing core record/replay internals.
+pytest failure without changing core record/replay internals. v1 records the
+full pytest session and surfaces the first observed failure; it does not
+silently inject `--maxfail=1`.
 
 ## Testing
 
@@ -69,6 +73,8 @@ Skipped tests:
 
 - Recording inspection still depends on the replay/control backend exposing an
   inspectable stopped state.
+- pytest-xdist is out of scope for v1 because correct support requires
+  per-worker recordings and manifests.
 - Editable install is blocked by the Meson editable-loader issue and is
   documented separately.
 - No core replay, DAP, trace format, threading, cursor/frame reconstruction, or

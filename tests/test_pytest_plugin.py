@@ -3,7 +3,6 @@ from __future__ import annotations
 import importlib.util
 import json
 import os
-import subprocess
 import sys
 from pathlib import Path
 
@@ -14,53 +13,10 @@ from retracesoftware import pytest_plugin as plugin
 
 pytest_plugins = ["pytester"]
 REPO_ROOT = Path(__file__).resolve().parents[1]
-_ORIGINAL_CAPTURE_FAILED_TEST_RECORDING = plugin._capture_failed_test_recording
-
-
-@pytest.fixture(autouse=True)
-def _restore_capture_helper(monkeypatch):
-    monkeypatch.setattr(plugin, "_capture_failed_test_recording", _ORIGINAL_CAPTURE_FAILED_TEST_RECORDING)
 
 
 def _run_pytest_with_plugin(pytester, *args):
     return pytester.runpytest("-p", "retracesoftware.pytest_plugin", *args)
-
-
-def _install_successful_fake_capture(pytester):
-    pytester.makeconftest("""
-        import retracesoftware.pytest_plugin as plugin
-
-
-        def pytest_configure(config):
-            def fake_capture(recording_path, item):
-                recording_path.parent.mkdir(parents=True, exist_ok=True)
-                recording_path.write_bytes(b"fake real retrace recording")
-                return plugin.RecordingCaptureResult(
-                    available=True,
-                    placeholder=False,
-                    capture_method=plugin.EXISTING_CLI_CAPTURE_METHOD,
-                )
-
-            plugin._capture_failed_test_recording = fake_capture
-    """)
-
-
-def _install_failed_fake_capture(pytester):
-    pytester.makeconftest("""
-        import retracesoftware.pytest_plugin as plugin
-
-
-        def pytest_configure(config):
-            def fake_capture(recording_path, item):
-                return plugin.RecordingCaptureResult(
-                    available=False,
-                    placeholder=False,
-                    capture_method=plugin.EXISTING_CLI_CAPTURE_METHOD,
-                    failure_reason="fake recorder unavailable",
-                )
-
-            plugin._capture_failed_test_recording = fake_capture
-    """)
 
 
 def _repo_test_pythonpath() -> str:
@@ -73,137 +29,302 @@ def _repo_test_pythonpath() -> str:
     return os.pathsep.join(entries)
 
 
-def _single_run_dir(base):
+def _single_run_dir(base: Path) -> Path:
     run_dirs = list(base.glob("*"))
     assert len(run_dirs) == 1
     return run_dirs[0]
 
 
-def test_capture_failed_test_recording_uses_existing_cli_subprocess(monkeypatch, tmp_path):
-    calls = []
-    recording_path = tmp_path / "New project" / "run one" / "recording.bin"
+class _FakeConfig:
+    class Option:
+        numprocesses = None
 
-    class FakeItem:
-        nodeid = "tests/test_example.py::test_failure"
+    class PluginManager:
+        def list_name_plugin(self):
+            return []
 
-    def fake_run(command, *, cwd, env, capture_output, text):
+    option = Option()
+    pluginmanager = PluginManager()
+
+    def __init__(
+        self,
+        *,
+        args: tuple[str, ...] = ("--retrace",),
+        output_dir: str = ".retrace/runs",
+        mode: str = "failed-only",
+    ) -> None:
+        self.invocation_params = type("InvocationParams", (), {"args": args})()
+        self._options = {
+            "retrace": "--retrace" in args,
+            "retrace_output_dir": output_dir,
+            "retrace_mode": mode,
+        }
+
+    def getoption(self, name: str, default=None):
+        return self._options.get(name, default)
+
+
+def _install_fake_session_child(
+    monkeypatch,
+    *,
+    returncode: int,
+    write_manifest: bool = True,
+    write_recording: bool = True,
+) -> list[dict]:
+    calls: list[dict] = []
+
+    def fake_run_child(command, *, env):
+        print("fake child stdout")
+        print("fake child stderr", file=sys.stderr)
         calls.append({
             "command": command,
-            "cwd": cwd,
-            "env": env,
-            "capture_output": capture_output,
-            "text": text,
+            "env": {
+                plugin.RETRACE_PYTEST_REEXEC_PARENT: env.get(plugin.RETRACE_PYTEST_REEXEC_PARENT),
+                plugin.RETRACE_PYTEST_RECORDED_CHILD: env.get(plugin.RETRACE_PYTEST_RECORDED_CHILD),
+                plugin.RETRACE_PYTEST_RUN_ID: env.get(plugin.RETRACE_PYTEST_RUN_ID),
+                plugin.RETRACE_PYTEST_RUN_DIR: env.get(plugin.RETRACE_PYTEST_RUN_DIR),
+                plugin.RETRACE_PYTEST_RECORDING: env.get(plugin.RETRACE_PYTEST_RECORDING),
+            },
         })
-        recording_path.parent.mkdir(parents=True, exist_ok=True)
-        recording_path.write_bytes(b"real recording")
-        return subprocess.CompletedProcess(command, 1, stdout="", stderr="")
+        run_dir = Path(env[plugin.RETRACE_PYTEST_RUN_DIR])
+        recording = Path(env[plugin.RETRACE_PYTEST_RECORDING])
+        manifest_path = run_dir / "manifest.json"
+        failure_path = run_dir / "failure.txt"
+        run_dir.mkdir(parents=True, exist_ok=True)
+        if write_recording:
+            recording.write_bytes(b"fake full-session recording")
+        if write_manifest:
+            from retracesoftware.pytest_runs import (
+                build_failed_test_manifest,
+                write_manifest as write_run_manifest,
+            )
 
-    monkeypatch.setattr(plugin.subprocess, "run", fake_run)
+            manifest = build_failed_test_manifest(
+                run_id=env[plugin.RETRACE_PYTEST_RUN_ID],
+                recording_path=recording,
+                manifest_path=manifest_path,
+                failure_path=failure_path,
+                node_id="tests/test_example.py::test_failure",
+                test_file="tests/test_example.py",
+                test_function="test_failure",
+                exception_type="AssertionError",
+                exception_message="simulated child failure",
+                recording_placeholder=False,
+                recording_capture_method=plugin.FULL_SESSION_CAPTURE_METHOD,
+                recording_capture_scope=plugin.FULL_SESSION_CAPTURE_SCOPE,
+                recording_failure_selection=plugin.FIRST_FAILURE_SELECTION,
+                recording_available=True,
+            )
+            written = write_run_manifest(manifest, runs_dir=run_dir.parent)
+            written_manifest = {**manifest, "manifest_path": str(written)}
+            failure_path.write_text(plugin._render_failure_txt(written_manifest), encoding="utf-8")
+        return returncode
 
-    capture = plugin._capture_failed_test_recording(recording_path, FakeItem())
+    monkeypatch.setattr(plugin, "_run_child_process", fake_run_child)
+    return calls
 
-    assert capture == plugin.RecordingCaptureResult(
-        available=True,
-        placeholder=False,
-        capture_method="existing-cli-subprocess",
-    )
-    assert calls[0]["command"] == [
+
+def _prepare_recorded_child(monkeypatch, pytester, *, run_id: str = "child-run") -> Path:
+    run_dir = pytester.path / ".retrace" / "runs" / run_id
+    recording_path = run_dir / "recording.bin"
+    run_dir.mkdir(parents=True, exist_ok=True)
+    recording_path.write_bytes(b"active full-session recording")
+    monkeypatch.setenv(plugin.RETRACE_PYTEST_RECORDED_CHILD, "1")
+    monkeypatch.setenv(plugin.RETRACE_PYTEST_RUN_ID, run_id)
+    monkeypatch.setenv(plugin.RETRACE_PYTEST_RUN_DIR, str(run_dir))
+    monkeypatch.setenv(plugin.RETRACE_PYTEST_RECORDING, str(recording_path))
+    return run_dir
+
+
+def test_parent_retrace_launches_full_session_recorded_child(monkeypatch, tmp_path):
+    monkeypatch.chdir(tmp_path)
+    calls = _install_fake_session_child(monkeypatch, returncode=7)
+    config = _FakeConfig(args=("--retrace", "-q", "--maxfail=2"))
+
+    exit_code = plugin._run_recorded_pytest_session(config)
+
+    assert exit_code == 7
+    call = calls[0]
+    command = call["command"]
+    assert command[:5] == [
         sys.executable,
         "-m",
         "retracesoftware",
         "--recording",
-        str(recording_path),
+        call["env"][plugin.RETRACE_PYTEST_RECORDING],
+    ]
+    assert command[5:] == [
         "--format",
         "binary",
         "--stacktraces",
         "--",
         "-m",
         "pytest",
-        "tests/test_example.py::test_failure",
+        "-q",
+        "--maxfail=2",
     ]
-    assert calls[0]["cwd"] == Path.cwd()
-    assert calls[0]["capture_output"] is True
-    assert calls[0]["text"] is True
-    assert calls[0]["env"]["RETRACE_PYTEST_RECORDING_CHILD"] == "1"
+    assert "--retrace" not in command
+    assert "--maxfail=1" not in command
+    assert call["env"][plugin.RETRACE_PYTEST_REEXEC_PARENT] == "1"
+    assert call["env"][plugin.RETRACE_PYTEST_RECORDED_CHILD] == "1"
+    assert call["env"][plugin.RETRACE_PYTEST_RUN_ID]
 
 
-def test_retrace_failing_test_creates_failed_run_artifacts(pytester):
-    _install_successful_fake_capture(pytester)
-    pytester.makepyfile("""
-        def test_failure():
-            assert False
-    """)
+def test_parent_retrace_preserves_child_exit_code_and_output(monkeypatch, tmp_path, capsys):
+    monkeypatch.chdir(tmp_path)
+    _install_fake_session_child(monkeypatch, returncode=3)
 
-    result = _run_pytest_with_plugin(pytester, "--retrace", "-q")
+    exit_code = plugin._run_recorded_pytest_session(_FakeConfig())
+    captured = capsys.readouterr()
 
-    result.assert_outcomes(failed=1)
-    run_dir = _single_run_dir(pytester.path / ".retrace" / "runs")
+    assert exit_code == 3
+    assert "fake child stdout" in captured.out
+    assert "fake child stderr" in captured.err
+
+
+def test_passing_recorded_child_deletes_temporary_artifact(monkeypatch, tmp_path):
+    monkeypatch.chdir(tmp_path)
+    calls = _install_fake_session_child(monkeypatch, returncode=0, write_manifest=False)
+
+    exit_code = plugin._run_recorded_pytest_session(_FakeConfig())
+
+    assert exit_code == 0
+    call = calls[0]
+    assert not Path(call["env"][plugin.RETRACE_PYTEST_RUN_DIR]).exists()
+    assert not (tmp_path / ".retrace" / "runs").exists()
+
+
+def test_failing_recorded_child_keeps_run_artifacts(monkeypatch, tmp_path):
+    monkeypatch.chdir(tmp_path)
+    _install_fake_session_child(monkeypatch, returncode=1)
+
+    exit_code = plugin._run_recorded_pytest_session(_FakeConfig())
+
+    assert exit_code == 1
+    run_dir = _single_run_dir(tmp_path / ".retrace" / "runs")
     assert (run_dir / "manifest.json").is_file()
     assert (run_dir / "failure.txt").is_file()
-    assert (run_dir / "recording.bin").is_file()
-    assert (run_dir / "recording.bin").read_bytes() == b"fake real retrace recording"
-
+    assert (run_dir / "recording.bin").read_bytes() == b"fake full-session recording"
     manifest = json.loads((run_dir / "manifest.json").read_text(encoding="utf-8"))
-    assert manifest["pytest"]["node_id"].endswith("test_failure")
-    assert manifest["failure"]["exception_type"] == "AssertionError"
-    assert manifest["recording_path"].endswith("recording.bin")
     assert manifest["recording"] == {
         "available": True,
-        "capture_method": "existing-cli-subprocess",
+        "capture_method": "full-session-clean-subprocess",
+        "capture_scope": "full_session",
         "failure_reason": None,
+        "failure_selection": "first_failure",
         "placeholder": False,
     }
 
 
-def test_retrace_failure_output_includes_next_step_commands(pytester):
-    _install_successful_fake_capture(pytester)
-    pytester.makepyfile("""
-        def test_failure():
-            raise ValueError("boom")
-    """)
+def test_failing_child_without_manifest_keeps_recording_with_fallback_metadata(monkeypatch, tmp_path):
+    monkeypatch.chdir(tmp_path)
+    _install_fake_session_child(monkeypatch, returncode=2, write_manifest=False)
 
-    result = _run_pytest_with_plugin(pytester, "--retrace", "-q")
+    exit_code = plugin._run_recorded_pytest_session(_FakeConfig())
 
-    result.assert_outcomes(failed=1)
-    result.stdout.fnmatch_lines([
-        "*Retrace captured failed test:*",
-        "*capture_method: existing-cli-subprocess*",
-        "*retrace inspect --latest*",
-        "*retrace mcp --latest*",
-        "*Artifacts are local and may contain runtime data. Delete with: retrace clean --all*",
-        "*RETRACE_RECORDING=*",
-        "*RETRACE_MANIFEST=*",
-    ])
-
-
-def test_retrace_recording_failure_keeps_manifest_and_failure_artifacts(pytester):
-    _install_failed_fake_capture(pytester)
-    pytester.makepyfile("""
-        def test_failure():
-            raise RuntimeError("boom")
-    """)
-
-    result = _run_pytest_with_plugin(pytester, "--retrace", "-q")
-
-    result.assert_outcomes(failed=1)
-    run_dir = _single_run_dir(pytester.path / ".retrace" / "runs")
-    assert (run_dir / "manifest.json").is_file()
-    assert (run_dir / "failure.txt").is_file()
-    assert not (run_dir / "recording.bin").exists()
+    assert exit_code == 2
+    run_dir = _single_run_dir(tmp_path / ".retrace" / "runs")
     manifest = json.loads((run_dir / "manifest.json").read_text(encoding="utf-8"))
-    assert manifest["recording"]["available"] is False
-    assert manifest["recording"]["placeholder"] is False
-    assert manifest["recording"]["capture_method"] == "existing-cli-subprocess"
-    assert manifest["recording"]["failure_reason"] == "fake recorder unavailable"
-    result.stdout.fnmatch_lines([
-        "*Retrace captured failed-test metadata, but recording failed:*",
-        "*reason: fake recorder unavailable*",
-        "*retrace agent-context --latest*",
-    ])
+    assert manifest["pytest"]["node_id"] == "<session>"
+    assert manifest["failure"]["exception_type"] == "PytestSessionFailure"
+    assert manifest["recording"]["capture_method"] == "full-session-clean-subprocess"
+    assert manifest["recording"]["capture_scope"] == "full_session"
+    assert manifest["recording"]["failure_selection"] == "first_failure"
 
 
-def test_retrace_recording_child_guard_does_not_create_artifacts(pytester, monkeypatch):
-    monkeypatch.setenv("RETRACE_PYTEST_RECORDING_CHILD", "1")
+def test_child_args_remove_retrace_options_but_preserve_user_args(monkeypatch, tmp_path):
+    monkeypatch.chdir(tmp_path)
+    calls = _install_fake_session_child(monkeypatch, returncode=1)
+    config = _FakeConfig(
+        args=(
+            "--retrace",
+            "--retrace-mode=failed-only",
+            "--retrace-output-dir",
+            "custom-runs",
+            "-k",
+            "failure",
+            "--maxfail=1",
+            "-q",
+        ),
+        output_dir="custom-runs",
+    )
+
+    exit_code = plugin._run_recorded_pytest_session(config)
+
+    assert exit_code == 1
+    command = calls[0]["command"]
+    assert "--retrace" not in command
+    assert "--retrace-mode=failed-only" not in command
+    assert "--retrace-output-dir" not in command
+    assert "custom-runs" not in command
+    assert command[-4:] == ["-k", "failure", "--maxfail=1", "-q"]
+    assert _single_run_dir(tmp_path / "custom-runs").is_dir()
+
+
+def test_recorded_child_call_failure_writes_first_failure_manifest(pytester, monkeypatch):
+    run_dir = _prepare_recorded_child(monkeypatch, pytester)
+    pytester.makepyfile("""
+        def test_first_failure():
+            raise ValueError("first")
+
+        def test_second_failure():
+            raise RuntimeError("second")
+    """)
+
+    result = _run_pytest_with_plugin(pytester, "-q")
+
+    result.assert_outcomes(failed=2)
+    manifest = json.loads((run_dir / "manifest.json").read_text(encoding="utf-8"))
+    assert manifest["pytest"]["node_id"].endswith("test_first_failure")
+    assert manifest["failure"]["exception_type"] == "ValueError"
+    assert manifest["failure"]["exception_message"] == "first"
+
+
+def test_recorded_child_setup_failure_is_captured(pytester, monkeypatch):
+    run_dir = _prepare_recorded_child(monkeypatch, pytester)
+    pytester.makepyfile("""
+        import pytest
+
+        @pytest.fixture
+        def broken_fixture():
+            raise RuntimeError("setup boom")
+
+        def test_failure(broken_fixture):
+            assert True
+    """)
+
+    result = _run_pytest_with_plugin(pytester, "-q")
+
+    result.assert_outcomes(errors=1)
+    manifest = json.loads((run_dir / "manifest.json").read_text(encoding="utf-8"))
+    assert manifest["failure"]["exception_type"] == "RuntimeError"
+    assert manifest["failure"]["exception_message"] == "setup boom"
+
+
+def test_recorded_child_teardown_failure_is_captured(pytester, monkeypatch):
+    run_dir = _prepare_recorded_child(monkeypatch, pytester)
+    pytester.makepyfile("""
+        import pytest
+
+        @pytest.fixture
+        def broken_teardown():
+            yield
+            raise RuntimeError("teardown boom")
+
+        def test_failure(broken_teardown):
+            assert True
+    """)
+
+    result = _run_pytest_with_plugin(pytester, "-q")
+
+    result.assert_outcomes(passed=1, errors=1)
+    manifest = json.loads((run_dir / "manifest.json").read_text(encoding="utf-8"))
+    assert manifest["failure"]["exception_type"] == "RuntimeError"
+    assert manifest["failure"]["exception_message"] == "teardown boom"
+
+
+def test_recorded_child_with_retrace_flag_does_not_reexec_again(pytester, monkeypatch):
+    run_dir = _prepare_recorded_child(monkeypatch, pytester)
     pytester.makepyfile("""
         def test_failure():
             assert False
@@ -212,18 +333,15 @@ def test_retrace_recording_child_guard_does_not_create_artifacts(pytester, monke
     result = _run_pytest_with_plugin(pytester, "--retrace", "-q")
 
     result.assert_outcomes(failed=1)
-    assert not (pytester.path / ".retrace" / "runs").exists()
+    assert (run_dir / "manifest.json").is_file()
+    assert len(list((pytester.path / ".retrace" / "runs").glob("*"))) == 1
 
 
-def test_agent_context_latest_after_failed_retrace_run(pytester, monkeypatch, capsys):
-    _install_successful_fake_capture(pytester)
-    pytester.makepyfile("""
-        def test_failure():
-            raise ValueError("boom")
-    """)
-    result = _run_pytest_with_plugin(pytester, "--retrace", "-q")
-    result.assert_outcomes(failed=1)
-    monkeypatch.chdir(pytester.path)
+def test_agent_context_latest_after_failed_retrace_run(monkeypatch, tmp_path, capsys):
+    monkeypatch.chdir(tmp_path)
+    _install_fake_session_child(monkeypatch, returncode=1)
+    exit_code = plugin._run_recorded_pytest_session(_FakeConfig())
+    assert exit_code == 1
 
     exit_code = cli.main(["agent-context", "--latest"])
     output = capsys.readouterr().out
@@ -231,30 +349,23 @@ def test_agent_context_latest_after_failed_retrace_run(pytester, monkeypatch, ca
     assert exit_code == 0
     assert "Retrace failed-test context" in output
     assert "test_failure" in output
-    assert "ValueError: boom" in output
-    assert "recording:" in output
-    assert "manifest:" in output
-    assert "failure:" in output
+    assert "AssertionError: simulated child failure" in output
     assert "recording_available: yes" in output
     assert "recording_placeholder: no" in output
-    assert "recording_capture_method: existing-cli-subprocess" in output
+    assert "recording_capture_method: full-session-clean-subprocess" in output
+    assert "capture_scope: full_session" in output
+    assert "failure_selection: first_failure" in output
     assert "retrace inspect --latest" in output
-    assert "retrace runs" in output
     assert "retrace mcp --latest" in output
-    assert "retrace vscode --latest" in output
     assert "root cause" not in output.lower()
     assert "suggest" not in output.lower()
 
 
-def test_agent_context_latest_json_after_failed_retrace_run(pytester, monkeypatch, capsys):
-    _install_successful_fake_capture(pytester)
-    pytester.makepyfile("""
-        def test_failure():
-            assert False
-    """)
-    result = _run_pytest_with_plugin(pytester, "--retrace", "-q")
-    result.assert_outcomes(failed=1)
-    monkeypatch.chdir(pytester.path)
+def test_agent_context_latest_json_after_failed_retrace_run(monkeypatch, tmp_path, capsys):
+    monkeypatch.chdir(tmp_path)
+    _install_fake_session_child(monkeypatch, returncode=1)
+    exit_code = plugin._run_recorded_pytest_session(_FakeConfig())
+    assert exit_code == 1
     capsys.readouterr()
 
     exit_code = cli.main(["agent-context", "--latest", "--json"])
@@ -263,35 +374,23 @@ def test_agent_context_latest_json_after_failed_retrace_run(pytester, monkeypatc
 
     assert exit_code == 0
     assert context["test"]["node_id"].endswith("test_failure")
-    assert context["evidence"]["recording_exists"] is True
     assert context["evidence"]["recording_available"] is True
-    assert context["evidence"]["recording_placeholder"] is False
-
-
-def test_retrace_passing_test_does_not_create_run_by_default(pytester):
-    pytester.makepyfile("""
-        def test_passes():
-            assert True
-    """)
-
-    result = _run_pytest_with_plugin(pytester, "--retrace", "-q")
-
-    result.assert_outcomes(passed=1)
-    assert not (pytester.path / ".retrace" / "runs").exists()
+    assert context["evidence"]["recording_capture_method"] == "full-session-clean-subprocess"
+    assert context["evidence"]["recording_capture_scope"] == "full_session"
+    assert context["evidence"]["recording_failure_selection"] == "first_failure"
 
 
 def test_retrace_manifest_does_not_include_env_values(pytester, monkeypatch, capsys):
-    _install_successful_fake_capture(pytester)
     monkeypatch.setenv("DB_PASSWORD", "supersecret")
+    run_dir = _prepare_recorded_child(monkeypatch, pytester)
     pytester.makepyfile("""
         def test_failure():
             assert False
     """)
 
-    result = _run_pytest_with_plugin(pytester, "--retrace", "-q")
+    result = _run_pytest_with_plugin(pytester, "-q")
 
     result.assert_outcomes(failed=1)
-    run_dir = _single_run_dir(pytester.path / ".retrace" / "runs")
     raw_manifest = (run_dir / "manifest.json").read_text(encoding="utf-8")
     raw_failure = (run_dir / "failure.txt").read_text(encoding="utf-8")
     manifest = json.loads(raw_manifest)
@@ -310,21 +409,12 @@ def test_retrace_manifest_does_not_include_env_values(pytester, monkeypatch, cap
 def test_retrace_manifest_records_ci_teamcity_and_plugin_metadata(pytester, monkeypatch):
     monkeypatch.setenv("CI", "1")
     monkeypatch.setenv("TEAMCITY_VERSION", "2026.1-private-value")
+    run_dir = _prepare_recorded_child(monkeypatch, pytester)
     pytester.makeconftest("""
         import retracesoftware.pytest_plugin as plugin
 
 
         def pytest_configure(config):
-            def fake_capture(recording_path, item):
-                recording_path.parent.mkdir(parents=True, exist_ok=True)
-                recording_path.write_bytes(b"fake real retrace recording")
-                return plugin.RecordingCaptureResult(
-                    available=True,
-                    placeholder=False,
-                    capture_method=plugin.EXISTING_CLI_CAPTURE_METHOD,
-                )
-
-            plugin._capture_failed_test_recording = fake_capture
             plugin._active_plugin_names = lambda config: [
                 "pytest-cov",
                 "pytest-env",
@@ -339,10 +429,9 @@ def test_retrace_manifest_records_ci_teamcity_and_plugin_metadata(pytester, monk
             assert False
     """)
 
-    result = _run_pytest_with_plugin(pytester, "--retrace", "-q")
+    result = _run_pytest_with_plugin(pytester, "-q")
 
     result.assert_outcomes(failed=1)
-    run_dir = _single_run_dir(pytester.path / ".retrace" / "runs")
     raw_manifest = (run_dir / "manifest.json").read_text(encoding="utf-8")
     manifest = json.loads(raw_manifest)
     pytest_info = manifest["pytest"]
@@ -378,7 +467,7 @@ def test_coverage_detected_from_runtime_module(monkeypatch):
 def test_coverage_invocation_creates_failed_run_artifacts(pytester, monkeypatch):
     if importlib.util.find_spec("coverage") is None:
         pytest.skip("coverage.py is not installed")
-    _install_successful_fake_capture(pytester)
+    run_dir = _prepare_recorded_child(monkeypatch, pytester)
     monkeypatch.setenv("PYTHONPATH", _repo_test_pythonpath())
     pytester.makepyfile("""
         def test_failure():
@@ -395,49 +484,26 @@ def test_coverage_invocation_creates_failed_run_artifacts(pytester, monkeypatch)
         "pytest",
         "-p",
         "retracesoftware.pytest_plugin",
-        "--retrace",
         "-q",
     )
 
     result.assert_outcomes(failed=1)
     assert (pytester.path / ".coverage").is_file()
-    run_dir = _single_run_dir(pytester.path / ".retrace" / "runs")
     manifest = json.loads((run_dir / "manifest.json").read_text(encoding="utf-8"))
     assert manifest["environment"]["coverage_detected"] is True
     assert manifest["pytest"]["coverage_detected"] is True
 
 
-def test_retrace_output_dir_changes_run_directory(pytester):
-    _install_successful_fake_capture(pytester)
-    pytester.makepyfile("""
-        def test_failure():
-            assert False
-    """)
+def test_retrace_failed_only_mode_is_supported(monkeypatch, tmp_path):
+    monkeypatch.chdir(tmp_path)
+    _install_fake_session_child(monkeypatch, returncode=1)
 
-    result = _run_pytest_with_plugin(
-        pytester,
-        "--retrace",
-        "--retrace-output-dir",
-        "custom-runs",
-        "-q",
+    exit_code = plugin._run_recorded_pytest_session(
+        _FakeConfig(args=("--retrace", "--retrace-mode=failed-only")),
     )
 
-    result.assert_outcomes(failed=1)
-    assert _single_run_dir(pytester.path / "custom-runs").is_dir()
-    assert not (pytester.path / ".retrace" / "runs").exists()
-
-
-def test_retrace_failed_only_mode_is_supported(pytester):
-    _install_successful_fake_capture(pytester)
-    pytester.makepyfile("""
-        def test_failure():
-            assert False
-    """)
-
-    result = _run_pytest_with_plugin(pytester, "--retrace", "--retrace-mode=failed-only", "-q")
-
-    result.assert_outcomes(failed=1)
-    assert _single_run_dir(pytester.path / ".retrace" / "runs").is_dir()
+    assert exit_code == 1
+    assert _single_run_dir(tmp_path / ".retrace" / "runs").is_dir()
 
 
 def test_retrace_unsupported_mode_fails_clearly(pytester):
@@ -452,3 +518,18 @@ def test_retrace_unsupported_mode_fails_clearly(pytester):
     result.stderr.fnmatch_lines([
         "*unsupported --retrace-mode='all'; only 'failed-only' is implemented*",
     ])
+
+
+def test_xdist_is_out_of_scope_for_retrace_v1():
+    class FakeConfig:
+        class Option:
+            numprocesses = 2
+
+        option = Option()
+
+        class InvocationParams:
+            args = ("-n", "2")
+
+        invocation_params = InvocationParams()
+
+    assert plugin._xdist_requested(FakeConfig()) is True

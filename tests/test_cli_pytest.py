@@ -213,9 +213,11 @@ def test_mcp_latest_unavailable_recording_fails_clearly(monkeypatch, tmp_path, c
             recording_path=recording,
             node_id="tests/test_example.py::test_latest",
             recording_placeholder=False,
-            recording_capture_method="existing-cli-subprocess",
+            recording_capture_method="full-session-clean-subprocess",
+            recording_capture_scope="full_session",
+            recording_failure_selection="first_failure",
             recording_available=False,
-            recording_failure_reason="child pytest passed unexpectedly",
+            recording_failure_reason="pytest exited before a replayable recording was available",
         ),
         runs_dir=tmp_path / ".retrace" / "runs",
     )
@@ -226,7 +228,7 @@ def test_mcp_latest_unavailable_recording_fails_clearly(monkeypatch, tmp_path, c
 
     assert exit_code == 1
     assert "recording is unavailable" in captured.err
-    assert "child pytest passed unexpectedly" in captured.err
+    assert "pytest exited before a replayable recording was available" in captured.err
 
 
 def test_inspect_latest_unavailable_recording_fails_before_replay(monkeypatch, tmp_path, capsys):
@@ -238,7 +240,9 @@ def test_inspect_latest_unavailable_recording_fails_before_replay(monkeypatch, t
             recording_path=recording,
             node_id="tests/test_example.py::test_latest",
             recording_placeholder=False,
-            recording_capture_method="existing-cli-subprocess",
+            recording_capture_method="full-session-clean-subprocess",
+            recording_capture_scope="full_session",
+            recording_failure_selection="first_failure",
             recording_available=False,
             recording_failure_reason="recording command could not start",
         ),
@@ -326,7 +330,9 @@ def test_mcp_latest_real_recording_launches_existing_mcp_path(monkeypatch, tmp_p
             recording_path=recording,
             node_id="tests/test_example.py::test_latest",
             recording_placeholder=False,
-            recording_capture_method="existing-cli-subprocess",
+            recording_capture_method="full-session-clean-subprocess",
+            recording_capture_scope="full_session",
+            recording_failure_selection="first_failure",
             recording_available=True,
         ),
         runs_dir=tmp_path / ".retrace" / "runs",

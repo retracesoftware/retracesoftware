@@ -112,6 +112,7 @@ def _agent_context(manifest: dict) -> dict:
     failure_path = _artifact_path(manifest, "failure_path")
     pytest_info = manifest.get("pytest") if isinstance(manifest.get("pytest"), dict) else {}
     failure = manifest.get("failure") if isinstance(manifest.get("failure"), dict) else {}
+    recording = manifest.get("recording") if isinstance(manifest.get("recording"), dict) else {}
     recording_status = _recording_status(manifest, recording_path)
     return {
         "title": "Retrace failed-test context",
@@ -137,6 +138,8 @@ def _agent_context(manifest: dict) -> dict:
             "recording_available": recording_status["available"],
             "recording_placeholder": recording_status["placeholder"],
             "recording_capture_method": recording_status["capture_method"],
+            "recording_capture_scope": recording.get("capture_scope", ""),
+            "recording_failure_selection": recording.get("failure_selection", ""),
             "recording_failure_reason": recording_status["failure_reason"],
             "inspect_available": "unknown",
             "external_calls_available": "unknown",
@@ -194,6 +197,8 @@ def _render_agent_context(context: dict) -> str:
         f"recording_available: {_yes_no(context['evidence']['recording_available'])}",
         f"recording_placeholder: {_yes_no(context['evidence']['recording_placeholder'])}",
         f"recording_capture_method: {context['evidence']['recording_capture_method']}",
+        f"capture_scope: {context['evidence']['recording_capture_scope']}",
+        f"failure_selection: {context['evidence']['recording_failure_selection']}",
         f"recording_failure_reason: {context['evidence']['recording_failure_reason'] or ''}",
         f"inspect_available: {context['evidence']['inspect_available']}",
         f"external_calls_available: {context['evidence']['external_calls_available']}",

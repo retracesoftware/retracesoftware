@@ -42,12 +42,14 @@ Use `--keep-passing` when you want to keep a recording even if tests pass.
 
 ## Failed-test artifacts
 
-`pytest --retrace` currently records failed tests by re-running the failed node
-under the existing Retrace recorder. The child pytest process is guarded with
-`RETRACE_PYTEST_RECORDING_CHILD=1` so it does not recursively create another
-failed-test run.
+`pytest --retrace` re-execs the pytest session under the existing Retrace
+recorder. The recorded child process is the actual pytest run; Retrace does not
+rerun a failed node after the fact. If the recorded session passes, the
+temporary artifact is deleted. If the recorded session fails, Retrace keeps the
+session recording and writes failed-test metadata for the first observed
+failure.
 
-For each failed test, Retrace writes:
+For a failed session, Retrace writes:
 
 ```text
 .retrace/runs/<run-id>/
@@ -66,6 +68,12 @@ retrace inspect --latest
 
 `retrace mcp --latest` starts only when the latest run has a real, available
 recording. `retrace clean --latest --yes` removes the most recent run.
+
+For v1, `pytest --retrace` surfaces the first failure observed in the recorded
+session. It preserves user pytest semantics and does not silently inject
+`--maxfail=1`. For flaky tests, the failure is captured when it happens during
+the recorded run. pytest-xdist is out of scope for v1 because correct support
+needs per-worker recordings and manifests.
 
 ## Coverage.py and CI
 

@@ -5,10 +5,11 @@ before sharing it with a design partner.
 
 ## What This Preview Is
 
-This is a testing-first workflow for failed pytest runs. When a test fails,
-`pytest --retrace` re-runs the failed node under Retrace, captures a local
-recording, and writes failed-test artifacts that can be inspected through CLI
-and MCP entrypoints.
+This is a testing-first workflow for failed pytest runs. `pytest --retrace`
+re-execs the pytest session under the Retrace recorder, so the recorded child is
+the test run that actually passes or fails. When that recorded session fails,
+Retrace keeps the local recording and writes first-failure artifacts that can be
+inspected through CLI and MCP entrypoints.
 
 The basic workflow is:
 
@@ -59,7 +60,7 @@ pytest --retrace
 
 ## Generated Artifacts
 
-Each failed test creates one failed-test artifact directory:
+Each failed recorded session creates one failed-test artifact directory:
 
 ```text
 .retrace/runs/<run-id>/
@@ -68,9 +69,11 @@ Each failed test creates one failed-test artifact directory:
   failure.txt
 ```
 
-`recording.bin` is the local Retrace recording. `manifest.json` contains
-pytest, environment, failure, and artifact metadata. `failure.txt` is a short
-plain-text failure summary for humans and agents.
+`recording.bin` is the local full-session Retrace recording. `manifest.json`
+contains pytest, environment, failure, and artifact metadata for the first
+observed failure. `failure.txt` is a short plain-text failure summary for
+humans and agents. If the recorded session passes, the temporary artifact is
+deleted.
 
 ## Commands
 
@@ -106,6 +109,10 @@ Safe artifacts to share first:
 - `retrace inspect --latest` may return a clear "no inspectable state"
   limitation depending on the replay backend and recording shape.
 - `retrace mcp --latest` requires an available, non-placeholder recording.
+- v1 reports the first observed failure in the recorded session. It does not
+  silently add `--maxfail=1`.
+- pytest-xdist is out of scope for v1; correct support requires per-worker
+  recordings and manifests.
 - The threading/new replay version is not included in this preview.
 - Final exception, frame, and locals reliability still depends on separate
   CLI/MCP/DAP hardening work.
