@@ -1,0 +1,327 @@
+"""Minimal MCP wrapper for the agent-facing Retrace debugging CLI."""
+
+from __future__ import annotations
+
+import json
+import subprocess
+import sys
+from typing import Any, Callable
+
+from retracesoftware.agent_inspect import (
+    inspect_external_call as _inspect_external_call,
+    inspect_external_calls as _inspect_external_calls,
+    inspect_frame as _inspect_frame,
+    inspect_provenance as _inspect_provenance,
+    inspect_recording as _inspect_recording,
+    inspect_variable as _inspect_variable,
+)
+
+
+SERVER_NAME = "retrace-agent-debugging"
+SERVER_VERSION = "0.1.0"
+
+
+TOOLS: list[dict[str, Any]] = [
+    {
+        "name": "retrace_inspect",
+        "description": (
+            "Use this first when a Retrace recording is available. It reports where the "
+            "recorded execution stopped, the failure/exception state, and candidate "
+            "application frames. It does not infer root cause."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "recording": {"type": "string"},
+                "max_frames": {"type": "integer", "default": 5},
+                "max_vars": {"type": "integer", "default": 50},
+                "repr_budget": {"type": "integer", "default": 300},
+            },
+            "required": ["recording"],
+            "additionalProperties": False,
+        },
+    },
+    {
+        "name": "retrace_frame",
+        "description": (
+            "Use this after retrace_inspect to inspect the locals in a chosen application "
+            "frame. If frame 0 is a test/assertion/helper frame, inspect the next "
+            "business-logic frame."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "recording": {"type": "string"},
+                "frame": {"type": "integer"},
+                "repr_budget": {"type": "integer", "default": 300},
+            },
+            "required": ["recording", "frame"],
+            "additionalProperties": False,
+        },
+    },
+    {
+        "name": "retrace_var",
+        "description": (
+            "Use this to inspect one named local variable from a selected frame. This is "
+            "useful after retrace_frame identifies a local that appears central to the "
+            "failure."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "recording": {"type": "string"},
+                "frame": {"type": "integer"},
+                "name": {"type": "string"},
+                "repr_budget": {"type": "integer", "default": 300},
+            },
+            "required": ["recording", "frame", "name"],
+            "additionalProperties": False,
+        },
+    },
+    {
+        "name": "retrace_provenance",
+        "description": (
+            "Use this to ask where a named local entered the selected frame. This reports "
+            "stack provenance only. It does not provide full value-level lineage, "
+            "mutation history, or container insertion history."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "recording": {"type": "string"},
+                "frame": {"type": "integer"},
+                "name": {"type": "string"},
+            },
+            "required": ["recording", "frame", "name"],
+            "additionalProperties": False,
+        },
+    },
+    {
+        "name": "retrace_external_calls",
+        "description": (
+            "Use retrace_external_calls after retrace_inspect when the failure may depend on "
+            "a DB/API/file/config/time/random result. It returns bounded previews of recorded "
+            "external calls before the failure. It does not infer root cause or provide full "
+            "value lineage."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "recording": {"type": "string"},
+                "before_failure": {"type": "boolean", "default": True},
+                "limit": {"type": "integer", "default": 20},
+                "repr_budget": {"type": "integer", "default": 300},
+            },
+            "required": ["recording"],
+            "additionalProperties": False,
+        },
+    },
+    {
+        "name": "retrace_external_call",
+        "description": (
+            "Use retrace_external_call after retrace_external_calls to expand one selected "
+            "recorded DB/API/file/config/time/random call with a larger bounded preview. "
+            "It does not infer root cause or provide full value lineage."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "recording": {"type": "string"},
+                "index": {"type": "integer"},
+                "before_failure": {"type": "boolean", "default": True},
+                "repr_budget": {"type": "integer", "default": 4000},
+            },
+            "required": ["recording", "index"],
+            "additionalProperties": False,
+        },
+    },
+]
+
+
+def list_tools() -> list[dict[str, Any]]:
+    """Return MCP tool definitions."""
+    return json.loads(json.dumps(TOOLS))
+
+
+def retrace_inspect(
+    recording: str,
+    max_frames: int = 5,
+    max_vars: int = 50,
+    repr_budget: int = 300,
+) -> dict[str, Any]:
+    """Return observed stop/failure state for a Retrace recording."""
+    return _inspect_recording(
+        recording,
+        max_frames=max_frames,
+        max_vars=max_vars,
+        repr_budget=repr_budget,
+    )
+
+
+def retrace_frame(
+    recording: str,
+    frame: int,
+    repr_budget: int = 300,
+) -> dict[str, Any]:
+    """Return bounded locals for one application frame."""
+    return _inspect_frame(
+        recording,
+        frame_index=frame,
+        repr_budget=repr_budget,
+    )
+
+
+def retrace_var(
+    recording: str,
+    frame: int,
+    name: str,
+    repr_budget: int = 300,
+) -> dict[str, Any]:
+    """Return a bounded preview for one named local."""
+    return _inspect_variable(
+        recording,
+        frame_index=frame,
+        name=name,
+        repr_budget=repr_budget,
+    )
+
+
+def retrace_provenance(
+    recording: str,
+    frame: int,
+    name: str,
+) -> dict[str, Any]:
+    """Return stack provenance for one named local, when available."""
+    return _inspect_provenance(
+        recording,
+        frame_index=frame,
+        name=name,
+    )
+
+
+def retrace_external_calls(
+    recording: str,
+    before_failure: bool = True,
+    limit: int = 20,
+    repr_budget: int = 300,
+) -> dict[str, Any]:
+    """Return bounded recorded external-call results, when available."""
+    return _inspect_external_calls(
+        recording,
+        before_failure=before_failure,
+        limit=limit,
+        repr_budget=repr_budget,
+    )
+
+
+def retrace_external_call(
+    recording: str,
+    index: int,
+    before_failure: bool = True,
+    repr_budget: int = 4000,
+) -> dict[str, Any]:
+    """Return one expanded recorded external-call result, when available."""
+    return _inspect_external_call(
+        recording,
+        index=index,
+        before_failure=before_failure,
+        repr_budget=repr_budget,
+    )
+
+
+def _json_result(value: Any) -> dict[str, Any]:
+    return {
+        "content": [
+            {
+                "type": "text",
+                "text": json.dumps(value, indent=2, sort_keys=True),
+            }
+        ]
+    }
+
+
+def _tool_error(code: str, message: str, recoverable: bool = True) -> dict[str, Any]:
+    return {"error": {"code": code, "message": message, "recoverable": recoverable}}
+
+
+def call_tool(name: str, arguments: dict[str, Any]) -> dict[str, Any]:
+    """Call one MCP tool and return an MCP content result."""
+    dispatch: dict[str, Callable[..., dict[str, Any]]] = {
+        "retrace_inspect": retrace_inspect,
+        "retrace_frame": retrace_frame,
+        "retrace_var": retrace_var,
+        "retrace_provenance": retrace_provenance,
+        "retrace_external_calls": retrace_external_calls,
+        "retrace_external_call": retrace_external_call,
+    }
+    if name not in dispatch:
+        return _json_result(_tool_error("unknown_tool", f"Unknown tool: {name}"))
+
+    try:
+        result = dispatch[name](**arguments)
+    except subprocess.TimeoutExpired as exc:
+        result = _tool_error("replay_timeout", f"Retrace replay timed out after {exc.timeout} seconds.")
+    except OSError as exc:
+        result = _tool_error("replay_unavailable", str(exc))
+    except TypeError as exc:
+        result = _tool_error("invalid_arguments", str(exc))
+
+    return _json_result(result)
+
+
+def handle(request: dict[str, Any]) -> dict[str, Any] | None:
+    """Handle one JSON-RPC MCP request."""
+    method = request.get("method")
+    request_id = request.get("id")
+
+    if method == "notifications/initialized":
+        return None
+
+    if method == "initialize":
+        return {
+            "jsonrpc": "2.0",
+            "id": request_id,
+            "result": {
+                "protocolVersion": "2024-11-05",
+                "capabilities": {"tools": {}},
+                "serverInfo": {"name": SERVER_NAME, "version": SERVER_VERSION},
+            },
+        }
+
+    if method == "tools/list":
+        return {"jsonrpc": "2.0", "id": request_id, "result": {"tools": list_tools()}}
+
+    if method == "tools/call":
+        params = request.get("params") or {}
+        result = call_tool(params.get("name", ""), params.get("arguments") or {})
+        return {"jsonrpc": "2.0", "id": request_id, "result": result}
+
+    return {
+        "jsonrpc": "2.0",
+        "id": request_id,
+        "error": {"code": -32601, "message": f"Method not found: {method}"},
+    }
+
+
+def main() -> int:
+    """Run the MCP server over newline-delimited JSON-RPC on stdio."""
+    for line in sys.stdin:
+        if not line.strip():
+            continue
+        try:
+            request = json.loads(line)
+            response = handle(request)
+            if response is not None:
+                print(json.dumps(response, separators=(",", ":")), flush=True)
+        except Exception as exc:  # Defensive: keep the MCP process alive.
+            response = {
+                "jsonrpc": "2.0",
+                "id": None,
+                "error": {"code": -32603, "message": str(exc)},
+            }
+            print(json.dumps(response, separators=(",", ":")), flush=True)
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

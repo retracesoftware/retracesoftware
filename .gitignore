@@ -217,6 +217,7 @@ go/replay/replay
 go/cmd/replay/replay
 
 # Trace recordings
+.retrace/
 *.retrace
 *.retrace.d/
 *.d/
