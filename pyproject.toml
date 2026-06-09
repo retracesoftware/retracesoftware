@@ -21,6 +21,9 @@ classifiers = [
 ]
 
 [project.scripts]
+retrace = "retracesoftware.cli:main"
+retrace-agent = "retracesoftware.cli:agent_main"
+retrace-agent-mcp = "retracesoftware.agent_mcp:main"
 replay = "retracesoftware.replay:_exec_replay"
 
 [project.urls]
