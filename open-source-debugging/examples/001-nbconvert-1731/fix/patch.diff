@@ -3,7 +3,7 @@ index 01da1888..f9e47f08 100644
 --- a/nbconvert/filters/widgetsdatatypefilter.py
 +++ b/nbconvert/filters/widgetsdatatypefilter.py
 @@ -54,11 +54,8 @@ class WidgetsDataTypeFilter(NbConvertBase):
- 
+
          """
          metadata = self.metadata.get(self.notebook_path, {})
 -        widgets_state = (

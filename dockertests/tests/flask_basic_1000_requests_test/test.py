@@ -29,4 +29,3 @@ if __name__ == "__main__":
     except Exception as exc:  # noqa: BLE001 - top-level scenario diagnostics.
         print(f"test failed: {exc}", file=sys.stderr, flush=True)
         raise
-

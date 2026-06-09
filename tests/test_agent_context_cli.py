@@ -47,6 +47,33 @@ def test_agent_context_missing_recording_is_clear(tmp_path: Path, capsys) -> Non
     assert str(recording) in captured.err
 
 
+def test_agent_context_invalid_manifest_is_clear(tmp_path: Path, capsys) -> None:
+    recording = tmp_path / "recording.bin"
+    recording.write_bytes(b"recording")
+    manifest = tmp_path / "manifest.json"
+    manifest.write_text("{not json", encoding="utf-8")
+
+    assert (
+        cli.main(
+            [
+                "agent-context",
+                "--recording",
+                str(recording),
+                "--manifest",
+                str(manifest),
+            ]
+        )
+        == 1
+    )
+
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert "retrace agent-context failed" in captured.err
+    assert "is not valid JSON" in captured.err
+    assert str(manifest) in captured.err
+    assert "Traceback" not in captured.err
+
+
 def test_latest_recording_pointer_resolves_from_nested_directory(
     tmp_path: Path,
     monkeypatch,

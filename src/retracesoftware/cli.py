@@ -69,7 +69,11 @@ def _run_agent_context(args: argparse.Namespace) -> int:
     manifest = _resolve_args_manifest(args, command="retrace agent-context")
     if manifest is None and getattr(args, "manifest", None):
         return 1
-    context = build_agent_context(recording, manifest)
+    try:
+        context = build_agent_context(recording, manifest)
+    except RecordingResolutionError as exc:
+        print(f"retrace agent-context failed: {exc}", file=sys.stderr)
+        return 1
     if args.json:
         print(json.dumps(context, indent=2, sort_keys=True))
     else:

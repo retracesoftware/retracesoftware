@@ -20,7 +20,7 @@ index cb2d35a..51c8f0c 100644
          skip_registration: Literal[True],
 +        register_referenced_components: bool = False,
      ) -> Schema: ...
- 
+
      @overload
 @@ -36,6 +37,7 @@ class SchemaGenerator:
          *,
@@ -28,7 +28,7 @@ index cb2d35a..51c8f0c 100644
          skip_registration: bool = False,
 +        register_referenced_components: bool = False,
      ) -> Schema | Reference: ...
- 
+
      def __call__(
 @@ -45,6 +47,7 @@ class SchemaGenerator:
          *,
@@ -44,7 +44,7 @@ index cb2d35a..51c8f0c 100644
              skip_registration=skip_registration,
 +            register_referenced_components=register_referenced_components,
          )
- 
+
      def _resolve_schema_override(
 @@ -133,6 +137,7 @@ class SchemaGenerator:
          serializer: type['BaseSerializer'],
@@ -77,7 +77,7 @@ index cb2d35a..51c8f0c 100644
 -                else reference
 -            )
 +            return reference
- 
+
          # Register the final schema:
          schema_obj = load_schema(
 @@ -201,3 +211,16 @@ def _build_resolution_context(
@@ -104,7 +104,7 @@ index 8b5e597..bfd16c1 100644
 @@ -7,12 +7,17 @@ from typing import Annotated, Any, Final, Literal, Optional, Union
  import pytest
  from typing_extensions import TypedDict
- 
+
 +from dmr import Controller, Query
  from dmr.exceptions import UnsolvableAnnotationsError
 +from dmr.openapi import build_schema
@@ -112,7 +112,7 @@ index 8b5e597..bfd16c1 100644
  from dmr.openapi.generators.schema import SchemaGenerator
  from dmr.openapi.objects import OpenAPIType, Reference, Schema
 +from dmr.routing import Router, path
- 
+
  try:
 +    import msgspec
 +
@@ -121,8 +121,8 @@ index 8b5e597..bfd16c1 100644
      pytest.skip(reason='msgspec is not installed', allow_module_level=True)
 @@ -37,6 +42,19 @@ class _TestEnum(enum.IntEnum):
      width = 2
- 
- 
+
+
 +class _TestStrEnum(enum.StrEnum):
 +    none = 'None'
 +
@@ -137,12 +137,12 @@ index 8b5e597..bfd16c1 100644
 +
 +
  _TEST_SCHEMA: Final = Schema(type=OpenAPIType.OBJECT)
- 
- 
+
+
 @@ -274,6 +292,27 @@ def test_enum(
      assert schema == Schema(enum=[1, 2], title=_TestEnum.__qualname__)
- 
- 
+
+
 +def test_str_enum_query_schema() -> None:
 +    """Ensure StrEnum query fields register referenced schemas."""
 +    schema = build_schema(
