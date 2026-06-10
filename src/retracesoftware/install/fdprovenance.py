@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-import threading
+import weakref
 
 
 class FdProvenance:
@@ -14,12 +14,35 @@ class FdProvenance:
     """
 
     def __init__(self) -> None:
-        self._lock = threading.RLock()
-        self._passthrough_fds: set[int] = set()
+        # This runs inside the install/pathpredicate plumbing itself, so avoid
+        # Python locks here: lock methods are also part of Retrace's patched
+        # surface. The GIL is enough for this small process-local table.
+        self._passthrough_fds: dict[int, weakref.ReferenceType | None] = {}
 
     def should_retrace_fd(self, fd: int) -> bool:
-        with self._lock:
-            return fd not in self._passthrough_fds
+        owner_ref = self._passthrough_fds.get(fd)
+        if fd not in self._passthrough_fds:
+            return True
+
+        if owner_ref is None:
+            return False
+
+        owner = owner_ref()
+        if owner is None or getattr(owner, "closed", False):
+            self._passthrough_fds.pop(fd, None)
+            return True
+
+        try:
+            current_fd = owner.fileno()
+        except Exception:
+            self._passthrough_fds.pop(fd, None)
+            return True
+
+        if current_fd != fd:
+            self._passthrough_fds.pop(fd, None)
+            return True
+
+        return False
 
     def should_passthrough_call(self, module_name, function_name, args, kwargs) -> bool:
         if module_name != "posix":
@@ -31,10 +54,9 @@ class FdProvenance:
         return fd in {0, 1, 2}
 
     def mark_result(self, result):
-        fd = _result_fd(result)
+        fd, owner = _result_fd_and_owner(result)
         if fd is not None:
-            with self._lock:
-                self._passthrough_fds.add(fd)
+            self._passthrough_fds[fd] = _owner_ref(owner, self, fd)
         return result
 
     def observe_passthrough_call(self, module_name, function_name, args, kwargs, result):
@@ -57,15 +79,13 @@ class FdProvenance:
             source_fd = _arg(args, kwargs, "fd", 0)
             target_fd = _arg(args, kwargs, "fd2", 1)
             if _is_passthrough_fd(source_fd, self) and isinstance(target_fd, int):
-                with self._lock:
-                    self._passthrough_fds.add(target_fd)
+                self._passthrough_fds[target_fd] = None
             return result
 
         if function_name == "close":
             fd = _arg(args, kwargs, "fd", 0)
             if isinstance(fd, int):
-                with self._lock:
-                    self._passthrough_fds.discard(fd)
+                self._passthrough_fds.pop(fd, None)
             return result
 
         return result
@@ -83,19 +103,29 @@ def _is_passthrough_fd(fd, provenance: FdProvenance) -> bool:
     return isinstance(fd, int) and not provenance.should_retrace_fd(fd)
 
 
-def _result_fd(result) -> int | None:
+def _result_fd_and_owner(result) -> tuple[int | None, object | None]:
     if isinstance(result, int) and result >= 0:
-        return result
+        return result, None
 
     fileno = getattr(result, "fileno", None)
     if fileno is None:
-        return None
+        return None, None
 
     try:
         fd = fileno()
     except Exception:
-        return None
+        return None, None
 
     if isinstance(fd, int) and fd >= 0:
-        return fd
-    return None
+        return fd, result
+    return None, None
+
+
+def _owner_ref(owner, provenance: FdProvenance, fd: int):
+    if owner is None:
+        return None
+
+    try:
+        return weakref.ref(owner, lambda _ref: provenance._passthrough_fds.pop(fd, None))
+    except TypeError:
+        return None

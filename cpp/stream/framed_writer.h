@@ -133,15 +133,17 @@ public:
 
         const uint8_t* data = buf_.data();
         size_t remaining = buf_.size();
-        uint8_t frame_header[FRAME_HEADER_SIZE];
-        memcpy(frame_header, pid_bytes_, 4);
+        std::vector<uint8_t> frame;
+        frame.reserve(FRAME_HEADER_SIZE + max_payload_);
 
         while (remaining > 0) {
             uint16_t chunk = (uint16_t)std::min(remaining, max_payload_);
-            frame_header[4] = (uint8_t)(chunk);
-            frame_header[5] = (uint8_t)(chunk >> 8);
-            write_raw(frame_header, FRAME_HEADER_SIZE);
-            write_raw(data, chunk);
+            frame.resize(FRAME_HEADER_SIZE + chunk);
+            memcpy(frame.data(), pid_bytes_, 4);
+            frame[4] = (uint8_t)(chunk);
+            frame[5] = (uint8_t)(chunk >> 8);
+            memcpy(frame.data() + FRAME_HEADER_SIZE, data, chunk);
+            write_raw(frame.data(), frame.size());
             data += chunk;
             remaining -= chunk;
         }

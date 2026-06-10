@@ -122,3 +122,85 @@ def test_tempfile_gettempdir_passthrough_fd_probe_replays(tmp_path: Path) -> Non
         f"replay failed\nstdout:\n{replay.stdout}\nstderr:\n{replay.stderr}"
     )
     assert "fd provenance tempfile ok" in replay.stdout
+
+
+def test_closed_passthrough_file_fd_does_not_poison_reused_pipe_fd(tmp_path: Path) -> None:
+    script = tmp_path / "fd_provenance_stale_file_fd.py"
+    script.write_text(
+        textwrap.dedent(
+            """
+            import io
+            import os
+
+
+            untraced_tmp = os.path.abspath("untraced_tmp")
+            os.makedirs(untraced_tmp, exist_ok=True)
+
+            stale_path = os.path.join(untraced_tmp, "stale-fd-source")
+            with open(stale_path, "wb") as handle:
+                stale_fd = handle.fileno()
+                handle.write(b"stale file payload")
+
+            r, w = os.pipe()
+            assert r == stale_fd or w == stale_fd, (stale_fd, r, w)
+
+            os.write(w, b"hello from reused pipe fd\\n")
+            os.close(w)
+
+            buf = io.open(r, "rb")
+            wrapper = io.TextIOWrapper(buf)
+            print(wrapper.read(), end="", flush=True)
+            """
+        ),
+        encoding="utf-8",
+    )
+
+    recording = tmp_path / "trace.retrace"
+    env = os.environ.copy()
+    _use_this_checkout(env)
+
+    record = _run(
+        [
+            sys.executable,
+            "-m",
+            "retracesoftware",
+            "--recording",
+            str(recording),
+            "--stacktraces",
+            "--",
+            str(script),
+        ],
+        cwd=tmp_path,
+        env=env,
+    )
+    assert record.returncode == 0, (
+        f"record failed\nstdout:\n{record.stdout}\nstderr:\n{record.stderr}"
+    )
+
+    extract = _run([str(recording), "--extract"], cwd=tmp_path, env=env)
+    assert extract.returncode == 0, (
+        f"extract failed\nstdout:\n{extract.stdout}\nstderr:\n{extract.stderr}"
+    )
+
+    list_pids = _run(
+        [
+            sys.executable,
+            "-m",
+            "retracesoftware",
+            "--recording",
+            str(recording),
+            "--list_pids",
+        ],
+        cwd=tmp_path,
+        env=env,
+    )
+    assert list_pids.returncode == 0, (
+        f"list_pids failed\nstdout:\n{list_pids.stdout}\nstderr:\n{list_pids.stderr}"
+    )
+
+    root_pid = list_pids.stdout.splitlines()[0]
+    replay = _run([str(tmp_path / "trace.d" / f"{root_pid}.bin")], cwd=tmp_path, env=env)
+    assert replay.returncode == 0, (
+        f"replay failed\nstdout:\n{replay.stdout}\nstderr:\n{replay.stderr}"
+    )
+    assert "hello from reused pipe fd" in replay.stdout
