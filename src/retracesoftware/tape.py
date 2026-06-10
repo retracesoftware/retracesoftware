@@ -116,6 +116,22 @@ def _write_shebang(trace_path, replay_bin):
     os.chmod(str(trace_path), 0o755)
 
 
+def _trace_identity(path):
+    st = os.stat(path)
+    return f"{st.st_dev}:{st.st_ino}"
+
+
+def _prepared_by_autoenable(trace_path):
+    expected = os.environ.get("RETRACE_INODE")
+    if expected is None:
+        return False
+    try:
+        identity = _trace_identity(trace_path)
+    except OSError:
+        return False
+    return expected == identity
+
+
 class _ReplayTapeReader:
     __slots__ = ("_tape_reader",)
 
@@ -175,7 +191,11 @@ def create_tape_writer(options, argv, *, thread_getter) -> TapeWriter:
     trace_path = Path(expand_recording_path(recording))
     trace_path.parent.mkdir(parents=True, exist_ok=True)
     replay_bin = _find_replay_bin(getattr(options, "replay_bin", None))
-    if recording_format == "binary" and not is_fifo_path(trace_path):
+    if (
+        recording_format == "binary"
+        and not is_fifo_path(trace_path)
+        and not _prepared_by_autoenable(trace_path)
+    ):
         _write_shebang(trace_path, replay_bin)
 
     path_info = stream.get_path_info()

@@ -113,6 +113,7 @@ install_data(
   _py_root / 'modules/OpenSSL.SSL.toml',
   _py_root / 'modules/PIL._imaging.toml',
   _py_root / 'modules/_io.toml',
+  _py_root / 'modules/_pytest.cacheprovider.toml',
   _py_root / 'modules/_sqlite3.toml',
   _py_root / 'modules/babel.localedata.toml',
   _py_root / 'modules/confluent_kafka.cimpl.toml',

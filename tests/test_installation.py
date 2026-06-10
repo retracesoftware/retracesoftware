@@ -18,6 +18,13 @@ def _wrap_marker(target):
     return wrapper
 
 
+def _system_wrap_marker(target, system):
+    def wrapper(self):
+        return ("system-wrapped", system, target(self))
+
+    return wrapper
+
+
 def _system():
     system = System(on_bind=utils.noop)
     system.primary_hooks = CallHooks()
@@ -314,6 +321,38 @@ def test_type_attribute_mixed_directives_all_apply_and_uninstall():
 
     assert Example.__dict__["wake"] is original_wake
     assert Example.__dict__["close"] is original_close
+
+
+def test_type_attribute_system_wrap_receives_system_and_uninstalls():
+    system = _system()
+
+    class Example:
+        def ping(self):
+            return 123
+
+    original = Example.__dict__["ping"]
+    namespace = {"__name__": "test_type_attribute_system_wrap", "Example": Example}
+
+    undo = patch(
+        namespace,
+        {
+            "type_attributes": {
+                "Example": {
+                    "system_wrap": {
+                        "ping": "tests.test_installation._system_wrap_marker",
+                    },
+                },
+            },
+        },
+        Installation(system),
+    )
+
+    try:
+        assert Example().ping() == ("system-wrapped", system, 123)
+    finally:
+        undo()
+
+    assert Example.__dict__["ping"] is original
 
 
 def test_pathparam_skips_callables_without_inspectable_signature():

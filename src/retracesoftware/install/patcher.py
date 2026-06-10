@@ -569,6 +569,16 @@ def patch(
                                     set_type_attr(attr, wrapper_factory(value))
                                 continue
 
+                            if sub_directive == 'system_wrap':
+                                for attr, dotted_path in sub_names.items():
+                                    if not hasattr(cls, attr):
+                                        continue
+                                    value = getattr(cls, attr)
+                                    value = utils.try_unwrap(value)
+                                    wrapper_factory = resolve(dotted_path)
+                                    set_type_attr(attr, wrapper_factory(value, system))
+                                continue
+
                             # Recurse: sub_spec is e.g. {"proxy": ["now", "utcnow"]}
                             # but targets are attributes on the class, not the module
                             cls_ns = {attr: getattr(cls, attr)

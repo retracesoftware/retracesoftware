@@ -2,6 +2,7 @@
 
 import functools
 import gc
+import itertools
 import os
 import sys
 
@@ -254,6 +255,73 @@ def signal_signal(target, system):
             system.bind(retrace_signal_trampoline)
             handler = retrace_signal_trampoline
         return target(signalnum, handler)
+
+    return wrapper
+
+
+def _pytest_cache_method_with_payload_token(target, system):
+    target = utils.try_unwrap(target)
+    counter = itertools.count()
+    payloads = {}
+
+    @utils.exclude_from_stacktrace
+    def external(key, token):
+        self, payload = payloads.pop(token)
+        return target(self, key, payload)
+
+    wrapped_external = system.patch_function(external)
+
+    @functools.wraps(target)
+    @utils.exclude_from_stacktrace
+    def wrapper(self, key, payload):
+        token = next(counter)
+        payloads[token] = (self, payload)
+        return wrapped_external(key, token)
+
+    return wrapper
+
+
+def pytest_cache_get(target, system):
+    """Record/replay Cache.get without exposing mutable defaults as call args."""
+
+    return _pytest_cache_method_with_payload_token(target, system)
+
+
+def pytest_cache_set(target, system):
+    """Record/replay Cache.set without exposing mutable JSON values as call args."""
+
+    return _pytest_cache_method_with_payload_token(target, system)
+
+
+def pytest_cache_for_config(target, system):
+    """Keep pytest --cache-clear branch decisions tied to recorded cache state."""
+
+    target = utils.try_unwrap(target)
+    cls = getattr(target, "__self__", None)
+    if not isinstance(cls, type):
+        return target
+
+    counter = itertools.count()
+    cachedirs = {}
+
+    @utils.exclude_from_stacktrace
+    def cachedir_exists(token):
+        return cachedirs.pop(token).is_dir()
+
+    wrapped_cachedir_exists = system.patch_function(cachedir_exists)
+
+    @functools.wraps(target)
+    @utils.exclude_from_stacktrace
+    def wrapper(config, *, _ispytest=False):
+        if not config.getoption("cacheclear"):
+            return target(config, _ispytest=_ispytest)
+
+        cachedir = cls.cache_dir_from_config(config, _ispytest=_ispytest)
+        token = next(counter)
+        cachedirs[token] = cachedir
+        if wrapped_cachedir_exists(token):
+            cls.clear_cache(cachedir, _ispytest=_ispytest)
+        return cls(cachedir, config, _ispytest=_ispytest)
 
     return wrapper
 

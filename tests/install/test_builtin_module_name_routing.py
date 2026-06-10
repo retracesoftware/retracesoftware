@@ -101,6 +101,10 @@ def test_module_directives_include_ext_proxy_result():
     assert "ext_proxy_result" in DIRECTIVE_KEYS
 
 
+def test_module_directives_include_system_wrap():
+    assert "system_wrap" in DIRECTIVE_KEYS
+
+
 def test_thread_allocate_lock_uses_ext_proxy_result():
     cfg = ModuleConfigResolver()["_thread"]
 
