@@ -258,6 +258,7 @@ def patch(
     installation,
     update_refs=None,
     pathpredicate=None,
+    fd_provenance=None,
     module_ref_index=None,
 ):
     """Apply a TOML-derived patch spec to *module* using *installation*.
@@ -579,6 +580,7 @@ def patch(
                                 installation,
                                 update_refs=update_refs,
                                 pathpredicate=pathpredicate,
+                                fd_provenance=fd_provenance,
                                 module_ref_index=module_ref_index,
                             )
                         for attr, new_val in cls_ns.items():
@@ -612,7 +614,45 @@ def patch(
                             predicate=pathpredicate,
                             fallback_index=fallback_index)
 
-                        wrapped = functional.if_then_else(should_retrace, patched, system.disable_for(patched))
+                        disabled = system.disable_for(patched)
+
+                        def wrapped(*args, __patched=patched, __disabled=disabled,
+                                    __should_retrace=should_retrace,
+                                    __fd_provenance=fd_provenance,
+                                    __module_name=namespace.get("__name__"),
+                                    __function_name=name,
+                                    **kwargs):
+                            if (
+                                __fd_provenance is not None
+                                and __fd_provenance.should_passthrough_call(
+                                    __module_name,
+                                    __function_name,
+                                    args,
+                                    kwargs,
+                                )
+                            ):
+                                result = __disabled(*args, **kwargs)
+                                return __fd_provenance.observe_passthrough_call(
+                                    __module_name,
+                                    __function_name,
+                                    args,
+                                    kwargs,
+                                    result,
+                                )
+
+                            if __should_retrace(*args, **kwargs):
+                                return __patched(*args, **kwargs)
+                            result = __disabled(*args, **kwargs)
+                            if __fd_provenance is not None:
+                                result = __fd_provenance.observe_passthrough_call(
+                                    __module_name,
+                                    __function_name,
+                                    args,
+                                    kwargs,
+                                    result,
+                                )
+                            return result
+
                         namespace[name] = wrapped
                         module_ref_changes = []
                         if update_refs:

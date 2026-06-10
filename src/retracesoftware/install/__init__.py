@@ -122,9 +122,19 @@ def install_retrace(*, system, retrace_file_patterns=None, monitor_level=0, verb
     default_io_config = not _user_module_config_exists("_io")
     installation = Installation(system)
 
+    from retracesoftware.install.fdprovenance import FdProvenance
     from retracesoftware.install.pathpredicate import load_patterns, make_pathpredicate
-    pathpredicate = make_pathpredicate(load_patterns(retrace_file_patterns), verbose=verbose)
-    io_pathpredicate = make_pathpredicate([], verbose=verbose)
+    fd_provenance = FdProvenance()
+    pathpredicate = make_pathpredicate(
+        load_patterns(retrace_file_patterns),
+        verbose=verbose,
+        fd_provenance=fd_provenance,
+    )
+    io_pathpredicate = make_pathpredicate(
+        [],
+        verbose=verbose,
+        fd_provenance=fd_provenance,
+    )
 
     def module_patcher(namespace, update_refs, module_name=None, module_ref_index=None):
         name = module_name or namespace.get('__name__')
@@ -139,6 +149,7 @@ def install_retrace(*, system, retrace_file_patterns=None, monitor_level=0, verb
                 installation,
                 update_refs=update_refs,
                 pathpredicate=active_pathpredicate,
+                fd_provenance=fd_provenance,
                 module_ref_index=module_ref_index,
             )
             if undo is not None:

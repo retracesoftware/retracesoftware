@@ -91,6 +91,7 @@ py.install_sources(
   _py_root / 'install/__init__.py',
   _py_root / 'install/config.py',
   _py_root / 'install/edgecases.py',
+  _py_root / 'install/fdprovenance.py',
   _py_root / 'install/globals.py',
   _py_root / 'install/hooks.py',
   _py_root / 'install/importhook.py',
