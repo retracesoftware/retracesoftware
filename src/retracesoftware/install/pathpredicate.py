@@ -59,7 +59,7 @@ def _matches_ignore_glob(path, ignore_globs):
     return any(fnmatch.fnmatch(path, pattern) for pattern in ignore_globs)
 
 
-def make_pathpredicate(patterns, verbose=False, ignore_globs=DEFAULT_IGNORE_GLOBS):
+def make_pathpredicate(patterns, verbose=False, ignore_globs=DEFAULT_IGNORE_GLOBS, fd_provenance=None):
     """Build a predicate callable from compiled regex patterns.
 
     The returned callable accepts a single argument (the value extracted
@@ -76,6 +76,10 @@ def make_pathpredicate(patterns, verbose=False, ignore_globs=DEFAULT_IGNORE_GLOB
 
     def predicate(arg):
         if isinstance(arg, int):
+            if fd_provenance is not None and not fd_provenance.should_retrace_fd(arg):
+                if verbose:
+                    print(f"retrace pathpredicate: fd={arg} -> passthrough (fd came from passthrough path I/O)", file=sys.stderr)
+                return False
             if verbose:
                 print(f"retrace pathpredicate: fd={arg} -> retrace (fd always retraced)", file=sys.stderr)
             return True

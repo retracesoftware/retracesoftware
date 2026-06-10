@@ -5,9 +5,12 @@ items from ObjectWriter via the SPSC queue. These tests exercise the
 persister's file handling and data integrity through the writer.
 """
 import gc
+import os
 import pickle
 import socket
 import struct
+import subprocess
+import sys
 import threading
 import time
 from types import SimpleNamespace
@@ -133,6 +136,113 @@ def test_multiple_writers_can_append_same_file(tmp_path):
     payload = _unframe(path.read_bytes())
     assert b"first" in payload
     assert b"second" in payload
+
+
+def _parse_pid_frames(raw):
+    pos = 0
+    frames = 0
+    while pos < len(raw):
+        frame_start = pos
+        assert pos + 6 <= len(raw), f"short frame header at offset {frame_start}"
+        pid, payload_len = struct.unpack("<IH", raw[pos : pos + 6])
+        pos += 6
+        payload = raw[pos : pos + payload_len]
+        pos += payload_len
+        assert len(payload) == payload_len, (
+            f"short payload at offset {frame_start} for pid {pid}"
+        )
+        assert payload.startswith(f"{pid}:".encode()), (
+            f"frame payload at offset {frame_start} belongs to a different "
+            f"writer or starts mid-frame: pid={pid} payload={payload[:80]!r}"
+        )
+        frames += 1
+    return frames
+
+
+def test_pid_framed_fifo_writes_are_atomic_across_processes(tmp_path):
+    """Concurrent writers must not interleave frame headers and payloads."""
+    if not hasattr(os, "mkfifo"):
+        pytest.skip("requires POSIX mkfifo")
+
+    fifo_path = tmp_path / "trace.pipe"
+    output_path = tmp_path / "trace.bin"
+    writer_script = tmp_path / "frame_writer_child.py"
+    writer_script.write_text(
+        """
+import os
+import sys
+
+from retracesoftware import stream
+
+fifo_path = sys.argv[1]
+frame_count = int(sys.argv[2])
+payload_size = int(sys.argv[3])
+
+fw = stream._backend_mod.FramedWriter(fifo_path)
+pid = os.getpid()
+for index in range(frame_count):
+    prefix = f"{pid}:{index}:".encode()
+    payload = prefix + bytes([pid & 0xFF]) * (payload_size - len(prefix))
+    fw.write(payload)
+    fw.flush()
+fw.close()
+""",
+        encoding="utf-8",
+    )
+    os.mkfifo(fifo_path)
+
+    process_count = 8
+    frame_count = 600
+    payload_size = 64
+    processes = [
+        subprocess.Popen(
+            [
+                sys.executable,
+                str(writer_script),
+                str(fifo_path),
+                str(frame_count),
+                str(payload_size),
+            ],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+        for _ in range(process_count)
+    ]
+
+    fd = os.open(fifo_path, os.O_RDONLY | os.O_NONBLOCK)
+    try:
+        with output_path.open("wb") as output:
+            while any(process.poll() is None for process in processes):
+                try:
+                    chunk = os.read(fd, 65536)
+                except BlockingIOError:
+                    chunk = b""
+                if chunk:
+                    output.write(chunk)
+                else:
+                    time.sleep(0.0001)
+
+            while True:
+                try:
+                    chunk = os.read(fd, 65536)
+                except BlockingIOError:
+                    break
+                if not chunk:
+                    break
+                output.write(chunk)
+    finally:
+        os.close(fd)
+        for process in processes:
+            try:
+                process.wait(timeout=10)
+            except subprocess.TimeoutExpired:
+                process.terminate()
+                process.wait(timeout=5)
+
+    outputs = [process.communicate(timeout=1) for process in processes]
+    assert [process.returncode for process in processes] == [0] * process_count, outputs
+    assert _parse_pid_frames(output_path.read_bytes()) == process_count * frame_count
 
 
 # ---------------------------------------------------------------------------

@@ -1,4 +1,4 @@
-"""Regression for pytest fd-level capture replay divergence."""
+"""Regression for pytest default fd capture replay divergence."""
 
 from __future__ import annotations
 
@@ -14,25 +14,22 @@ from tests.install.external._pytest_replay_regression_helpers import (
 )
 
 
-def test_pytest_capfd_replay_keeps_fd_capture_and_summary_ordered(
+def test_pytest_default_capture_replay_does_not_misroute_fd_probe_writes(
     tmp_path: Path,
 ) -> None:
+    pytest.importorskip("pytest", minversion="9")
+
     files = {
         "tests/test_sample.py": """
-            import os
-
-
-            def test_capfd_reads_fd_output(capfd):
-                os.write(1, b"fd stdout\\n")
-                captured = capfd.readouterr()
-                assert "fd stdout" in captured.out
+            def test_sample_passes():
+                assert 2 + 2 == 4
         """,
     }
     record, replay = record_extract_replay_pytest(
         tmp_path,
         files=files,
         pytest_args=[
-            "tests/test_sample.py::test_capfd_reads_fd_output",
+            "tests/test_sample.py::test_sample_passes",
             "-q",
             "-p",
             "no:cacheprovider",

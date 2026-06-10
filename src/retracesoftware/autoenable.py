@@ -59,25 +59,29 @@ else:
                 return os.path.splitext(os.path.basename(arg))[0]
         return 'recording'
 
-    def _prepare_trace_file(path):
-        """If root retrace process, truncate trace file and add shebang."""
-        try:
-            existing_inode = str(os.stat(path).st_ino)
-        except FileNotFoundError:
-            existing_inode = None
+    def _trace_identity(path):
+        st = os.stat(path)
+        return f'{st.st_dev}:{st.st_ino}'
 
-        if os.environ.get('RETRACE_INODE') == existing_inode and existing_inode is not None:
+    def _prepare_trace_file(path):
+        """Prepare the shared trace file once for this process tree."""
+        try:
+            existing_identity = _trace_identity(path)
+        except FileNotFoundError:
+            existing_identity = None
+
+        if os.environ.get('RETRACE_INODE') == existing_identity and existing_identity is not None:
             return  # child process, file already prepared by root
 
         from retracesoftware.replay import extract_binary_path
         extract_bin = extract_binary_path()
-        shebang = f'#!{extract_bin}\n'
+        shebang = f'#!{extract_bin} --recording\n'
 
         os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
         with open(path, 'wb') as f:
             f.write(shebang.encode())
         os.chmod(path, 0o755)
-        os.environ['RETRACE_INODE'] = str(os.stat(path).st_ino)
+        os.environ['RETRACE_INODE'] = _trace_identity(path)
 
     if 'RETRACE_RECORDING' in os.environ or 'RETRACE_CONFIG' in os.environ:
         import sys

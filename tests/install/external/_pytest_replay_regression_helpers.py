@@ -4,12 +4,37 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
+import sys
 import textwrap
 
 from tests.helpers import PYTHON, _run_for_pidfile, local_pythonpath, tail
 
 
 TIMEOUT = 45
+REPO_ROOT = Path(__file__).resolve().parents[3]
+BUILD_TAG = (
+    f"cp{sys.version_info.major}{sys.version_info.minor}"
+    f"{getattr(sys, 'abiflags', '')}"
+)
+
+
+def minimal_project_pythonpath(tmp_path: Path) -> str:
+    """PYTHONPATH for temp-project pytest runs without importing repo tests."""
+    paths = [
+        str(tmp_path),
+        str(REPO_ROOT / "src"),
+    ]
+    build_root = REPO_ROOT / "build" / BUILD_TAG
+    for relpath in (
+        Path("cpp") / "functional",
+        Path("cpp") / "utils",
+        Path("cpp") / "stream",
+        Path("cpp") / "cursor",
+    ):
+        path = build_root / relpath
+        if path.exists():
+            paths.append(str(path))
+    return os.pathsep.join(paths)
 
 
 def clean_env(tmp_path: Path, extra: dict[str, str] | None = None) -> dict[str, str]:
@@ -43,6 +68,7 @@ def record_extract_replay_pytest(
     files: dict[str, str],
     pytest_args: list[str],
     env: dict[str, str] | None = None,
+    replay_env: dict[str, str] | None = None,
     timeout: int = TIMEOUT,
 ):
     write_files(tmp_path, files)
@@ -72,7 +98,7 @@ def record_extract_replay_pytest(
         f"record stderr:\n{tail(record.stderr)}"
     )
 
-    replay_env = clean_env(tmp_path)
+    replay_env = clean_env(tmp_path, replay_env)
     extract = _run_for_pidfile(
         [str(recording), "--extract"],
         cwd=tmp_path,

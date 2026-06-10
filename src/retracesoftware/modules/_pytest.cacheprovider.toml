@@ -1,0 +1,11 @@
+package = "pytest"
+
+# Pytest's cacheprovider stores framework state in .pytest_cache. Record may
+# create or update that cache, then replay runs in the same source tree and can
+# otherwise read different live cache state. Treat cache reads/writes as an
+# external boundary so replay follows the recorded pytest session state instead
+# of the live cache directory left behind by record.
+[type_attributes.Cache.system_wrap]
+for_config = "retracesoftware.install.edgecases.pytest_cache_for_config"
+get = "retracesoftware.install.edgecases.pytest_cache_get"
+set = "retracesoftware.install.edgecases.pytest_cache_set"
