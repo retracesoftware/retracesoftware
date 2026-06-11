@@ -326,6 +326,55 @@ def pytest_cache_for_config(target, system):
     return wrapper
 
 
+def _disable_coverage_tracer_callbacks(tracer, system):
+    callback_attrs = (
+        "check_include",
+        "concur_id_func",
+        "disable_plugin",
+        "lock_data",
+        "should_start_context",
+        "should_trace",
+        "switch_context",
+        "unlock_data",
+        "warn",
+    )
+
+    for attr in callback_attrs:
+        if not hasattr(tracer, attr):
+            continue
+        callback = getattr(tracer, attr)
+        if callback is None or not callable(callback):
+            continue
+        if getattr(callback, "__retrace_disabled_thread_target__", False):
+            continue
+        setattr(tracer, attr, system.disable_for(callback, unwrap_args=False))
+
+
+def coverage_collector_start_tracer(target, system):
+    """Keep coverage.py tracer callbacks out of Retrace's app boundary.
+
+    coverage.py installs a C or Python trace function to observe the user code
+    being measured. That trace function calls Python callbacks such as
+    ``should_trace`` and ``switch_context`` from inside coverage's own
+    instrumentation path. Those callbacks are coverage control-plane work, not
+    application behavior, so they must not consume record/replay messages.
+    """
+
+    target = utils.try_unwrap(target)
+    disabled_target = system.disable_for(target, unwrap_args=False)
+
+    @functools.wraps(target)
+    @utils.exclude_from_stacktrace
+    def wrapper(self, *args, **kwargs):
+        result = disabled_target(self, *args, **kwargs)
+        tracers = getattr(self, "tracers", ())
+        if tracers:
+            _disable_coverage_tracer_callbacks(tracers[-1], system)
+        return result
+
+    return wrapper
+
+
 def openssl_connection_class(cls):
     class Connection(cls):
         __module__ = cls.__module__

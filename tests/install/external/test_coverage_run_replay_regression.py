@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 import pytest
@@ -17,10 +18,15 @@ def _record_extract_replay_script(
     script_name: str,
     script_source: str,
     record_args: list[str],
+    env: dict[str, str] | None = None,
 ):
     script = tmp_path / script_name
     script.write_text(script_source, encoding="utf-8")
     recording = tmp_path / "trace.retrace"
+    run_env = None
+    if env is not None:
+        run_env = os.environ.copy()
+        run_env.update(env)
 
     record = _run_for_pidfile(
         [
@@ -34,7 +40,7 @@ def _record_extract_replay_script(
             *record_args,
         ],
         cwd=tmp_path,
-        env=None,
+        env=run_env,
         timeout=TIMEOUT,
     )
     assert record.returncode == 0, (
@@ -46,7 +52,7 @@ def _record_extract_replay_script(
     extract = _run_for_pidfile(
         [str(recording), "--extract"],
         cwd=tmp_path,
-        env=None,
+        env=run_env,
         timeout=TIMEOUT,
     )
     assert extract.returncode == 0, (
@@ -64,7 +70,7 @@ def _record_extract_replay_script(
             "--list_pids",
         ],
         cwd=tmp_path,
-        env=None,
+        env=run_env,
         timeout=TIMEOUT,
     )
     assert list_pids.returncode == 0, (
@@ -76,16 +82,12 @@ def _record_extract_replay_script(
     replay = _run_for_pidfile(
         [str(tmp_path / "trace.d" / f"{root_pid}.bin")],
         cwd=tmp_path,
-        env=None,
+        env=run_env,
         timeout=TIMEOUT,
     )
     return record, replay
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="coverage run currently hangs replay after coverage tracing re-enters Retrace dispatcher",
-)
 def test_coverage_run_plain_script_replays_to_completion(tmp_path: Path) -> None:
     pytest.importorskip("coverage")
 
@@ -107,10 +109,6 @@ def test_coverage_run_plain_script_replays_to_completion(tmp_path: Path) -> None
     assert "coverage-script-value=42" in replay.stdout
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="coverage run -m pytest currently fails during replay under coverage tracing",
-)
 def test_coverage_run_pytest_replays_to_completion(tmp_path: Path) -> None:
     pytest.importorskip("coverage")
 
@@ -125,8 +123,9 @@ def test_covered_sample(tmp_path):
     value_file = Path(tmp_path) / "value.txt"
     value_file.write_text("42", encoding="utf-8")
     assert int(value_file.read_text(encoding="utf-8")) == 42
-""",
+        """,
         ["-m", "coverage", "run", "-m", "pytest", "-q", "test_covered_sample.py"],
+        env={"PYTEST_DISABLE_PLUGIN_AUTOLOAD": "1"},
     )
 
     assert "1 passed" in record.stdout
@@ -140,10 +139,6 @@ def test_covered_sample(tmp_path):
     assert "1 passed" in replay.stdout
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="coverage shutdown currently materializes an invalid sqlite connection during replay",
-)
 def test_coverage_api_shutdown_replays_without_sqlite_stub_error(tmp_path: Path) -> None:
     pytest.importorskip("coverage")
 

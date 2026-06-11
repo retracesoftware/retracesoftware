@@ -1,0 +1,47 @@
+package = "coverage"
+
+# CoverageData owns coverage.py's .coverage SQLite state and synchronization.
+# Those reads/writes/locks describe the measurement tool, not the application
+# execution that Retrace is replaying.
+[type_attributes.CoverageData]
+disable = [
+    "__bool__",
+    "__init__",
+    "_choose_filename",
+    "_choose_lines_or_arcs",
+    "_connect",
+    "_context_id",
+    "_debug_dataio",
+    "_file_id",
+    "_init_db",
+    "_open_db",
+    "_read_db",
+    "_reset",
+    "_set_context_id",
+    "_start_using",
+    "add_arcs",
+    "add_file_tracers",
+    "add_lines",
+    "arcs",
+    "base_filename",
+    "close",
+    "contexts_by_lineno",
+    "data_filename",
+    "dumps",
+    "erase",
+    "file_tracer",
+    "has_arcs",
+    "lines",
+    "loads",
+    "measured_contexts",
+    "measured_files",
+    "purge_files",
+    "read",
+    "set_context",
+    "set_query_context",
+    "set_query_contexts",
+    "touch_file",
+    "touch_files",
+    "update",
+    "write",
+]
