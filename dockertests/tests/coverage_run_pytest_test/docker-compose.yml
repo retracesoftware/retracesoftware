@@ -1,0 +1,14 @@
+services:
+  dryrun:
+    environment:
+      COVERAGE_FILE: /tmp/.coverage
+    command: python -m coverage run -m pytest -q /app/test/test.py
+
+  record:
+    environment:
+      COVERAGE_FILE: /tmp/.coverage
+    command: env -u RETRACE_RECORDING -u RETRACE_CONFIG python -m retracesoftware --recording /recording/trace.bin --format unframed_binary --stacktraces -- -m coverage run -m pytest -q /app/test/test.py
+
+  replay:
+    environment:
+      COVERAGE_FILE: /tmp/.coverage
