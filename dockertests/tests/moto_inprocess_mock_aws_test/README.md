@@ -1,11 +1,10 @@
 # in-process moto mock_aws record regression
 
-Manual end-to-end reproducer for in-process `moto.mock_aws()` under Retrace.
+End-to-end regression for in-process `moto.mock_aws()` under Retrace.
 
 This scenario is distinct from the external Moto server scenario. It uses
-Moto's in-process botocore hook and currently fails during `record`, before
-Replay starts, because Moto's `MotoRandom(Random)` path trips Retrace's
-`_random.Random` patching.
+Moto's in-process botocore hook and exercises the `MotoRandom(Random)` path
+that previously tripped Retrace's `_random.Random` patching during `record`.
 
 Run:
 
@@ -14,7 +13,7 @@ cd /path/to/retracesoftware/dockertests
 python run.py moto_inprocess_mock_aws_test
 ```
 
-Current failing signature:
+Previous failing signature:
 
 ```text
 TypeError: descriptor 'getrandbits' for '_random.Random' objects doesn't apply to a 'MotoRandom' object
