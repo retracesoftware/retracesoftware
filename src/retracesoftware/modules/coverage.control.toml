@@ -1,0 +1,20 @@
+package = "coverage"
+
+# Coverage lifecycle/reporting writes .coverage SQLite files and reports.
+# That is coverage tool state, not application behavior being replayed.
+[type_attributes.Coverage]
+disable = [
+    "_atexit",
+    "combine",
+    "erase",
+    "get_data",
+    "html_report",
+    "json_report",
+    "lcov_report",
+    "load",
+    "report",
+    "save",
+    "start",
+    "stop",
+    "xml_report",
+]

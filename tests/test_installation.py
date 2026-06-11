@@ -2,12 +2,16 @@ import sys
 import types
 import posix
 
+import pytest
+
 import retracesoftware.functional as functional
 import retracesoftware.utils as utils
 
 from retracesoftware.install.installation import Installation
+from retracesoftware.install.edgecases import coverage_collector_start_tracer
 from retracesoftware.install.patcher import patch
 from retracesoftware.install.replace import ModuleRefIndex, restore_module_refs
+from retracesoftware.modules import ModuleConfigResolver
 from retracesoftware.proxy.system import CallHooks, LifecycleHooks, System
 
 
@@ -398,3 +402,99 @@ def test_posix_pathparam_uses_first_arg_for_uninspectable_builtin(tmp_path):
         undo()
 
     assert namespace["utime"] is posix.utime
+
+
+def test_posix_symlink_pathparam_uses_destination_path(tmp_path):
+    system = _system()
+    seen = []
+    target = tmp_path / "target.txt"
+    link = tmp_path / "target-current"
+    target.write_text("ok", encoding="utf-8")
+    namespace = {"__name__": "posix", "symlink": posix.symlink}
+
+    undo = patch(
+        namespace,
+        {"pathparam": {"symlink": "dst"}},
+        Installation(system),
+        pathpredicate=lambda path: seen.append(path) or False,
+    )
+
+    try:
+        namespace["symlink"](target, link)
+        assert seen == [link]
+        assert link.is_symlink()
+    finally:
+        undo()
+
+    assert namespace["symlink"] is posix.symlink
+
+
+def test_stdlib_config_filters_posix_symlink_by_destination_path():
+    cfg = ModuleConfigResolver()["posix"]
+
+    assert cfg["pathparam"]["symlink"] == "dst"
+
+
+def test_coverage_collector_config_disables_lifecycle_methods():
+    pytest.importorskip("coverage")
+
+    cfg = ModuleConfigResolver()["coverage.collector"]
+    collector_config = cfg["type_attributes"]["Collector"]
+
+    assert collector_config["system_wrap"]["_start_tracer"] == (
+        "retracesoftware.install.edgecases.coverage_collector_start_tracer"
+    )
+    assert {"__init__", "start", "stop", "flush_data"}.issubset(
+        collector_config["disable"]
+    )
+
+
+def test_coverage_sqldata_config_disables_data_store_methods():
+    pytest.importorskip("coverage")
+
+    cfg = ModuleConfigResolver()["coverage.sqldata"]
+    data_config = cfg["type_attributes"]["CoverageData"]
+
+    assert {"__init__", "set_context", "add_lines", "write"}.issubset(
+        data_config["disable"]
+    )
+
+
+def test_coverage_collector_start_tracer_disables_tracer_callbacks():
+    system = _system()
+
+    class Tracer:
+        pass
+
+    class Collector:
+        def __init__(self):
+            self.tracers = []
+            self.original_gate = "not-called"
+
+    def original_start_tracer(collector):
+        collector.original_gate = system.gate.get()
+        tracer = Tracer()
+        tracer.should_trace = lambda filename, frame: ("should_trace", system.gate.get())
+        tracer.switch_context = lambda context: ("switch_context", system.gate.get())
+        tracer.lock_data = lambda: ("lock_data", system.gate.get())
+        collector.tracers.append(tracer)
+        return "trace-function"
+
+    collector = Collector()
+    wrapped = coverage_collector_start_tracer(original_start_tracer, system)
+
+    result = system.gate.apply_with("internal", wrapped)(collector)
+
+    assert result == "trace-function"
+    assert collector.original_gate is None
+    tracer = collector.tracers[0]
+    assert getattr(tracer.should_trace, "__retrace_disabled_thread_target__", False)
+    assert system.gate.apply_with("internal", tracer.should_trace)("example.py", None) == (
+        "should_trace",
+        None,
+    )
+    assert system.gate.apply_with("internal", tracer.switch_context)("ctx") == (
+        "switch_context",
+        None,
+    )
+    assert system.gate.apply_with("internal", tracer.lock_data)() == ("lock_data", None)

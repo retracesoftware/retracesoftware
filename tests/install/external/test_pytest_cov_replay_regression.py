@@ -13,10 +13,6 @@ from tests.install.external._pytest_replay_regression_helpers import (
 )
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="pytest-cov/coverage tracing currently corrupts replay path/stat ordering",
-)
 def test_pytest_cov_replay_keeps_coverage_path_state_aligned(tmp_path: Path) -> None:
     pytest.importorskip("pytest_cov")
     pytest.importorskip("coverage")
