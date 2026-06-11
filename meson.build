@@ -131,6 +131,7 @@ install_data(
   _py_root / 'modules/psycopg2._psycopg.toml',
   _py_root / 'modules/psycopg_c._psycopg.toml',
   _py_root / 'modules/psutil.toml',
+  _py_root / 'modules/pytest_rerunfailures.toml',
   _py_root / 'modules/pycurl.toml',
   _py_root / 'modules/pylibmc._pylibmc.toml',
   _py_root / 'modules/pymssql._pymssql.toml',

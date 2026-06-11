@@ -422,6 +422,51 @@ def fsspec_cached_call(target):
     return wrapper
 
 
+def _pytest_xdist_active(config):
+    if hasattr(config, "workerinput") or hasattr(config, "slaveinput"):
+        return True
+    option = getattr(config, "option", None)
+    numprocesses = getattr(option, "numprocesses", None)
+    return numprocesses not in (None, 0, "0")
+
+
+def pytest_rerunfailures_configure(target, system):
+    """Avoid pytest-rerunfailures' xdist status server in serial pytest runs.
+
+    pytest-rerunfailures starts a daemon localhost server when the xdist plugin
+    is installed, even for ordinary serial pytest runs. That server is only
+    useful for real xdist worker coordination; in serial runs it adds replay
+    control-plane sockets and daemon shutdown races without contributing to the
+    user's test behavior.
+    """
+
+    disabled = system.disable_for(utils.try_unwrap(target), unwrap_args=False)
+
+    @functools.wraps(target)
+    def wrapper(config, *args, **kwargs):
+        pluginmanager = getattr(config, "pluginmanager", None)
+        hasplugin = getattr(pluginmanager, "hasplugin", None)
+        if (
+            hasplugin is not None
+            and hasplugin("xdist")
+            and not _pytest_xdist_active(config)
+        ):
+            def serial_hasplugin(name):
+                if name == "xdist":
+                    return False
+                return hasplugin(name)
+
+            pluginmanager.hasplugin = serial_hasplugin
+            try:
+                return disabled(config, *args, **kwargs)
+            finally:
+                pluginmanager.hasplugin = hasplugin
+
+        return disabled(config, *args, **kwargs)
+
+    return wrapper
+
+
 typewrappers = {
     '_socket': {
         'socket': {

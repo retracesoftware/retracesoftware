@@ -1,0 +1,8 @@
+package = "pytest-rerunfailures"
+
+# pytest-rerunfailures starts a daemon localhost status server when xdist is
+# installed. That server is pytest/plugin control-plane plumbing, not user test
+# behavior. In serial runs, force pytest-rerunfailures down its ordinary no-op
+# StatusDB path. Actual xdist runs keep pytest-rerunfailures' normal behavior.
+[system_wrap]
+pytest_configure = "retracesoftware.install.edgecases.pytest_rerunfailures_configure"
