@@ -25,6 +25,7 @@ def _restore_attr(target, name, original):
 
 def _unwrap_patched_attr(cls, name, value):
     target = utils.unwrap(value)
+    target = getattr(target, "__retrace_original_descriptor__", target)
 
     for base in cls.__mro__[1:]:
         if base.__dict__.get(name) is target:
@@ -197,8 +198,21 @@ def patch_type(system, cls, install_session=None):
     def proxy_attrs(target_cls, attr_dict, handler, originals):
         blacklist = system._patch_type_blacklist
 
-        def proxy_function(func):
-            return system._wrapped_function(handler=handler, target=func)
+        def proxy_function(name, func):
+            target = func
+            if handler is system.ext_gateway and utils.is_method_descriptor(func):
+                def target(instance, *args, __descriptor=func, **kwargs):
+                    return __descriptor(utils.try_unwrap(instance), *args, **kwargs)
+
+                target.__name__ = getattr(func, "__name__", name)
+                target.__qualname__ = getattr(
+                    func,
+                    "__qualname__",
+                    f"{target_cls.__qualname__}.{name}",
+                )
+                target.__module__ = getattr(func, "__module__", target_cls.__module__)
+                target.__retrace_original_descriptor__ = func
+            return system._wrapped_function(handler=handler, target=target)
 
         def proxy_member(member):
             return system.descriptor_proxytype(type(member))(member)
@@ -226,7 +240,7 @@ def patch_type(system, cls, install_session=None):
             ):
                 with_proxied(proxy_member(value))
             elif callable(value) and not isinstance(value, type):
-                with_proxied(proxy_function(value))
+                with_proxied(proxy_function(name, value))
 
     try:
         with WithoutFlags(cls, "Py_TPFLAGS_IMMUTABLETYPE"):

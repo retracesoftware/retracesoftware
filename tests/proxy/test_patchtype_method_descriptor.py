@@ -6,8 +6,8 @@ import _random
 import random
 import types
 
-from retracesoftware.proxy.system import CallHooks, LifecycleHooks, System
 from retracesoftware.proxy.patchtype import patch_type
+from retracesoftware.proxy.system import CallHooks, LifecycleHooks, System
 
 
 def _system() -> System:

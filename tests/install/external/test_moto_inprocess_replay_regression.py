@@ -132,10 +132,6 @@ def test_moto_random_string_works_without_retrace(tmp_path: Path) -> None:
     assert "moto-random=" in dryrun.stdout
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="in-process moto random hits issue #56 until _random.Random subclass descriptors are fixed",
-)
 def test_moto_random_string_records_under_retrace(tmp_path: Path) -> None:
     pytest.importorskip("moto")
 
@@ -165,10 +161,6 @@ def test_moto_mock_aws_s3_works_without_retrace(tmp_path: Path) -> None:
     assert "moto-s3-ok" in dryrun.stdout
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="in-process moto mock_aws hits issue #56 until _random.Random subclass descriptors are fixed",
-)
 def test_moto_mock_aws_s3_records_and_replays(tmp_path: Path) -> None:
     pytest.importorskip("boto3")
     pytest.importorskip("moto")
