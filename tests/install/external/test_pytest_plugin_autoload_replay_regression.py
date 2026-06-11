@@ -4,8 +4,6 @@ from __future__ import annotations
 
 from pathlib import Path
 
-import pytest
-
 from tests.install.external._pytest_replay_regression_helpers import (
     assert_replay_does_not_contain_signature,
     assert_successful_replay,
@@ -13,13 +11,11 @@ from tests.install.external._pytest_replay_regression_helpers import (
 )
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="normal pytest plugin autoload currently diverges during replay",
-)
 def test_pytest_plugin_autoload_replay_reaches_passing_test(
     tmp_path: Path,
 ) -> None:
+    import pytest
+
     pytest.importorskip("pytest_rerunfailures")
     pytest.importorskip("xdist")
 

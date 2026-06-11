@@ -65,6 +65,41 @@ def install_import_hooks(disable_for, module_patcher):
     # We also need the original _run_code.
     orig_run_code = runpy._run_code
     orig_run_module = runpy.run_module
+    assertion_rewrite_undos = []
+
+    def _maybe_patch_pytest_assertion_rewrite(namespace, module_name):
+        if module_name != "_pytest.assertion.rewrite":
+            return
+        cls = namespace.get("AssertionRewritingHook")
+        if cls is None:
+            return
+        original = getattr(cls, "exec_module", None)
+        if original is None or getattr(original, "__retrace_patch__", False):
+            return
+
+        def exec_module(self, module):
+            original(self, module)
+            spec = getattr(module, "__spec__", None)
+            loaded_name = (
+                getattr(spec, "name", None)
+                or getattr(module, "__name__", None)
+            )
+            module_patcher(module.__dict__, False, loaded_name)
+
+        exec_module.__retrace_patch__ = True
+        cls.exec_module = exec_module
+        assertion_rewrite_undos.append((cls, original))
+
+    def _patch_loaded_module(namespace, module_name):
+        module_patcher(namespace, False, module_name)
+        _maybe_patch_pytest_assertion_rewrite(namespace, module_name)
+
+    already_loaded_rewrite = sys.modules.get("_pytest.assertion.rewrite")
+    if already_loaded_rewrite is not None:
+        _maybe_patch_pytest_assertion_rewrite(
+            already_loaded_rewrite.__dict__,
+            "_pytest.assertion.rewrite",
+        )
 
     # ── __import__ / importlib.import_module ──────────────────
     builtins.__import__ = disable_for(builtins.__import__, unwrap_args=False)
@@ -78,7 +113,7 @@ def install_import_hooks(disable_for, module_patcher):
         if globals is not None:
             spec = globals.get("__spec__")
             module_name = getattr(spec, "name", None) or globals.get("__name__")
-            module_patcher(globals, False, module_name)
+            _patch_loaded_module(globals, module_name)
 
     utils.update(_bootstrap_external._LoaderBasics, "exec_module",
                  utils.wrap_func_with_overrides,
@@ -90,7 +125,7 @@ def install_import_hooks(disable_for, module_patcher):
         if globals is not None:
             spec = globals.get("__spec__")
             module_name = getattr(spec, "name", None) or globals.get("__name__")
-            module_patcher(globals, False, module_name)
+            _patch_loaded_module(globals, module_name)
 
     utils.update(runpy, "_run_code",
                  utils.wrap_func_with_overrides,
@@ -117,7 +152,7 @@ def install_import_hooks(disable_for, module_patcher):
             orig(module)
             spec = getattr(module, "__spec__", None)
             module_name = getattr(spec, "name", None) or getattr(module, "__name__", None)
-            module_patcher(module.__dict__, False, module_name)
+            _patch_loaded_module(module.__dict__, module_name)
             return module
         return wrapper
 
@@ -130,6 +165,8 @@ def install_import_hooks(disable_for, module_patcher):
         importlib.import_module = orig_import_module
         _imp.exec_dynamic = orig_exec_dynamic
         _imp.exec_builtin = orig_exec_builtin
+        for cls, original in reversed(assertion_rewrite_undos):
+            cls.exec_module = original
         _bootstrap_external._LoaderBasics.exec_module = orig_exec_module
         runpy._run_code = orig_run_code
         runpy.run_module = orig_run_module
