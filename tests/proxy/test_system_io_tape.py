@@ -192,6 +192,24 @@ def test_replayer_consumes_protocol_result_after_thread_switch():
     assert message.thread_id == 0
 
 
+def test_thread_demux_buffered_eof_does_not_invoke_terminal_signal_exit():
+    class EOFReader:
+        def read(self):
+            raise RuntimeError("Could not read: 1 bytes from tracefile with timeout")
+
+    def on_end_of_stream():
+        raise AssertionError("buffered cleanup peek must not force terminal exit")
+
+    demux = _ThreadDemuxSource(
+        EOFReader().read,
+        thread_id=lambda: 0,
+        initial_thread_id=0,
+        on_end_of_stream=on_end_of_stream,
+    )
+
+    assert demux.peek_buffered() is None
+
+
 def test_replay_binding_state_consumes_trailing_binding_deletes():
     class FlatTapeReader:
         def __init__(self, items):

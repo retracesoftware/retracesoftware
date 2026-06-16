@@ -1,0 +1,8 @@
+package = "coverage"
+
+# ``coverage run`` prepares sys.path, module metadata, and argv before it
+# executes the target program. That startup work is coverage command-runner
+# state, not application behavior, and can otherwise consume replay messages
+# before pytest or the user test starts.
+[type_attributes.PyRunner]
+disable = ["prepare", "_prepare2"]

@@ -79,7 +79,7 @@ datetime.proxy = ["now", "utcnow", "today"]
 
 [time]
 immutable = ["struct_time"]
-proxy = ["perf_counter", "time", "gmtime", "localtime", "strftime", "monotonic", "monotonic_ns", "time_ns"]
+proxy = ["perf_counter", "time", "sleep", "gmtime", "localtime", "strftime", "monotonic", "monotonic_ns", "time_ns"]
 
 [pathlib]
 immutable = ["PosixPath"]
@@ -286,6 +286,7 @@ proxy = ["fork_exec"]
 proxy = ["fcntl", "flock", "ioctl", "lockf"]
 
 [pwd]
+immutable = ["struct_passwd"]
 proxy = ["getpwnam", "getpwuid", "getpwall"]
 
 [grp]

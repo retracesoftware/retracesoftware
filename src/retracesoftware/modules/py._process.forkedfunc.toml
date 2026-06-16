@@ -1,0 +1,7 @@
+package = "py"
+
+# ForkedFunc is pytest-forked's parent/child control-plane helper. The child
+# result is the boundary value the parent needs; the temp-file protocol used to
+# transport that value should not be replayed as live filesystem state.
+[type_attributes.ForkedFunc.system_wrap]
+waitfinish = "retracesoftware.install.edgecases.py_forkedfunc_waitfinish"

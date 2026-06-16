@@ -1,0 +1,17 @@
+package = "pytest"
+
+# Pytest stores invocation-directory metadata and owns session marker env vars
+# while constructing/running Config. Keep that framework bookkeeping out of the
+# app trace while preserving ordinary cwd/env behavior from tests and user code.
+#
+# Pytest assertion rewriting also scans installed package metadata to decide
+# which plugin modules should receive rewritten assertions. Keep that discovery
+# scan out of the trace while leaving the loaded plugins and test execution
+# intact.
+[system_wrap]
+get_config = "retracesoftware.install.edgecases.pytest_get_config_invocation_dir"
+main = "retracesoftware.install.edgecases.pytest_main_control_env"
+_main = "retracesoftware.install.edgecases.pytest_main_control_env"
+
+[type_attributes.Config]
+disable = ["_mark_plugins_for_rewrite"]

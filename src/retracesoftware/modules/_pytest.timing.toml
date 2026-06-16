@@ -1,0 +1,7 @@
+package = "pytest"
+
+# Pytest's session-duration objects are terminal/reporting state. They call
+# time.time()/perf_counter() while formatting summaries, which can otherwise
+# interleave with coverage/plugin cleanup messages and desync replay.
+[type_attributes.Instant]
+disable = ["__init__"]

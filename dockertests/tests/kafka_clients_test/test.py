@@ -7,9 +7,36 @@ from kafka import TopicPartition as KafkaTopicPartition
 from kafka.partitioner.default import DefaultPartitioner
 
 
+class StaticCluster:
+    def __init__(self, topic, partitions):
+        self._topic = topic
+        self._partitions = set(partitions)
+
+    def topics(self):
+        return {self._topic}
+
+    def partitions_for_topic(self, topic):
+        assert topic == self._topic
+        return self._partitions
+
+    def available_partitions_for_topic(self, topic):
+        assert topic == self._topic
+        return self._partitions
+
+
 def exercise_kafka_python():
     partitioner = DefaultPartitioner()
-    selected = partitioner(b"user-1", [0, 1, 2], [0, 1, 2])
+    if callable(partitioner):
+        selected = partitioner(b"user-1", [0, 1, 2], [0, 1, 2])
+    else:
+        selected = partitioner.partition(
+            "orders",
+            key=b"user-1",
+            serialized_key=b"user-1",
+            value=None,
+            serialized_value=None,
+            cluster=StaticCluster("orders", [0, 1, 2]),
+        )
     topic_partition = KafkaTopicPartition("orders", selected)
     assert topic_partition.topic == "orders"
     assert topic_partition.partition in {0, 1, 2}

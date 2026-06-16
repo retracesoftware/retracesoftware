@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from tests.helpers import PYTHON, _run_for_pidfile, tail
+from tests.helpers import PYTHON, _run_for_pidfile, local_pythonpath, tail
 
 
 TIMEOUT = 20
@@ -127,6 +127,87 @@ def test_covered_sample(tmp_path):
         ["-m", "coverage", "run", "-m", "pytest", "-q", "test_covered_sample.py"],
         env={"PYTEST_DISABLE_PLUGIN_AUTOLOAD": "1"},
     )
+
+    assert "1 passed" in record.stdout
+    assert replay.returncode == 0, (
+        f"coverage pytest replay failed or timed out\n"
+        f"record stdout:\n{tail(record.stdout)}\n"
+        f"record stderr:\n{tail(record.stderr)}\n"
+        f"replay stdout:\n{tail(replay.stdout)}\n"
+        f"replay stderr:\n{tail(replay.stderr)}"
+    )
+    assert "1 passed" in replay.stdout
+
+
+def test_coverage_run_pytest_readonly_tree_replays_with_plugin_discovery(
+    tmp_path: Path,
+) -> None:
+    pytest.importorskip("coverage")
+
+    test_dir = tmp_path / "app" / "test"
+    recording_dir = tmp_path / "recording"
+    test_dir.mkdir(parents=True)
+    recording_dir.mkdir()
+    test_file = test_dir / "test_sample.py"
+    test_file.write_text(
+        """
+from pathlib import Path
+
+
+def test_coverage_run_pytest_exercises_user_code(tmp_path):
+    value_file = Path(tmp_path) / "value.txt"
+    value_file.write_text("42", encoding="utf-8")
+    assert int(value_file.read_text(encoding="utf-8")) == 42
+        """,
+        encoding="utf-8",
+    )
+
+    env = os.environ.copy()
+    env["PYTHONFAULTHANDLER"] = "1"
+    env["PYTHONPATH"] = os.pathsep.join([str(test_dir), local_pythonpath()])
+    env["COVERAGE_FILE"] = str(tmp_path / ".coverage")
+    env.pop("PYTEST_DISABLE_PLUGIN_AUTOLOAD", None)
+
+    os.chmod(test_file, 0o400)
+    os.chmod(test_dir, 0o500)
+    try:
+        record = _run_for_pidfile(
+            [
+                PYTHON,
+                "-m",
+                "retracesoftware",
+                "--recording",
+                "trace.bin",
+                "--format",
+                "unframed_binary",
+                "--stacktraces",
+                "--",
+                "-m",
+                "coverage",
+                "run",
+                "-m",
+                "pytest",
+                "-q",
+                str(test_file),
+            ],
+            cwd=recording_dir,
+            env=env,
+            timeout=TIMEOUT,
+        )
+        assert record.returncode == 0, (
+            f"record failed\nstdout:\n{tail(record.stdout)}\n"
+            f"stderr:\n{tail(record.stderr)}"
+        )
+
+        replay = _run_for_pidfile(
+            [PYTHON, "-m", "retracesoftware", "--recording", "trace.bin"],
+            cwd=recording_dir,
+            env=env,
+            timeout=TIMEOUT,
+        )
+    finally:
+        os.chmod(test_dir, 0o700)
+        os.chmod(test_file, 0o600)
 
     assert "1 passed" in record.stdout
     assert replay.returncode == 0, (

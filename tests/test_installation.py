@@ -1,3 +1,5 @@
+import os
+import pathlib
 import sys
 import types
 import posix
@@ -8,7 +10,14 @@ import retracesoftware.functional as functional
 import retracesoftware.utils as utils
 
 from retracesoftware.install.installation import Installation
-from retracesoftware.install.edgecases import coverage_collector_start_tracer
+from retracesoftware.install.edgecases import (
+    coverage_collector_start_tracer,
+    pytest_cache_for_config,
+    pytest_main_control_env,
+    pytest_cache_set,
+    pytest_get_config_invocation_dir,
+    pytest_register_cleanup_lock_removal,
+)
 from retracesoftware.install.patcher import patch
 from retracesoftware.install.replace import ModuleRefIndex, restore_module_refs
 from retracesoftware.modules import ModuleConfigResolver
@@ -435,6 +444,12 @@ def test_stdlib_config_filters_posix_symlink_by_destination_path():
     assert cfg["pathparam"]["symlink"] == "dst"
 
 
+def test_stdlib_config_treats_pwd_struct_passwd_as_immutable():
+    cfg = ModuleConfigResolver()["pwd"]
+
+    assert "struct_passwd" in cfg["immutable"]
+
+
 def test_coverage_collector_config_disables_lifecycle_methods():
     pytest.importorskip("coverage")
 
@@ -458,6 +473,369 @@ def test_coverage_sqldata_config_disables_data_store_methods():
     assert {"__init__", "set_context", "add_lines", "write"}.issubset(
         data_config["disable"]
     )
+
+
+def test_coverage_execfile_config_disables_runner_prepare_methods():
+    pytest.importorskip("coverage")
+
+    cfg = ModuleConfigResolver()["coverage.execfile"]
+    runner_config = cfg["type_attributes"]["PyRunner"]
+
+    assert {"prepare", "_prepare2"}.issubset(runner_config["disable"])
+
+
+def test_pytest_terminalwriter_config_disables_width_probe():
+    cfg = ModuleConfigResolver()["_pytest._io.terminalwriter"]
+
+    assert "get_terminal_width" in cfg["disable"]
+
+
+def test_pytest_config_disables_plugin_rewrite_metadata_scan():
+    cfg = ModuleConfigResolver()["_pytest.config"]
+    config_type = cfg["type_attributes"]["Config"]
+
+    assert cfg["system_wrap"]["get_config"] == (
+        "retracesoftware.install.edgecases.pytest_get_config_invocation_dir"
+    )
+    assert cfg["system_wrap"]["main"] == (
+        "retracesoftware.install.edgecases.pytest_main_control_env"
+    )
+    assert cfg["system_wrap"]["_main"] == (
+        "retracesoftware.install.edgecases.pytest_main_control_env"
+    )
+    assert "_mark_plugins_for_rewrite" in config_type["disable"]
+
+
+def test_pytest_get_config_invocation_dir_disables_and_restores_getcwd():
+    disabled_calls = []
+    original_getcwd = os.getcwd
+
+    class FakeSystem:
+        def disable_for(self, fn, *, unwrap_args=True):
+            def disabled(*args, **kwargs):
+                disabled_calls.append((fn, args, kwargs, unwrap_args))
+                return "/disabled-cwd"
+
+            return disabled
+
+    def target():
+        return pathlib.Path.cwd()
+
+    wrapped = pytest_get_config_invocation_dir(target, FakeSystem())
+
+    assert wrapped() == pathlib.Path("/disabled-cwd")
+    assert os.getcwd is original_getcwd
+    assert len(disabled_calls) == 1
+    assert disabled_calls[0][1:] == ((), {}, False)
+
+
+def test_pytest_main_control_env_disables_only_pytest_version(monkeypatch):
+    normal_calls = []
+    disabled_calls = []
+
+    class FakeSystem:
+        def disable_for(self, fn, *, unwrap_args=True):
+            def disabled(*args, **kwargs):
+                disabled_calls.append((fn, args, kwargs, unwrap_args))
+                return None
+
+            return disabled
+
+    def fake_putenv(*args):
+        normal_calls.append(("putenv", args))
+
+    def fake_unsetenv(*args):
+        normal_calls.append(("unsetenv", args))
+
+    environ_type = type(os.environ)
+    setitem_globals = environ_type.__setitem__.__globals__
+    delitem_globals = environ_type.__delitem__.__globals__
+    monkeypatch.setattr(os, "putenv", fake_putenv)
+    monkeypatch.setattr(os, "unsetenv", fake_unsetenv)
+    monkeypatch.setitem(setitem_globals, "putenv", fake_putenv)
+    monkeypatch.setitem(delitem_globals, "unsetenv", fake_unsetenv)
+
+    def target():
+        os.environ["PYTEST_VERSION"] = "9.1.0"
+        os.environ["PYTEST_CURRENT_TEST"] = "test_sample.py::test_example (call)"
+        os.environ["RETRACE_APP_ENV_TEST"] = "kept"
+        del os.environ["PYTEST_CURRENT_TEST"]
+        del os.environ["PYTEST_VERSION"]
+        del os.environ["RETRACE_APP_ENV_TEST"]
+        return "done"
+
+    wrapped = pytest_main_control_env(target, FakeSystem())
+
+    assert wrapped() == "done"
+    assert normal_calls == [
+        ("putenv", (b"RETRACE_APP_ENV_TEST", b"kept")),
+        ("unsetenv", (b"RETRACE_APP_ENV_TEST",)),
+    ]
+    assert [(args, unwrap) for _, args, _, unwrap in disabled_calls] == [
+        ((b"PYTEST_VERSION", b"9.1.0"), False),
+        ((b"PYTEST_CURRENT_TEST", b"test_sample.py::test_example (call)"), False),
+        ((b"PYTEST_CURRENT_TEST",), False),
+        ((b"PYTEST_VERSION",), False),
+    ]
+
+
+def test_pytest_timing_config_disables_terminal_duration_timer():
+    cfg = ModuleConfigResolver()["_pytest.timing"]
+    instant_type = cfg["type_attributes"]["Instant"]
+
+    assert "__init__" in instant_type["disable"]
+
+
+def test_pytest_logging_config_disables_unconfigure_cleanup():
+    cfg = ModuleConfigResolver()["_pytest.logging"]
+    logging_plugin_type = cfg["type_attributes"]["LoggingPlugin"]
+
+    assert "pytest_unconfigure" in logging_plugin_type["disable"]
+
+
+def test_pytest_pathlib_config_disables_tempdir_cleanup_pid_probe():
+    cfg = ModuleConfigResolver()["_pytest.pathlib"]
+
+    assert "cleanup_numbered_dir" in cfg["disable"]
+    assert cfg["system_wrap"]["register_cleanup_lock_removal"] == (
+        "retracesoftware.install.edgecases.pytest_register_cleanup_lock_removal"
+    )
+
+
+def test_pytest_cacheprovider_config_disables_builtin_sessionfinish_writes():
+    cfg = ModuleConfigResolver()["_pytest.cacheprovider"]
+
+    assert "pytest_sessionfinish" in cfg["type_attributes"]["LFPlugin"]["disable"]
+    assert "pytest_sessionfinish" in cfg["type_attributes"]["NFPlugin"]["disable"]
+
+
+def test_stdlib_config_records_time_sleep_boundary():
+    cfg = ModuleConfigResolver()["time"]
+
+    assert "sleep" in cfg["proxy"]
+
+
+def test_py_process_forkedfunc_config_wraps_waitfinish():
+    pytest.importorskip("py._process.forkedfunc")
+
+    cfg = ModuleConfigResolver()["py._process.forkedfunc"]
+    forked_func_type = cfg["type_attributes"]["ForkedFunc"]
+
+    assert forked_func_type["system_wrap"]["waitfinish"] == (
+        "retracesoftware.install.edgecases.py_forkedfunc_waitfinish"
+    )
+
+
+def test_py_path_local_config_wraps_mkdtemp():
+    pytest.importorskip("py._path.local")
+
+    cfg = ModuleConfigResolver()["py._path.local"]
+    local_path_type = cfg["type_attributes"]["LocalPath"]
+
+    assert local_path_type["system_wrap"]["mkdtemp"] == (
+        "retracesoftware.install.edgecases.py_localpath_mkdtemp"
+    )
+
+
+def test_pytest_cache_set_runs_target_with_retrace_disabled():
+    calls = []
+
+    class FakeSystem:
+        def disable_for(self, fn, *, unwrap_args=True):
+            def disabled(*args, **kwargs):
+                calls.append(("disabled", fn, args, kwargs, unwrap_args))
+                return fn(*args, **kwargs)
+
+            return disabled
+
+        def patch_function(self, fn):
+            def patched(*args, **kwargs):
+                calls.append(("patched", fn, args, kwargs))
+                return fn(*args, **kwargs)
+
+            return patched
+
+    cache = object()
+
+    def target(self, key, value):
+        calls.append(("target", self, key, value))
+        return f"{key}:{value}"
+
+    wrapped = pytest_cache_set(target, FakeSystem())
+
+    assert wrapped(cache, "randomly_seed", 12345) == "randomly_seed:12345"
+    assert calls[0][0] == "patched"
+    assert calls[0][2] == ("randomly_seed", 0)
+    assert calls[1] == (
+        "disabled",
+        target,
+        (cache, "randomly_seed", 12345),
+        {},
+        False,
+    )
+    assert calls[2] == ("target", cache, "randomly_seed", 12345)
+
+
+def test_pytest_cache_for_config_edgecase_binds_cacheclear_probe_lazily(tmp_path):
+    calls = []
+
+    class FakeSystem:
+        def patch_function(self, fn):
+            calls.append(fn)
+            return fn
+
+    class Config:
+        def __init__(self, cacheclear):
+            self.cacheclear = cacheclear
+
+        def getoption(self, name):
+            assert name == "cacheclear"
+            return self.cacheclear
+
+    class Cache:
+        cleared = []
+
+        def __init__(self, cachedir, config, *, _ispytest=False):
+            self.cachedir = cachedir
+            self.config = config
+            self._ispytest = _ispytest
+
+        @classmethod
+        def for_config(cls, config, *, _ispytest=False):
+            return cls(tmp_path / "default-cache", config, _ispytest=_ispytest)
+
+        @classmethod
+        def cache_dir_from_config(cls, config, *, _ispytest=False):
+            return tmp_path / "existing-cache"
+
+        @classmethod
+        def clear_cache(cls, cachedir, *, _ispytest=False):
+            cls.cleared.append((cachedir, _ispytest))
+
+    cachedir = tmp_path / "existing-cache"
+    cachedir.mkdir()
+    wrapped = pytest_cache_for_config(Cache.for_config, FakeSystem())
+
+    assert calls == []
+    no_clear = wrapped(Config(False), _ispytest=True)
+    assert calls == []
+    assert no_clear.cachedir == tmp_path / "default-cache"
+
+    with_clear = wrapped(Config(True), _ispytest=True)
+    assert len(calls) == 1
+    assert with_clear.cachedir == cachedir
+    assert Cache.cleared == [(cachedir, True)]
+
+
+def test_pytest_register_cleanup_lock_removal_disables_registered_callback(tmp_path):
+    disabled_calls = []
+    registered = []
+
+    class FakeSystem:
+        def disable_for(self, fn, *, unwrap_args=True):
+            def disabled(*args, **kwargs):
+                disabled_calls.append((fn, args, kwargs, unwrap_args))
+                return fn(*args, **kwargs)
+
+            return disabled
+
+    def target(lock_path, register):
+        def cleanup():
+            return "cleaned"
+
+        return register(cleanup)
+
+    def register(callback):
+        registered.append(callback)
+        return "registered"
+
+    wrapped = pytest_register_cleanup_lock_removal(target, FakeSystem())
+
+    assert wrapped(tmp_path / ".lock", register) == "registered"
+    assert len(registered) == 1
+    assert registered[0]() == "cleaned"
+    assert len(disabled_calls) == 2
+    assert disabled_calls[0][1][0] == tmp_path / ".lock"
+    assert callable(disabled_calls[0][1][1])
+    assert disabled_calls[0][2:] == ({}, False)
+    assert disabled_calls[1][1:] == ((), {}, False)
+
+
+def test_pytest_register_cleanup_lock_removal_preserves_default_register(tmp_path):
+    disabled_calls = []
+    registered = []
+
+    class FakeSystem:
+        def disable_for(self, fn, *, unwrap_args=True):
+            def disabled(*args, **kwargs):
+                disabled_calls.append((fn, args, kwargs, unwrap_args))
+                return fn(*args, **kwargs)
+
+            return disabled
+
+    def default_register(callback):
+        registered.append(callback)
+        return "default-registered"
+
+    def target(lock_path, register=default_register):
+        def cleanup():
+            return lock_path.name
+
+        return register(cleanup)
+
+    wrapped = pytest_register_cleanup_lock_removal(target, FakeSystem())
+
+    assert wrapped(tmp_path / ".lock") == "default-registered"
+    assert len(registered) == 1
+    assert registered[0]() == ".lock"
+    assert len(disabled_calls) == 2
+    assert disabled_calls[0][1][0] == tmp_path / ".lock"
+    assert callable(disabled_calls[0][1][1])
+    assert disabled_calls[0][2:] == ({}, False)
+    assert disabled_calls[1][1:] == ((), {}, False)
+
+
+def test_pytest_register_cleanup_lock_removal_wraps_keyword_register(tmp_path):
+    disabled_calls = []
+    registered = []
+
+    class FakeSystem:
+        def disable_for(self, fn, *, unwrap_args=True):
+            def disabled(*args, **kwargs):
+                disabled_calls.append((fn, args, kwargs, unwrap_args))
+                return fn(*args, **kwargs)
+
+            return disabled
+
+    def target(lock_path, *, register):
+        def cleanup():
+            return lock_path.name
+
+        return register(cleanup)
+
+    def register(callback):
+        registered.append(callback)
+        return "keyword-registered"
+
+    wrapped = pytest_register_cleanup_lock_removal(target, FakeSystem())
+
+    assert wrapped(tmp_path / ".lock", register=register) == "keyword-registered"
+    assert len(registered) == 1
+    assert registered[0]() == ".lock"
+    assert len(disabled_calls) == 2
+    assert disabled_calls[0][1][0] == tmp_path / ".lock"
+    assert callable(disabled_calls[0][2]["register"])
+    assert disabled_calls[0][3] is False
+    assert disabled_calls[1][1:] == ((), {}, False)
+
+
+def test_pluggy_manager_config_disables_pytest_entrypoint_scan():
+    pytest.importorskip("pluggy")
+
+    cfg = ModuleConfigResolver()["pluggy._manager"]
+    manager_type = cfg["type_attributes"]["PluginManager"]
+
+    assert "load_setuptools_entrypoints" in manager_type["disable"]
 
 
 def test_coverage_collector_start_tracer_disables_tracer_callbacks():

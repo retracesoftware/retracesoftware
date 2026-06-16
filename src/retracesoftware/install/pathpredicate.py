@@ -21,6 +21,12 @@ DEFAULT_IGNORE_GLOBS = (
     "__pycache__/*",
     "*/__pycache__",
     "*/__pycache__/*",
+    # Pytest tmp_path roots are framework scratch space. Half-recording their
+    # directory setup leaves high-level file opens without live parent dirs.
+    "/tmp/pytest-of-*",
+    "/tmp/pytest-of-*/*",
+    "/var/tmp/pytest-of-*",
+    "/var/tmp/pytest-of-*/*",
 )
 
 def load_patterns(extra_file=None):

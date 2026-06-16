@@ -1,0 +1,5 @@
+package = "pytest"
+
+# Pytest terminal width probing only formats terminal/progress/warning output.
+# It is pytest control-plane state, not behavior from the code under test.
+disable = ["get_terminal_width"]

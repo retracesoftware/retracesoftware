@@ -1,0 +1,9 @@
+package = "py"
+
+# py.process.ForkedFunc uses LocalPath.mkdtemp() to create its child-result
+# control directory. The recorded posix.mkdir call is replayed without touching
+# the live filesystem, but default path-backed _io.open calls are passthrough.
+# Materialize only this py control directory so the passthrough opens can create
+# retval/stdout/stderr files while waitfinish() returns the recorded result.
+[type_attributes.LocalPath.system_wrap]
+mkdtemp = "retracesoftware.install.edgecases.py_localpath_mkdtemp"
