@@ -350,7 +350,10 @@ class _ThreadDemuxSource:
         except BaseException as exc:
             if isinstance(exc, (KeyboardInterrupt, SystemExit)):
                 raise
-            if self._handle_end_of_stream(exc):
+            # Buffered peeks are used while draining pending bind-close markers
+            # during replay cleanup. EOF there only means no close is waiting;
+            # it must not force the terminal signal EOF exit path.
+            if _is_tracefile_eof(exc):
                 return None
             buffered = None
         else:
@@ -1357,7 +1360,8 @@ def replayer(*, next_object,
         nonlocal replayed_signal_callback
         call_callback = system.gate.apply_with("internal", functional.call)
         signal_handler_targets = getattr(system, "_signal_handler_targets", {})
-        if message.fn in signal_handler_targets:
+        is_signal_handler = message.fn in signal_handler_targets
+        if is_signal_handler:
             replayed_signal_callback = True
         callback_fn = signal_handler_targets.get(
             message.fn,
@@ -1369,9 +1373,13 @@ def replayer(*, next_object,
                 unproxy_int(message.args),
                 unproxy_int(message.kwargs),
             )
-        except Exception as exc:
+        except BaseException as exc:
             if debug:
                 checkpoint(_on_error(exc))
+            else:
+                consume_callback_completion()
+            if is_signal_handler or not isinstance(exc, Exception):
+                raise
             return None
         if not is_create_stub_callback(callback_fn):
             result = system.gate.apply_with("internal", callback_int_proxy)(result)
@@ -1383,10 +1391,12 @@ def replayer(*, next_object,
     def run_raw_callback(message):
         nonlocal replayed_signal_callback
         call_callback = system.gate.apply_with("internal", functional.call)
+        is_signal_handler = False
         try:
             callback_fn = tape_reader.resolve(message.fn)
             signal_handler_targets = getattr(system, "_signal_handler_targets", {})
-            if callback_fn in signal_handler_targets:
+            is_signal_handler = callback_fn in signal_handler_targets
+            if is_signal_handler:
                 replayed_signal_callback = True
             callback_fn = signal_handler_targets.get(
                 callback_fn,
@@ -1397,9 +1407,13 @@ def replayer(*, next_object,
                 unproxy_int(tape_reader.resolve(message.args)),
                 unproxy_int(tape_reader.resolve(message.kwargs)),
             )
-        except Exception as exc:
+        except BaseException as exc:
             if debug:
                 raw_checkpoint(_on_error(exc))
+            else:
+                consume_callback_completion()
+            if is_signal_handler or not isinstance(exc, Exception):
+                raise
             return None
         if not is_create_stub_callback(callback_fn):
             result = system.gate.apply_with("internal", callback_int_proxy)(result)
@@ -1435,6 +1449,49 @@ def replayer(*, next_object,
             message,
             (CallbackResultMessage, CallbackErrorMessage, CheckpointMessage),
         )
+
+    def consume_interrupted_external_error():
+        # A Python signal handler can run while an external call is in progress
+        # (for example SIGALRM interrupting time.sleep). The callback error is
+        # replayed first; the interrupted external call may then have a
+        # redundant ERROR tag. Consume that outer tag so replay resumes at the
+        # next real message, but leave the next message tag/payload untouched.
+        try:
+            next_value = tape_reader._peek_item(resolve=False)
+        except StopIteration:
+            return False
+
+        if next_value != "ERROR":
+            return False
+
+        tape_reader._discard_peeked()
+
+        message_tags = {
+            "CALL",
+            "CALLBACK",
+            "CALLBACK_ERROR",
+            "CALLBACK_RESULT",
+            "CHECKPOINT",
+            "ERROR",
+            "ON_START",
+            "RESULT",
+            "STACKTRACE",
+            "SYNC",
+            "THREAD_SWITCH",
+        }
+        try:
+            payload = tape_reader._peek_item(resolve=False)
+        except StopIteration:
+            return True
+
+        if isinstance(payload, str) and payload in message_tags:
+            return True
+
+        if isinstance(payload, (_BindOpenEvent, _BindCloseEvent)):
+            return True
+
+        tape_reader._discard_peeked()
+        return True
 
     def bind_replay_object(obj, on_callback):
         pending_callback_completions = 0
@@ -1576,7 +1633,11 @@ def replayer(*, next_object,
             message = read_message()
 
             if isinstance(message, CallbackMessage):
-                run_callback(message)
+                try:
+                    run_callback(message)
+                except BaseException:
+                    consume_interrupted_external_error()
+                    raise
                 continue
 
             if isinstance(message, (CallbackResultMessage, CallbackErrorMessage)):

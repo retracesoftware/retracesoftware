@@ -12,10 +12,6 @@ from tests.install.external._pytest_replay_regression_helpers import (
 )
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="pytest importlib collection mode currently exits during replay",
-)
 def test_pytest_importlib_import_mode_replays_collected_test(tmp_path: Path) -> None:
     files = {
         "pkg/__init__.py": "",

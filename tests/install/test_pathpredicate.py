@@ -55,6 +55,18 @@ class TestVerboseQuietParity:
         path = "/tmp/app/__pycache__/main.cpython-312.pyc.123456"
         assert predicate(path) is False
 
+    @pytest.mark.parametrize(
+        "path",
+        [
+            "/tmp/pytest-of-root",
+            "/tmp/pytest-of-root/pytest-0/test_example0/value.txt",
+            "/var/tmp/pytest-of-root",
+            "/var/tmp/pytest-of-root/pytest-0/test_example0/value.txt",
+        ],
+    )
+    def test_pytest_tmp_root_is_ignored_even_under_matching_prefix(self, predicate, path):
+        assert predicate(path) is False
+
 
 class TestEmptyPatterns:
     """With no patterns, only ints (fds) should retrace."""

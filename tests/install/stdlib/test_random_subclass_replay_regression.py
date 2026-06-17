@@ -4,15 +4,9 @@ from __future__ import annotations
 
 from pathlib import Path
 
-import pytest
-
 from tests.helpers import PYTHON, _run_for_pidfile, tail
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="random.Random subclasses hit issue #56 until method descriptor receiver unwrapping lands",
-)
 def test_random_subclass_records_and_replays_with_stacktraces(tmp_path: Path) -> None:
     script = tmp_path / "random_subclass_repro.py"
     script.write_text(

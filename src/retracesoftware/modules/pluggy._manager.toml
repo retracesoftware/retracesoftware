@@ -1,0 +1,7 @@
+package = "pluggy"
+
+# Pytest asks pluggy to discover pytest11 entry points during startup. The
+# importlib.metadata scan and plugin registration are pytest/pluggy control
+# plane; plugin hooks still run normally later in the pytest session.
+[type_attributes.PluginManager]
+disable = ["load_setuptools_entrypoints"]

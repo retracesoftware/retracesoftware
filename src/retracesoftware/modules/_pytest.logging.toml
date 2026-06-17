@@ -1,0 +1,7 @@
+package = "pytest"
+
+# Pytest logging plugin unconfigure closes pytest-owned handlers and locks at
+# session shutdown. That cleanup is pytest control-plane state; user logging
+# during the test still runs through the normal logging/IO paths.
+[type_attributes.LoggingPlugin]
+disable = ["pytest_unconfigure"]

@@ -1,16 +1,15 @@
-"""Regression for pytest-timeout signal replay divergence."""
+"""Regression for pytest-timeout replay exit-code preservation."""
 
 from __future__ import annotations
 
 from pathlib import Path
 
 from tests.install.external._pytest_replay_regression_helpers import (
-    assert_replay_does_not_contain_signature,
     record_extract_replay_pytest,
 )
 
 
-def test_pytest_timeout_signal_failure_replays_same_timeout(tmp_path: Path) -> None:
+def test_pytest_timeout_replay_preserves_failed_exit_code(tmp_path: Path) -> None:
     import pytest
 
     pytest.importorskip("pytest_timeout")
@@ -42,14 +41,9 @@ def test_pytest_timeout_signal_failure_replays_same_timeout(tmp_path: Path) -> N
         },
     )
 
-    assert record.returncode != 0
     combined = replay.stdout + replay.stderr
-    assert_replay_does_not_contain_signature(
-        record,
-        replay,
-        "Checkpoint difference:",
-        "_signal.setitimer",
-    )
-    assert "Timeout" in combined
+    assert record.returncode == 1
+    assert "Timeout (>0.2s) from pytest-timeout" in combined
     assert "1 failed" in combined
     assert "Checkpoint difference:" not in combined
+    assert replay.returncode == record.returncode

@@ -1,0 +1,7 @@
+package = "pytest"
+
+# Pytest temp-path cleanup checks the owning PID while removing pytest-managed
+# temp directories at session shutdown. That cleanup guard is pytest framework
+# state, not application behavior.
+disable = ["cleanup_numbered_dir"]
+system_wrap = { register_cleanup_lock_removal = "retracesoftware.install.edgecases.pytest_register_cleanup_lock_removal" }

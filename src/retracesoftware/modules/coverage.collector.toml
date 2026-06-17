@@ -1,0 +1,28 @@
+package = "coverage"
+
+# coverage.py is instrumentation/control-plane around the code under test.
+# The tracer callbacks run while user code is executing, but the callbacks
+# themselves must not consume Retrace record/replay messages.
+[type_attributes.Collector]
+disable = [
+    "__init__",
+    "_activity",
+    "_clear_data",
+    "_installation_trace",
+    "cached_mapped_file",
+    "disable_plugin",
+    "flush_data",
+    "lock_data",
+    "mapped_file_dict",
+    "pause",
+    "plugin_was_disabled",
+    "post_fork",
+    "reset",
+    "resume",
+    "start",
+    "stop",
+    "switch_context",
+    "unlock_data",
+    "use_data",
+]
+system_wrap = { _start_tracer = "retracesoftware.install.edgecases.coverage_collector_start_tracer" }

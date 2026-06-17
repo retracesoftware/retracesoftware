@@ -2,6 +2,7 @@
 
 import functools
 import gc
+import inspect
 import itertools
 import os
 import sys
@@ -148,6 +149,45 @@ def subprocess_internal_poll(target):
     return wrapper
 
 
+def py_localpath_mkdtemp(target, system):
+    """Materialize py.path tempdirs needed by passthrough file opens."""
+
+    original = getattr(target, "__func__", target)
+
+    @functools.wraps(target)
+    @utils.exclude_from_stacktrace
+    def wrapper(cls, rootdir=None):
+        path = original(cls, rootdir=rootdir)
+        if getattr(system, "retrace_mode", None) == "replay":
+            system.disable_for(os.makedirs)(str(path), exist_ok=True)
+        return path
+
+    return classmethod(wrapper)
+
+
+def py_forkedfunc_waitfinish(target, system):
+    """Record/replay ForkedFunc's child result as primitive data."""
+
+    @functools.wraps(target)
+    @utils.exclude_from_stacktrace
+    def wrapper(self, *args, **kwargs):
+        from py._process.forkedfunc import Result
+
+        def result_tuple():
+            result = target(self, *args, **kwargs)
+            return (
+                result.exitstatus,
+                result.signal,
+                result.retval,
+                result.out,
+                result.err,
+            )
+
+        return Result(*system.patch_function(result_tuple)())
+
+    return wrapper
+
+
 def _live_getpid():
     value = _REAL_GETPID
     while True:
@@ -261,19 +301,22 @@ def signal_signal(target, system):
 
 def _pytest_cache_method_with_payload_token(target, system):
     target = utils.try_unwrap(target)
+    disabled_target = system.disable_for(target, unwrap_args=False)
     counter = itertools.count()
     payloads = {}
+    wrapped_external = None
 
     @utils.exclude_from_stacktrace
     def external(key, token):
         self, payload = payloads.pop(token)
-        return target(self, key, payload)
-
-    wrapped_external = system.patch_function(external)
+        return disabled_target(self, key, payload)
 
     @functools.wraps(target)
     @utils.exclude_from_stacktrace
     def wrapper(self, key, payload):
+        nonlocal wrapped_external
+        if wrapped_external is None:
+            wrapped_external = system.patch_function(external)
         token = next(counter)
         payloads[token] = (self, payload)
         return wrapped_external(key, token)
@@ -283,12 +326,6 @@ def _pytest_cache_method_with_payload_token(target, system):
 
 def pytest_cache_get(target, system):
     """Record/replay Cache.get without exposing mutable defaults as call args."""
-
-    return _pytest_cache_method_with_payload_token(target, system)
-
-
-def pytest_cache_set(target, system):
-    """Record/replay Cache.set without exposing mutable JSON values as call args."""
 
     return _pytest_cache_method_with_payload_token(target, system)
 
@@ -303,25 +340,207 @@ def pytest_cache_for_config(target, system):
 
     counter = itertools.count()
     cachedirs = {}
+    wrapped_cachedir_exists = None
 
     @utils.exclude_from_stacktrace
     def cachedir_exists(token):
         return cachedirs.pop(token).is_dir()
 
-    wrapped_cachedir_exists = system.patch_function(cachedir_exists)
-
     @functools.wraps(target)
     @utils.exclude_from_stacktrace
     def wrapper(config, *, _ispytest=False):
+        nonlocal wrapped_cachedir_exists
         if not config.getoption("cacheclear"):
             return target(config, _ispytest=_ispytest)
 
         cachedir = cls.cache_dir_from_config(config, _ispytest=_ispytest)
         token = next(counter)
         cachedirs[token] = cachedir
+        if wrapped_cachedir_exists is None:
+            wrapped_cachedir_exists = system.patch_function(cachedir_exists)
         if wrapped_cachedir_exists(token):
             cls.clear_cache(cachedir, _ispytest=_ispytest)
         return cls(cachedir, config, _ispytest=_ispytest)
+
+    return wrapper
+
+
+def _is_pytest_control_env_key(key):
+    return key in {"PYTEST_VERSION", "PYTEST_CURRENT_TEST"} or key in {
+        b"PYTEST_VERSION",
+        b"PYTEST_CURRENT_TEST",
+    }
+
+
+def pytest_get_config_invocation_dir(target, system):
+    """Keep pytest invocation-directory bookkeeping out of the app trace."""
+
+    target = utils.try_unwrap(target)
+
+    @functools.wraps(target)
+    @utils.exclude_from_stacktrace
+    def wrapper(*args, **kwargs):
+        original_getcwd = os.getcwd
+        disabled_getcwd = system.disable_for(original_getcwd, unwrap_args=False)
+        os.getcwd = disabled_getcwd
+        try:
+            return target(*args, **kwargs)
+        finally:
+            os.getcwd = original_getcwd
+
+    return wrapper
+
+
+def pytest_main_control_env(target, system):
+    """Keep pytest's session marker out of the application trace.
+
+    Pytest sets and later restores markers such as ``PYTEST_VERSION`` and
+    ``PYTEST_CURRENT_TEST`` around framework execution. Those markers are
+    pytest control-plane state; tracing them can desync when coverage.py,
+    pytest-cov, or pytest cleanup shift startup/shutdown calls around the
+    measured execution. Other environment mutations still pass through the
+    normal Retrace wrappers.
+    """
+
+    target = utils.try_unwrap(target)
+
+    @functools.wraps(target)
+    @utils.exclude_from_stacktrace
+    def wrapper(*args, **kwargs):
+        patched_putenv = os.putenv
+        patched_unsetenv = os.unsetenv
+        disabled_putenv = system.disable_for(patched_putenv, unwrap_args=False)
+        disabled_unsetenv = system.disable_for(patched_unsetenv, unwrap_args=False)
+
+        environ_type = type(os.environ)
+        setitem_globals = environ_type.__setitem__.__globals__
+        delitem_globals = environ_type.__delitem__.__globals__
+        original_setitem_putenv = setitem_globals.get("putenv")
+        original_delitem_unsetenv = delitem_globals.get("unsetenv")
+
+        @functools.wraps(patched_putenv)
+        @utils.exclude_from_stacktrace
+        def putenv(key, value):
+            if _is_pytest_control_env_key(key):
+                return disabled_putenv(key, value)
+            return patched_putenv(key, value)
+
+        @functools.wraps(patched_unsetenv)
+        @utils.exclude_from_stacktrace
+        def unsetenv(key):
+            if _is_pytest_control_env_key(key):
+                return disabled_unsetenv(key)
+            return patched_unsetenv(key)
+
+        os.putenv = putenv
+        os.unsetenv = unsetenv
+        setitem_globals["putenv"] = putenv
+        delitem_globals["unsetenv"] = unsetenv
+        try:
+            return target(*args, **kwargs)
+        finally:
+            os.putenv = patched_putenv
+            os.unsetenv = patched_unsetenv
+            if original_setitem_putenv is None:
+                setitem_globals.pop("putenv", None)
+            else:
+                setitem_globals["putenv"] = original_setitem_putenv
+            if original_delitem_unsetenv is None:
+                delitem_globals.pop("unsetenv", None)
+            else:
+                delitem_globals["unsetenv"] = original_delitem_unsetenv
+
+    return wrapper
+
+
+def pytest_register_cleanup_lock_removal(target, system):
+    """Keep pytest tempdir cleanup-lock callbacks out of the app trace."""
+
+    target = utils.try_unwrap(target)
+    disabled_target = system.disable_for(target, unwrap_args=False)
+    try:
+        register_param = inspect.signature(target).parameters.get("register")
+    except (TypeError, ValueError):
+        register_param = None
+    register_kind = None if register_param is None else register_param.kind
+    if register_param is None or register_param.default is inspect.Parameter.empty:
+        default_register = _DEFAULT
+    else:
+        default_register = register_param.default
+
+    def disabled_register_for(register):
+        @utils.exclude_from_stacktrace
+        def disabled_register(callback, *args, **kwargs):
+            callback = system.disable_for(callback, unwrap_args=False)
+            return register(callback, *args, **kwargs)
+
+        return disabled_register
+
+    @functools.wraps(target)
+    @utils.exclude_from_stacktrace
+    def wrapper(lock_path, register=_DEFAULT, *args, **kwargs):
+        if "register" in kwargs:
+            kwargs = dict(kwargs)
+            kwargs["register"] = disabled_register_for(kwargs["register"])
+            return disabled_target(lock_path, *args, **kwargs)
+        if register is _DEFAULT:
+            if default_register is _DEFAULT:
+                return disabled_target(lock_path, *args, **kwargs)
+            register = default_register
+        if register_kind is inspect.Parameter.KEYWORD_ONLY:
+            kwargs = dict(kwargs)
+            kwargs["register"] = disabled_register_for(register)
+            return disabled_target(lock_path, *args, **kwargs)
+        return disabled_target(lock_path, disabled_register_for(register), *args, **kwargs)
+
+    return wrapper
+
+
+def _disable_coverage_tracer_callbacks(tracer, system):
+    callback_attrs = (
+        "check_include",
+        "concur_id_func",
+        "disable_plugin",
+        "lock_data",
+        "should_start_context",
+        "should_trace",
+        "switch_context",
+        "unlock_data",
+        "warn",
+    )
+
+    for attr in callback_attrs:
+        if not hasattr(tracer, attr):
+            continue
+        callback = getattr(tracer, attr)
+        if callback is None or not callable(callback):
+            continue
+        if getattr(callback, "__retrace_disabled_thread_target__", False):
+            continue
+        setattr(tracer, attr, system.disable_for(callback, unwrap_args=False))
+
+
+def coverage_collector_start_tracer(target, system):
+    """Keep coverage.py tracer callbacks out of Retrace's app boundary.
+
+    coverage.py installs a C or Python trace function to observe the user code
+    being measured. That trace function calls Python callbacks such as
+    ``should_trace`` and ``switch_context`` from inside coverage's own
+    instrumentation path. Those callbacks are coverage control-plane work, not
+    application behavior, so they must not consume record/replay messages.
+    """
+
+    target = utils.try_unwrap(target)
+    disabled_target = system.disable_for(target, unwrap_args=False)
+
+    @functools.wraps(target)
+    @utils.exclude_from_stacktrace
+    def wrapper(self, *args, **kwargs):
+        result = disabled_target(self, *args, **kwargs)
+        tracers = getattr(self, "tracers", ())
+        if tracers:
+            _disable_coverage_tracer_callbacks(tracers[-1], system)
+        return result
 
     return wrapper
 
@@ -418,6 +637,44 @@ def fsspec_cached_call(target):
             cls._latest = token
             cls._cache[token] = obj
         return obj
+
+    return wrapper
+
+
+def _pytest_xdist_active(config):
+    if hasattr(config, "workerinput") or hasattr(config, "slaveinput"):
+        return True
+    option = getattr(config, "option", None)
+    numprocesses = getattr(option, "numprocesses", None)
+    return numprocesses not in (None, 0, "0")
+
+
+def pytest_rerunfailures_configure(target, system):
+    """Avoid pytest-rerunfailures' xdist status server in serial pytest runs."""
+
+    disabled = system.disable_for(utils.try_unwrap(target), unwrap_args=False)
+
+    @functools.wraps(target)
+    def wrapper(config, *args, **kwargs):
+        pluginmanager = getattr(config, "pluginmanager", None)
+        hasplugin = getattr(pluginmanager, "hasplugin", None)
+        if (
+            hasplugin is not None
+            and hasplugin("xdist")
+            and not _pytest_xdist_active(config)
+        ):
+            def serial_hasplugin(name):
+                if name == "xdist":
+                    return False
+                return hasplugin(name)
+
+            pluginmanager.hasplugin = serial_hasplugin
+            try:
+                return disabled(config, *args, **kwargs)
+            finally:
+                pluginmanager.hasplugin = hasplugin
+
+        return disabled(config, *args, **kwargs)
 
     return wrapper
 
