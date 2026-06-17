@@ -12,11 +12,6 @@ from tests.install.external._pytest_replay_regression_helpers import (
     record_extract_replay_pytest,
 )
 
-
-@pytest.mark.xfail(
-    strict=True,
-    reason="pytest-rerunfailures actual rerun state currently desyncs replay",
-)
 def test_pytest_rerunfailures_actual_rerun_replays_cleanly(tmp_path: Path) -> None:
     pytest.importorskip("pytest_rerunfailures")
 
