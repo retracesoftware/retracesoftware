@@ -14,7 +14,6 @@ from retracesoftware.install.edgecases import (
     coverage_collector_start_tracer,
     pytest_cache_for_config,
     pytest_main_control_env,
-    pytest_cache_set,
     pytest_get_config_invocation_dir,
     pytest_register_cleanup_lock_removal,
 )
@@ -605,6 +604,9 @@ def test_pytest_pathlib_config_disables_tempdir_cleanup_pid_probe():
 def test_pytest_cacheprovider_config_disables_builtin_sessionfinish_writes():
     cfg = ModuleConfigResolver()["_pytest.cacheprovider"]
 
+    assert "set" in cfg["type_attributes"]["Cache"]["disable"]
+    assert "get" in cfg["type_attributes"]["Cache"]["system_wrap"]
+    assert "set" not in cfg["type_attributes"]["Cache"]["system_wrap"]
     assert "pytest_sessionfinish" in cfg["type_attributes"]["LFPlugin"]["disable"]
     assert "pytest_sessionfinish" in cfg["type_attributes"]["NFPlugin"]["disable"]
 
@@ -635,45 +637,6 @@ def test_py_path_local_config_wraps_mkdtemp():
     assert local_path_type["system_wrap"]["mkdtemp"] == (
         "retracesoftware.install.edgecases.py_localpath_mkdtemp"
     )
-
-
-def test_pytest_cache_set_runs_target_with_retrace_disabled():
-    calls = []
-
-    class FakeSystem:
-        def disable_for(self, fn, *, unwrap_args=True):
-            def disabled(*args, **kwargs):
-                calls.append(("disabled", fn, args, kwargs, unwrap_args))
-                return fn(*args, **kwargs)
-
-            return disabled
-
-        def patch_function(self, fn):
-            def patched(*args, **kwargs):
-                calls.append(("patched", fn, args, kwargs))
-                return fn(*args, **kwargs)
-
-            return patched
-
-    cache = object()
-
-    def target(self, key, value):
-        calls.append(("target", self, key, value))
-        return f"{key}:{value}"
-
-    wrapped = pytest_cache_set(target, FakeSystem())
-
-    assert wrapped(cache, "randomly_seed", 12345) == "randomly_seed:12345"
-    assert calls[0][0] == "patched"
-    assert calls[0][2] == ("randomly_seed", 0)
-    assert calls[1] == (
-        "disabled",
-        target,
-        (cache, "randomly_seed", 12345),
-        {},
-        False,
-    )
-    assert calls[2] == ("target", cache, "randomly_seed", 12345)
 
 
 def test_pytest_cache_for_config_edgecase_binds_cacheclear_probe_lazily(tmp_path):

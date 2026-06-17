@@ -330,12 +330,6 @@ def pytest_cache_get(target, system):
     return _pytest_cache_method_with_payload_token(target, system)
 
 
-def pytest_cache_set(target, system):
-    """Record/replay Cache.set without exposing mutable JSON values as call args."""
-
-    return _pytest_cache_method_with_payload_token(target, system)
-
-
 def pytest_cache_for_config(target, system):
     """Keep pytest --cache-clear branch decisions tied to recorded cache state."""
 
