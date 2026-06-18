@@ -483,6 +483,16 @@ def test_coverage_execfile_config_disables_runner_prepare_methods():
     assert {"prepare", "_prepare2"}.issubset(runner_config["disable"])
 
 
+def test_pyodbc_config_proxies_connection_and_cursor_boundary():
+    pytest.importorskip("pyodbc")
+
+    cfg = ModuleConfigResolver()["pyodbc"]
+
+    assert {"connect", "Connection", "Cursor"}.issubset(cfg["proxy"])
+    assert "Row" not in cfg["proxy"]
+    assert "OperationalError" in cfg["immutable"]
+
+
 def test_pytest_terminalwriter_config_disables_width_probe():
     cfg = ModuleConfigResolver()["_pytest._io.terminalwriter"]
 

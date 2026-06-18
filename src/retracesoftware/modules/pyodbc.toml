@@ -1,0 +1,15 @@
+# pyodbc C extension — ODBC database I/O via SQLDriverConnect/SQLExecute.
+# Network/database work happens below Python inside the ODBC driver manager,
+# so it does not flow through Python's _socket interception.
+#
+# connect returns Connection objects, and Connection creates Cursor objects.
+# Cursor methods are the database boundary; row values are returned data, not
+# objects that need in-place type patching.
+
+package = "pyodbc"
+
+proxy = ["connect", "Connection", "Cursor"]
+
+immutable = ["Error", "Warning", "InterfaceError", "DatabaseError",
+             "DataError", "OperationalError", "IntegrityError",
+             "InternalError", "ProgrammingError", "NotSupportedError"]

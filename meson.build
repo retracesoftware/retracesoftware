@@ -142,6 +142,7 @@ install_data(
   _py_root / 'modules/pluggy._manager.toml',
   _py_root / 'modules/psutil.toml',
   _py_root / 'modules/pytest_rerunfailures.toml',
+  _py_root / 'modules/pyodbc.toml',
   _py_root / 'modules/py._path.local.toml',
   _py_root / 'modules/py._process.forkedfunc.toml',
   _py_root / 'modules/pycurl.toml',

@@ -1,0 +1,80 @@
+# pyodbc + SQL Server regression.
+#
+# The record phase has access to SQL Server. The base harness replay phase runs
+# with network_mode: none, so passing replay proves the pyodbc database boundary
+# was recorded instead of reusing the live database.
+
+services:
+  sqlserver:
+    platform: linux/amd64
+    image: mcr.microsoft.com/mssql/server:2022-latest
+    environment:
+      ACCEPT_EULA: "Y"
+      MSSQL_SA_PASSWORD: "Retrace1!Password"
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "/opt/mssql-tools18/bin/sqlcmd",
+          "-S",
+          "localhost",
+          "-U",
+          "sa",
+          "-P",
+          "Retrace1!Password",
+          "-C",
+          "-Q",
+          "SELECT 1",
+        ]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 20s
+
+  install:
+    build:
+      context: .
+      dockerfile: tests/pyodbc_mssql_test/Dockerfile
+      args:
+        BASE_IMAGE: ${TEST_IMAGE:-retracesoftware-test}
+    image: ${COMPOSE_PROJECT_NAME:-retracetest}_pyodbc_mssql
+
+  dryrun:
+    image: ${COMPOSE_PROJECT_NAME:-retracetest}_pyodbc_mssql
+    depends_on:
+      install:
+        condition: service_completed_successfully
+      sqlserver:
+        condition: service_healthy
+    environment:
+      DB_DRIVER: "ODBC Driver 18 for SQL Server"
+      DB_HOST: sqlserver
+      DB_PORT: "1433"
+      DB_NAME: master
+      DB_USER: sa
+      DB_PASSWORD: "Retrace1!Password"
+
+  record:
+    image: ${COMPOSE_PROJECT_NAME:-retracetest}_pyodbc_mssql
+    depends_on:
+      dryrun:
+        condition: service_completed_successfully
+      sqlserver:
+        condition: service_healthy
+    environment:
+      DB_DRIVER: "ODBC Driver 18 for SQL Server"
+      DB_HOST: sqlserver
+      DB_PORT: "1433"
+      DB_NAME: master
+      DB_USER: sa
+      DB_PASSWORD: "Retrace1!Password"
+
+  replay:
+    image: ${COMPOSE_PROJECT_NAME:-retracetest}_pyodbc_mssql
+    environment:
+      DB_DRIVER: "ODBC Driver 18 for SQL Server"
+      DB_HOST: sqlserver
+      DB_PORT: "1433"
+      DB_NAME: master
+      DB_USER: sa
+      DB_PASSWORD: "Retrace1!Password"
