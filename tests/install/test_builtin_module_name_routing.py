@@ -35,7 +35,8 @@ def test_default_io_pathpredicate_passthroughs_paths_but_retraces_fds(
         file_obj = _io.open(str(path), "w")
         file_obj.close()
         path_stderr = capsys.readouterr().err
-        assert "no match" in path_stderr
+        assert "retrace pathpredicate:" in path_stderr
+        assert "default-io-path.txt" in path_stderr
         assert "passthrough" in path_stderr
 
         read_fd, write_fd = os.pipe()
