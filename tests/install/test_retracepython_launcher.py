@@ -369,7 +369,14 @@ def test_current_hook_enable_and_disable_write_pth_files(tmp_path: Path) -> None
 
     assert enable_current_hook(target) == (target, paths_target)
     assert target.read_text(encoding="utf-8") == activation_pth_source()
-    assert "retracesoftware" in paths_target.read_text(encoding="utf-8")
+    linked_paths = [
+        Path(line)
+        for line in paths_target.read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+    assert linked_paths
+    assert all(path.is_absolute() for path in linked_paths)
+    assert all(path.exists() for path in linked_paths)
     assert disable_current_hook(target) == [target, paths_target]
     assert not target.exists()
     assert not paths_target.exists()
