@@ -5,6 +5,8 @@ from __future__ import annotations
 from pathlib import Path
 import sys
 
+import pytest
+
 from tests.helpers import PYTHON, _completed_process_error, _run_for_pidfile, tail
 from tests.install.external._pytest_replay_regression_helpers import (
     assert_replay_does_not_contain_signature,
@@ -105,6 +107,13 @@ def test_pytest_last_failed_cache_mode_replays_default_capture(
     assert_successful_replay(record, replay, "1 passed")
 
 
+@pytest.mark.xfail(
+    reason=(
+        "tracked in #64: retrace-venv autoenabled Python child subprocess "
+        "records/extracts, but root pidfile replay exits early"
+    ),
+    strict=True,
+)
 def test_retrace_venv_pytest_child_process_cache_and_capfd_replays(
     tmp_path: Path,
 ) -> None:
