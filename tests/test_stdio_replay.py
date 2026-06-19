@@ -12,6 +12,11 @@ PYTHON = sys.executable
 TIMEOUT = 30
 SCRIPTS_DIR = os.path.join(os.path.dirname(__file__), "scripts")
 
+needs_monitoring = pytest.mark.skipif(
+    sys.version_info < (3, 12),
+    reason="stdio failure inspection uses sys.monitoring-backed search",
+)
+
 
 @pytest.fixture
 def tmpdir():
