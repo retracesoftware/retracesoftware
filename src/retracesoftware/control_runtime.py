@@ -12,6 +12,7 @@ from __future__ import annotations
 import json
 import os
 import sys
+import sysconfig
 import socket as socket_lib
 import _thread
 from dataclasses import dataclass
@@ -26,6 +27,10 @@ from retracesoftware.utils.breakpoint import BreakpointSpec, install_breakpoint,
 _real_fork = os.fork
 _RETRACE_PACKAGE_DIR = os.path.dirname(os.path.realpath(__file__))
 _HAS_MONITORING = hasattr(sys, "monitoring")
+_STDLIB_DIR = os.path.realpath(sysconfig.get_path("stdlib") or "")
+_PLATSTDLIB_DIR = os.path.realpath(sysconfig.get_path("platstdlib") or "")
+_PURELIB_DIR = os.path.realpath(sysconfig.get_path("purelib") or "")
+_PLATLIB_DIR = os.path.realpath(sysconfig.get_path("platlib") or "")
 
 @dataclass
 class StopAtBreakpoint:
@@ -48,7 +53,23 @@ class NextInstruction:
 class WaitForThreadChange:
     pass
 
-ControlExecutionIntent = StopAtBreakpoint | StopAtCursor | RunToReturn | NextInstruction | WaitForThreadChange
+@dataclass
+class StopAtFailure:
+    pass
+
+@dataclass
+class SearchFailures:
+    limit: int
+
+ControlExecutionIntent = (
+    StopAtBreakpoint
+    | StopAtCursor
+    | RunToReturn
+    | NextInstruction
+    | WaitForThreadChange
+    | StopAtFailure
+    | SearchFailures
+)
 
 
 class BackstopHitError(Exception):
@@ -162,6 +183,22 @@ class FrameInspector:
     def __init__(self, frame):
         self._frame = frame
 
+    def _select_frame(self, params: dict[str, Any]):
+        frame_index = params.get("application_frame_index")
+        if frame_index is None:
+            frame_index = params.get("frame_index")
+        if frame_index is None:
+            return self._frame
+        try:
+            remaining = int(frame_index)
+        except (TypeError, ValueError):
+            return None
+        frame = self._frame
+        while frame is not None and remaining > 0:
+            frame = frame.f_back
+            remaining -= 1
+        return frame
+
     @staticmethod
     def _frame_lineno(frame) -> int:
         lineno = frame.f_lineno
@@ -186,18 +223,27 @@ class FrameInspector:
         return {"frames": frames}
 
     def locals(self, params: dict[str, Any]) -> dict[str, Any]:
-        if self._frame is None:
+        frame = self._select_frame(params)
+        if frame is None:
             return {"variables": []}
         result = []
-        for name, value in self._frame.f_locals.items():
+        name_filter = params.get("name")
+        repr_budget = int(params.get("repr_budget", 300))
+        for name, value in frame.f_locals.items():
+            if name_filter is not None and name != name_filter:
+                continue
             try:
                 val_repr = repr(value)
             except Exception:
                 val_repr = "<repr failed>"
+            truncated = len(val_repr) > repr_budget
+            if truncated:
+                val_repr = val_repr[: max(repr_budget - 3, 0)] + "..."
             result.append({
                 "name": name,
                 "value": val_repr,
                 "type": type(value).__name__,
+                "truncated": truncated,
             })
         return {"variables": result}
 
@@ -205,7 +251,35 @@ class FrameInspector:
         return {}
 
     def evaluate(self, params: dict[str, Any]) -> dict[str, Any]:
-        return {}
+        frame = self._select_frame(params)
+        if frame is None:
+            return {"available": False, "reason": "frame unavailable"}
+        expression = params.get("expression")
+        if not isinstance(expression, str) or not expression:
+            return {"available": False, "reason": "expression is required"}
+        repr_budget = int(params.get("repr_budget", 1200))
+        try:
+            value = eval(expression, frame.f_globals, frame.f_locals)  # noqa: S307
+        except Exception as exc:
+            return {
+                "available": False,
+                "reason": f"{type(exc).__name__}: {exc}",
+                "expression": expression,
+            }
+        try:
+            value_repr = repr(value)
+        except Exception:
+            value_repr = "<repr failed>"
+        truncated = len(value_repr) > repr_budget
+        if truncated:
+            value_repr = value_repr[: max(repr_budget - 3, 0)] + "..."
+        return {
+            "available": True,
+            "expression": expression,
+            "result": value_repr,
+            "type": type(value).__name__,
+            "truncated": truncated,
+        }
 
     def source_location(self, params: dict[str, Any]) -> dict[str, Any]:
         if self._frame is None:
@@ -288,15 +362,19 @@ def _write_event(write_response: Callable[[dict[str, Any]], None], request_id: s
 
 
 def _write_stop(write_response: Callable[[dict[str, Any]], None], stop_result: dict[str, Any]) -> None:
+    payload = {
+        "reason": stop_result["reason"],
+        "message_index": stop_result["message_index"],
+        "cursor": stop_result["cursor"],
+        "thread_cursors": stop_result["thread_cursors"],
+    }
+    for key in ("exception", "location", "application_frame_confidence"):
+        if key in stop_result:
+            payload[key] = stop_result[key]
     write_response(
         {
             "kind": "stop",
-            "payload": {
-                "reason": stop_result["reason"],
-                "message_index": stop_result["message_index"],
-                "cursor": stop_result["cursor"],
-                "thread_cursors": stop_result["thread_cursors"],
-            },
+            "payload": payload,
         }
     )
 
@@ -560,6 +638,37 @@ def control_event_loop(
                     _write_ok(control_socket.write_response, request_id, {
                         "thread_id": get_thread_id(),
                     })
+                    continue
+
+                if command == "stop_at_failure":
+                    intent = StopAtFailure()
+                    frame = None
+                    result = yield intent
+                    if isinstance(result, dict):
+                        _write_stop(control_socket.write_response, result)
+                    else:
+                        _write_stop(control_socket.write_response, {
+                            "reason": result or "unknown",
+                            "message_index": get_message_index(),
+                            "cursor": {},
+                            "thread_cursors": {},
+                        })
+                    continue
+
+                if command == "search_failures":
+                    limit = params.get("limit", 5000)
+                    if not isinstance(limit, int) or limit <= 0:
+                        raise ParseRequestError(request_id, "invalid_params", "limit must be a positive integer")
+                    frame = None
+                    result = yield SearchFailures(limit=limit)
+                    if isinstance(result, dict):
+                        _write_ok(control_socket.write_response, request_id, result)
+                    else:
+                        _write_ok(control_socket.write_response, request_id, {
+                            "candidates": [],
+                            "completed": False,
+                            "reason": result or "unknown",
+                        })
                     continue
 
                 if command == "fork":
@@ -830,11 +939,52 @@ def _is_retrace_internal_code(code: CodeType) -> bool:
         return True
     return os.path.realpath(filename).startswith(_RETRACE_PACKAGE_DIR + os.sep)
 
+def _is_stdlib_code(code: CodeType) -> bool:
+    filename = code.co_filename
+    if not filename or filename.startswith("<"):
+        return False
+    real_filename = os.path.realpath(filename)
+    for base in (_STDLIB_DIR, _PLATSTDLIB_DIR):
+        if not base:
+            continue
+        if real_filename.startswith(base + os.sep) and "site-packages" not in real_filename:
+            return True
+    return False
+
+def _is_site_package_code(code: CodeType) -> bool:
+    filename = code.co_filename
+    if not filename or filename.startswith("<"):
+        return False
+    real_filename = os.path.realpath(filename)
+    for base in (_PURELIB_DIR, _PLATLIB_DIR):
+        if base and real_filename.startswith(base + os.sep):
+            return True
+    return False
+
+def _is_application_stop_code(code: CodeType) -> bool:
+    return (
+        not _is_retrace_internal_code(code)
+        and not _is_stdlib_code(code)
+        and not _is_site_package_code(code)
+    )
+
+def _code_classification(code: CodeType) -> str:
+    if _is_retrace_internal_code(code):
+        return "retrace"
+    if _is_stdlib_code(code):
+        return "stdlib"
+    if _is_site_package_code(code):
+        return "site_packages"
+    return "application"
+
+def _is_control_flow_exception(exception: BaseException) -> bool:
+    return not isinstance(exception, Exception) or isinstance(exception, GeneratorExit)
+
 def _find_user_frame():
     """Walk the call stack to find the first frame outside retracesoftware internals."""
     frame = sys._getframe(1)
     while frame is not None:
-        if not _is_retrace_internal_code(frame.f_code):
+        if _is_application_stop_code(frame.f_code):
             return frame
         frame = frame.f_back
     return None
@@ -856,6 +1006,8 @@ class Controller:
         self._in_control_log = False
         self._monitor = None
         self._trace_monitor = None
+        self._failure_monitor = None
+        self._failure_search_monitor = None
         self._current_breakpoint = None
         self._backstop = None
         self._message_index = 0
@@ -944,6 +1096,10 @@ class Controller:
         if self._done:
             return
         if self._backstop is not None and self._message_index >= self._backstop:
+            search_result = self._finish_failure_search("backstop", self._message_index)
+            if search_result is not None:
+                self._send_and_handle_locked(search_result)
+                return
             err = BackstopHitError(
                 message_index=self._message_index,
                 cursor=self._cursor_dict(cursor.cursor_snapshot().to_dict()),
@@ -997,8 +1153,174 @@ class Controller:
         elif isinstance(intent, WaitForThreadChange):
             self._install_wait_for_thread_change()
 
+        elif isinstance(intent, StopAtFailure):
+            self._install_stop_at_failure()
+
+        elif isinstance(intent, SearchFailures):
+            self._install_failure_search(intent)
+
         else:
             raise RuntimeError(f"unexpected intent: {intent}")
+
+    def _failure_candidate(self, code: CodeType, offset: int, exception: BaseException) -> dict[str, Any]:
+        frame = _find_frame_for_code(code)
+        line = self._lineno_from_code(code, offset)
+        snapshot = self._cursor_dict(cursor.cursor_snapshot().to_dict())
+        snapshot["f_lasti"] = offset
+        snapshot["lineno"] = line
+        return {
+            "message_index": self._message_index,
+            "cursor": snapshot,
+            "exception": {
+                "type": type(exception).__name__,
+                "message": str(exception),
+                "assertion_text": str(exception) if isinstance(exception, AssertionError) else "",
+                "control_flow": _is_control_flow_exception(exception),
+            },
+            "location": {
+                "filename": code.co_filename,
+                "line": line,
+                "function": code.co_name,
+            },
+            "classification": _code_classification(code),
+            "application_frame": _is_application_stop_code(code),
+            "stack_top": {
+                "filename": frame.f_code.co_filename,
+                "line": FrameInspector._frame_lineno(frame),
+                "function": frame.f_code.co_name,
+            } if frame is not None else {
+                "filename": code.co_filename,
+                "line": line,
+                "function": code.co_name,
+            },
+        }
+
+    def _finish_failure_search(self, reason: str, message_index: int) -> dict[str, Any] | None:
+        monitor = self._failure_search_monitor
+        if monitor is None:
+            return None
+        self._failure_search_monitor = None
+        return monitor.finish(reason=reason, message_index=message_index)
+
+    def _install_failure_search(self, intent: SearchFailures):
+        if self._failure_search_monitor is not None:
+            self._failure_search_monitor.close()
+
+        tool_id = _acquire_tool_id("retrace_search_failures")
+        E = sys.monitoring.events
+        owner = self
+
+        class FailureSearchMonitor:
+            def __init__(self, tool_id, limit):
+                self._tool_id = tool_id
+                self._limit = limit
+                self._closed = False
+                self.candidates: list[dict[str, Any]] = []
+
+            def close(self):
+                if self._closed:
+                    return
+                sys.monitoring.set_events(self._tool_id, 0)
+                sys.monitoring.register_callback(self._tool_id, E.RAISE, None)
+                try:
+                    sys.monitoring.free_tool_id(self._tool_id)
+                except Exception:
+                    pass
+                self._closed = True
+
+            def add(self, candidate: dict[str, Any]) -> bool:
+                self.candidates.append(candidate)
+                return len(self.candidates) >= self._limit
+
+            def finish(self, *, reason: str, message_index: int) -> dict[str, Any]:
+                self.close()
+                return {
+                    "candidates": self.candidates,
+                    "completed": reason == "eof",
+                    "reason": reason,
+                    "message_index": message_index,
+                }
+
+        monitor = FailureSearchMonitor(tool_id, intent.limit)
+        self._failure_search_monitor = monitor
+
+        def _on_raise(code, offset, exception):
+            if self._done:
+                return None
+            candidate = owner._failure_candidate(code, offset, exception)
+            if not monitor.add(candidate):
+                return None
+            owner._failure_search_monitor = None
+            owner._send_and_handle_locked(monitor.finish(reason="limit", message_index=owner._message_index))
+            return None
+
+        sys.monitoring.register_callback(tool_id, E.RAISE, self._disable_for(_on_raise))
+        sys.monitoring.set_events(tool_id, E.RAISE)
+
+    def _install_stop_at_failure(self):
+        if self._failure_monitor is not None:
+            self._failure_monitor.close()
+
+        tool_id = _acquire_tool_id("retrace_stop_failure")
+        E = sys.monitoring.events
+
+        class FailureMonitor:
+            def __init__(self, tool_id):
+                self._tool_id = tool_id
+                self._closed = False
+
+            def close(self):
+                if self._closed:
+                    return
+                sys.monitoring.set_events(self._tool_id, 0)
+                sys.monitoring.register_callback(self._tool_id, E.RAISE, None)
+                try:
+                    sys.monitoring.free_tool_id(self._tool_id)
+                except Exception:
+                    pass
+                self._closed = True
+
+        monitor = FailureMonitor(tool_id)
+        self._failure_monitor = monitor
+
+        def _on_raise(code, offset, exception):
+            if self._done or not _is_application_stop_code(code):
+                return None
+            if _is_control_flow_exception(exception):
+                return None
+            frame = _find_frame_for_code(code) or _find_user_frame()
+            if frame is None:
+                return None
+            monitor.close()
+            self._failure_monitor = None
+            self._last_code = code
+            self._stopped_frame = frame
+            snapshot = self._cursor_dict(cursor.cursor_snapshot().to_dict())
+            snapshot["f_lasti"] = offset
+            snapshot["lineno"] = self._lineno_from_code(code, offset)
+            location = {
+                "filename": frame.f_code.co_filename,
+                "line": FrameInspector._frame_lineno(frame),
+                "function": frame.f_code.co_name,
+            }
+            stop_result = {
+                "reason": "exception",
+                "message_index": self._message_index,
+                "cursor": snapshot,
+                "thread_cursors": {},
+                "exception": {
+                    "type": type(exception).__name__,
+                    "message": str(exception),
+                    "assertion_text": str(exception) if isinstance(exception, AssertionError) else "",
+                },
+                "location": location,
+                "application_frame_confidence": "high",
+            }
+            self._send_and_handle_locked(stop_result)
+            return None
+
+        sys.monitoring.register_callback(tool_id, E.RAISE, self._disable_for(_on_raise))
+        sys.monitoring.set_events(tool_id, E.RAISE)
 
     def _install_run_to_return(self, intent: RunToReturn):
         counters = intent.function_counts
@@ -1211,6 +1533,10 @@ class Controller:
     def on_replay_finished(self):
         if self._done:
             return
+        search_result = self._finish_failure_search("eof", self._message_index)
+        if search_result is not None:
+            self._send_and_handle_locked(search_result)
+            return
         err = ReplayEOF(message_index=self._message_index)
         self._event_loop_lock.acquire()
         try:
@@ -1260,5 +1586,11 @@ class Controller:
             self._trace_monitor.close()
             self._trace_monitor = None
         self._returning_to_counts = None
+        if self._failure_monitor is not None:
+            self._failure_monitor.close()
+            self._failure_monitor = None
+        if self._failure_search_monitor is not None:
+            self._failure_search_monitor.close()
+            self._failure_search_monitor = None
         cursor.set_on_thread_switch(None)
         self._stopped_frame = None

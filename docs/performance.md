@@ -93,7 +93,6 @@ Install Retrace:
 
 ```bash
 pip install retracesoftware
-python -m retracesoftware install
 ```
 
 Run all benchmarks:
@@ -130,7 +129,7 @@ python synthetic_benchmark.py
 With Retrace:
 
 ```bash
-RETRACE_RECORDING=/tmp/recording python synthetic_benchmark.py
+retracepython --recording /tmp/recording synthetic_benchmark.py
 ```
 
 ### 2. External Boundary Benchmark (`external_boundary_benchmark.py`)
@@ -153,7 +152,7 @@ python external_boundary_benchmark.py
 With Retrace:
 
 ```bash
-RETRACE_RECORDING=/tmp/recording python external_boundary_benchmark.py
+retracepython --recording /tmp/recording external_boundary_benchmark.py
 ```
 
 For the runnable benchmark scripts and quick command reference, see
@@ -209,7 +208,7 @@ ab -n 1000 -c 10 http://localhost:8000/api/endpoint
 With Retrace recording:
 
 ```bash
-RETRACE_RECORDING=/tmp/recording python app.py
+retracepython --recording /tmp/recording app.py
 ab -n 1000 -c 10 http://localhost:8000/api/endpoint
 ```
 
@@ -263,7 +262,7 @@ if __name__ == "__main__":
 Run the baseline, then run with Retrace and compare:
 
 ```bash
-RETRACE_RECORDING=/tmp/recording python your_benchmark.py
+retracepython --recording /tmp/recording your_benchmark.py
 ```
 
 ## Troubleshooting

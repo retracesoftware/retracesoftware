@@ -9,11 +9,11 @@ For user-facing setup, start with [../README.md](../README.md).
 The current Python package is under `src/retracesoftware`.
 
 - `__main__.py` owns the `python -m retracesoftware` CLI. It records target
-  commands, replays recordings, lists recorded PIDs, and installs or removes
-  the auto-enable hook.
-- `autoenable.py` is imported by `retracesoftware_autoenable.pth`. It re-execs
-  ordinary Python commands through `python -m retracesoftware` when
-  `RETRACE_RECORDING` or `RETRACE_CONFIG` is set.
+  commands, replays recordings, lists recorded PIDs, creates Retrace venvs, and
+  installs or removes the optional active-environment env hook.
+- `retracepython.py`, `retrace_venv.py`, and `retrace_venv_bootstrap.py` own
+  the launcher flows that re-exec ordinary Python commands through
+  `python -m retracesoftware`.
 - `tape.py` creates recording files, writes executable shebangs, stores
   checksums and process metadata, and opens replay readers.
 - `install/` patches Python runtime surfaces so external calls cross the

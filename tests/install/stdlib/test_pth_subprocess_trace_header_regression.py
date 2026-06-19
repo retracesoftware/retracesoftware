@@ -1,12 +1,12 @@
-"""Regression: .pth child Python processes must not corrupt shared traces.
+"""Regression: Retrace venv child Python processes must not corrupt shared traces.
 
-The public auto-enable flow is:
+The public always-on venv flow is:
 
-    python -m retracesoftware install
-    RETRACE_RECORDING=trace.retrace python -m pytest tests
+    python -m retracesoftware venv .venv
+    RETRACE_RECORDING=trace.retrace .venv/bin/python -m pytest tests
 
 When pytest starts a child Python subprocess, that child inherits
-``RETRACE_RECORDING`` and auto-enables Retrace through the installed .pth hook.
+``RETRACE_RECORDING`` and runs through the venv's Retrace-aware Python wrapper.
 The child must append its process stream to the shared trace without
 re-preparing/truncating the executable trace header written by the parent.
 """
@@ -19,19 +19,10 @@ import subprocess
 import sys
 import textwrap
 
-import pytest
-
-from retracesoftware import tape as retrace_tape
 from tests.helpers import tail
 
 
 TIMEOUT = 60
-HAS_AUTOENABLE_TRACE_HEADER_GUARD = hasattr(
-    retrace_tape,
-    "_prepared_by_autoenable",
-)
-
-
 def _run(args: list[str], *, cwd: Path, env: dict[str, str]) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
         args,
@@ -49,22 +40,14 @@ def _clean_retrace_env() -> dict[str, str]:
     for key in (
         "RETRACE_CONFIG",
         "RETRACE_RECORDING",
-        "RETRACE_INODE",
+        "RETRACE_RECORDING_INODE",
         "RETRACE_SKIP_CHECKSUMS",
     ):
         env.pop(key, None)
     return env
 
 
-@pytest.mark.xfail(
-    not HAS_AUTOENABLE_TRACE_HEADER_GUARD,
-    strict=True,
-    reason=(
-        "child Python .pth auto-enable can re-prepare/truncate the shared "
-        "trace header before the autoenable trace-header guard lands"
-    ),
-)
-def test_pth_pytest_child_python_process_extracts_without_trace_header_corruption(
+def test_retrace_venv_pytest_child_python_process_extracts_without_trace_header_corruption(
     tmp_path: Path,
 ) -> None:
     tests_dir = tmp_path / "tests"
@@ -99,15 +82,25 @@ def test_pth_pytest_child_python_process_extracts_without_trace_header_corruptio
     recording = tmp_path / "trace.retrace"
 
     install_env = _clean_retrace_env()
+    venv_dir = tmp_path / ".retrace-venv"
     install = _run(
-        [sys.executable, "-m", "retracesoftware", "install"],
+        [
+            sys.executable,
+            "-m",
+            "retracesoftware",
+            "venv",
+            str(venv_dir),
+            "--without-pip",
+            "--system-site-packages",
+        ],
         cwd=tmp_path,
         env=install_env,
     )
     assert install.returncode == 0, (
-        f"install auto-enable failed\nstdout:\n{tail(install.stdout)}\n"
+        f"create retrace venv failed\nstdout:\n{tail(install.stdout)}\n"
         f"stderr:\n{tail(install.stderr)}"
     )
+    retrace_python = venv_dir / "bin" / "python"
 
     record_env = install_env.copy()
     record_env["PYTHONFAULTHANDLER"] = "1"
@@ -115,7 +108,7 @@ def test_pth_pytest_child_python_process_extracts_without_trace_header_corruptio
     record_env["RETRACE_RECORDING"] = recording.name
 
     record = _run(
-        [sys.executable, "-m", "pytest", "tests", "-q", "--tb=short"],
+        [str(retrace_python), "-m", "pytest", "tests", "-q", "--tb=short"],
         cwd=tmp_path,
         env=record_env,
     )
@@ -129,7 +122,7 @@ def test_pth_pytest_child_python_process_extracts_without_trace_header_corruptio
     inspect_env = install_env.copy()
     extract = _run([str(recording), "--extract"], cwd=tmp_path, env=inspect_env)
     assert extract.returncode == 0, (
-        "extract failed; child Python auto-enable likely rewrote/truncated the "
+        "extract failed; child Python launcher likely rewrote/truncated the "
         "shared trace header\n"
         f"stdout:\n{tail(extract.stdout)}\nstderr:\n{tail(extract.stderr)}"
     )

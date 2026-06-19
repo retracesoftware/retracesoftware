@@ -6,6 +6,7 @@ import json
 import os
 import subprocess
 import sys
+import ast
 from pathlib import Path
 from typing import Any, Sequence
 
@@ -31,6 +32,27 @@ EXTERNAL_CALL_LIMITATIONS = [
     "It does not infer root cause.",
     "It does not prove full value-level provenance.",
     "Values are bounded previews.",
+]
+
+FUNCTION_CODE_LIMITATIONS = [
+    "This reports source code for one selected application frame.",
+    "It reads the frame's resolved source path from the local replay environment.",
+    "It does not prove that local source exactly matches the original recording.",
+    "It does not infer root cause.",
+]
+
+EXPRESSION_LIMITATIONS = [
+    "This evaluates one expression in a selected application frame.",
+    "Evaluation runs inside replay/control inspection state and should be used for read-only expressions.",
+    "Values are bounded previews.",
+    "It does not infer root cause.",
+]
+
+FAILURE_SEARCH_LIMITATIONS = [
+    "This reports raised exceptions as replay candidates with cursors.",
+    "Candidates can include handled exceptions and library/bootstrap noise.",
+    "The UI or agent should rank and filter candidates before choosing one to inspect.",
+    "Inspecting locals for a candidate requires replaying to that candidate's cursor.",
 ]
 
 
@@ -75,6 +97,34 @@ def inspect_recording(
         repr_budget=repr_budget,
     )
     return report
+
+
+def inspect_failures(
+    recording: str,
+    *,
+    pid: str | None = None,
+    limit: int = 5000,
+    python_executable: str | None = None,
+    timeout_seconds: int = 30,
+) -> dict[str, Any]:
+    """Return exception/failure candidates discovered during replay."""
+    recording_path = Path(recording)
+    commands = _failure_search_commands(limit=limit)
+    result = _run_replay_control(
+        recording_path,
+        commands,
+        python_executable=python_executable or sys.executable,
+        timeout_seconds=timeout_seconds,
+    )
+    responses = _parse_control_responses(result.stdout)
+    return _build_failures_report(
+        recording_path=recording_path,
+        pid=pid,
+        responses=responses,
+        stderr=result.stderr,
+        returncode=result.returncode,
+        limit=limit,
+    )
 
 
 def inspect_frame(
@@ -260,6 +310,77 @@ def inspect_external_call(
         responses=responses,
         stderr=result.stderr,
         returncode=result.returncode,
+        repr_budget=repr_budget,
+    )
+
+
+def inspect_function_code(
+    recording: str,
+    *,
+    frame_index: int,
+    pid: str | None = None,
+    max_frames: int = 20,
+    max_chars: int = 12000,
+    python_executable: str | None = None,
+    timeout_seconds: int = 30,
+) -> dict[str, Any]:
+    """Return the containing function source for one application frame."""
+    recording_path = Path(recording)
+    commands = _function_code_commands(frame_index=frame_index, max_frames=max_frames)
+    result = _run_replay_control(
+        recording_path,
+        commands,
+        python_executable=python_executable or sys.executable,
+        timeout_seconds=timeout_seconds,
+    )
+    responses = _parse_control_responses(result.stdout)
+    return _build_function_code_report(
+        recording_path=recording_path,
+        pid=pid,
+        frame_index=frame_index,
+        responses=responses,
+        stderr=result.stderr,
+        returncode=result.returncode,
+        max_frames=max_frames,
+        max_chars=max_chars,
+    )
+
+
+def inspect_expression(
+    recording: str,
+    *,
+    frame_index: int,
+    expression: str,
+    pid: str | None = None,
+    max_frames: int = 20,
+    repr_budget: int = 1200,
+    python_executable: str | None = None,
+    timeout_seconds: int = 30,
+) -> dict[str, Any]:
+    """Evaluate one expression in a selected application frame."""
+    recording_path = Path(recording)
+    commands = _expression_commands(
+        frame_index=frame_index,
+        expression=expression,
+        max_frames=max_frames,
+        repr_budget=repr_budget,
+    )
+    result = _run_replay_control(
+        recording_path,
+        commands,
+        python_executable=python_executable or sys.executable,
+        timeout_seconds=timeout_seconds,
+    )
+    responses = _parse_control_responses(result.stdout)
+    return _build_expression_report(
+        recording_path=recording_path,
+        pid=pid,
+        frame_index=frame_index,
+        expression=expression,
+        responses=responses,
+        stderr=result.stderr,
+        returncode=result.returncode,
+        max_frames=max_frames,
         repr_budget=repr_budget,
     )
 
@@ -538,8 +659,120 @@ def render_external_call_markdown(report: dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
+def render_function_code_markdown(report: dict[str, Any]) -> str:
+    session = report["recording"]
+    frame = report["frame"]
+    function_code = report["function_code"]
+    availability = report["availability"]
+
+    lines: list[str] = ["# Retrace function code", ""]
+    lines.extend([
+        "Recording:",
+        f"  path: {session['path']}",
+        "",
+        "Frame:",
+        f"  index: {_display(frame.get('index'))}",
+        f"  available: {_display(frame.get('available'))}",
+        f"  file: {_display(frame.get('file'))}",
+        f"  line: {_display(frame.get('line'))}",
+        f"  function: {_display(frame.get('function'))}",
+        "",
+        "Function code:",
+        f"  available: {_display(function_code.get('available'))}",
+        f"  start_line: {_display(function_code.get('start_line'))}",
+        f"  end_line: {_display(function_code.get('end_line'))}",
+        f"  current_line: {_display(function_code.get('current_line'))}",
+        f"  source_origin: {_display(function_code.get('source_origin'))}",
+        f"  truncated: {_display(function_code.get('truncated'))}",
+        f"  reason: {_display(function_code.get('reason'))}",
+        f"  source_available: {_display(availability.get('source_available'))}",
+        "",
+    ])
+    if function_code.get("available"):
+        lines.extend(["```python", function_code.get("source", ""), "```", ""])
+
+    lines.append("Limitations:")
+    for item in report["limitations"]:
+        lines.append(f"- {item}")
+    lines.append("")
+    return "\n".join(lines)
+
+
+def render_expression_markdown(report: dict[str, Any]) -> str:
+    session = report["recording"]
+    frame = report["frame"]
+    evaluation = report["evaluation"]
+    availability = report["availability"]
+
+    lines: list[str] = ["# Retrace expression evaluation", ""]
+    lines.extend([
+        "Recording:",
+        f"  path: {session['path']}",
+        "",
+        "Frame:",
+        f"  index: {_display(frame.get('index'))}",
+        f"  available: {_display(frame.get('available'))}",
+        f"  file: {_display(frame.get('file'))}",
+        f"  line: {_display(frame.get('line'))}",
+        f"  function: {_display(frame.get('function'))}",
+        "",
+        "Expression:",
+        f"  text: {_display(evaluation.get('expression'))}",
+        f"  available: {_display(evaluation.get('available'))}",
+        f"  value_preview: {_display(evaluation.get('value_preview'))}",
+        f"  type: {_display(evaluation.get('type'))}",
+        f"  truncated: {_display(evaluation.get('truncated'))}",
+        f"  reason: {_display(evaluation.get('reason'))}",
+        f"  evaluation_available: {_display(availability.get('evaluation_available'))}",
+        "",
+        "Limitations:",
+    ])
+    for item in report["limitations"]:
+        lines.append(f"- {item}")
+    lines.append("")
+    return "\n".join(lines)
+
+
 def render_json(report: dict[str, Any]) -> str:
     return json.dumps(report, indent=2, sort_keys=True) + "\n"
+
+
+def render_failures_markdown(report: dict[str, Any]) -> str:
+    lines = [
+        "# Retrace failure candidates",
+        "",
+        f"recording: {_display(_dict(report.get('recording')).get('path'))}",
+        f"candidate_count: {_display(report.get('candidate_count'))}",
+        f"classification_counts: {_display(report.get('classification_counts'))}",
+        f"completed: {_display(report.get('completed'))}",
+        f"reason: {_display(report.get('reason'))}",
+        "",
+        "Candidates:",
+    ]
+    candidates = _list_of_dicts(report.get("ranked_candidates"))
+    if not candidates:
+        lines.append("  unavailable")
+    for candidate in candidates:
+        exception = _dict(candidate.get("exception"))
+        location = _dict(candidate.get("location"))
+        lines.append(
+            f"  {candidate.get('rank', '?')}. "
+            f"{_display(exception.get('type'))}: {_display(exception.get('message'))}"
+        )
+        lines.append(
+            f"     {_display(location.get('filename'))}:{_display(location.get('line'))} "
+            f"in {_display(location.get('function'))}"
+        )
+        lines.append(
+            f"     classification: {_display(candidate.get('classification'))}; "
+            f"control_flow: {_display(exception.get('control_flow'))}; "
+            f"score: {_display(candidate.get('score'))}"
+        )
+    lines.extend(["", "Limitations:"])
+    for item in report["limitations"]:
+        lines.append(f"- {item}")
+    lines.append("")
+    return "\n".join(lines)
 
 
 def _inspection_commands(*, max_frames: int, max_vars: int, repr_budget: int) -> list[dict[str, Any]]:
@@ -553,6 +786,14 @@ def _inspection_commands(*, max_frames: int, max_vars: int, repr_budget: int) ->
             "command": "locals",
             "params": {"frame_index": 0, "max_vars": max_vars, "repr_budget": repr_budget},
         },
+        {"id": "close", "command": "close"},
+    ]
+
+
+def _failure_search_commands(*, limit: int) -> list[dict[str, Any]]:
+    return [
+        {"id": "hello", "command": "hello"},
+        {"id": "failures", "command": "search_failures", "params": {"limit": limit}},
         {"id": "close", "command": "close"},
     ]
 
@@ -642,6 +883,35 @@ def _external_calls_commands(*, before_failure: bool, limit: int, repr_budget: i
     ]
 
 
+def _function_code_commands(*, frame_index: int, max_frames: int) -> list[dict[str, Any]]:
+    return [
+        {"id": "hello", "command": "hello"},
+        {"id": "stop", "command": "stop_at_failure"},
+        {"id": "inspect", "command": "inspect"},
+        {"id": "stack", "command": "stack", "params": {"max_frames": max(max_frames * 4, frame_index + 1)}},
+        {"id": "close", "command": "close"},
+    ]
+
+
+def _expression_commands(*, frame_index: int, expression: str, max_frames: int, repr_budget: int) -> list[dict[str, Any]]:
+    return [
+        {"id": "hello", "command": "hello"},
+        {"id": "stop", "command": "stop_at_failure"},
+        {"id": "inspect", "command": "inspect"},
+        {"id": "stack", "command": "stack", "params": {"max_frames": max(max_frames * 4, frame_index + 1)}},
+        {
+            "id": "eval",
+            "command": "eval",
+            "params": {
+                "application_frame_index": frame_index,
+                "expression": expression,
+                "repr_budget": repr_budget,
+            },
+        },
+        {"id": "close", "command": "close"},
+    ]
+
+
 def _run_replay_control(
     recording_path: Path,
     commands: Sequence[dict[str, Any]],
@@ -650,6 +920,10 @@ def _run_replay_control(
     timeout_seconds: int,
 ) -> subprocess.CompletedProcess[str]:
     stdin = "\n".join(json.dumps(command, separators=(",", ":")) for command in commands) + "\n"
+    cwd = _control_replay_cwd(recording_path)
+    env = os.environ.copy()
+    if cwd is not None:
+        env["PWD"] = str(cwd)
     return subprocess.run(
         [
             python_executable,
@@ -663,7 +937,17 @@ def _run_replay_control(
         capture_output=True,
         text=True,
         timeout=timeout_seconds,
+        cwd=str(cwd) if cwd is not None else None,
+        env=env,
     )
+
+
+def _control_replay_cwd(recording_path: Path) -> Path | None:
+    resolved = recording_path.resolve()
+    for parent in resolved.parents:
+        if (parent / "pyproject.toml").is_file() or (parent / ".git").exists():
+            return parent
+    return None
 
 
 def _parse_control_responses(stdout: str) -> list[dict[str, Any]]:
@@ -774,6 +1058,102 @@ def _build_report(
         },
         "limitations": LIMITATIONS,
     }
+
+
+def _build_failures_report(
+    *,
+    recording_path: Path,
+    pid: str | None,
+    responses: list[dict[str, Any]],
+    stderr: str,
+    returncode: int,
+    limit: int,
+) -> dict[str, Any]:
+    by_id = {
+        str(response.get("id")): response
+        for response in responses
+        if response.get("ok") is not None and response.get("id") is not None
+    }
+    failures = _ok_result(by_id.get("failures"))
+    raw_candidates = failures.get("candidates", [])
+    candidates = [
+        _normalize_failure_candidate(candidate, index=index)
+        for index, candidate in enumerate(raw_candidates)
+        if isinstance(candidate, dict)
+    ]
+    ranked_candidates = sorted(
+        candidates,
+        key=lambda candidate: (-int(candidate["score"]), int(candidate["index"])),
+    )
+    for rank, candidate in enumerate(ranked_candidates, start=1):
+        candidate["rank"] = rank
+    classification_counts: dict[str, int] = {}
+    for candidate in candidates:
+        classification = str(candidate.get("classification") or "unknown")
+        classification_counts[classification] = classification_counts.get(classification, 0) + 1
+    metadata = _recording_metadata()
+    metadata.update({"path": str(recording_path), "pid": pid, "thread_id": "unavailable"})
+    protocol_errors = [response for response in responses if response.get("ok") is False]
+
+    return {
+        "recording": metadata,
+        "candidate_count": len(candidates),
+        "classification_counts": classification_counts,
+        "candidates": candidates,
+        "ranked_candidates": ranked_candidates,
+        "completed": bool(failures.get("completed")),
+        "reason": failures.get("reason") or "unavailable",
+        "message_index": failures.get("message_index"),
+        "availability": {
+            "failure_candidates_available": bool(candidates),
+            "cursor_available": any(bool(candidate.get("cursor")) for candidate in candidates),
+        },
+        "control": {
+            "returncode": returncode,
+            "responses": len(responses),
+            "protocol_errors": protocol_errors,
+            "stderr_available": bool(stderr.strip()),
+            "stderr_preview": "",
+        },
+        "limits": {"limit": limit},
+        "limitations": FAILURE_SEARCH_LIMITATIONS,
+    }
+
+
+def _normalize_failure_candidate(candidate: dict[str, Any], *, index: int) -> dict[str, Any]:
+    exception = _dict(candidate.get("exception"))
+    classification = str(candidate.get("classification") or "unknown")
+    control_flow = bool(exception.get("control_flow"))
+    exception_type = str(exception.get("type") or "unavailable")
+    score = 0
+    if classification == "application":
+        score += 100
+    elif classification == "site_packages":
+        score += 30
+    elif classification == "stdlib":
+        score += 10
+    if exception_type == "AssertionError":
+        score += 50
+    if control_flow:
+        score -= 100
+    normalized = {
+        "index": index,
+        "rank": None,
+        "score": score,
+        "message_index": candidate.get("message_index"),
+        "cursor": candidate.get("cursor") if isinstance(candidate.get("cursor"), dict) else {},
+        "exception": {
+            "type": exception_type,
+            "message": str(exception.get("message") or ""),
+            "assertion_text": str(exception.get("assertion_text") or ""),
+            "control_flow": control_flow,
+        },
+        "location": _origin_location(candidate.get("location")),
+        "classification": classification,
+        "application_frame": bool(candidate.get("application_frame")),
+        "stack_top": _origin_location(candidate.get("stack_top")),
+    }
+    return normalized
 
 
 def _build_frame_report(
@@ -1219,8 +1599,294 @@ def _build_external_call_report(
     }
 
 
+def _build_function_code_report(
+    *,
+    recording_path: Path,
+    pid: str | None,
+    frame_index: int,
+    responses: list[dict[str, Any]],
+    stderr: str,
+    returncode: int,
+    max_frames: int,
+    max_chars: int,
+) -> dict[str, Any]:
+    by_id = {
+        str(response.get("id")): response
+        for response in responses
+        if response.get("ok") is not None and response.get("id") is not None
+    }
+    stop = next((response for response in responses if response.get("kind") == "stop"), {})
+    stop_payload = stop.get("payload", {}) if isinstance(stop.get("payload"), dict) else {}
+    inspect_result = _ok_result(by_id.get("inspect"))
+    stack_result = _ok_result(by_id.get("stack"))
+    metadata = _recording_metadata()
+
+    cursor = stop_payload.get("cursor") or inspect_result.get("cursor") or {}
+    thread_id = cursor.get("thread_id") if isinstance(cursor, dict) else None
+    metadata.update({"path": str(recording_path), "pid": pid, "thread_id": thread_id or "unavailable"})
+
+    application_stack = _application_frames(stack_result.get("frames", []), max_frames)
+    frame_available = 0 <= frame_index < len(application_stack)
+    frame_location = application_stack[frame_index] if frame_available else {}
+    source = _function_source_from_frame(
+        frame_location,
+        base_dir=_control_replay_cwd(recording_path),
+        max_chars=max_chars,
+    ) if frame_available else _unavailable_function_code(
+        reason="frame unavailable",
+        max_chars=max_chars,
+    )
+    protocol_errors = [response for response in responses if response.get("ok") is False]
+
+    return {
+        "recording": metadata,
+        "frame": {
+            "index": frame_index,
+            "available": frame_available,
+            "file": frame_location.get("filename", "unavailable") if frame_available else "unavailable",
+            "line": frame_location.get("line", "unavailable") if frame_available else "unavailable",
+            "function": frame_location.get("function", "unavailable") if frame_available else "unavailable",
+            "status": "available" if frame_available else "unavailable",
+        },
+        "function_code": source,
+        "function_code_available": bool(source.get("available")),
+        "availability": {
+            "frame_available": frame_available,
+            "source_available": bool(source.get("available")),
+            "cursor_available": isinstance(cursor, dict) and bool(cursor),
+        },
+        "control": {
+            "returncode": returncode,
+            "responses": len(responses),
+            "protocol_errors": protocol_errors,
+            "stderr_available": bool(stderr.strip()),
+            "stderr_preview": "",
+        },
+        "limits": {
+            "max_frames": max_frames,
+            "max_chars": max_chars,
+        },
+        "limitations": FUNCTION_CODE_LIMITATIONS,
+    }
+
+
+def _build_expression_report(
+    *,
+    recording_path: Path,
+    pid: str | None,
+    frame_index: int,
+    expression: str,
+    responses: list[dict[str, Any]],
+    stderr: str,
+    returncode: int,
+    max_frames: int,
+    repr_budget: int,
+) -> dict[str, Any]:
+    by_id = {
+        str(response.get("id")): response
+        for response in responses
+        if response.get("ok") is not None and response.get("id") is not None
+    }
+    stop = next((response for response in responses if response.get("kind") == "stop"), {})
+    stop_payload = stop.get("payload", {}) if isinstance(stop.get("payload"), dict) else {}
+    inspect_result = _ok_result(by_id.get("inspect"))
+    stack_result = _ok_result(by_id.get("stack"))
+    eval_response = by_id.get("eval")
+    eval_result = _ok_result(eval_response)
+    metadata = _recording_metadata()
+
+    cursor = stop_payload.get("cursor") or inspect_result.get("cursor") or {}
+    thread_id = cursor.get("thread_id") if isinstance(cursor, dict) else None
+    metadata.update({"path": str(recording_path), "pid": pid, "thread_id": thread_id or "unavailable"})
+
+    application_stack = _application_frames(stack_result.get("frames", []), max_frames)
+    frame_available = 0 <= frame_index < len(application_stack)
+    frame_location = application_stack[frame_index] if frame_available else {}
+    evaluation = _evaluation_result(expression, eval_response, eval_result, repr_budget=repr_budget)
+    protocol_errors = [response for response in responses if response.get("ok") is False]
+
+    return {
+        "recording": metadata,
+        "frame": {
+            "index": frame_index,
+            "available": frame_available,
+            "file": frame_location.get("filename", "unavailable") if frame_available else "unavailable",
+            "line": frame_location.get("line", "unavailable") if frame_available else "unavailable",
+            "function": frame_location.get("function", "unavailable") if frame_available else "unavailable",
+            "status": "available" if frame_available else "unavailable",
+        },
+        "evaluation": evaluation,
+        "evaluation_available": bool(evaluation.get("available")),
+        "availability": {
+            "frame_available": frame_available,
+            "evaluation_available": bool(evaluation.get("available")),
+            "cursor_available": isinstance(cursor, dict) and bool(cursor),
+        },
+        "control": {
+            "returncode": returncode,
+            "responses": len(responses),
+            "protocol_errors": protocol_errors,
+            "stderr_available": bool(stderr.strip()),
+            "stderr_preview": "",
+        },
+        "limits": {
+            "max_frames": max_frames,
+            "repr_budget": repr_budget,
+        },
+        "limitations": EXPRESSION_LIMITATIONS,
+    }
+
+
 def _recording_metadata() -> dict[str, Any]:
     return {"python_version": "unavailable", "format": "unavailable"}
+
+
+def _evaluation_result(
+    expression: str,
+    response: dict[str, Any] | None,
+    result: dict[str, Any],
+    *,
+    repr_budget: int,
+) -> dict[str, Any]:
+    if response is not None and response.get("ok") is False:
+        error = response.get("error")
+        message = error.get("message") if isinstance(error, dict) else "evaluation failed"
+        return _unavailable_evaluation(expression, reason=str(message))
+    if not result:
+        return _unavailable_evaluation(expression, reason="evaluation unavailable")
+
+    raw_value = (
+        result.get("value_preview")
+        or result.get("result")
+        or result.get("value")
+        or result.get("repr")
+        or "unavailable"
+    )
+    value_preview, truncated = _truncate(str(raw_value), repr_budget)
+    value_type = result.get("type") or result.get("value_type") or result.get("result_type") or "unavailable"
+    available = raw_value != "unavailable"
+    return {
+        "available": available,
+        "expression": expression,
+        "value_preview": value_preview,
+        "type": str(value_type),
+        "truncated": bool(result.get("truncated")) or truncated,
+        "variables_reference": result.get("variablesReference") or result.get("variables_reference") or 0,
+        "reason": None if available else "evaluation unavailable",
+    }
+
+
+def _unavailable_evaluation(expression: str, *, reason: str) -> dict[str, Any]:
+    return {
+        "available": False,
+        "expression": expression,
+        "value_preview": "unavailable",
+        "type": "unavailable",
+        "truncated": False,
+        "variables_reference": 0,
+        "reason": reason,
+    }
+
+
+def _function_source_from_frame(frame: dict[str, Any], *, base_dir: Path | None = None, max_chars: int) -> dict[str, Any]:
+    filename = str(frame.get("filename") or frame.get("file") or "")
+    function_name = str(frame.get("function") or frame.get("name") or "")
+    line = _coerce_int(frame.get("line"))
+    if not filename or filename == "unavailable":
+        return _unavailable_function_code(reason="frame has no source path", max_chars=max_chars)
+    if line is None:
+        return _unavailable_function_code(reason="frame has no line number", max_chars=max_chars)
+
+    path = Path(filename)
+    if not path.is_absolute() and base_dir is not None:
+        path = base_dir / path
+    try:
+        text = path.read_text(encoding="utf-8")
+    except UnicodeDecodeError:
+        try:
+            text = path.read_text()
+        except OSError as exc:
+            return _unavailable_function_code(reason=f"could not read source: {exc}", max_chars=max_chars)
+    except OSError as exc:
+        return _unavailable_function_code(reason=f"could not read source: {exc}", max_chars=max_chars)
+
+    lines = text.splitlines()
+    try:
+        tree = ast.parse(text, filename=filename)
+    except SyntaxError as exc:
+        return _unavailable_function_code(reason=f"could not parse source: {exc}", max_chars=max_chars)
+
+    node = _containing_function(tree, line, function_name)
+    if node is None:
+        return _unavailable_function_code(reason="containing function not found", max_chars=max_chars)
+
+    start_line = min([node.lineno, *(decorator.lineno for decorator in getattr(node, "decorator_list", []))])
+    end_line = getattr(node, "end_lineno", None)
+    if end_line is None:
+        return _unavailable_function_code(reason="function end line unavailable", max_chars=max_chars)
+
+    source = "\n".join(lines[start_line - 1:end_line]) + "\n"
+    source, truncated = _truncate(source, max_chars)
+    return {
+        "available": True,
+        "file": filename,
+        "function": function_name or getattr(node, "name", "unavailable"),
+        "start_line": start_line,
+        "end_line": end_line,
+        "current_line": line,
+        "source": source,
+        "source_origin": "local_file",
+        "source_matches_recording": "unknown",
+        "truncated": truncated,
+        "reason": None,
+    }
+
+
+def _containing_function(tree: ast.AST, line: int, function_name: str) -> ast.AST | None:
+    candidates: list[ast.AST] = []
+    for node in ast.walk(tree):
+        if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            continue
+        end_line = getattr(node, "end_lineno", None)
+        if end_line is None:
+            continue
+        if node.lineno <= line <= end_line:
+            candidates.append(node)
+    if function_name:
+        named = [node for node in candidates if getattr(node, "name", None) == function_name]
+        if named:
+            candidates = named
+    if not candidates:
+        return None
+    return min(candidates, key=lambda node: getattr(node, "end_lineno", line) - getattr(node, "lineno", line))
+
+
+def _unavailable_function_code(*, reason: str, max_chars: int) -> dict[str, Any]:
+    return {
+        "available": False,
+        "file": "unavailable",
+        "function": "unavailable",
+        "start_line": None,
+        "end_line": None,
+        "current_line": None,
+        "source": "",
+        "source_origin": "unavailable",
+        "source_matches_recording": "unknown",
+        "truncated": False,
+        "reason": reason,
+        "max_chars": max_chars,
+    }
+
+
+def _coerce_int(value: Any) -> int | None:
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return value
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
 
 
 def _ok_result(response: dict[str, Any] | None) -> dict[str, Any]:
@@ -1353,6 +2019,16 @@ def _truncate(text: str, budget: int) -> tuple[str, bool]:
     if budget <= 3:
         return text[:budget], True
     return text[: budget - 3] + "...", True
+
+
+def _dict(value: Any) -> dict[str, Any]:
+    return value if isinstance(value, dict) else {}
+
+
+def _list_of_dicts(value: Any) -> list[dict[str, Any]]:
+    if not isinstance(value, list):
+        return []
+    return [item for item in value if isinstance(item, dict)]
 
 
 def _format_location(location: Any) -> str:

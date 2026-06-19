@@ -44,7 +44,7 @@ def clean_env(tmp_path: Path, extra: dict[str, str] | None = None) -> dict[str, 
     env["PYTHONPATH"] = os.pathsep.join([str(tmp_path), local_pythonpath()])
     for key in (
         "RETRACE_CONFIG",
-        "RETRACE_INODE",
+        "RETRACE_RECORDING_INODE",
         "RETRACE_RECORDING",
         "RETRACE_SKIP_CHECKSUMS",
         "PYTEST_DISABLE_PLUGIN_AUTOLOAD",

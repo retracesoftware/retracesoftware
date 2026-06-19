@@ -189,7 +189,7 @@ func StartControlProcess(target runnerTarget, stdout, stderr io.Writer) (*Contro
 
 	args := []string{"-m", "retracesoftware", "--recording", target.Recording, "--control_socket", socketPath}
 	log.Printf("python: %s  cwd: %s  socket: %s", target.PythonBin, target.CWD, socketPath)
-	cmd := buildCommand(target.PythonBin, args...)
+	cmd := buildTargetCommand(target, args...)
 	cmd.Dir = target.CWD
 	cmd.Stdin = nil
 	cmd.Stdout = stdout

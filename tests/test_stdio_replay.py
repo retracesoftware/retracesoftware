@@ -34,6 +34,20 @@ def record_raw(script_path, trace_path):
     return result
 
 
+def record_failing_raw(script_path, trace_path):
+    """Record a failing script and keep the trace for failure inspection."""
+    cmd = [
+        PYTHON, "-m", "retracesoftware",
+        "--recording", trace_path,
+        "--format", "unframed_binary",
+        "--", script_path,
+    ]
+    result = subprocess.run(cmd, capture_output=True, text=True, timeout=TIMEOUT)
+    assert result.returncode != 0, "Record unexpectedly passed"
+    assert os.path.isfile(trace_path), "Trace file not created"
+    return result
+
+
 def replay_stdio(trace_path, commands):
     """Replay an unframed trace with --stdio, sending JSON commands and collecting responses.
 
@@ -57,6 +71,138 @@ def replay_stdio(trace_path, commands):
             responses.append(json.loads(line))
 
     return responses, result
+
+
+@needs_monitoring
+def test_stop_at_failure_exposes_application_frame_state(tmpdir):
+    """stop_at_failure stops on the user exception and keeps the frame inspectable."""
+    script = os.path.join(tmpdir, "failure_target.py")
+    with open(script, "w", encoding="utf-8") as f:
+        f.write(
+            "\n".join([
+                "def main():",
+                "    total = 41",
+                "    expected = 42",
+                "    assert total == expected, f'expected {expected}, got {total}'",
+                "",
+                "if __name__ == '__main__':",
+                "    main()",
+                "",
+            ])
+        )
+    trace = os.path.join(tmpdir, "trace.retrace")
+
+    record_failing_raw(script, trace)
+
+    commands = [
+        {"id": "hello", "command": "hello"},
+        {"id": "stop", "command": "stop_at_failure"},
+        {"id": "stack", "command": "stack"},
+        {
+            "id": "locals",
+            "command": "locals",
+            "params": {"application_frame_index": 0},
+        },
+        {
+            "id": "eval",
+            "command": "eval",
+            "params": {"application_frame_index": 0, "expression": "total"},
+        },
+        {"id": "close", "command": "close"},
+    ]
+    responses, result = replay_stdio(trace, commands)
+
+    assert result.returncode != 0
+    assert responses[0]["ok"] is True
+
+    stop = responses[1]
+    assert stop["kind"] == "stop"
+    assert stop["payload"]["reason"] == "exception"
+    assert stop["payload"]["exception"]["type"] == "AssertionError"
+    assert stop["payload"]["location"]["filename"] == script
+    assert stop["payload"]["location"]["function"] == "main"
+
+    stack = responses[2]
+    assert stack["ok"] is True
+    assert stack["result"]["frames"][0]["filename"] == script
+    assert stack["result"]["frames"][0]["function"] == "main"
+
+    locals_response = responses[3]
+    assert locals_response["ok"] is True
+    local_values = {
+        variable["name"]: variable
+        for variable in locals_response["result"]["variables"]
+    }
+    assert local_values["total"]["value"] == "41"
+    assert local_values["expected"]["value"] == "42"
+
+    eval_response = responses[4]
+    assert eval_response["ok"] is True
+    assert eval_response["result"] == {
+        "available": True,
+        "expression": "total",
+        "result": "41",
+        "type": "int",
+        "truncated": False,
+    }
+
+    assert responses[5]["ok"] is True
+
+
+@needs_monitoring
+def test_search_failures_returns_candidates_for_agent_filtering(tmpdir):
+    """search_failures reports exception candidates with cursors for app-side filtering."""
+    script = os.path.join(tmpdir, "failure_search_target.py")
+    with open(script, "w", encoding="utf-8") as f:
+        f.write(
+            "\n".join([
+                "def main():",
+                "    try:",
+                "        raise ValueError('handled setup noise')",
+                "    except ValueError:",
+                "        pass",
+                "    total = 41",
+                "    expected = 42",
+                "    assert total == expected, f'expected {expected}, got {total}'",
+                "",
+                "if __name__ == '__main__':",
+                "    main()",
+                "",
+            ])
+        )
+    trace = os.path.join(tmpdir, "trace.retrace")
+
+    record_failing_raw(script, trace)
+
+    commands = [
+        {"id": "hello", "command": "hello"},
+        {"id": "failures", "command": "search_failures", "params": {"limit": 5000}},
+        {"id": "close", "command": "close"},
+    ]
+    responses, result = replay_stdio(trace, commands)
+
+    assert result.returncode != 0
+    assert responses[0]["ok"] is True
+
+    failures = responses[1]
+    assert failures["ok"] is True
+    candidates = failures["result"]["candidates"]
+    app_candidates = [
+        candidate
+        for candidate in candidates
+        if candidate["classification"] == "application"
+    ]
+    assert any(candidate["exception"]["type"] == "ValueError" for candidate in app_candidates)
+    assertion = next(
+        candidate
+        for candidate in app_candidates
+        if candidate["exception"]["type"] == "AssertionError"
+        and candidate["location"]["function"] == "main"
+    )
+    assert assertion["cursor"]["function_counts"]
+    assert assertion["cursor"]["f_lasti"] is not None
+    assert assertion["location"]["filename"] == script
+    assert failures["result"]["completed"] is True
 
 
 def test_hello_close(tmpdir):

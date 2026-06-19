@@ -77,12 +77,30 @@ replaying it locally.
 
 ## Future Work
 
-Retrace may develop MCP server and provenance API capabilities so AI tools can
-inspect replayed executions, stack state, crash state, and provenance
-information directly from trace files.
+Retrace includes early agent-facing commands and an MCP server for inspecting
+recordings. Useful entry points include:
 
-Do not describe future provenance or MCP capabilities as generally available
-unless they are implemented in this repository.
+- `retrace agent-context --recording <file>`
+- `retrace diagnose --recording <file>`
+- `retrace failures --recording <file>`
+- `retrace inspect --recording <file>`
+- `retrace function-code --recording <file> --frame 0`
+- `retrace eval --recording <file> --frame 0 --expression <expr>`
+- `retrace mcp --recording <file>`
+
+The MCP server exposes tools such as `retrace_agent_workflow`,
+`retrace_diagnose`, `retrace_inspect`, `retrace_frame`,
+`retrace_failures`, `retrace_function_code`, `retrace_eval`, `retrace_var`,
+`retrace_provenance`, and `retrace_external_calls`.
+
+Agents should call `retrace_agent_workflow` when they need the canonical
+debugging method. The recommended evidence order is diagnose, search raised
+failure candidates when the first stop may be noisy, inspect frame, read
+function code, evaluate suspicious expressions, inspect/provenance-check locals,
+then inspect external calls when boundary data may be involved.
+
+These tools provide evidence and next inspection steps. Do not describe them as
+a fully autonomous root-cause engine.
 
 ## Contributor Notes
 

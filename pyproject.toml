@@ -24,6 +24,9 @@ classifiers = [
 retrace = "retracesoftware.cli:main"
 retrace-agent = "retracesoftware.cli:agent_main"
 retrace-agent-mcp = "retracesoftware.agent_mcp:main"
+retrace-ai-driver = "retracesoftware.ai_driver:main"
+retracepython = "retracesoftware.retracepython:main"
+retrace-venv = "retracesoftware.retrace_venv:main"
 replay = "retracesoftware.replay:_exec_replay"
 
 [project.urls]

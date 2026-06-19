@@ -432,17 +432,17 @@ def test_flask_dev_server_many_requests_sigint_pidfile_replay_replays_all_reques
     strict=True,
     reason=(
         "Flask dev-server PidFile replay can consume shutdown SYNC while "
-        "a request thread expects CallMarkerMessage after pth auto-enable "
+        "a request thread expects CallMarkerMessage after Retrace venv "
         "recording with many external requests"
     ),
 )
-def test_flask_dev_server_many_requests_pth_autoenable_replay_keeps_thread_markers(
+def test_flask_dev_server_many_requests_retrace_venv_replay_keeps_thread_markers(
     tmp_path: Path,
 ):
     pytest.importorskip("flask")
     requests = pytest.importorskip("requests")
 
-    script = tmp_path / "flask_many_requests_pth_repro.py"
+    script = tmp_path / "flask_many_requests_retrace_venv_repro.py"
     script.write_text(
         textwrap.dedent(
             """
@@ -462,7 +462,7 @@ def test_flask_dev_server_many_requests_pth_autoenable_replay_keeps_thread_marke
 
 
             if __name__ == "__main__":
-                print("many-request pth flask server starting", flush=True)
+                print("many-request retrace-venv flask server starting", flush=True)
                 app.run(
                     host="127.0.0.1",
                     port=int(os.environ["PORT"]),
@@ -478,19 +478,29 @@ def test_flask_dev_server_many_requests_pth_autoenable_replay_keeps_thread_marke
     port = _free_port()
     recording_name = "trace.retrace"
     recording = tmp_path / recording_name
+    venv_dir = tmp_path / ".retrace-venv"
 
     install_env = os.environ.copy()
     install_env["MESONPY_EDITABLE_SKIP"] = _editable_skip()
     install_env["PYTHONPATH"] = _local_pythonpath()
     install = _run(
-        [sys.executable, "-m", "retracesoftware", "install"],
+        [
+            sys.executable,
+            "-m",
+            "retracesoftware",
+            "venv",
+            str(venv_dir),
+            "--without-pip",
+            "--system-site-packages",
+        ],
         cwd=tmp_path,
         env=install_env,
     )
     assert install.returncode == 0, _completed_process_error(
-        "install auto-enable",
+        "create retrace venv",
         install,
     )
+    retrace_python = venv_dir / "bin" / "python"
 
     record_env = install_env.copy()
     record_env["PORT"] = str(port)
@@ -502,7 +512,7 @@ def test_flask_dev_server_many_requests_pth_autoenable_replay_keeps_thread_marke
     server_log = tmp_path / "server.log"
     with server_log.open("w", encoding="utf-8") as output:
         record = subprocess.Popen(
-            [sys.executable, script.name],
+            [str(retrace_python), script.name],
             cwd=tmp_path,
             env=record_env,
             stdout=output,

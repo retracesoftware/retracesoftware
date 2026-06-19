@@ -7,30 +7,35 @@ Retrace environment variables are uppercase. Lowercase names such as
 
 | Variable | Used For | Description |
 |---|---|---|
-| `RETRACE_RECORDING` | record | Recording path used by the `.pth` auto-enable hook |
+| `RETRACE` | record | Enables the active-environment hook when truthy |
+| `RETRACE_RECORDING` | record | Recording path used by launchers and the active-environment hook |
 | `RETRACE_CONFIG` | record | Bundled config preset name or path to a config file |
+| `RETRACE_AUTO_DEBUG` | record/debug | Enables recording in the active-environment hook and runs `retrace-ai-driver` automatically if the command exits nonzero |
+| `RETRACE_AI_SERVER` | debug | Retrace AI service URL passed to `retrace-ai-driver`; defaults to `https://retrace-ai-service.retracesoftware.workers.dev` |
+| `RETRACE_API_KEY` | debug | Bearer token for the Retrace AI service; if unset, the driver requests a free client token |
 | `RETRACE_SKIP_CHECKSUMS` | replay | Debug escape hatch for checksum/version validation |
 
-For commands that use the auto-enable hook, a typical recording command is:
+For one-shot recording, prefer `retracepython`:
 
 ```
-RETRACE_RECORDING=recordings/example.retrace python app.py
+retracepython --recording recordings/example.retrace app.py
 ```
 
-## Auto-Enable Behavior
+## Active-Environment Hook Behavior
 
-`python -m retracesoftware install` installs a `.pth` file into the active
-Python environment. On fresh Python startup, that hook imports
-`retracesoftware.autoenable`.
+`python -m retracesoftware enable-hook` installs an env-gated `.pth` hook into
+the active Python environment. The hook does not import Retrace unless
+`RETRACE=1`, `RETRACE_AUTO_DEBUG=1`, `RETRACE_RECORDING`, or `RETRACE_CONFIG`
+is set.
 
-If `RETRACE_RECORDING` is set, the hook uses that value as the recording path,
-prepares the `.retrace` file, and re-executes Python as:
+When active, the hook prepares the `.retrace` file and re-executes Python as:
 
 ```
 python -m retracesoftware --recording <path> -- <original command>
 ```
 
-If `RETRACE_CONFIG` is set, the hook loads that config preset or config file.
+If only `RETRACE=1` is set, the hook loads the default `release` config. If
+`RETRACE_CONFIG` is set, the hook loads that config preset or config file.
 The bundled `release` and `debug` presets include:
 
 ```
@@ -46,8 +51,30 @@ RETRACE_CONFIG=debug python app.py
 If both are set, `RETRACE_RECORDING` overrides the recording path from the
 config.
 
-If neither `RETRACE_RECORDING` nor `RETRACE_CONFIG` is set, ordinary Python
-startup continues.
+If none of `RETRACE`, `RETRACE_AUTO_DEBUG`, `RETRACE_RECORDING`, or
+`RETRACE_CONFIG` is set, ordinary Python startup continues.
+
+## Auto-Debug On Failure
+
+Set `RETRACE_AUTO_DEBUG=1` or `RETRACE_AUTO_DEBUG=true` to supervise the
+recording command. In an enabled active-environment hook, this also records with
+the default config even when `RETRACE` is not set. If the command exits nonzero,
+Retrace preserves that exit code and runs `retrace-ai-driver` against the
+recording with `--tool-executor dap`.
+
+The driver starts the Retrace DAP server and drives it through the
+`retrace-ai-service`/provider configuration supplied to the driver. The launcher
+passes through driver-oriented variables such as `RETRACE_AI_DRIVER_COMMAND`,
+`RETRACE_AI_DRIVER`, `RETRACE_AI_SERVER`, `RETRACE_API_KEY`,
+`RETRACE_AI_MAX_TOOL_CALLS`, `RETRACE_AI_TIME_BUDGET`,
+`RETRACE_AI_MAX_OUTPUT_TOKENS`, and `RETRACE_REPLAY_BIN`.
+
+Unset `RETRACE_AUTO_DEBUG`, or set it to `0` or `false`, to keep the normal
+exec-based launcher behavior.
+
+When `RETRACE_AUTO_DEBUG` records with the default recording path and the command
+exits successfully, Retrace deletes the trace file. If you pass `--recording` or
+set `RETRACE_RECORDING`, Retrace keeps that explicit trace even on success.
 
 ## Recording And Config Overrides
 
@@ -98,6 +125,8 @@ editable installs, and local packaging tests.
 
 | Variable | Description |
 |---|---|
-| `RETRACE_INODE` | Internal auto-enable guard that prevents recursive re-exec of the same Python process |
+| `RETRACE_RECORDING_INODE` | Internal guard that prevents launchers from re-preparing the same recording file |
+| `RETRACE_NO_VENV_BOOTSTRAP` | Internal guard used to keep `retracepython` one-shot even when an active-environment hook is installed |
+| `RETRACE_AUTO_DEBUG_SUPERVISED` | Internal guard that prevents child Python processes from launching nested auto-debug supervisors |
 
 Do not set internal guard variables manually in normal workflows.

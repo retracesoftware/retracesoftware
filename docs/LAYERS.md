@@ -86,9 +86,9 @@ This layer is where external library coverage becomes live Python behavior.
 
 The package root owns orchestration:
 
-- `__main__.py` for CLI record/replay/install/uninstall
-- `autoenable.py` and `retracesoftware_autoenable.pth` for `.pth` startup
-  activation
+- `__main__.py` for CLI record/replay and launcher utility subcommands
+- `retracepython.py`, `retrace_venv.py`, and `retrace_venv_bootstrap.py` for
+  explicit launcher and env-gated venv startup
 - `tape.py` for recording preambles, checksums, shebangs, and tape open helpers
 - `run.py` for running recorded Python scripts/modules
 - `threadid/` for stable top-level thread-id helpers
@@ -121,7 +121,7 @@ recorded process tree, and launches the Go replay binary as the debug adapter.
 | Lower layers stay reusable | `functional`, `utils`, and `stream` do not know about user workflows. |
 | Proxy owns boundary semantics | `proxy` decides record/replay behavior through abstract reader/writer protocols. |
 | Install wires policy to Python | `install` applies module configs and runtime patches. |
-| CLI is orchestration | `__main__.py`, `autoenable.py`, and `tape.py` assemble the workflow. |
+| CLI is orchestration | `__main__.py`, `retracepython.py`, `retrace_venv.py`, and `tape.py` assemble the workflow. |
 | Go owns recording tooling | extraction, indexing, workspace generation, and VS Code DAP launch live in `go/`. |
 | Editor UI stays outside replay data | VS Code and DAP control traffic must not be recorded as application I/O. |
 

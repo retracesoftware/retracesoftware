@@ -48,7 +48,7 @@ def _clean_env() -> dict[str, str]:
     for key in (
         "RETRACE_CONFIG",
         "RETRACE_RECORDING",
-        "RETRACE_INODE",
+        "RETRACE_RECORDING_INODE",
         "RETRACE_REPLAY_BIN",
         "RETRACE_SKIP_CHECKSUMS",
     ):

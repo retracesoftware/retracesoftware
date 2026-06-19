@@ -4,8 +4,8 @@ This test intentionally sits at the outer edge of the project:
 
 1. build a wheel from the checkout;
 2. install it into a fresh virtualenv;
-3. install the auto-enable .pth in that virtualenv;
-4. record a script by running plain Python with RETRACE_RECORDING set;
+3. make that virtualenv Retrace-aware;
+4. record a script by running its Python with RETRACE_RECORDING set;
 5. open the generated workspace in VS Code and drive a real ``retrace`` debug
    session through VS Code's debug API.
 
@@ -396,7 +396,17 @@ def test_fresh_install_record_and_vscode_debug_smoke(tmp_path: Path):
         timeout=120,
     )
 
-    run([runtime_python, "-m", "retracesoftware", "install"], timeout=30)
+    run(
+        [
+            runtime_python,
+            "-m",
+            "retracesoftware",
+            "venv",
+            str(venv_dir),
+            "--without-pip",
+        ],
+        timeout=30,
+    )
 
     workspace_dir = tmp_path / "workspace"
     workspace_dir.mkdir()

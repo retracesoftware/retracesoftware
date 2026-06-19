@@ -117,7 +117,7 @@ def record_and_replay_pth_pidfile(
     timeout=TIMEOUT,
     record_extra_env=None,
 ):
-    """Record a temp script through the public .pth flow and replay its root PidFile."""
+    """Record a temp script through a Retrace venv and replay its root PidFile."""
     script = Path(tmp_path) / script_name
     script.write_text(textwrap.dedent(script_source), encoding="utf-8")
 
@@ -131,16 +131,25 @@ def record_and_replay_pth_pidfile(
     install_env.pop("RETRACE_CONFIG", None)
     install_env.pop("RETRACE_SKIP_CHECKSUMS", None)
 
+    venv_dir = Path(tmp_path) / ".retrace-venv"
     install = _run_for_pidfile(
-        [PYTHON, "-m", "retracesoftware", "install"],
+        [
+            PYTHON,
+            "-m",
+            "retracesoftware",
+            "venv",
+            str(venv_dir),
+            "--without-pip",
+        ],
         cwd=Path(tmp_path),
         env=install_env,
         timeout=timeout,
     )
     assert install.returncode == 0, _completed_process_error(
-        "install auto-enable",
+        "create retrace venv",
         install,
     )
+    retrace_python = venv_dir / "bin" / "python"
 
     record_env = install_env.copy()
     record_env["PYTHONFAULTHANDLER"] = "1"
@@ -150,7 +159,7 @@ def record_and_replay_pth_pidfile(
         record_env.update(record_extra_env)
 
     record = _run_for_pidfile(
-        [PYTHON, script.name],
+        [str(retrace_python), script.name],
         cwd=Path(tmp_path),
         env=record_env,
         timeout=timeout,

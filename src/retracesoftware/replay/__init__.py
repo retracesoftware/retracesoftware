@@ -35,6 +35,35 @@ def _find_go_source(repo_root: str) -> str | None:
     return None
 
 
+def _go_source_newer_than(binary: str, go_dir: str) -> bool:
+    try:
+        binary_mtime = os.path.getmtime(binary)
+    except OSError:
+        return True
+
+    for root, dirs, files in os.walk(go_dir):
+        dirs[:] = [
+            d for d in dirs
+            if d not in {'.git', 'tmp', 'vendor'} and not d.startswith('.')
+        ]
+        for filename in files:
+            if not filename.endswith('.go'):
+                continue
+            try:
+                if os.path.getmtime(os.path.join(root, filename)) > binary_mtime:
+                    return True
+            except OSError:
+                continue
+    return False
+
+
+def _build_go_binary(go_dir: str) -> None:
+    import subprocess
+
+    print(f"replay: building Go binary -> {_BINARY}", file=sys.stderr)
+    subprocess.check_call(['go', 'build', '-o', _BINARY, './cmd/replay'], cwd=go_dir)
+
+
 def binary_path() -> str:
     """Return the absolute path to the Go replay binary, building it if needed.
 
@@ -50,19 +79,21 @@ def binary_path() -> str:
     if env_bin and os.path.isfile(env_bin) and os.access(env_bin, os.X_OK):
         return env_bin
 
+    repo_root = _find_repo_root(_PKG_DIR)
+    go_dir = _find_go_source(repo_root) if repo_root is not None else None
+
     if os.path.isfile(_BINARY) and os.access(_BINARY, os.X_OK):
+        if go_dir is not None and _go_source_newer_than(_BINARY, go_dir):
+            _build_go_binary(go_dir)
         return _BINARY
 
-    # Binary missing — try to build from source into the package dir
-    repo_root = _find_repo_root(_PKG_DIR)
-    if repo_root is None:
-        raise FileNotFoundError(
-            f"Go replay binary not found at {_BINARY} and cannot locate "
-            f"repo root from {_PKG_DIR}; set RETRACE_REPLAY_BIN"
-        )
-
-    go_dir = _find_go_source(repo_root)
+    # Binary missing — try to build from source into the package dir.
     if go_dir is None:
+        if repo_root is None:
+            raise FileNotFoundError(
+                f"Go replay binary not found at {_BINARY} and cannot locate "
+                f"repo root from {_PKG_DIR}; set RETRACE_REPLAY_BIN"
+            )
         raise FileNotFoundError(
             f"Go replay binary not found at {_BINARY} and cannot find "
             f"Go source (checked {repo_root}/go and "
@@ -70,9 +101,7 @@ def binary_path() -> str:
             "set RETRACE_REPLAY_SRC or RETRACE_REPLAY_BIN"
         )
 
-    import subprocess
-    print(f"replay: building Go binary → {_BINARY}", file=sys.stderr)
-    subprocess.check_call(['go', 'build', '-o', _BINARY, './cmd/replay'], cwd=go_dir)
+    _build_go_binary(go_dir)
     return _BINARY
 
 

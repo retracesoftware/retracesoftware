@@ -74,10 +74,26 @@ func (rc RawCursor) ToMap() map[string]any {
 
 // ControlStopResult holds the raw protocol data from a stop message.
 type ControlStopResult struct {
-	Reason        string                `json:"reason"`
-	MessageIndex  uint64                `json:"message_index"`
-	Cursor        RawCursor             `json:"cursor"`
+	Reason        string    `json:"reason"`
+	MessageIndex  uint64    `json:"message_index"`
+	Cursor        RawCursor `json:"cursor"`
 	ThreadCursors map[uint64]RawCursor
+	Exception     *ExceptionInfo `json:"exception,omitempty"`
+	Location      *StopLocation  `json:"location,omitempty"`
+	AppConfidence string         `json:"application_frame_confidence,omitempty"`
+}
+
+type ExceptionInfo struct {
+	Type          string `json:"type,omitempty"`
+	Message       string `json:"message,omitempty"`
+	AssertionText string `json:"assertion_text,omitempty"`
+	ControlFlow   bool   `json:"control_flow,omitempty"`
+}
+
+type StopLocation struct {
+	Filename string `json:"filename,omitempty"`
+	Line     int    `json:"line,omitempty"`
+	Function string `json:"function,omitempty"`
 }
 
 func parseRawCursor(v any) RawCursor {
@@ -128,5 +144,49 @@ func parseStopResult(result map[string]any) ControlStopResult {
 			out.ThreadCursors[tid] = parseRawCursor(v)
 		}
 	}
+	out.Exception = parseExceptionInfo(result["exception"])
+	out.Location = parseStopLocation(result["location"])
+	if v, ok := result["application_frame_confidence"].(string); ok {
+		out.AppConfidence = v
+	}
 	return out
+}
+
+func parseExceptionInfo(v any) *ExceptionInfo {
+	m, ok := v.(map[string]any)
+	if !ok {
+		return nil
+	}
+	info := &ExceptionInfo{}
+	if value, ok := m["type"].(string); ok {
+		info.Type = value
+	}
+	if value, ok := m["message"].(string); ok {
+		info.Message = value
+	}
+	if value, ok := m["assertion_text"].(string); ok {
+		info.AssertionText = value
+	}
+	if value, ok := m["control_flow"].(bool); ok {
+		info.ControlFlow = value
+	}
+	return info
+}
+
+func parseStopLocation(v any) *StopLocation {
+	m, ok := v.(map[string]any)
+	if !ok {
+		return nil
+	}
+	loc := &StopLocation{}
+	if value, ok := m["filename"].(string); ok {
+		loc.Filename = value
+	}
+	if value, ok := m["line"].(float64); ok {
+		loc.Line = int(value)
+	}
+	if value, ok := m["function"].(string); ok {
+		loc.Function = value
+	}
+	return loc
 }

@@ -351,53 +351,59 @@ def replay(args):
             if controller:
                 controller.on_replay_finished()
 
-def pth_source():
-    return Path(__file__).parent / 'retracesoftware_autoenable.pth'
-
-def pth_target():
-    import sysconfig
-    return Path(sysconfig.get_paths()["purelib"]) / 'retracesoftware_autoenable.pth'
-
-def cmd_install(args):
-    """Install the .pth file so retrace auto-activates via RETRACE=1."""
-    import shutil
-    import stat
-    source = pth_source()
-    target = pth_target()
-    shutil.copy(source, target)
-    if hasattr(os, "chflags") and hasattr(stat, "UF_HIDDEN"):
-        try:
-            flags = os.stat(target).st_flags
-            if flags & stat.UF_HIDDEN:
-                os.chflags(target, flags & ~stat.UF_HIDDEN)
-        except OSError:
-            pass
-    print(f'Retrace auto-enable installed: {target}')
-
 def cmd_uninstall(args):
-    """Remove the .pth file to disable auto-activation."""
-    target = pth_target()
-    if target.exists():
-        target.unlink()
-        print(f'Retrace auto-enable removed: {target}')
+    """Remove the legacy .pth file if it exists."""
+    from retracesoftware.retrace_venv import legacy_autoenable_pth_target, remove_legacy_autoenable
+
+    target = legacy_autoenable_pth_target()
+    if remove_legacy_autoenable(target):
+        print(f'Retrace legacy auto-enable hook removed: {target}')
     else:
         print(f'Nothing to remove: {target} does not exist')
 
 def main():
-    # Check for "install" or "uninstall" subcommands first
-    if len(sys.argv) >= 2 and sys.argv[1] in ('install', 'uninstall'):
+    # Check utility subcommands first.
+    if len(sys.argv) >= 2 and sys.argv[1] in ('venv', 'enable-hook', 'disable-hook', 'uninstall'):
+        if sys.argv[1] == 'venv':
+            from retracesoftware.retrace_venv import main as venv_main
+            raise SystemExit(venv_main(sys.argv[2:]))
+        if sys.argv[1] == 'enable-hook':
+            parser = argparse.ArgumentParser(
+                prog="python -m retracesoftware enable-hook",
+                description="Install an env-gated Retrace hook into the active Python environment.",
+            )
+            parser.parse_args(sys.argv[2:])
+            from retracesoftware.retrace_venv import enable_current_hook
+            target, paths_target = enable_current_hook()
+            print(f'Retrace env hook installed: {target}')
+            print(f'Retrace import path link installed: {paths_target}')
+            print('Activate it with RETRACE=1, RETRACE_RECORDING, or RETRACE_CONFIG.')
+            return
+        if sys.argv[1] == 'disable-hook':
+            parser = argparse.ArgumentParser(
+                prog="python -m retracesoftware disable-hook",
+                description="Remove the env-gated Retrace hook from the active Python environment.",
+            )
+            parser.parse_args(sys.argv[2:])
+            from retracesoftware.retrace_venv import current_hook_pth_target, disable_current_hook
+            target = current_hook_pth_target()
+            removed = disable_current_hook(target)
+            if removed:
+                for removed_target in removed:
+                    print(f'Retrace env hook file removed: {removed_target}')
+            else:
+                print(f'Nothing to remove: {target} does not exist')
+            return
+
         parser = argparse.ArgumentParser(
             prog="python -m retracesoftware",
             description="Retrace record/replay system"
         )
         sub = parser.add_subparsers(dest='command')
-        sub.add_parser('install', help='Install .pth file for RETRACE=1 auto-activation')
-        sub.add_parser('uninstall', help='Remove .pth file to disable auto-activation')
+        sub.add_parser('uninstall', help='Remove legacy .pth auto-enable hook')
         
         args = parser.parse_args()
-        if args.command == 'install':
-            cmd_install(args)
-        elif args.command == 'uninstall':
+        if args.command == 'uninstall':
             cmd_uninstall(args)
         return
 

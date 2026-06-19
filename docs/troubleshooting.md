@@ -33,15 +33,16 @@ Confirm Retrace is installed in the active environment:
 python -m pip show retracesoftware
 ```
 
-If you are using the auto-enable workflow, confirm the hook is installed:
+For one-shot recording, use `retracepython`:
 
 ```
-python -m retracesoftware install
+retracepython --recording recordings/test.retrace your_script.py
 ```
 
-Then record with uppercase `RETRACE_RECORDING`:
+If you are using the active-environment hook, confirm it is installed:
 
 ```
+python -m retracesoftware enable-hook
 RETRACE_RECORDING=recordings/test.retrace python your_script.py
 ```
 

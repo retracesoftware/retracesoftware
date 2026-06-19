@@ -1,13 +1,13 @@
-"""Regression: appnope + pth auto-enable replay bootstrap diverges.
+"""Regression: appnope + Retrace venv replay bootstrap diverges.
 
 The public recording flow is:
 
-    python -m retracesoftware install
-    RETRACE_RECORDING=trace.retrace python app.py
+    python -m retracesoftware venv .venv
+    RETRACE_RECORDING=trace.retrace .venv/bin/python app.py
 
 On macOS, an app that imports ``appnope`` and starts a
-``multiprocessing.Process`` must record and replay through that pth path without
-auto-enabling retrace inside multiprocessing helper bootstrap processes or
+``multiprocessing.Process`` must record and replay through that venv path without
+enabling retrace inside multiprocessing helper bootstrap processes or
 desynchronizing debug checkpoints around the spawn pipe writes.
 
 The same app body passes through the direct wrapper flow:
@@ -52,11 +52,11 @@ def _run(
     sys.platform != "darwin",
     reason="appnope is a macOS app-nap integration library",
 )
-def test_appnope_pth_autoenable_pidfile_replay_patches_loaded_io_open():
+def test_appnope_retrace_venv_pidfile_replay_patches_loaded_io_open():
     pytest.importorskip("appnope")
 
-    workdir = Path(tempfile.mkdtemp(prefix="retrace-appnope-pth-", dir="/tmp"))
-    script = workdir / "appnope_pth_autoenable_repro.py"
+    workdir = Path(tempfile.mkdtemp(prefix="retrace-appnope-venv-", dir="/tmp"))
+    script = workdir / "appnope_retrace_venv_repro.py"
     script.write_text(
         textwrap.dedent(
             """
@@ -71,7 +71,7 @@ def test_appnope_pth_autoenable_pidfile_replay_patches_loaded_io_open():
 
 
             if __name__ == "__main__":
-                print("=== appnope_pth_autoenable ===", flush=True)
+                print("=== appnope_retrace_venv ===", flush=True)
                 if sys.platform == "darwin":
                     appnope.nope()
                     print("disabled app nap", flush=True)
@@ -92,14 +92,16 @@ def test_appnope_pth_autoenable_pidfile_replay_patches_loaded_io_open():
     recording_name = "trace.retrace"
 
     python = shlex.quote(sys.executable)
+    venv_dir = ".retrace-venv"
+    retrace_python = shlex.quote(f"{venv_dir}/bin/python")
     command = textwrap.dedent(
         f"""
         set -e
         cd {shlex.quote(str(workdir))}
-        {python} -m retracesoftware install
+        {python} -m retracesoftware venv {venv_dir} --without-pip --system-site-packages
         rm -f {recording_name}
         rm -rf trace.d
-        RETRACE_RECORDING={recording_name} RETRACE_CONFIG=debug {python} {shlex.quote(script.name)} > record.log 2>&1
+        RETRACE_RECORDING={recording_name} RETRACE_CONFIG=debug {retrace_python} {shlex.quote(script.name)} > record.log 2>&1
         ./{recording_name} --extract > extract.log 2>&1
         ROOT_PID=$({python} -m retracesoftware --recording {recording_name} --list_pids | head -1)
         ./trace.d/${{ROOT_PID}}.bin > replay.log 2>&1
@@ -122,6 +124,6 @@ def test_appnope_pth_autoenable_pidfile_replay_patches_loaded_io_open():
     )
     assert "failed to patch _io.open" not in combined
     assert "Could not read: 1 bytes from tracefile" not in combined
-    assert "=== appnope_pth_autoenable ===" in combined
+    assert "=== appnope_retrace_venv ===" in combined
     assert "process started" in combined
     assert "terminated" in combined

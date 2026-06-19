@@ -198,31 +198,76 @@ Install the package:
 
     python -m pip install retracesoftware
 
-Enable the auto-recording hook in the active virtual environment:
+Installing Retrace does not automatically record Python processes. Choose the
+launcher mode that matches the workflow.
 
-    python -m retracesoftware install
+### One-Shot Recording
 
-That installs a `.pth` file into the environment. Fresh Python processes in that environment import Retrace at startup, but they only record when you set a Retrace environment variable.
+Use `retracepython` when you want to record one command:
 
-Record an ordinary Python file:
-
-    RETRACE_RECORDING=recordings/run.retrace python my_script.py
+    retracepython --recording recordings/run.retrace my_script.py
 
 Record a pytest run:
 
-    PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 python -m retracesoftware --recording recordings/tests.retrace -- -m pytest tests/ -q --tb=short
+    PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 retracepython --recording recordings/tests.retrace -m pytest tests/ -q --tb=short
 
 Record a module-based CLI:
 
-    RETRACE_RECORDING=recordings/cli.retrace python -m your_package.cli --input examples/input.json
+    retracepython --recording recordings/cli.retrace -m your_package.cli --input examples/input.json
 
 Record a one-off command:
 
-    RETRACE_RECORDING=recordings/debug.retrace python -c "import random; print(random.random())"
+    retracepython --recording recordings/debug.retrace -c "import random; print(random.random())"
+
+`retracepython` is intentionally one-shot. If the recorded program explicitly
+runs ordinary `python`, that child process is not automatically recorded.
+
+To automatically run the AI debugger when the recorded command fails, set
+`RETRACE_AUTO_DEBUG=1`:
+
+    RETRACE_AUTO_DEBUG=1 retracepython my_script.py
+
+On failure, Retrace runs `retrace-ai-driver` with the DAP tool executor against
+the recording. The driver starts the Retrace DAP server and drives it through
+the `retrace-ai-service`/provider configuration supplied to the driver.
+Configure that driver with environment variables such as
+`RETRACE_AI_SERVER`, `RETRACE_API_KEY`, and `RETRACE_REPLAY_BIN`.
+`RETRACE_AI_SERVER` defaults to
+`https://retrace-ai-service.retracesoftware.workers.dev`.
+`RETRACE_AI_DRIVER_COMMAND` can override the packaged driver command for
+development.
+
+When auto-debug uses the default recording path, successful runs delete the
+temporary trace. If you pass `--recording` or set `RETRACE_RECORDING`, Retrace
+keeps that explicit trace even when the command succeeds.
+
+### Retrace-Aware Virtual Environment
+
+Use a Retrace venv when ordinary `python` commands in that environment should
+record, including `sys.executable` child processes:
+
+    python -m retracesoftware venv .retrace-venv
+    .retrace-venv/bin/python my_script.py
+
+`pip`, `ensurepip`, `venv`, and Retrace's own commands bypass recording inside
+the generated venv.
+
+### Active-Environment Hook
+
+If you already have a configured Python environment, install an env-gated hook
+into that environment:
+
+    python -m retracesoftware enable-hook
+    RETRACE=1 python my_script.py
+
+The hook is inert unless `RETRACE=1`, `RETRACE_AUTO_DEBUG=1`,
+`RETRACE_RECORDING`, or `RETRACE_CONFIG` is set. Remove it with:
+
+    python -m retracesoftware disable-hook
 
 Retrace creates the parent directory if needed and writes an executable `.retrace` file. The recording stores the command, working directory, environment, Python version, Retrace checksums, and recorded boundary calls.
 
-You can also record without the `.pth` hook:
+You can also record through the underlying CLI:
 
     python -m retracesoftware --recording recordings/run.retrace -- my_script.py
 
@@ -317,7 +362,7 @@ Run Go tests:
 
 - `quickstart/` first-run demo and public quickstart flow
 - `src/retracesoftware/__main__.py` CLI record/replay entrypoint
-- `src/retracesoftware/autoenable.py` `.pth` startup hook implementation
+- `src/retracesoftware/retracepython.py` and `retrace_venv.py` launcher implementations
 - `src/retracesoftware/tape.py` recording file setup, checksums, and tape I/O
 - `src/retracesoftware/install/` runtime patching and import hooks
 - `src/retracesoftware/proxy/` record/replay boundary semantics

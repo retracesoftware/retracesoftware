@@ -43,22 +43,26 @@ type Proxy struct {
 	pidFile      string
 	recordingDir string // directory containing the recording/extracted pidfiles
 	processCWD   string // cwd recorded in the process preamble
+	root         *Replay
 	debugger     Debugger
 	provider     SnapshotProvider
 	clientR      *bufio.Reader
 	clientW      *Writer
 	launchErr    error
 
-	breakpointIDs       map[string]int // "file:line[:cond]" -> debugger breakpoint ID
-	breakpointSpecs     map[string]BreakpointSpec
-	currentMessageIndex uint64
-	currentCursor       *Cursor // current position, nil until first navigation
-	currentHit          BreakpointHit
-	hasCurrentHit       bool
-	navHistory          []*Cursor
-	navigatedFromHit    bool // true after step/nav, false after continue lands on a hit
-	navTimeout          time.Duration
-	seq                 atomic.Int64
+	breakpointIDs        map[string]int // "file:line[:cond]" -> debugger breakpoint ID
+	breakpointSpecs      map[string]BreakpointSpec
+	exceptionFilters     map[string]bool
+	currentException     *ExceptionInfo
+	currentExceptionMode string
+	currentMessageIndex  uint64
+	currentCursor        *Cursor // current position, nil until first navigation
+	currentHit           BreakpointHit
+	hasCurrentHit        bool
+	navHistory           []*Cursor
+	navigatedFromHit     bool // true after step/nav, false after continue lands on a hit
+	navTimeout           time.Duration
+	seq                  atomic.Int64
 }
 
 func NewProxy(pidFile string, clientIn io.Reader, clientW *Writer) *Proxy {
@@ -73,14 +77,15 @@ func NewProxy(pidFile string, clientIn io.Reader, clientW *Writer) *Proxy {
 		}
 	}
 	return &Proxy{
-		pidFile:         pidFile,
-		recordingDir:    recDir,
-		processCWD:      processCWD,
-		clientR:         bufio.NewReader(clientIn),
-		clientW:         clientW,
-		breakpointIDs:   make(map[string]int),
-		breakpointSpecs: make(map[string]BreakpointSpec),
-		navTimeout:      defaultNavigationTimeout,
+		pidFile:          pidFile,
+		recordingDir:     recDir,
+		processCWD:       processCWD,
+		clientR:          bufio.NewReader(clientIn),
+		clientW:          clientW,
+		breakpointIDs:    make(map[string]int),
+		breakpointSpecs:  make(map[string]BreakpointSpec),
+		exceptionFilters: make(map[string]bool),
+		navTimeout:       defaultNavigationTimeout,
 	}
 }
 
@@ -145,9 +150,14 @@ func (p *Proxy) handleInitialize(env envelope) error {
 	caps := json.RawMessage(`{
 		"supportsConfigurationDoneRequest": true,
 		"supportsConditionalBreakpoints": true,
+		"supportsExceptionInfoRequest": true,
 		"supportsStepBack": true,
 		"supportsStepInTargetsRequest": false,
-		"supportsSteppingGranularity": true
+		"supportsSteppingGranularity": true,
+		"exceptionBreakpointFilters": [
+			{"filter": "raised", "label": "Raised Exceptions", "default": true},
+			{"filter": "uncaught", "label": "Uncaught Exceptions"}
+		]
 	}`)
 
 	resp := p.successResponse(env.Seq, "initialize", caps)
@@ -173,6 +183,7 @@ func (p *Proxy) handleLaunch(env envelope) error {
 		if err != nil {
 			return p.clientW.Write(p.errorResponse(env.Seq, "launch", err.Error()))
 		}
+		p.root = root
 		engine := NewQueryEngine(root, p.pidFile, dapLog)
 		p.debugger = NewDebugger(engine)
 		p.provider = engine.Provider()
@@ -219,6 +230,14 @@ func (p *Proxy) handlePostLaunch() error {
 			if err := p.clientW.Write(p.successResponse(env.Seq, env.Command, body)); err != nil {
 				return err
 			}
+		case "setExceptionBreakpoints":
+			body, err := p.handleSetExceptionBreakpoints(env.Arguments)
+			if err != nil {
+				return p.clientW.Write(p.errorResponse(env.Seq, env.Command, err.Error()))
+			}
+			if err := p.clientW.Write(p.successResponse(env.Seq, env.Command, body)); err != nil {
+				return err
+			}
 		case "threads":
 			body := json.RawMessage(`{"threads":[{"id":1,"name":"MainThread"}]}`)
 			if err := p.clientW.Write(p.successResponse(env.Seq, env.Command, body)); err != nil {
@@ -248,6 +267,11 @@ func (p *Proxy) handlePostLaunch() error {
 			}
 		case "evaluate":
 			body := json.RawMessage(`{"result":"<evaluation unavailable>","variablesReference":0}`)
+			if err := p.clientW.Write(p.successResponse(env.Seq, env.Command, body)); err != nil {
+				return err
+			}
+		case "exceptionInfo":
+			body := p.handleExceptionInfo()
 			if err := p.clientW.Write(p.successResponse(env.Seq, env.Command, body)); err != nil {
 				return err
 			}
@@ -363,6 +387,29 @@ func (p *Proxy) handleSetBreakpoints(argsRaw json.RawMessage) (json.RawMessage, 
 	return body, err
 }
 
+func (p *Proxy) handleSetExceptionBreakpoints(argsRaw json.RawMessage) (json.RawMessage, error) {
+	var args struct {
+		Filters []string `json:"filters"`
+	}
+	if len(argsRaw) > 0 {
+		if err := json.Unmarshal(argsRaw, &args); err != nil {
+			return nil, fmt.Errorf("parse setExceptionBreakpoints args: %w", err)
+		}
+	}
+	p.exceptionFilters = make(map[string]bool, len(args.Filters))
+	for _, filter := range args.Filters {
+		switch filter {
+		case "raised", "uncaught":
+			p.exceptionFilters[filter] = true
+		}
+	}
+	return json.RawMessage(`{"breakpoints":[]}`), nil
+}
+
+func (p *Proxy) exceptionsEnabled() bool {
+	return p.exceptionFilters["raised"] || p.exceptionFilters["uncaught"]
+}
+
 func sourceLineCanBreak(path string, line int) bool {
 	if path == "" || line <= 0 {
 		return false
@@ -428,6 +475,9 @@ func (p *Proxy) handleContinue(ctx context.Context, reverse bool) error {
 	hitsLen := p.debugger.Hits().Len()
 	log.Printf("handleContinue: cursor=%v reverse=%v currentMsgIdx=%d hitsLen=%d",
 		p.currentCursor != nil, reverse, p.currentMessageIndex, hitsLen)
+	if !reverse && p.exceptionsEnabled() && hitsLen == 0 {
+		return p.handleContinueToException(ctx)
+	}
 	if p.currentCursor == nil {
 		hit, ok = p.debugger.Hits().FirstFrom(0)
 	} else if reverse {
@@ -449,6 +499,8 @@ func (p *Proxy) handleContinue(ctx context.Context, reverse bool) error {
 	p.currentMessageIndex = hit.Location.MessageIndex
 	p.currentHit = hit
 	p.hasCurrentHit = true
+	p.currentException = nil
+	p.currentExceptionMode = ""
 	p.navigatedFromHit = false
 	p.navHistory = nil
 	p.currentCursor = NewCursor(hit.Location, p.provider, nil)
@@ -478,6 +530,46 @@ func (p *Proxy) handleContinue(ctx context.Context, reverse bool) error {
 		"threadId":          1,
 		"allThreadsStopped": true,
 	}))
+}
+
+func (p *Proxy) handleContinueToException(ctx context.Context) error {
+	if p.root == nil {
+		return fmt.Errorf("no active replay root")
+	}
+
+	result, err := p.root.StopAtFailure(ctx)
+	if err != nil {
+		return err
+	}
+	if result.Reason != "exception" {
+		return p.clientW.Write(p.makeEvent("terminated", map[string]any{}))
+	}
+
+	loc := locationFromStopResult(result)
+	p.currentMessageIndex = loc.MessageIndex
+	p.currentCursor = NewCursor(loc, p.provider, p.root)
+	p.currentException = result.Exception
+	p.currentExceptionMode = "always"
+	if p.exceptionFilters["uncaught"] && !p.exceptionFilters["raised"] {
+		// The current replay runtime stops at raised application exceptions.
+		// Keep the requested mode for DAP exceptionInfo while using the same
+		// capture mechanism.
+		p.currentExceptionMode = "unhandled"
+	}
+	p.hasCurrentHit = false
+	p.navigatedFromHit = false
+	p.navHistory = nil
+
+	body := map[string]any{
+		"reason":            "exception",
+		"threadId":          1,
+		"allThreadsStopped": true,
+	}
+	if p.currentException != nil {
+		body["text"] = p.currentException.Type
+		body["description"] = p.currentException.Message
+	}
+	return p.clientW.Write(p.makeEvent("stopped", body))
 }
 
 func (p *Proxy) handleCursorNav(ctx context.Context, reason string, nav func() (*Cursor, error), recordHistory bool) (retErr error) {
@@ -578,6 +670,36 @@ func (p *Proxy) handleSource(args json.RawMessage) json.RawMessage {
 		return body
 	}
 	body, _ := json.Marshal(map[string]any{"content": string(data), "mimeType": "text/x-python"})
+	return body
+}
+
+func (p *Proxy) handleExceptionInfo() json.RawMessage {
+	if p.currentException == nil {
+		body, _ := json.Marshal(map[string]any{
+			"exceptionId": "<none>",
+			"description": "No exception is associated with the current stop.",
+			"breakMode":   "never",
+		})
+		return body
+	}
+
+	exceptionID := p.currentException.Type
+	if exceptionID == "" {
+		exceptionID = "<unknown>"
+	}
+	breakMode := p.currentExceptionMode
+	if breakMode == "" {
+		breakMode = "always"
+	}
+	body, _ := json.Marshal(map[string]any{
+		"exceptionId": exceptionID,
+		"description": p.currentException.Message,
+		"breakMode":   breakMode,
+		"details": map[string]any{
+			"typeName": p.currentException.Type,
+			"message":  p.currentException.Message,
+		},
+	})
 	return body
 }
 

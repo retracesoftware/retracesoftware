@@ -51,9 +51,9 @@ Many bugs that look like proxy or replay bugs are actually install-layer bugs.
 - `InstallSession` is part of the runtime contract, not just test scaffolding.
   If callback identity, wrapped descriptors, or callback normalization change,
   record/replay and pytest paths must stay aligned.
-- Auto-enable bootstrap is also part of the install story: `autoenable.py` and
-  `retracesoftware_autoenable.pth` are what make child processes or fresh
-  interpreters start under retrace automatically in some workflows.
+- Launcher bootstrap is also part of the install story: `retracepython.py`,
+  `retrace_venv.py`, and `retrace_venv_bootstrap.py` control one-shot,
+  Retrace-aware venv, and optional active-environment env-hook startup.
 
 ## High-Risk Areas
 
@@ -72,8 +72,8 @@ Many bugs that look like proxy or replay bugs are actually install-layer bugs.
   retracing or proxy too much of the system.
 - Already-loaded module patching: ref replacement behavior can be subtle and
   affect modules imported before retrace setup.
-- Auto-enable bootstrap drift: changes that desynchronize `.pth` startup,
-  environment-driven activation, and the main install lifecycle can break
+- Launcher bootstrap drift: changes that desynchronize env-driven activation,
+  wrapper startup, and the main install lifecycle can break
   child-process activation in ways that look like replay or packaging bugs.
 - `atexit` and shutdown behavior: whether cleanup runs inside or outside the
   active context changes what gets recorded.
@@ -134,7 +134,8 @@ Many bugs that look like proxy or replay bugs are actually install-layer bugs.
 - `src/retracesoftware/install/monitoring.py`
 - `src/retracesoftware/install/startthread.py`
 - `src/retracesoftware/install/pathpredicate.py`
-- `src/retracesoftware/autoenable.py`
-- `src/retracesoftware/retracesoftware_autoenable.pth`
+- `src/retracesoftware/retracepython.py`
+- `src/retracesoftware/retrace_venv.py`
+- `src/retracesoftware/retrace_venv_bootstrap.py`
 - `src/retracesoftware/modules/*.toml`
 - `docs/DEBUGGING.md`

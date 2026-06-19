@@ -121,8 +121,8 @@ def _trace_identity(path):
     return f"{st.st_dev}:{st.st_ino}"
 
 
-def _prepared_by_autoenable(trace_path):
-    expected = os.environ.get("RETRACE_INODE")
+def _prepared_by_retracepython(trace_path):
+    expected = os.environ.get("RETRACE_RECORDING_INODE")
     if expected is None:
         return False
     try:
@@ -194,7 +194,7 @@ def create_tape_writer(options, argv, *, thread_getter) -> TapeWriter:
     if (
         recording_format == "binary"
         and not is_fifo_path(trace_path)
-        and not _prepared_by_autoenable(trace_path)
+        and not _prepared_by_retracepython(trace_path)
     ):
         _write_shebang(trace_path, replay_bin)
 

@@ -1,13 +1,14 @@
-"""Regression: pth+debug recording can replay ResultMessage as Checkpoint.
+"""Regression: Retrace venv debug recording can replay ResultMessage as Checkpoint.
 
-The public pth recording hook works for this small psutil program without
-``RETRACE_CONFIG=debug``.  The direct wrapper flow also works with debug:
+The direct wrapper flow works with debug:
 
     RETRACE_CONFIG=debug python -m retracesoftware --recording trace.retrace -- app.py
 
-The failing shape is the local dockertest/manual pth flow:
+The failing shape was the old local dockertest/manual pth flow. The equivalent
+always-on environment is now:
 
-    RETRACE_RECORDING=trace.retrace RETRACE_CONFIG=debug python app.py
+    python -m retracesoftware venv .venv
+    RETRACE_RECORDING=trace.retrace RETRACE_CONFIG=debug .venv/bin/python app.py
 
 For psutil/memray and some Flask server recordings, PidFile replay starts
 normally and then sees a protocol ``ResultMessage`` where it expects the next
@@ -42,7 +43,7 @@ def _run(
     )
 
 
-def test_pth_debug_psutil_pidfile_replay_keeps_checkpoint_alignment(
+def test_retrace_venv_debug_psutil_pidfile_replay_keeps_checkpoint_alignment(
     tmp_path: Path,
 ):
     pytest.importorskip("psutil")
@@ -65,16 +66,30 @@ def test_pth_debug_psutil_pidfile_replay_keeps_checkpoint_alignment(
         encoding="utf-8",
     )
 
+    venv_dir = tmp_path / ".retrace-venv"
+    install_env = os.environ.copy()
+    install_env.pop("RETRACE_RECORDING", None)
+    install_env.pop("RETRACE_CONFIG", None)
+    install_env.pop("RETRACE_RECORDING_INODE", None)
     install = _run(
-        [sys.executable, "-m", "retracesoftware", "install"],
+        [
+            sys.executable,
+            "-m",
+            "retracesoftware",
+            "venv",
+            str(venv_dir),
+            "--without-pip",
+            "--system-site-packages",
+        ],
         cwd=tmp_path,
-        env=os.environ.copy(),
+        env=install_env,
     )
     assert install.returncode == 0, (
-        "failed to install pth auto-enable hook\n"
+        "failed to create Retrace venv\n"
         f"stdout:\n{install.stdout}\n"
         f"stderr:\n{install.stderr}"
     )
+    retrace_python = venv_dir / "bin" / "python"
 
     recording_name = "trace.retrace"
     recording = tmp_path / recording_name
@@ -82,17 +97,18 @@ def test_pth_debug_psutil_pidfile_replay_keeps_checkpoint_alignment(
 
     record_env = os.environ.copy()
     record_env.pop("RETRACE_SKIP_CHECKSUMS", None)
+    record_env.pop("RETRACE_RECORDING_INODE", None)
     record_env["PYTHONFAULTHANDLER"] = "1"
     record_env["RETRACE_CONFIG"] = "debug"
     record_env["RETRACE_RECORDING"] = recording_name
 
     record = _run(
-        [sys.executable, script.name],
+        [str(retrace_python), script.name],
         cwd=tmp_path,
         env=record_env,
     )
     assert record.returncode == 0, (
-        "record failed for pth+debug psutil reproducer\n"
+        "record failed for retrace-venv+debug psutil reproducer\n"
         f"stdout:\n{record.stdout}\n"
         f"stderr:\n{record.stderr}"
     )
@@ -101,7 +117,7 @@ def test_pth_debug_psutil_pidfile_replay_keeps_checkpoint_alignment(
 
     extract = _run([str(recording), "--extract"], cwd=tmp_path, env=record_env)
     assert extract.returncode == 0, (
-        "extract failed for pth+debug psutil reproducer\n"
+        "extract failed for retrace-venv+debug psutil reproducer\n"
         f"stdout:\n{extract.stdout}\n"
         f"stderr:\n{extract.stderr}"
     )
@@ -119,7 +135,7 @@ def test_pth_debug_psutil_pidfile_replay_keeps_checkpoint_alignment(
         env=record_env,
     )
     assert list_pids.returncode == 0, (
-        "list_pids failed for pth+debug psutil reproducer\n"
+        "list_pids failed for retrace-venv+debug psutil reproducer\n"
         f"stdout:\n{list_pids.stdout}\n"
         f"stderr:\n{list_pids.stderr}"
     )

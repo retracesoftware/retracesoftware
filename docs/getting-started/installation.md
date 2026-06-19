@@ -1,8 +1,8 @@
 # Installation
 
-Use a virtual environment. Retrace installs a `.pth` auto-enable hook into the
-active Python environment, so keeping it inside a venv makes setup and cleanup
-obvious.
+Use a virtual environment for application dependencies. Retrace does not enable
+itself just because it is installed; choose an explicit launcher mode when you
+want to record.
 
 ## Requirements
 
@@ -58,51 +58,74 @@ Check that Python can see the package:
 python -m pip show retracesoftware
 ```
 
-## Enable Auto-Recording
+## One-Shot Recording
 
-Run this once per virtual environment:
-
-```
-python -m retracesoftware install
-```
-
-This copies `retracesoftware_autoenable.pth` into the active environment's
-site-packages directory. Fresh Python processes in that environment will import
-Retrace's auto-enable module at startup.
-
-The hook records when you provide a recording path:
+For a single experiment, run the command through `retracepython`:
 
 ```
-RETRACE_RECORDING=recordings/example.retrace python your_script.py
+retracepython --recording recordings/example.retrace your_script.py
 ```
 
-It can also record from a config preset or config file:
+Module commands work too:
 
 ```
-RETRACE_CONFIG=debug python your_script.py
+retracepython --recording recordings/example.retrace -m your_package.cli
 ```
 
-For day-to-day use, prefer `RETRACE_RECORDING` because it makes the output path
-obvious.
+`retracepython` is one-shot: child processes that explicitly run ordinary
+`python` are not automatically recorded.
 
-## Disable Auto-Recording
+## Create A Retrace-Aware Venv
 
-To remove the `.pth` hook from the active environment:
+For workflows where child `sys.executable` processes should also be recorded,
+create a Retrace venv:
 
 ```
-python -m retracesoftware uninstall
+python -m retracesoftware venv .retrace-venv
+.retrace-venv/bin/python your_script.py
 ```
 
-## Direct Recording Without The Hook
+The generated venv keeps `pip`, `ensurepip`, `venv`, and Retrace's own commands
+untraced, but normal `python app.py`, `python -m app`, and `sys.executable`
+children run through Retrace.
 
-You can also record explicitly:
+## Enable An Existing Python Environment
+
+If you already have a configured Python environment, install an env-gated hook
+into that environment:
+
+```
+python -m retracesoftware enable-hook
+RETRACE=1 python your_script.py
+```
+
+The hook is inert unless `RETRACE=1`, `RETRACE_AUTO_DEBUG=1`,
+`RETRACE_RECORDING`, or `RETRACE_CONFIG` is set. `pip`, `ensurepip`, `venv`,
+multiprocessing helper bootstraps, and Retrace's own commands bypass recording.
+
+To remove the hook:
+
+```
+python -m retracesoftware disable-hook
+```
+
+## Explicit Recording Without Launchers
+
+You can also record through the underlying CLI:
 
 ```
 python -m retracesoftware --recording recordings/example.retrace -- your_script.py
 ```
 
-Auto-recording remains the standard environment-variable workflow for ordinary
-scripts and application commands.
+Everything after `--` is the target command.
 
 For examples beyond a single `.py` file, see
 [Recording Python Commands](recording-python-commands.md).
+
+## Remove Legacy Auto-Enable Hooks
+
+Older Retrace builds installed a `.pth` auto-enable hook. Remove it with:
+
+```
+python -m retracesoftware uninstall
+```

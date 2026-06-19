@@ -156,7 +156,9 @@ Run these for `meson.build`, install-entrypoint, or package-layout changes:
 - import smoke:
   `python -c "import retracesoftware.protocol, retracesoftware.testing, retracesoftware.threadid"`
 - entrypoint smoke:
-  `python -m retracesoftware install`
+  `retracepython --help`
+  `python -m retracesoftware enable-hook`
+  `python -m retracesoftware disable-hook`
 
 ### Web Replay Ladder
 

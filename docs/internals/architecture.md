@@ -21,7 +21,7 @@ is incomplete or the replay path is wrong.
 ```mermaid
 flowchart TD
     APP["User Python command"]
-    AUTO["autoenable.py / .pth hook"]
+    LAUNCH["retracepython / Retrace venv"]
     CLI["__main__.py"]
     RUN["run.py"]
     INSTALL["install/ runtime patching"]
@@ -34,8 +34,8 @@ flowchart TD
     VSCODE["VS Code extension"]
     CTRL["control_runtime.py"]
 
-    APP --> AUTO
-    AUTO --> CLI
+    APP --> LAUNCH
+    LAUNCH --> CLI
     CLI --> RUN
     CLI --> INSTALL
     INSTALL --> MODULES
@@ -49,45 +49,51 @@ flowchart TD
     CTRL --> CLI
 ```
 
-## Auto-Enable And Re-Exec
+## Launcher Re-Exec
 
-`python -m retracesoftware install` installs
-`retracesoftware_autoenable.pth` into the active Python environment. On a fresh
-Python startup, the `.pth` file imports `retracesoftware.autoenable`.
+Retrace has three launcher modes:
 
-Auto-enable is intentionally environment-driven:
+- `retracepython <command>` records one command and does not automatically
+  retrace ordinary child `python` subprocesses.
+- `python -m retracesoftware venv <dir>` creates a venv whose `python` launcher
+  records normal Python commands and `sys.executable` children.
+- `python -m retracesoftware enable-hook` installs an env-gated hook into the
+  active environment.
 
+The active-environment hook is intentionally environment-driven:
+
+- `RETRACE=1` records with the default config.
 - `RETRACE_RECORDING=<path>` records to a specific file.
 - `RETRACE_CONFIG=<name-or-path>` loads a config preset or config file.
-- if neither variable is set, Python startup continues normally.
+- if none of those variables is set, Python startup continues normally.
 
-When recording is enabled, `autoenable.py` prepares the target `.retrace` file
-and re-executes Python as:
+When recording is enabled, the launcher prepares the target `.retrace` file and
+re-executes Python as:
 
 ```
 python -m retracesoftware --recording <path> -- <original command>
 ```
 
-The internal `RETRACE_INODE` guard prevents recursive re-exec of the same
-recording path.
+The internal `RETRACE_RECORDING_INODE` guard prevents launchers from
+re-preparing the same recording path.
 
 ## Recording Path
 
-1. A user runs an ordinary Python command with `RETRACE_RECORDING` set.
-2. The `.pth` hook imports `retracesoftware.autoenable`.
-3. `autoenable.py` prepares the `.retrace` file and re-execs Python through the
+1. A user runs a Python command through `retracepython`, a Retrace venv, or an
+   enabled active-environment hook.
+2. The launcher prepares the `.retrace` file and re-execs Python through the
    Retrace CLI.
-4. `src/retracesoftware/__main__.py` builds a recorder system and tape writer.
-5. `src/retracesoftware/install/` patches configured runtime and library
+3. `src/retracesoftware/__main__.py` builds a recorder system and tape writer.
+4. `src/retracesoftware/install/` patches configured runtime and library
    surfaces.
-6. `src/retracesoftware/run.py` runs the original Python command.
-7. External calls cross the `proxy/` boundary, execute live, and write messages
+5. `src/retracesoftware/run.py` runs the original Python command.
+6. External calls cross the `proxy/` boundary, execute live, and write messages
    to `stream/`.
-8. `src/retracesoftware/tape.py` writes the recording preamble, checksums,
+7. `src/retracesoftware/tape.py` writes the recording preamble, checksums,
    environment, Python version, command, and boundary-call stream.
 
 Explicit recording through `python -m retracesoftware --recording ... --
-<target>` uses the same recorder path without relying on the `.pth` hook.
+<target>` uses the same recorder path without relying on a launcher.
 
 ## Recording Files And PidFiles
 

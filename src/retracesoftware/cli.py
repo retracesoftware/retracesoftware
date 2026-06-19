@@ -10,9 +10,20 @@ import sys
 from pathlib import Path
 from typing import Sequence
 
+from retracesoftware.agent_diagnose import (
+    diagnose_recording,
+    render_diagnosis_markdown,
+    render_json as render_diagnosis_json,
+)
 from retracesoftware.agent_inspect import (
+    inspect_expression,
+    inspect_failures,
+    inspect_function_code,
     inspect_recording,
+    render_expression_markdown,
+    render_failures_markdown,
     render_json,
+    render_function_code_markdown,
     render_markdown,
 )
 from retracesoftware.recording_context import (
@@ -152,6 +163,135 @@ def _run_inspect(args: argparse.Namespace) -> int:
     return 1
 
 
+def _run_diagnose(args: argparse.Namespace) -> int:
+    recording = _resolve_args_recording(args, command="retrace diagnose")
+    if recording is None:
+        return 1
+    if not _validate_recording(recording, command="retrace diagnose"):
+        return 1
+    try:
+        diagnosis = diagnose_recording(
+            str(recording),
+            max_frames=args.max_frames,
+            max_vars=args.max_vars,
+            repr_budget=args.repr_budget,
+        )
+    except subprocess.TimeoutExpired as exc:
+        print(f"retrace diagnose failed: timed out after {exc.timeout} seconds", file=sys.stderr)
+        return 1
+    except OSError as exc:
+        print(
+            "Recording found, but no inspectable state was available through the current CLI backend.\n"
+            f"Details: {exc}\n"
+            "Try opening this recording in VS Code, or start MCP with:\n"
+            f"  retrace mcp --recording {recording}",
+            file=sys.stderr,
+        )
+        return 1
+
+    if args.json:
+        print(render_diagnosis_json(diagnosis), end="")
+    else:
+        print(render_diagnosis_markdown(diagnosis), end="")
+    return 0
+
+
+def _run_function_code(args: argparse.Namespace) -> int:
+    recording = _resolve_args_recording(args, command="retrace function-code")
+    if recording is None:
+        return 1
+    if not _validate_recording(recording, command="retrace function-code"):
+        return 1
+    try:
+        report = inspect_function_code(
+            str(recording),
+            frame_index=args.frame,
+            max_chars=args.max_chars,
+        )
+    except subprocess.TimeoutExpired as exc:
+        print(f"retrace function-code failed: timed out after {exc.timeout} seconds", file=sys.stderr)
+        return 1
+    except OSError as exc:
+        print(
+            "Recording found, but function source was not available through the current CLI backend.\n"
+            f"Details: {exc}\n"
+            "Try opening this recording in VS Code, or start MCP with:\n"
+            f"  retrace mcp --recording {recording}",
+            file=sys.stderr,
+        )
+        return 1
+
+    if args.json:
+        print(render_json(report), end="")
+    else:
+        print(render_function_code_markdown(report), end="")
+    return 0
+
+
+def _run_eval(args: argparse.Namespace) -> int:
+    recording = _resolve_args_recording(args, command="retrace eval")
+    if recording is None:
+        return 1
+    if not _validate_recording(recording, command="retrace eval"):
+        return 1
+    try:
+        report = inspect_expression(
+            str(recording),
+            frame_index=args.frame,
+            expression=args.expression,
+            repr_budget=args.repr_budget,
+        )
+    except subprocess.TimeoutExpired as exc:
+        print(f"retrace eval failed: timed out after {exc.timeout} seconds", file=sys.stderr)
+        return 1
+    except OSError as exc:
+        print(
+            "Recording found, but expression evaluation was not available through the current CLI backend.\n"
+            f"Details: {exc}\n"
+            "Try opening this recording in VS Code, or start MCP with:\n"
+            f"  retrace mcp --recording {recording}",
+            file=sys.stderr,
+        )
+        return 1
+
+    if args.json:
+        print(render_json(report), end="")
+    else:
+        print(render_expression_markdown(report), end="")
+    return 0
+
+
+def _run_failures(args: argparse.Namespace) -> int:
+    recording = _resolve_args_recording(args, command="retrace failures")
+    if recording is None:
+        return 1
+    if not _validate_recording(recording, command="retrace failures"):
+        return 1
+    try:
+        report = inspect_failures(
+            str(recording),
+            limit=args.limit,
+        )
+    except subprocess.TimeoutExpired as exc:
+        print(f"retrace failures failed: timed out after {exc.timeout} seconds", file=sys.stderr)
+        return 1
+    except OSError as exc:
+        print(
+            "Recording found, but failure search was not available through the current CLI backend.\n"
+            f"Details: {exc}\n"
+            "Try opening this recording in VS Code, or start MCP with:\n"
+            f"  retrace mcp --recording {recording}",
+            file=sys.stderr,
+        )
+        return 1
+
+    if args.json:
+        print(render_json(report), end="")
+    else:
+        print(render_failures_markdown(report), end="")
+    return 0
+
+
 def _add_recording_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--recording", help="Retrace recording path")
     parser.add_argument("--latest", action="store_true", help="Use .retrace/latest-recording.json")
@@ -196,10 +336,71 @@ def _build_inspect_parser(*, prog: str = "retrace inspect") -> argparse.Argument
     return parser
 
 
+def _build_diagnose_parser(*, prog: str = "retrace diagnose") -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        prog=prog,
+        description="Inspect a recording and emit an evidence-driven agent diagnosis loop.",
+    )
+    parser.add_argument("recording_path", nargs="?", help="Retrace recording path")
+    _add_recording_arguments(parser)
+    parser.add_argument("--json", action="store_true", help="Emit structured JSON")
+    parser.add_argument("--max-frames", type=int, default=5, help="Maximum application frames to inspect")
+    parser.add_argument("--max-vars", type=int, default=12, help="Maximum locals to inspect")
+    parser.add_argument("--repr-budget", type=int, default=300, help="Maximum repr characters per value")
+    parser.set_defaults(func=_run_diagnose)
+    return parser
+
+
+def _build_function_code_parser(*, prog: str = "retrace function-code") -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        prog=prog,
+        description="Return source for the function containing a selected application frame.",
+    )
+    parser.add_argument("recording_path", nargs="?", help="Retrace recording path")
+    _add_recording_arguments(parser)
+    parser.add_argument("--frame", type=int, default=0, help="Application frame index")
+    parser.add_argument("--max-chars", type=int, default=12000, help="Maximum source characters to return")
+    parser.add_argument("--json", action="store_true", help="Emit structured JSON")
+    parser.set_defaults(func=_run_function_code)
+    return parser
+
+
+def _build_eval_parser(*, prog: str = "retrace eval") -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        prog=prog,
+        description="Evaluate one expression in a selected application frame.",
+    )
+    parser.add_argument("recording_path", nargs="?", help="Retrace recording path")
+    _add_recording_arguments(parser)
+    parser.add_argument("--frame", type=int, default=0, help="Application frame index")
+    parser.add_argument("--expression", required=True, help="Expression to evaluate in the selected frame")
+    parser.add_argument("--repr-budget", type=int, default=1200, help="Maximum repr characters per value")
+    parser.add_argument("--json", action="store_true", help="Emit structured JSON")
+    parser.set_defaults(func=_run_eval)
+    return parser
+
+
+def _build_failures_parser(*, prog: str = "retrace failures") -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        prog=prog,
+        description="Search replay for raised exception candidates and their cursors.",
+    )
+    parser.add_argument("recording_path", nargs="?", help="Retrace recording path")
+    _add_recording_arguments(parser)
+    parser.add_argument("--limit", type=int, default=5000, help="Maximum exception candidates to collect")
+    parser.add_argument("--json", action="store_true", help="Emit structured JSON")
+    parser.set_defaults(func=_run_failures)
+    return parser
+
+
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="retrace", description="Retrace workflow commands.")
     subparsers = parser.add_subparsers(dest="command", required=True)
     subparsers.add_parser("agent-context", help="Print an evidence-only recording handoff.")
+    subparsers.add_parser("diagnose", help="Emit an evidence-driven agent diagnosis loop.")
+    subparsers.add_parser("eval", help="Evaluate one expression in a selected application frame.")
+    subparsers.add_parser("failures", help="Search replay for raised exception candidates.")
+    subparsers.add_parser("function-code", help="Return source for a selected application frame.")
     subparsers.add_parser("mcp", help="Run the Retrace MCP server for a recording.")
     subparsers.add_parser("inspect", help="Inspect observed replay/debugger state from a recording.")
     return parser
@@ -215,6 +416,18 @@ def _dispatch(argv: list[str], *, prog: str = "retrace") -> int:
     if argv and argv[0] == "inspect":
         args = _build_inspect_parser(prog=f"{prog} inspect").parse_args(argv[1:])
         return args.func(args)
+    if argv and argv[0] == "diagnose":
+        args = _build_diagnose_parser(prog=f"{prog} diagnose").parse_args(argv[1:])
+        return args.func(args)
+    if argv and argv[0] == "function-code":
+        args = _build_function_code_parser(prog=f"{prog} function-code").parse_args(argv[1:])
+        return args.func(args)
+    if argv and argv[0] == "eval":
+        args = _build_eval_parser(prog=f"{prog} eval").parse_args(argv[1:])
+        return args.func(args)
+    if argv and argv[0] == "failures":
+        args = _build_failures_parser(prog=f"{prog} failures").parse_args(argv[1:])
+        return args.func(args)
     parser = _build_parser()
     parser.parse_args(argv)
     return 2
@@ -229,8 +442,24 @@ def agent_main(argv: Sequence[str] | None = None) -> int:
     if raw_argv and raw_argv[0] == "inspect":
         args = _build_inspect_parser(prog="retrace-agent inspect").parse_args(raw_argv[1:])
         return args.func(args)
+    if raw_argv and raw_argv[0] == "diagnose":
+        args = _build_diagnose_parser(prog="retrace-agent diagnose").parse_args(raw_argv[1:])
+        return args.func(args)
+    if raw_argv and raw_argv[0] == "function-code":
+        args = _build_function_code_parser(prog="retrace-agent function-code").parse_args(raw_argv[1:])
+        return args.func(args)
+    if raw_argv and raw_argv[0] == "eval":
+        args = _build_eval_parser(prog="retrace-agent eval").parse_args(raw_argv[1:])
+        return args.func(args)
+    if raw_argv and raw_argv[0] == "failures":
+        args = _build_failures_parser(prog="retrace-agent failures").parse_args(raw_argv[1:])
+        return args.func(args)
     parser = argparse.ArgumentParser(prog="retrace-agent", description="Agent-facing Retrace commands.")
     subparsers = parser.add_subparsers(dest="command", required=True)
+    subparsers.add_parser("diagnose", help="Emit an evidence-driven agent diagnosis loop.")
+    subparsers.add_parser("eval", help="Evaluate one expression in a selected application frame.")
+    subparsers.add_parser("failures", help="Search replay for raised exception candidates.")
+    subparsers.add_parser("function-code", help="Return source for a selected application frame.")
     subparsers.add_parser("inspect", help="Inspect observed replay/debugger state from a recording.")
     parser.parse_args(raw_argv)
     return 2

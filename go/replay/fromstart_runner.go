@@ -8,10 +8,11 @@ import (
 )
 
 var (
-	buildCommand = pythonCommand
-	runCommand   = func(cmd *exec.Cmd) error { return cmd.Run() }
-	startCommand = func(cmd *exec.Cmd) error { return cmd.Start() }
-	waitCommand  = func(cmd *exec.Cmd) error { return cmd.Wait() }
+	buildCommand       = pythonCommand
+	buildTargetCommand = pythonCommandForTarget
+	runCommand         = func(cmd *exec.Cmd) error { return cmd.Run() }
+	startCommand       = func(cmd *exec.Cmd) error { return cmd.Start() }
+	waitCommand        = func(cmd *exec.Cmd) error { return cmd.Wait() }
 )
 
 // RunReplay launches a non-interactive Python replay process for the
@@ -37,7 +38,7 @@ func RunReplay(pidFile string, stdout, stderr io.Writer, chunkMS float64, extraA
 	cmdArgs = append(cmdArgs, extraArgs...)
 	log.Printf("replay run: %s %v (cwd=%s)", target.PythonBin, cmdArgs, target.CWD)
 
-	cmd := buildCommand(target.PythonBin, cmdArgs...)
+	cmd := buildTargetCommand(target, cmdArgs...)
 	cmd.Dir = target.CWD
 	cmd.Stdout = stdout
 	cmd.Stderr = stderr

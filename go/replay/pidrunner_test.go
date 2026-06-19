@@ -27,16 +27,16 @@ func writeTempPidFile(t *testing.T) string {
 }
 
 func TestRunReplayStartsFreshEachCall(t *testing.T) {
-	oldBuild := buildCommand
+	oldBuild := buildTargetCommand
 	oldRun := runCommand
 	defer func() {
-		buildCommand = oldBuild
+		buildTargetCommand = oldBuild
 		runCommand = oldRun
 	}()
 
 	var built [][]string
-	buildCommand = func(name string, args ...string) *exec.Cmd {
-		row := []string{name}
+	buildTargetCommand = func(target runnerTarget, args ...string) *exec.Cmd {
+		row := []string{target.PythonBin}
 		row = append(row, args...)
 		built = append(built, row)
 		return &exec.Cmd{}

@@ -223,36 +223,18 @@ class TestTextIOWrapperProxy:
 # ── subprocess inherits recording ───────────────────────────────
 
 class TestSubprocessRecorded:
-    """Verify child subprocesses are recorded via RETRACE_RECORDING inheritance.
+    """Verify one-shot recording does not implicitly retrace child Python.
 
-    A sitecustomize.py is injected via PYTHONPATH so that every child
-    Python process loads autoenable, which sees RETRACE_RECORDING and
-    records to the same trace file.
-
-    The child prints time.time() which is non-deterministic.  If the child
-    is recorded, replay will reproduce the exact same value.  If it isn't,
-    the values will differ.
+    The child prints ``time.time()``. Under the one-shot launcher model, a child
+    that explicitly invokes ordinary ``python`` is not automatically retraced;
+    use a Retrace venv or the active-environment hook for that behavior.
     """
 
-    @pytest.fixture
-    def autoenable_env(self, tmpdir):
-        """Create a temp dir with sitecustomize.py that triggers autoenable."""
-        site_dir = os.path.join(tmpdir, "site")
-        os.makedirs(site_dir)
-        with open(os.path.join(site_dir, "sitecustomize.py"), "w") as f:
-            f.write("import retracesoftware.autoenable\n")
-
-        pythonpath = os.environ.get("PYTHONPATH", "")
-        new_pythonpath = f"{site_dir}:{pythonpath}" if pythonpath else site_dir
-        return {"PYTHONPATH": new_pythonpath}
-
-    def test_subprocess_time_record_succeeds(self, tmpdir, autoenable_env):
+    def test_subprocess_time_record_succeeds(self, tmpdir):
         script = SCRIPTS / "subprocess_time.py"
         recording = os.path.join(tmpdir, "trace.retrace")
 
-        env = {**autoenable_env, "RETRACE_RECORDING": recording}
-
-        rec = run_record(script, recording, env=env)
+        rec = run_record(script, recording)
         assert rec.returncode == 0, (
             f"Record failed (exit {rec.returncode}):\n"
             f"stdout: {rec.stdout}\nstderr: {rec.stderr}"
@@ -263,13 +245,11 @@ class TestSubprocessRecorded:
         reason="Replay of subprocess.Popen with capture_output fails: "
                "replayed pipe() FDs are not real file descriptors"
     )
-    def test_subprocess_time_replay_deterministic(self, tmpdir, autoenable_env):
+    def test_subprocess_time_replay_deterministic(self, tmpdir):
         script = SCRIPTS / "subprocess_time.py"
         recording = os.path.join(tmpdir, "trace.retrace")
 
-        env = {**autoenable_env, "RETRACE_RECORDING": recording}
-
-        rec = run_record(script, recording, env=env)
+        rec = run_record(script, recording)
         assert rec.returncode == 0
 
         rep = run_replay(recording)

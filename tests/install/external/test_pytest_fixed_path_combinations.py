@@ -105,20 +105,20 @@ def test_pytest_last_failed_cache_mode_replays_default_capture(
     assert_successful_replay(record, replay, "1 passed")
 
 
-def test_pth_autoenable_pytest_child_process_cache_and_capfd_replays(
+def test_retrace_venv_pytest_child_process_cache_and_capfd_replays(
     tmp_path: Path,
 ) -> None:
     write_files(
         tmp_path,
         {
-            "tests/test_pth_combo.py": """
+            "tests/test_retrace_venv_combo.py": """
                 import os
                 import subprocess
                 import sys
 
 
                 def test_child_process_cache_and_capture(pytestconfig, capfd):
-                    seen = pytestconfig.cache.get("retrace/pth-combo", "recorded-miss")
+                    seen = pytestconfig.cache.get("retrace/venv-combo", "recorded-miss")
                     proc = subprocess.run(
                         [
                             sys.executable,
@@ -131,7 +131,7 @@ def test_pth_autoenable_pytest_child_process_cache_and_capfd_replays(
                     )
                     os.write(1, b"parent fd capture\\n")
                     captured = capfd.readouterr()
-                    pytestconfig.cache.set("retrace/pth-combo", "written")
+                    pytestconfig.cache.set("retrace/venv-combo", "written")
                     assert seen == "recorded-miss"
                     assert "child-pid" in proc.stdout
                     assert "parent fd capture" in captured.out
@@ -140,6 +140,7 @@ def test_pth_autoenable_pytest_child_process_cache_and_capfd_replays(
     )
 
     recording = tmp_path / "trace.retrace"
+    venv_dir = tmp_path / ".retrace-venv"
     install_env = clean_env(
         tmp_path,
         {
@@ -148,15 +149,24 @@ def test_pth_autoenable_pytest_child_process_cache_and_capfd_replays(
         },
     )
     install = _run_for_pidfile(
-        [PYTHON, "-m", "retracesoftware", "install"],
+        [
+            PYTHON,
+            "-m",
+            "retracesoftware",
+            "venv",
+            str(venv_dir),
+            "--without-pip",
+            "--system-site-packages",
+        ],
         cwd=tmp_path,
         env=install_env,
         timeout=60,
     )
     assert install.returncode == 0, _completed_process_error(
-        "install auto-enable",
+        "create retrace venv",
         install,
     )
+    retrace_python = venv_dir / "bin" / "python"
 
     record_env = install_env.copy()
     record_env["PYTHONFAULTHANDLER"] = "1"
@@ -164,10 +174,10 @@ def test_pth_autoenable_pytest_child_process_cache_and_capfd_replays(
     record_env["RETRACE_RECORDING"] = recording.name
     record = _run_for_pidfile(
         [
-            PYTHON,
+            str(retrace_python),
             "-m",
             "pytest",
-            "tests/test_pth_combo.py::test_child_process_cache_and_capture",
+            "tests/test_retrace_venv_combo.py::test_child_process_cache_and_capture",
             "-q",
             "--tb=short",
             "--cache-clear",
@@ -225,4 +235,3 @@ def test_pth_autoenable_pytest_child_process_cache_and_capfd_replays(
         "b'blat'",
     )
     assert_successful_replay(record, replay, "1 passed")
-

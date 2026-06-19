@@ -770,6 +770,45 @@ func TestDAPBreakpointE2E(t *testing.T) {
 	t.Log("OK: disconnect")
 }
 
+func TestDAPExceptionBreakpointE2E(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping e2e test in short mode")
+	}
+	python := requirePython312(t)
+	session := newDAPSession(t, python, "exception_target.py", `def explode():
+    value = "gold"
+    raise RuntimeError("boom " + value)
+
+try:
+    explode()
+except RuntimeError:
+    pass
+`)
+
+	session.client.send("setExceptionBreakpoints", map[string]any{
+		"filters": []string{"raised"},
+	})
+	session.expectResponse("setExceptionBreakpoints", 10*time.Second)
+	session.configurationDone()
+
+	session.client.send("continue", map[string]any{"threadId": 1})
+	session.expectStopped("exception", 30*time.Second)
+
+	frame := session.topFrame()
+	assertTopFrame(t, frame, session.script, 3, "explode")
+
+	session.client.send("exceptionInfo", map[string]any{"threadId": 1})
+	resp := session.expectResponse("exceptionInfo", 10*time.Second)
+	body, _ := resp["body"].(map[string]any)
+	if body["exceptionId"] != "RuntimeError" {
+		t.Fatalf("exceptionId = %v, want RuntimeError; body=%v", body["exceptionId"], body)
+	}
+	description, _ := body["description"].(string)
+	if !strings.Contains(description, "boom gold") {
+		t.Fatalf("exception description = %q, want boom gold; body=%v", description, body)
+	}
+}
+
 // TestDAPDebuggerControlsE2E drives the common VS Code stepping requests
 // against a real recording. It covers step-over (next), reverse step-over
 // (stepBack), step-into, and step-out through the Go DAP proxy.

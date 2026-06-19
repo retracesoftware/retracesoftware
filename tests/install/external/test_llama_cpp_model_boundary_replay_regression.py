@@ -142,21 +142,21 @@ def test_replay_huggingface_download_after_rich_status_output_matches_record(
     strict=True,
     reason=(
         "Flight-search replay can consume a bind marker after recording via "
-        "the .pth auto-enable path with a relative RETRACE_RECORDING"
+        "the Retrace venv path with a relative RETRACE_RECORDING"
     ),
 )
-def test_flight_search_relative_autoenable_pidfile_replay_matches_record(
+def test_flight_search_relative_retrace_venv_pidfile_replay_matches_record(
     tmp_path: Path,
 ) -> None:
     """Regression for the current cookbook flight-search replay failure.
 
     The failing manual flow records the real flight-search assistant through
-    the ``python -m retracesoftware install`` / ``RETRACE_RECORDING=...`` path,
+    the ``python -m retracesoftware venv`` / ``RETRACE_RECORDING=...`` path,
     with ``RETRACE_RECORDING`` set to a relative path in the app directory.
 
     Direct ``python -m retracesoftware --recording ...`` recordings and
     absolute ``RETRACE_RECORDING=/tmp/...`` recordings can pass on the same
-    build, so this test deliberately keeps the relative auto-enable shape.
+    build, so this test deliberately keeps the relative always-on venv shape.
     """
 
     app_dir_text = os.environ.get("RETRACE_FLIGHT_SEARCH_ASSISTANT_DIR")
@@ -177,21 +177,31 @@ def test_flight_search_relative_autoenable_pidfile_replay_matches_record(
     pytest.importorskip("rich.console")
     _ensure_flight_search_model_is_cached()
 
+    venv_dir = app_dir / ".retrace-venv"
     install = subprocess.run(
-        [sys.executable, "-m", "retracesoftware", "install"],
+        [
+            sys.executable,
+            "-m",
+            "retracesoftware",
+            "venv",
+            str(venv_dir),
+            "--without-pip",
+            "--system-site-packages",
+        ],
         cwd=app_dir,
         capture_output=True,
         text=True,
         timeout=30,
     )
     assert install.returncode == 0, (
-        "failed to install Retrace auto-enable hook\n"
+        "failed to create Retrace venv\n"
         f"stdout:\n{install.stdout}\n"
         f"stderr:\n{install.stderr}"
     )
+    retrace_python = venv_dir / "bin" / "python"
 
-    recording_name = "flight-relative-autoenable.retrace"
-    trace_dir = app_dir / "flight-relative-autoenable.d"
+    recording_name = "flight-relative-retrace-venv.retrace"
+    trace_dir = app_dir / "flight-relative-retrace-venv.d"
     recording = app_dir / recording_name
     if recording.exists():
         recording.unlink()
@@ -207,7 +217,7 @@ def test_flight_search_relative_autoenable_pidfile_replay_matches_record(
 
     record = subprocess.run(
         [
-            sys.executable,
+            str(retrace_python),
             "flight_search.py",
             "--query",
             _FLIGHT_SEARCH_QUERY,
@@ -276,7 +286,7 @@ def test_flight_search_relative_autoenable_pidfile_replay_matches_record(
     combined = replay.stdout + replay.stderr
 
     assert replay.returncode == 0, (
-        "flight-search relative auto-enable PidFile replay diverged\n"
+        "flight-search relative Retrace venv PidFile replay diverged\n"
         f"exit: {replay.returncode}\n"
         f"stdout:\n{replay.stdout}\n"
         f"stderr:\n{replay.stderr}"

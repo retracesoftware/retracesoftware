@@ -6,43 +6,76 @@ The main CLI entrypoint is:
 python -m retracesoftware
 ```
 
-There is also a `replay` console script installed by the package.
+There are also `retracepython`, `retrace-venv`, `retrace-ai-driver`, and
+`replay` console scripts installed by the package.
 
 Run `python -m retracesoftware --help` to inspect the top-level command. Record
 flags are parsed when the invocation contains a target command after `--`.
 
-## Install And Uninstall Auto-Enable
+## One-Shot Recording
 
-Install the `.pth` auto-enable hook into the active Python environment:
-
-```
-python -m retracesoftware install
-```
-
-Remove it:
+Record a single Python command:
 
 ```
-python -m retracesoftware uninstall
-```
-
-## Record With Auto-Enable
-
-After `python -m retracesoftware install`, run ordinary Python with
-`RETRACE_RECORDING`:
-
-```
-RETRACE_RECORDING=recordings/example.retrace python your_script.py
+retracepython --recording recordings/example.retrace your_script.py
 ```
 
 Module commands work the same way:
 
 ```
-RETRACE_RECORDING=recordings/example.retrace python -m your_package.cli arg1 arg2
+retracepython --recording recordings/example.retrace -m your_package.cli arg1 arg2
 ```
 
-## Record Explicitly
+Run the AI debugger automatically when the recorded command fails:
 
-Record without relying on the `.pth` hook:
+```
+RETRACE_AUTO_DEBUG=1 retracepython your_script.py
+```
+
+On failure, Retrace runs `retrace-ai-driver` with `--tool-executor dap` against
+the recording. The driver starts the Retrace DAP server and drives it through
+the `retrace-ai-service`/provider configuration supplied to the driver.
+Configure the driver with `RETRACE_AI_SERVER`, `RETRACE_API_KEY`, and
+`RETRACE_REPLAY_BIN`. `RETRACE_AI_DRIVER_COMMAND` can override the packaged
+driver command for development.
+`RETRACE_AI_SERVER` defaults to
+`https://retrace-ai-service.retracesoftware.workers.dev`.
+
+Successful auto-debug runs delete the default trace. Pass `--recording` or set
+`RETRACE_RECORDING` when you want to keep the trace even on success.
+
+## Retrace-Aware Venv
+
+Create a venv whose `python` launcher records normal Python commands and
+`sys.executable` children:
+
+```
+python -m retracesoftware venv .retrace-venv
+```
+
+`pip`, `ensurepip`, `venv`, and Retrace commands bypass recording in that venv.
+
+## Existing-Environment Hook
+
+Install an env-gated hook into the active environment:
+
+```
+python -m retracesoftware enable-hook
+RETRACE=1 python your_script.py
+```
+
+Remove it:
+
+```
+python -m retracesoftware disable-hook
+```
+
+The hook is inert unless `RETRACE=1`, `RETRACE_AUTO_DEBUG=1`,
+`RETRACE_RECORDING`, or `RETRACE_CONFIG` is set.
+
+## Record Through The Underlying CLI
+
+Record through `python -m retracesoftware` directly:
 
 ```
 python -m retracesoftware --recording recordings/example.retrace -- your_script.py

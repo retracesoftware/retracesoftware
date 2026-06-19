@@ -60,9 +60,9 @@ is the operational contributor guide for making safe changes in this repo.
 
 - `src/retracesoftware/__main__.py`, `run.py`, `replay/`
   CLI orchestration, recording setup, replay startup, replay binary discovery.
-  `__main__.py` exposes the `install`/`uninstall` subcommands and the
-  record/replay invocation. `pyproject.toml` also installs a `replay` console
-  script that points at `retracesoftware.replay:_exec_replay`.
+  `__main__.py` exposes record/replay invocation plus launcher utility
+  subcommands. `pyproject.toml` also installs `retracepython`, `retrace-venv`,
+  and `replay` console scripts.
 - `src/retracesoftware/install/`
   Runtime patching, import hooks, weakref/thread setup, monitoring, pytest integration.
 - `src/retracesoftware/proxy/`
@@ -88,10 +88,9 @@ is the operational contributor guide for making safe changes in this repo.
 - Top-level Python helpers in `src/retracesoftware/`:
   `tape.py` (top-level recording I/O implementation, distinct from
   `proxy/tape.py` which only holds the `Tape` / `TapeReader` / `TapeWriter`
-  Protocol types), `autoenable.py` + `retracesoftware_autoenable.pth`
-  (auto-activation when `RETRACE_RECORDING` or `RETRACE_CONFIG` is set
-  in the environment — bare `RETRACE=1` does nothing today, despite some
-  stale `__main__.py install` help text), `cursor.py`, `control_runtime.py`,
+  Protocol types), `retracepython.py`, `retrace_venv.py`, and
+  `retrace_venv_bootstrap.py` (explicit one-shot launcher, Retrace-aware venv
+  creation, and optional active-environment env hook), `cursor.py`, `control_runtime.py`,
   `search.py`, `exceptions.py`, `run.py`, and the `functional/`, `utils/`,
   `testing/` (incl. `memorytape.py`), and `threadid/` packages. Treat
   these as shared infrastructure used by `install`, `proxy`, `protocol`,
@@ -142,7 +141,7 @@ is the operational contributor guide for making safe changes in this repo.
 - Prefer fixes in the narrowest responsible layer. Avoid mixing `install`,
   `proxy`, and `stream` changes in one diff unless required.
 - Packaging is part of correctness here. A change that breaks editable/wheel
-  install, package contents, or `python -m retracesoftware install` blocks
+  install, package contents, or launcher entrypoints blocks
   real-world validation before replay behavior is even tested.
 
 ## Commands
@@ -157,8 +156,12 @@ is the operational contributor guide for making safe changes in this repo.
   `cd dockertests && python run.py --list`
 - Run one docker test:
   `cd dockertests && python run.py <test_name>`
-- Enable local auto-activation in the active venv:
-  `python -m retracesoftware install`
+- One-shot record launcher:
+  `retracepython --recording recordings/example.retrace script.py`
+- Create a Retrace-aware venv:
+  `python -m retracesoftware venv .retrace-venv`
+- Enable the optional env-gated hook in the active Python environment:
+  `python -m retracesoftware enable-hook`
 - Replay a recording via the installed console script:
   `replay <recording.retrace>`
   (equivalent to `python -m retracesoftware.replay`; uses the same Go replay

@@ -88,30 +88,40 @@ def _record_and_replay_pth_script(
 
     recording_name = "trace.retrace"
     recording = tmp_path / recording_name
+    venv_dir = tmp_path / ".retrace-venv"
 
     install_env = os.environ.copy()
     install_env["MESONPY_EDITABLE_SKIP"] = _editable_skip()
     install_env["PYTHONPATH"] = _local_pythonpath()
     install_env.pop("RETRACE_RECORDING", None)
     install_env.pop("RETRACE_CONFIG", None)
+    install_env.pop("RETRACE_RECORDING_INODE", None)
     install_env.pop("RETRACE_SKIP_CHECKSUMS", None)
 
     install = _run(
-        [sys.executable, "-m", "retracesoftware", "install"],
+        [
+            sys.executable,
+            "-m",
+            "retracesoftware",
+            "venv",
+            str(venv_dir),
+            "--without-pip",
+        ],
         cwd=tmp_path,
         env=install_env,
     )
     assert install.returncode == 0, _completed_process_error(
-        "install auto-enable",
+        "create retrace venv",
         install,
     )
+    retrace_python = venv_dir / "bin" / "python"
 
     record_env = install_env.copy()
     record_env["PYTHONFAULTHANDLER"] = "1"
     record_env["RETRACE_CONFIG"] = "debug"
     record_env["RETRACE_RECORDING"] = recording_name
 
-    record = _run([sys.executable, script.name], cwd=tmp_path, env=record_env)
+    record = _run([str(retrace_python), script.name], cwd=tmp_path, env=record_env)
     assert record.returncode == 0, (
         f"record failed for {script_name}\n"
         f"exit: {record.returncode}\n"

@@ -246,6 +246,57 @@ func (r *Replay) FindFirstBreakpoint(ctx context.Context, breakpoint map[string]
 	}
 }
 
+// StopAtFailure runs replay until the Python control runtime observes an
+// application exception. The returned stop result includes exception metadata
+// when the stop reason is "exception".
+func (r *Replay) StopAtFailure(ctx context.Context) (ControlStopResult, error) {
+	if _, err := r.client.SendCommand("stop_at_failure", nil); err != nil {
+		return ControlStopResult{}, r.wrapErr(fmt.Errorf("stop_at_failure: %w", err))
+	}
+
+	for {
+		select {
+		case <-ctx.Done():
+			return ControlStopResult{}, ctx.Err()
+		default:
+		}
+		msg, err := r.client.ReadMessage()
+		if err != nil {
+			if exitErr := r.Err(); exitErr != nil {
+				return ControlStopResult{}, exitErr
+			}
+			if err == io.EOF {
+				return ControlStopResult{Reason: "eof"}, nil
+			}
+			return ControlStopResult{}, fmt.Errorf("read: %w", err)
+		}
+		if msg.Error != nil {
+			return ControlStopResult{}, fmt.Errorf("stop_at_failure: %s: %s", msg.Error.Code, msg.Error.Message)
+		}
+		if msg.Kind == "event" && msg.Event == "log" {
+			if text, ok := msg.Payload["message"].(string); ok {
+				log.Printf("python: %s", text)
+			}
+			continue
+		}
+		if msg.Kind == "stop" {
+			result := parseStopResult(msg.Payload)
+			r.location = locationFromStopResult(result)
+			return result, nil
+		}
+	}
+}
+
+func locationFromStopResult(result ControlStopResult) Location {
+	return Location{
+		ThreadID:       result.Cursor.ThreadID,
+		FunctionCounts: result.Cursor.FunctionCounts,
+		FLasti:         result.Cursor.FLasti,
+		Lineno:         result.Cursor.Lineno,
+		MessageIndex:   result.MessageIndex,
+	}
+}
+
 // RunToCursor sends a run_to_cursor command and blocks until the replay
 // stops, returning the raw protocol stop result. It also updates the
 // Replay's current Location from the stop result.
