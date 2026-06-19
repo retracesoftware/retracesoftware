@@ -1012,9 +1012,7 @@ class Controller:
                 self._stopped_frame = _find_user_frame()
                 snapshot = cursor.cursor_snapshot().to_dict()
                 counts = list(snapshot.get("function_counts") or [])
-                if counts:
-                    snapshot["function_counts"] = counts[:-1]
-                self._returning_to_counts = tuple(snapshot.get("function_counts") or ())
+                self._returning_to_counts = tuple(counts[:-1] if counts else ())
                 if self._stopped_frame is not None:
                     snapshot["f_lasti"] = self._stopped_frame.f_lasti
                     snapshot["lineno"] = FrameInspector._frame_lineno(self._stopped_frame)
