@@ -69,25 +69,33 @@ def record_extract_replay_pytest(
     pytest_args: list[str],
     env: dict[str, str] | None = None,
     replay_env: dict[str, str] | None = None,
+    stacktraces: bool = True,
     timeout: int = TIMEOUT,
 ):
     write_files(tmp_path, files)
     recording = tmp_path / "trace.retrace"
     record_env = clean_env(tmp_path, env)
 
-    record = _run_for_pidfile(
+    command = [
+        PYTHON,
+        "-m",
+        "retracesoftware",
+        "--recording",
+        str(recording),
+    ]
+    if stacktraces:
+        command.append("--stacktraces")
+    command.extend(
         [
-            PYTHON,
-            "-m",
-            "retracesoftware",
-            "--recording",
-            str(recording),
-            "--stacktraces",
             "--",
             "-m",
             "pytest",
             *pytest_args,
-        ],
+        ]
+    )
+
+    record = _run_for_pidfile(
+        command,
         cwd=tmp_path,
         env=record_env,
         timeout=timeout,

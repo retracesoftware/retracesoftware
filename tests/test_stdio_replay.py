@@ -12,11 +12,6 @@ PYTHON = sys.executable
 TIMEOUT = 30
 SCRIPTS_DIR = os.path.join(os.path.dirname(__file__), "scripts")
 
-needs_monitoring = pytest.mark.skipif(
-    sys.version_info < (3, 12),
-    reason="sys.monitoring requires Python 3.12+",
-)
-
 
 @pytest.fixture
 def tmpdir():
@@ -89,7 +84,6 @@ def test_hello_close(tmpdir):
     assert close_resp["result"]["closed"] is True
 
 
-@needs_monitoring
 def test_breakpoint_hit(tmpdir):
     """Record, replay, set a breakpoint, and validate it fires."""
     script = os.path.join(SCRIPTS_DIR, "breakpoint_target.py")
@@ -144,7 +138,6 @@ def test_breakpoint_hit(tmpdir):
     assert close_resp["result"]["closed"] is True
 
 
-@needs_monitoring
 def test_breakpoint_multiple_hits(tmpdir):
     """Breakpoint on add() line fires twice (called twice in target script)."""
     script = os.path.join(SCRIPTS_DIR, "breakpoint_target.py")
@@ -189,7 +182,6 @@ def test_breakpoint_multiple_hits(tmpdir):
     assert responses[4]["ok"] is True
 
 
-@needs_monitoring
 def test_set_backstop(tmpdir):
     """Set a backstop before hitting breakpoints -- should stop at backstop."""
     script = os.path.join(SCRIPTS_DIR, "breakpoint_target.py")
@@ -222,3 +214,126 @@ def test_set_backstop(tmpdir):
     stop = responses[2]
     assert stop["kind"] == "stop"
     assert stop["payload"]["reason"] == "backstop"
+
+
+def test_breakpoint_cursor_stack_and_locals(tmpdir):
+    """Scan a breakpoint, replay to its cursor, then inspect stack and locals."""
+    script = os.path.join(SCRIPTS_DIR, "breakpoint_target.py")
+    trace = os.path.join(tmpdir, "trace.retrace")
+
+    record_raw(script, trace)
+
+    bp_file = os.path.realpath(script)
+    bp_line = 6  # "result = a + b"
+
+    scan_commands = [
+        {"command": "hello"},
+        {"command": "hit_breakpoints", "params": {
+            "breakpoint": {"file": bp_file, "line": bp_line},
+            "max_hits": 1,
+        }},
+    ]
+    scan_responses, scan_result = replay_stdio(trace, scan_commands)
+    assert scan_result.returncode == 0, f"Replay failed:\n{scan_result.stderr}"
+
+    bp_event = next(
+        r for r in scan_responses
+        if r.get("kind") == "event" and r.get("event") == "breakpoint_hit"
+    )
+    hit_cursor = bp_event["payload"]["cursor"]
+    assert hit_cursor["lineno"] == bp_line
+
+    inspect_commands = [
+        {"id": "1", "command": "hello"},
+        {"id": "2", "command": "run_to_cursor", "params": {"cursor": hit_cursor}},
+        {"id": "3", "command": "stack"},
+        {"id": "4", "command": "locals", "params": {"frame": 0}},
+    ]
+    inspect_responses, inspect_result = replay_stdio(trace, inspect_commands)
+    assert inspect_result.returncode == 0, f"Replay failed:\n{inspect_result.stderr}"
+
+    stop = next(r for r in inspect_responses if r.get("kind") == "stop")
+    assert stop["payload"]["reason"] == "cursor"
+    assert stop["payload"]["cursor"]["lineno"] == bp_line
+
+    stack = next(r for r in inspect_responses if r.get("id") == "3")
+    assert stack["ok"] is True
+    frames = stack["result"]["frames"]
+    assert frames[0]["filename"] == bp_file
+    assert frames[0]["line"] == bp_line
+    assert frames[0]["function"] == "add"
+
+    locals_response = next(r for r in inspect_responses if r.get("id") == "4")
+    assert locals_response["ok"] is True
+    local_names = {item["name"] for item in locals_response["result"]["variables"]}
+    assert {"a", "b"} <= local_names
+
+
+def test_run_to_cursor_then_next_instruction(tmpdir):
+    """Run to a materialized cursor, then advance one bytecode instruction."""
+    script = os.path.join(SCRIPTS_DIR, "breakpoint_target.py")
+    trace = os.path.join(tmpdir, "trace.retrace")
+
+    record_raw(script, trace)
+
+    bp_file = os.path.realpath(script)
+    bp_line = 6  # "result = a + b"
+
+    scan_responses, scan_result = replay_stdio(trace, [
+        {"command": "hello"},
+        {"command": "hit_breakpoints", "params": {
+            "breakpoint": {"file": bp_file, "line": bp_line},
+            "max_hits": 1,
+        }},
+    ])
+    assert scan_result.returncode == 0, f"Replay failed:\n{scan_result.stderr}"
+
+    bp_event = next(
+        r for r in scan_responses
+        if r.get("kind") == "event" and r.get("event") == "breakpoint_hit"
+    )
+    hit_cursor = bp_event["payload"]["cursor"]
+
+    responses, result = replay_stdio(trace, [
+        {"id": "1", "command": "hello"},
+        {"id": "2", "command": "run_to_cursor", "params": {"cursor": hit_cursor}},
+        {"id": "3", "command": "next_instruction"},
+        {"id": "4", "command": "stack"},
+    ])
+    assert result.returncode == 0, f"Replay failed:\n{result.stderr}"
+
+    stops = [r for r in responses if r.get("kind") == "stop"]
+    assert [s["payload"]["reason"] for s in stops] == ["cursor", "instruction"]
+    cursor_stop = stops[0]["payload"]["cursor"]
+    instruction_stop = stops[1]["payload"]["cursor"]
+    assert cursor_stop["lineno"] == bp_line
+    assert instruction_stop["f_lasti"] != cursor_stop["f_lasti"]
+
+    stack = next(r for r in responses if r.get("id") == "4")
+    assert stack["ok"] is True
+    assert stack["result"]["frames"][0]["filename"] == bp_file
+
+
+def test_thread_breakpoint_hits_with_stdio_replay(tmpdir):
+    """Source breakpoints should fire in worker threads during stdio replay."""
+    script = os.path.realpath(os.path.join(os.path.dirname(__file__), "..", "examples", "target_threads.py"))
+    trace = os.path.join(tmpdir, "trace.retrace")
+
+    record_raw(script, trace)
+
+    responses, result = replay_stdio(trace, [
+        {"id": "1", "command": "hello"},
+        {"id": "2", "command": "hit_breakpoints", "params": {
+            "breakpoint": {"file": script, "line": 8},
+            "max_hits": 6,
+        }},
+    ])
+    assert result.returncode == 0, f"Replay failed:\n{result.stderr}"
+
+    hits = [
+        r["payload"]["cursor"]
+        for r in responses
+        if r.get("kind") == "event" and r.get("event") == "breakpoint_hit"
+    ]
+    assert len(hits) == 6
+    assert all(hit["lineno"] == 8 for hit in hits)

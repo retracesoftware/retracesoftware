@@ -15,7 +15,7 @@ import sys
 import socket as socket_lib
 import _thread
 from dataclasses import dataclass
-from types import CodeType
+from types import CodeType, FrameType
 from typing import Any, Callable, Generator, Optional, Protocol, TextIO
 
 import retracesoftware.functional as functional
@@ -25,6 +25,7 @@ from retracesoftware.utils.breakpoint import BreakpointSpec, install_breakpoint,
 
 _real_fork = os.fork
 _RETRACE_PACKAGE_DIR = os.path.dirname(os.path.realpath(__file__))
+_HAS_MONITORING = hasattr(sys, "monitoring")
 
 @dataclass
 class StopAtBreakpoint:
@@ -662,6 +663,11 @@ def register_cursor_callback(cursor_dict, callback, on_missed=None):
         cursor.watch(counts, on_start=callback, on_missed=on_missed)
         return
 
+    if not _HAS_MONITORING:
+        monitor = _SetTraceCursorMonitor(counts, target_f_lasti, callback)
+        monitor.install()
+        return monitor
+
     os_tid = _thread.get_ident()
     tool_id = _acquire_tool_id("retrace_cursor_advance")
     E = sys.monitoring.events
@@ -690,6 +696,131 @@ def _find_frame_for_code(code: CodeType):
             return frame
         frame = frame.f_back
     return None
+
+
+class _SetTraceCursorMonitor:
+    """Cursor materialization fallback for Python versions without sys.monitoring.
+
+    The 3.12 path stops at an exact bytecode offset via INSTRUCTION events.
+    Python 3.11 can provide equivalent opcode events through sys.settrace when
+    ``frame.f_trace_opcodes`` is enabled for the traced frame.
+    """
+
+    def __init__(
+        self,
+        counts: tuple[int, ...],
+        target_f_lasti: int,
+        callback: Callable[[FrameType], Any],
+    ):
+        self._counts = counts
+        self._target_f_lasti = target_f_lasti
+        self._callback = callback
+        self._thread_id = _thread.get_ident()
+        self._previous_trace = None
+        self._trace_func = cursor.call_counter_disable_for(self._trace)
+        self._closed = False
+
+    def install(self, frame: FrameType | None = None) -> None:
+        self._previous_trace = sys.gettrace()
+        sys.settrace(self._trace_func)
+        if frame is not None:
+            frame.f_trace = self._trace_func
+            frame.f_trace_lines = True
+            frame.f_trace_opcodes = True
+
+    def close(self) -> None:
+        if self._closed:
+            return
+        if sys.gettrace() is self._trace_func:
+            sys.settrace(self._previous_trace)
+        self._closed = True
+
+    def _trace(self, frame: FrameType, event: str, arg):  # noqa: ARG002
+        if event == "call":
+            frame.f_trace_opcodes = True
+            return self._trace_func
+        if event != "opcode":
+            return self._trace_func
+        if _thread.get_ident() != self._thread_id:
+            return self._trace_func
+        if tuple(cursor.current_call_counts()) != self._counts:
+            return self._trace_func
+        if frame.f_lasti != self._target_f_lasti:
+            return self._trace_func
+        self.close()
+        self._callback(frame)
+        return None
+
+
+class _SetTraceNextInstructionMonitor:
+    """One-shot next-instruction fallback for Python versions without monitoring."""
+
+    def __init__(
+        self,
+        callback: Callable[[FrameType], Any],
+        thread_id: int,
+        target_code: CodeType | None = None,
+        start_offset: int | None = None,
+    ):
+        self._callback = callback
+        self._thread_id = thread_id
+        self._target_code = target_code
+        self._start_offset = start_offset
+        self._skipped_start_offset = False
+        self._previous_trace = None
+        self._trace_func = cursor.call_counter_disable_for(self._trace)
+        self._closed = False
+
+    def install(self, frame: FrameType | None = None) -> None:
+        self._previous_trace = sys.gettrace()
+        sys.settrace(self._trace_func)
+        if frame is not None:
+            frame.f_trace = self._trace_func
+            frame.f_trace_lines = True
+            frame.f_trace_opcodes = True
+
+    def close(self) -> None:
+        if self._closed:
+            return
+        if sys.gettrace() is self._trace_func:
+            sys.settrace(self._previous_trace)
+        self._closed = True
+
+    def _trace(self, frame: FrameType, event: str, arg):  # noqa: ARG002
+        if os.getenv("RETRACE_NEXT_TRACE_DEBUG") == "1":
+            print(
+                "NEXT_TRACE",
+                event,
+                frame.f_code.co_filename,
+                frame.f_code.co_name,
+                frame.f_lasti,
+                self._start_offset,
+                self._skipped_start_offset,
+                file=sys.stderr,
+                flush=True,
+            )
+        if event == "call":
+            frame.f_trace_opcodes = True
+            return self._trace_func
+        if event != "opcode":
+            return self._trace_func
+        if _thread.get_ident() != self._thread_id:
+            return self._trace_func
+        if _is_retrace_internal_code(frame.f_code):
+            return self._trace_func
+        if (
+            self._start_offset is not None
+            and frame.f_lasti == self._start_offset
+        ):
+            self._skipped_start_offset = True
+            return self._trace_func
+        self.close()
+        frame.f_trace = None
+        frame.f_trace_lines = False
+        frame.f_trace_opcodes = False
+        self._callback(frame)
+        return None
+
 
 def _is_retrace_internal_code(code: CodeType) -> bool:
     filename = code.co_filename
@@ -731,6 +862,7 @@ class Controller:
         self._done = False
         self._stopped_frame = None
         self._last_code: CodeType | None = None
+        self._returning_to_counts: tuple[int, ...] | None = None
         self._event_loop_lock = _thread.allocate_lock()
 
         self.event_loop = control_event_loop(
@@ -877,7 +1009,16 @@ class Controller:
             try:
                 if self._done:
                     return
-                snapshot = self._cursor_dict(cursor.cursor_snapshot().to_dict())
+                self._stopped_frame = _find_user_frame()
+                snapshot = cursor.cursor_snapshot().to_dict()
+                counts = list(snapshot.get("function_counts") or [])
+                if counts:
+                    snapshot["function_counts"] = counts[:-1]
+                self._returning_to_counts = tuple(snapshot.get("function_counts") or ())
+                if self._stopped_frame is not None:
+                    snapshot["f_lasti"] = self._stopped_frame.f_lasti
+                    snapshot["lineno"] = FrameInspector._frame_lineno(self._stopped_frame)
+                snapshot = self._cursor_dict(snapshot)
                 try:
                     self.event_loop.send(snapshot)
                     intent2 = self.event_loop.send("return")
@@ -910,6 +1051,74 @@ class Controller:
         target_code = self._stopped_frame.f_code if self._stopped_frame is not None else None
         start_offset = self._stopped_frame.f_lasti if self._stopped_frame is not None else None
         skipped_start_offset = False
+
+        if not _HAS_MONITORING:
+            def on_hit(frame):
+                self._last_code = frame.f_code
+                self._stopped_frame = frame
+                self._returning_to_counts = None
+                cursor_dict = {
+                    "thread_id": self._get_thread_id(),
+                    "function_counts": list(cursor.current_call_counts()),
+                    "f_lasti": frame.f_lasti,
+                    "lineno": FrameInspector._frame_lineno(frame),
+                }
+                self._send_and_handle_locked(cursor_dict)
+
+            monitor = _SetTraceNextInstructionMonitor(
+                callback=self._disable_for(on_hit),
+                thread_id=os_tid,
+                target_code=target_code,
+                start_offset=start_offset,
+            )
+            self._trace_monitor = monitor
+
+            returning_to_counts = self._returning_to_counts
+            if os.getenv("RETRACE_NEXT_TRACE_DEBUG") == "1":
+                print(
+                    "NEXT_INSTALL",
+                    "current", tuple(cursor.current_call_counts()),
+                    "returning", returning_to_counts,
+                    "frame", (
+                        None if self._stopped_frame is None
+                        else (self._stopped_frame.f_code.co_filename, self._stopped_frame.f_code.co_name, self._stopped_frame.f_lasti)
+                    ),
+                    file=sys.stderr,
+                    flush=True,
+                )
+            if (
+                returning_to_counts is not None
+                and tuple(cursor.current_call_counts()) != returning_to_counts
+            ):
+                def arm_after_return():
+                    frame = _find_user_frame()
+                    if os.getenv("RETRACE_NEXT_TRACE_DEBUG") == "1":
+                        print(
+                            "NEXT_ARM_AFTER_RETURN",
+                            "current", tuple(cursor.current_call_counts()),
+                            "frame", (
+                                None if frame is None
+                                else (frame.f_code.co_filename, frame.f_code.co_name, frame.f_lasti)
+                            ),
+                            file=sys.stderr,
+                            flush=True,
+                        )
+                    if frame is not None:
+                        self._stopped_frame = frame
+                        monitor._target_code = frame.f_code
+                        monitor._start_offset = frame.f_lasti
+                    monitor.install(frame)
+
+                cursor.watch(
+                    returning_to_counts,
+                    on_start=self._disable_for(arm_after_return),
+                )
+                return
+
+            self._returning_to_counts = None
+            monitor.install(self._stopped_frame)
+            return
+
         tool_id = _acquire_tool_id("retrace_next_instr")
         E = sys.monitoring.events
         monitor = utils.InstructionMonitor(tool_id)
@@ -1052,5 +1261,6 @@ class Controller:
         if self._trace_monitor is not None:
             self._trace_monitor.close()
             self._trace_monitor = None
+        self._returning_to_counts = None
         cursor.set_on_thread_switch(None)
         self._stopped_frame = None

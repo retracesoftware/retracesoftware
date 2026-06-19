@@ -15,6 +15,67 @@ import sys
 import pkgutil
 import fnmatch
 import os
+import site
+import sysconfig
+
+
+def _ignore_globs_for_root(root):
+    roots = {
+        os.fsdecode(root),
+        os.path.realpath(root),
+    }
+    globs = []
+    for item in sorted(roots):
+        item = item.replace("\\", "/").rstrip("/")
+        if not item:
+            continue
+        globs.extend((item, f"{item}/*"))
+    return tuple(globs)
+
+
+def _package_root_ignore_globs():
+    package_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    roots = [package_root]
+
+    # Editable installs commonly import retracesoftware from
+    # <checkout>/src/retracesoftware while importlib/path hooks stat the
+    # checkout root itself. Treat that source checkout as Retrace control-plane
+    # input too, but do not broaden wheel installs under site-packages.
+    source_root = os.path.dirname(package_root)
+    checkout_root = os.path.dirname(source_root)
+    if os.path.basename(source_root) == "src":
+        roots.extend([source_root, checkout_root])
+
+    globs = []
+    for root in roots:
+        globs.extend(_ignore_globs_for_root(root))
+    return tuple(globs)
+
+
+def _library_root_ignore_globs():
+    roots = {
+        sys.prefix,
+        sys.exec_prefix,
+    }
+    for key in ("purelib", "platlib"):
+        path = sysconfig.get_path(key)
+        if path:
+            roots.add(path)
+    for getter in (site.getsitepackages, site.getusersitepackages):
+        try:
+            paths = getter()
+        except Exception:
+            continue
+        if isinstance(paths, (str, bytes, os.PathLike)):
+            roots.add(paths)
+        else:
+            roots.update(path for path in paths if path)
+
+    globs = []
+    for root in sorted(roots):
+        globs.extend(_ignore_globs_for_root(root))
+    return tuple(globs)
+
 
 DEFAULT_IGNORE_GLOBS = (
     "__pycache__",
@@ -27,6 +88,15 @@ DEFAULT_IGNORE_GLOBS = (
     "/tmp/pytest-of-*/*",
     "/var/tmp/pytest-of-*",
     "/var/tmp/pytest-of-*/*",
+    # Retrace's own package files are control-plane inputs. If an editable
+    # checkout or venv lives under /tmp, the broad /tmp retrace pattern should
+    # not turn import/resource/stat probes for retracesoftware itself into
+    # recorded application behavior.
+    *_package_root_ignore_globs(),
+    # Virtualenv/site-package contents are dependency and interpreter inputs.
+    # They normally live outside /tmp and pass through; keep that behavior when
+    # a clean test/demo venv is created under /tmp.
+    *_library_root_ignore_globs(),
 )
 
 def load_patterns(extra_file=None):

@@ -1,10 +1,13 @@
 import os
 import sys
+import threading
 from dataclasses import dataclass
 from types import CodeType, FrameType
 from typing import Callable, Optional
 
 from . import install_call_counter, cursor_snapshot, call_counter_disable_for
+
+_HAS_MONITORING = hasattr(sys, "monitoring")
 
 @dataclass
 class BreakpointSpec:
@@ -40,6 +43,27 @@ class BreakpointMonitor:
             sys.monitoring.free_tool_id(self._tool_id)
         except Exception:
             pass
+        self._closed = True
+
+
+class SetTraceBreakpointMonitor:
+    """Line-breakpoint monitor for Python versions without sys.monitoring."""
+
+    def __init__(self, trace_func: Callable):
+        self._previous_trace = sys.gettrace()
+        self._previous_thread_trace = threading.gettrace()
+        self._closed = False
+        self._trace_func = trace_func
+        sys.settrace(trace_func)
+        threading.settrace(trace_func)
+
+    def close(self) -> None:
+        if self._closed:
+            return
+        if sys.gettrace() is self._trace_func:
+            sys.settrace(self._previous_trace)
+        if threading.gettrace() is self._trace_func:
+            threading.settrace(self._previous_thread_trace)
         self._closed = True
 
 
@@ -114,6 +138,25 @@ def install_breakpoint(
 
     install_call_counter()
     compiled = _compile_breakpoint(breakpoint)
+    if not _HAS_MONITORING:
+        _log("sys.monitoring unavailable; using sys.settrace breakpoint fallback")
+        trace_func = None
+
+        def on_trace_event(frame: FrameType, event: str, arg):  # noqa: ARG001
+            if event == "call":
+                if compiled.code_predicate(frame.f_code):
+                    return trace_func
+                return None
+            if event == "line":
+                if compiled.code_predicate(frame.f_code) and compiled.frame_predicate(frame):
+                    _log(f"TRACE hit: {frame.f_code.co_filename}:{frame.f_lineno}")
+                    callback(cursor_snapshot().to_dict())
+                return trace_func
+            return trace_func
+
+        trace_func = _wrap(on_trace_event)
+        return SetTraceBreakpointMonitor(trace_func)
+
     tool_id = _acquire_tool_id("retrace_breakpoint")
     _log(f"tool_id={tool_id}")
 

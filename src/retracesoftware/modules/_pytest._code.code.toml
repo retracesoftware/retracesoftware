@@ -1,0 +1,8 @@
+package = "pytest"
+
+# Pytest traceback path rendering is framework/control-plane formatting. It
+# asks for the current working directory while turning failures into terminal
+# output; recording that can desync extracted replay when pytest's formatting
+# path shifts between record and replay.
+[type_attributes.FormattedExcinfo]
+disable = ["_makepath"]

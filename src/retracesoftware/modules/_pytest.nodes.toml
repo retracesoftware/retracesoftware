@@ -1,0 +1,7 @@
+package = "pytest"
+
+# Pytest failure representation is framework/control-plane formatting. It reads
+# cwd/source paths while turning a failed call into terminal output; those probes
+# are not user application behavior and can desync extracted replay.
+[type_attributes.Item]
+disable = ["_repr_failure_py"]

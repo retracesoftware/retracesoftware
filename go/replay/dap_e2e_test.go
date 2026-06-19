@@ -174,6 +174,50 @@ func requirePython312(t *testing.T) string {
 	return p
 }
 
+// findPython311 searches for a Python 3.11 with retracesoftware installed.
+func findPython311() (string, error) {
+	var candidates []string
+	if p := os.Getenv("RETRACE_TEST_PYTHON311"); p != "" {
+		candidates = append(candidates, p)
+	}
+	if src := checkoutSrcDir(); src != "" {
+		root := filepath.Dir(src)
+		candidates = append(candidates,
+			filepath.Join(root, ".venv311", "bin", "python"),
+		)
+	}
+	if p, err := exec.LookPath("python3.11"); err == nil {
+		candidates = append(candidates, p)
+	}
+
+	for _, p := range candidates {
+		if _, err := os.Stat(p); err != nil {
+			continue
+		}
+		out, err := pythonCommand(p, "-c",
+			"import sys; v=sys.version_info; print(f'{v.major}.{v.minor}'); "+pythonImportProbe).CombinedOutput()
+		if err != nil {
+			continue
+		}
+		ver := strings.TrimSpace(strings.SplitN(string(out), "\n", 2)[0])
+		var major, minor int
+		fmt.Sscanf(ver, "%d.%d", &major, &minor)
+		if major == 3 && minor == 11 {
+			return p, nil
+		}
+	}
+	return "", fmt.Errorf("no Python 3.11 with retracesoftware found")
+}
+
+func requirePython311(t *testing.T) string {
+	t.Helper()
+	p, err := findPython311()
+	if err != nil {
+		t.Skipf("skipping: %v", err)
+	}
+	return p
+}
+
 type dapSession struct {
 	t              *testing.T
 	client         *dapClient
@@ -768,6 +812,33 @@ print(after)
 	session.step("stepOut")
 	assertTopFrame(t, session.topFrame(), session.script, 7, "<module>")
 	t.Log("OK: stepOut -> caller line 7")
+}
+
+// TestDAPDebuggerControlsPython311E2E verifies that the Go DAP proxy's source
+// breakpoint path works on Python 3.11, where the Python control runtime must
+// use sys.settrace instead of sys.monitoring.
+func TestDAPDebuggerControlsPython311E2E(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping e2e test in short mode")
+	}
+	python := requirePython311(t)
+
+	const source = `def add(a, b):
+    c = a + b
+    return c
+
+value = 1
+other = 2
+total = add(value, other)
+after = total + 1
+print(after)
+`
+
+	session := newDAPSession(t, python, "controls_py311_target.py", source)
+	session.setBreakpoint(7)
+	session.configurationDone()
+	session.continueToBreakpoint()
+	assertTopFrame(t, session.topFrame(), session.script, 7, "<module>")
 }
 
 // TestDAPContinueAdvancesWithinSameTraceMessageE2E records a tiny script with

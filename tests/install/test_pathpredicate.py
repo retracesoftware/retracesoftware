@@ -1,11 +1,15 @@
 """Validate that make_pathpredicate(verbose=True) and make_pathpredicate(verbose=False)
 produce predicates with identical accept/reject behaviour."""
 
+import os
 import re
+import sys
+import sysconfig
 from pathlib import Path
 
 import pytest
 
+import retracesoftware
 from retracesoftware.install.pathpredicate import make_pathpredicate
 
 
@@ -66,6 +70,42 @@ class TestVerboseQuietParity:
     )
     def test_pytest_tmp_root_is_ignored_even_under_matching_prefix(self, predicate, path):
         assert predicate(path) is False
+
+    def test_retracesoftware_package_root_is_ignored_even_under_matching_pattern(self, predicate):
+        package_path = Path(retracesoftware.__file__).resolve()
+        package_root = os.fspath(package_path.parent).replace("\\", "/")
+        package_predicate = make_pathpredicate([re.compile(re.escape(package_root))])
+
+        assert package_predicate(package_path) is False
+        assert package_predicate(package_path.parent / "modules" / "__init__.py") is False
+
+    def test_retracesoftware_editable_checkout_root_is_ignored(self):
+        package_root = Path(retracesoftware.__file__).resolve().parent
+        if package_root.parent.name != "src":
+            pytest.skip("only meaningful for src-layout editable installs")
+
+        checkout_root = package_root.parent.parent
+        checkout_predicate = make_pathpredicate(
+            [re.compile(re.escape(os.fspath(checkout_root).replace("\\", "/")))]
+        )
+
+        assert checkout_predicate(checkout_root) is False
+        assert checkout_predicate(package_root.parent) is False
+
+    def test_site_packages_root_is_ignored_even_under_matching_pattern(self):
+        purelib = sysconfig.get_path("purelib")
+        assert purelib
+        purelib = os.fspath(purelib).replace("\\", "/")
+        site_predicate = make_pathpredicate([re.compile(re.escape(purelib))])
+
+        assert site_predicate(Path(purelib) / "pytest" / "__init__.py") is False
+
+    def test_virtualenv_prefix_root_is_ignored_even_under_matching_pattern(self):
+        prefix = os.fspath(sys.prefix).replace("\\", "/")
+        prefix_predicate = make_pathpredicate([re.compile(re.escape(prefix))])
+
+        assert prefix_predicate(Path(prefix)) is False
+        assert prefix_predicate(Path(prefix) / "pyvenv.cfg") is False
 
 
 class TestEmptyPatterns:
