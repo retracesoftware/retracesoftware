@@ -1,0 +1,6 @@
+# tempfile probes candidate temp directories by creating a random file, writing
+# b"blat", closing it, and unlinking it. That probe is Python/runtime
+# control-plane state, not application behavior. Keeping it disabled prevents
+# pytest/DAP replay scans from diverging on live tempdir setup while preserving
+# user-visible tempfile calls after the directory has been selected.
+disable = ["_get_default_tempdir"]

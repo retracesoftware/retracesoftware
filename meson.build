@@ -158,6 +158,7 @@ install_data(
   _py_root / 'modules/resource.toml',
   _py_root / 'modules/stdlib.toml',
   _py_root / 'modules/syslog.toml',
+  _py_root / 'modules/tempfile.toml',
   install_dir: py.get_install_dir() / 'retracesoftware/modules',
 )
 
