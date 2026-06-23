@@ -1,0 +1,169 @@
+{
+  "debug_session_id": "local-trimmed-dataframe-fixture",
+  "kind": "retrace_ai_driver_run",
+  "report": {
+    "evidence": [
+      {
+        "source": "retrace-dap",
+        "summary": "Started Retrace DAP replay session and stopped at entry."
+      },
+      {
+        "source": "retrace-dap",
+        "summary": "DAP setBreakpoints completed."
+      },
+      {
+        "source": "retrace-dap",
+        "summary": "continue_execution stopped replay through DAP with reason 'breakpoint'."
+      },
+      {
+        "source": "retrace-dap",
+        "summary": "DAP stack trace has 43 frame(s); top frame is test_financial_report.py:26 in test_generate_financial_report."
+      },
+      {
+        "source": "retrace-dap",
+        "summary": "Read source context through DAP around test_financial_report.py:26."
+      },
+      {
+        "source": "retrace-dap",
+        "summary": "Read 4 variable(s) through DAP."
+      }
+    ],
+    "failure_category": "dataframe_assertion_mismatch",
+    "failure_domain": "target_application",
+    "limitations": [
+      "This report was produced by the self-contained local demo service, not by the hosted LLM service.",
+      "Use USE_HOSTED_AI=1 with RETRACE_API_KEY to test hosted prompting/model behavior."
+    ],
+    "root_cause": {
+      "claim": "The financial report output does not match the expected dataframe; the recorded failure is a pandas assert_frame_equal mismatch in amount_gbp.",
+      "confidence": "medium",
+      "why": "This local deterministic service drove the same retrace-ai-driver DAP tools that the hosted service uses: start_replay_session, set_breakpoints, continue_execution, get_stack_trace, get_source_context, and get_variables."
+    },
+    "status": "complete",
+    "summary": "The recorded pytest run is replayable through the Retrace DAP/debugger loop. The observed target failure is: pandas DataFrame assertion mismatch observed in replay",
+    "title": "DataFrame amount_gbp mismatch"
+  },
+  "status": "complete",
+  "target": "target_application",
+  "trace": "/workspace/runs/20260623T154350Z-long-1/dataframe-long.retrace",
+  "transcript": [
+    {
+      "arguments": {},
+      "result": {
+        "data": {
+          "session_id": "dap-replay-1",
+          "trace": "/workspace/runs/20260623T154350Z-long-1/dataframe-long.retrace"
+        },
+        "ok": true,
+        "summary": "Started Retrace DAP replay session and stopped at entry."
+      },
+      "tool": "start_replay_session"
+    },
+    {
+      "arguments": {
+        "breakpoints": [
+          {
+            "line": 26
+          }
+        ],
+        "source": {
+          "path": "/workspace/dataframe-test-example/tests/test_financial_report.py"
+        }
+      },
+      "result": {
+        "data": {
+          "breakpoints": [
+            {
+              "line": 26,
+              "verified": true
+            }
+          ]
+        },
+        "ok": true,
+        "summary": "DAP setBreakpoints completed."
+      },
+      "tool": "set_breakpoints"
+    },
+    {
+      "arguments": {},
+      "result": {
+        "data": {
+          "state": "stopped",
+          "stop": {
+            "reason": "breakpoint",
+            "thread_id": 1
+          }
+        },
+        "ok": true,
+        "summary": "continue_execution stopped replay through DAP with reason 'breakpoint'."
+      },
+      "tool": "continue_execution"
+    },
+    {
+      "arguments": {},
+      "result": {
+        "data": {
+          "source": "dap.stackTrace",
+          "stack_frames": [
+            {
+              "id": 0,
+              "line": 26,
+              "name": "test_generate_financial_report",
+              "source": {
+                "name": "test_financial_report.py",
+                "path": "/workspace/dataframe-test-example/tests/test_financial_report.py"
+              }
+            }
+          ],
+          "total_frames": 43
+        },
+        "ok": true,
+        "summary": "DAP stack trace has 43 frame(s); top frame is test_financial_report.py:26 in test_generate_financial_report."
+      },
+      "tool": "get_stack_trace"
+    },
+    {
+      "arguments": {},
+      "result": {
+        "data": {
+          "context": [
+            {
+              "current": true,
+              "line": 26,
+              "text": "    pd.testing.assert_frame_equal(result, expected)"
+            }
+          ],
+          "source": {
+            "path": "/workspace/dataframe-test-example/tests/test_financial_report.py",
+            "via": "dap.source"
+          }
+        },
+        "ok": true,
+        "summary": "Read source context through DAP around test_financial_report.py:26."
+      },
+      "tool": "get_source_context"
+    },
+    {
+      "arguments": {},
+      "result": {
+        "data": {
+          "variables": [
+            {
+              "name": "result",
+              "type": "DataFrame",
+              "value": "amount_gbp left value at positional index 249 is 63750.41"
+            },
+            {
+              "name": "expected",
+              "type": "DataFrame",
+              "value": "amount_gbp expected value at positional index 249 is 59463.2"
+            }
+          ]
+        },
+        "ok": true,
+        "summary": "Read 4 variable(s) through DAP."
+      },
+      "tool": "get_variables"
+    }
+  ]
+}
