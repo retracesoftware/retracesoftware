@@ -15,6 +15,7 @@ import sys
 import sysconfig
 import socket as socket_lib
 import _thread
+import threading
 from dataclasses import dataclass
 from types import CodeType, FrameType
 from typing import Any, Callable, Generator, Optional, Protocol, TextIO
@@ -1010,6 +1011,46 @@ class _SetTraceNextInstructionMonitor:
         return None
 
 
+class _SetTraceExceptionMonitor:
+    """Exception monitor fallback for Python versions without sys.monitoring."""
+
+    def __init__(
+        self,
+        callback: Callable[[FrameType, int, BaseException], Any],
+        disable_for: Callable[[Callable], Callable],
+    ):
+        self._callback = callback
+        self._previous_trace = None
+        self._previous_thread_trace = None
+        self._trace_func = disable_for(self._trace)
+        self._closed = False
+
+    def install(self) -> None:
+        self._previous_trace = sys.gettrace()
+        self._previous_thread_trace = threading.gettrace()
+        sys.settrace(self._trace_func)
+        threading.settrace(self._trace_func)
+
+    def close(self) -> None:
+        if self._closed:
+            return
+        if sys.gettrace() is self._trace_func:
+            sys.settrace(self._previous_trace)
+        if threading.gettrace() is self._trace_func:
+            threading.settrace(self._previous_thread_trace)
+        self._closed = True
+
+    def _trace(self, frame: FrameType, event: str, arg):  # noqa: ARG002
+        if self._closed:
+            return None
+        if event == "exception":
+            _, exception, _ = arg
+            self._callback(frame, frame.f_lasti, exception)
+            if self._closed:
+                return None
+        return self._trace_func
+
+
 def _is_retrace_internal_code(code: CodeType) -> bool:
     filename = code.co_filename
     if not filename:
@@ -1059,8 +1100,9 @@ def _code_classification(code: CodeType) -> str:
 def _is_control_flow_exception(exception: BaseException) -> bool:
     return not isinstance(exception, Exception) or isinstance(exception, GeneratorExit)
 
-def _is_traced_shutdown_exception() -> bool:
-    frame = sys._getframe(1)
+def _is_traced_shutdown_exception(frame: FrameType | None = None) -> bool:
+    if frame is None:
+        frame = sys._getframe(1)
     while frame is not None:
         if (
             frame.f_code.co_name == "traced_shutdown_callback"
@@ -1268,8 +1310,14 @@ class Controller:
         else:
             raise RuntimeError(f"unexpected intent: {intent}")
 
-    def _failure_candidate(self, code: CodeType, offset: int, exception: BaseException) -> dict[str, Any]:
-        frame = _find_frame_for_code(code)
+    def _failure_candidate(
+        self,
+        code: CodeType,
+        offset: int,
+        exception: BaseException,
+        frame: FrameType | None = None,
+    ) -> dict[str, Any]:
+        frame = frame or _find_frame_for_code(code)
         line = self._lineno_from_code(code, offset)
         snapshot = self._cursor_dict(cursor.cursor_snapshot().to_dict())
         snapshot["f_lasti"] = offset
@@ -1312,13 +1360,11 @@ class Controller:
         if self._failure_search_monitor is not None:
             self._failure_search_monitor.close()
 
-        tool_id = _acquire_tool_id("retrace_search_failures")
-        E = sys.monitoring.events
         owner = self
 
         class FailureSearchMonitor:
-            def __init__(self, tool_id, limit):
-                self._tool_id = tool_id
+            def __init__(self, close_hook, limit):
+                self._close_hook = close_hook
                 self._limit = limit
                 self._closed = False
                 self.candidates: list[dict[str, Any]] = []
@@ -1326,12 +1372,7 @@ class Controller:
             def close(self):
                 if self._closed:
                     return
-                sys.monitoring.set_events(self._tool_id, 0)
-                sys.monitoring.register_callback(self._tool_id, E.RAISE, None)
-                try:
-                    sys.monitoring.free_tool_id(self._tool_id)
-                except Exception:
-                    pass
+                self._close_hook()
                 self._closed = True
 
             def add(self, candidate: dict[str, Any]) -> bool:
@@ -1347,19 +1388,54 @@ class Controller:
                     "message_index": message_index,
                 }
 
-        monitor = FailureSearchMonitor(tool_id, intent.limit)
-        self._failure_search_monitor = monitor
-
-        def _on_raise(code, offset, exception):
+        def _on_raise(
+            code: CodeType,
+            offset: int,
+            exception: BaseException,
+            frame: FrameType | None = None,
+        ):
             if self._done:
                 return None
-            candidate = owner._failure_candidate(code, offset, exception)
+            candidate = owner._failure_candidate(code, offset, exception, frame)
             if not monitor.add(candidate):
                 return None
             owner._failure_search_monitor = None
             owner._send_and_handle_locked(monitor.finish(reason="limit", message_index=owner._message_index))
             return None
 
+        if not _HAS_MONITORING:
+            trace_monitor = None
+
+            def close_trace_monitor():
+                if trace_monitor is not None:
+                    trace_monitor.close()
+
+            monitor = FailureSearchMonitor(close_trace_monitor, intent.limit)
+            self._failure_search_monitor = monitor
+
+            def _on_trace_exception(frame: FrameType, offset: int, exception: BaseException):
+                return _on_raise(frame.f_code, offset, exception, frame)
+
+            trace_monitor = _SetTraceExceptionMonitor(
+                callback=_on_trace_exception,
+                disable_for=self._disable_for,
+            )
+            trace_monitor.install()
+            return
+
+        tool_id = _acquire_tool_id("retrace_search_failures")
+        E = sys.monitoring.events
+
+        def close_monitoring():
+            sys.monitoring.set_events(tool_id, 0)
+            sys.monitoring.register_callback(tool_id, E.RAISE, None)
+            try:
+                sys.monitoring.free_tool_id(tool_id)
+            except Exception:
+                pass
+
+        monitor = FailureSearchMonitor(close_monitoring, intent.limit)
+        self._failure_search_monitor = monitor
         sys.monitoring.register_callback(tool_id, E.RAISE, self._disable_for(_on_raise))
         sys.monitoring.set_events(tool_id, E.RAISE)
 
@@ -1367,30 +1443,24 @@ class Controller:
         if self._failure_monitor is not None:
             self._failure_monitor.close()
 
-        tool_id = _acquire_tool_id("retrace_stop_failure")
-        E = sys.monitoring.events
-
         class FailureMonitor:
-            def __init__(self, tool_id):
-                self._tool_id = tool_id
+            def __init__(self, close_hook):
+                self._close_hook = close_hook
                 self._closed = False
 
             def close(self):
                 if self._closed:
                     return
-                sys.monitoring.set_events(self._tool_id, 0)
-                sys.monitoring.register_callback(self._tool_id, E.RAISE, None)
-                try:
-                    sys.monitoring.free_tool_id(self._tool_id)
-                except Exception:
-                    pass
+                self._close_hook()
                 self._closed = True
 
-        monitor = FailureMonitor(tool_id)
-        self._failure_monitor = monitor
-
-        def _on_raise(code, offset, exception):
-            is_shutdown_exception = _is_traced_shutdown_exception()
+        def _on_raise(
+            code: CodeType,
+            offset: int,
+            exception: BaseException,
+            frame: FrameType | None = None,
+        ):
+            is_shutdown_exception = _is_traced_shutdown_exception(frame)
             if is_shutdown_exception and _is_handled_shutdown_probe_exception(code, exception):
                 return None
             if self._done or not (
@@ -1400,7 +1470,7 @@ class Controller:
                 return None
             if _is_control_flow_exception(exception):
                 return None
-            frame = _find_frame_for_code(code) or _find_user_frame()
+            frame = frame or _find_frame_for_code(code) or _find_user_frame()
             if frame is None:
                 return None
             monitor.close()
@@ -1431,6 +1501,39 @@ class Controller:
             self._send_and_handle_locked(stop_result)
             return None
 
+        if not _HAS_MONITORING:
+            trace_monitor = None
+
+            def close_trace_monitor():
+                if trace_monitor is not None:
+                    trace_monitor.close()
+
+            monitor = FailureMonitor(close_trace_monitor)
+            self._failure_monitor = monitor
+
+            def _on_trace_exception(frame: FrameType, offset: int, exception: BaseException):
+                return _on_raise(frame.f_code, offset, exception, frame)
+
+            trace_monitor = _SetTraceExceptionMonitor(
+                callback=_on_trace_exception,
+                disable_for=self._disable_for,
+            )
+            trace_monitor.install()
+            return
+
+        tool_id = _acquire_tool_id("retrace_stop_failure")
+        E = sys.monitoring.events
+
+        def close_monitoring():
+            sys.monitoring.set_events(tool_id, 0)
+            sys.monitoring.register_callback(tool_id, E.RAISE, None)
+            try:
+                sys.monitoring.free_tool_id(tool_id)
+            except Exception:
+                pass
+
+        monitor = FailureMonitor(close_monitoring)
+        self._failure_monitor = monitor
         sys.monitoring.register_callback(tool_id, E.RAISE, self._disable_for(_on_raise))
         sys.monitoring.set_events(tool_id, E.RAISE)
 

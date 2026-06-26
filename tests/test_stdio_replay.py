@@ -12,12 +12,6 @@ PYTHON = sys.executable
 TIMEOUT = 30
 SCRIPTS_DIR = os.path.join(os.path.dirname(__file__), "scripts")
 
-needs_monitoring = pytest.mark.skipif(
-    sys.version_info < (3, 12),
-    reason="stdio failure inspection uses sys.monitoring-backed search",
-)
-
-
 @pytest.fixture
 def tmpdir():
     d = tempfile.mkdtemp(prefix="retrace_stdio_")
@@ -78,7 +72,6 @@ def replay_stdio(trace_path, commands):
     return responses, result
 
 
-@needs_monitoring
 def test_stop_at_failure_exposes_application_frame_state(tmpdir):
     """stop_at_failure stops on the user exception and keeps the frame inspectable."""
     script = os.path.join(tmpdir, "failure_target.py")
@@ -154,7 +147,6 @@ def test_stop_at_failure_exposes_application_frame_state(tmpdir):
     assert responses[5]["ok"] is True
 
 
-@needs_monitoring
 def test_search_failures_returns_candidates_for_agent_filtering(tmpdir):
     """search_failures reports exception candidates with cursors for app-side filtering."""
     script = os.path.join(tmpdir, "failure_search_target.py")

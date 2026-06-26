@@ -10,12 +10,6 @@ import pytest
 from retracesoftware import agent_diagnose, agent_inspect, agent_mcp, cli
 
 
-needs_monitoring = pytest.mark.skipif(
-    sys.version_info < (3, 12),
-    reason="failure inspection uses sys.monitoring-backed stop_at_failure",
-)
-
-
 def _inspect_report(recording: Path) -> dict:
     return {
         "recording": {"path": str(recording), "pid": None, "thread_id": "main"},
@@ -90,7 +84,6 @@ def test_control_recording_path_extracts_framed_recording_root_pid(
     ]
 
 
-@needs_monitoring
 def test_inspect_recording_reads_unhandled_exception_from_binary_recording(tmp_path: Path) -> None:
     script = tmp_path / "repro_unhandled_exception.py"
     script.write_text(
