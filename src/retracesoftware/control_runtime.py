@@ -26,6 +26,7 @@ from retracesoftware.utils.breakpoint import BreakpointSpec, install_breakpoint,
 
 _real_fork = os.fork
 _RETRACE_PACKAGE_DIR = os.path.dirname(os.path.realpath(__file__))
+_INSTALL_INIT = os.path.join(_RETRACE_PACKAGE_DIR, "install", "__init__.py")
 _HAS_MONITORING = hasattr(sys, "monitoring")
 _STDLIB_DIR = os.path.realpath(sysconfig.get_path("stdlib") or "")
 _PLATSTDLIB_DIR = os.path.realpath(sysconfig.get_path("platstdlib") or "")
@@ -232,19 +233,16 @@ class FrameInspector:
         for name, value in frame.f_locals.items():
             if name_filter is not None and name != name_filter:
                 continue
-            try:
-                val_repr = repr(value)
-            except Exception:
-                val_repr = "<repr failed>"
-            truncated = len(val_repr) > repr_budget
-            if truncated:
-                val_repr = val_repr[: max(repr_budget - 3, 0)] + "..."
-            result.append({
+            val_repr, truncated, children = _debug_value_preview(value, repr_budget)
+            item = {
                 "name": name,
                 "value": val_repr,
                 "type": type(value).__name__,
                 "truncated": truncated,
-            })
+            }
+            if children:
+                item["children"] = children
+            result.append(item)
         return {"variables": result}
 
     def inspect(self, params: dict[str, Any]) -> dict[str, Any]:
@@ -288,6 +286,87 @@ class FrameInspector:
             "filename": self._frame.f_code.co_filename,
             "line": self._frame_lineno(self._frame),
         }
+
+
+def _debug_value_preview(value, repr_budget: int) -> tuple[str, bool, list[dict[str, str]]]:
+    dataframe_children = _dataframe_children(value, repr_budget)
+    if dataframe_children is not None:
+        shape = getattr(value, "shape", None)
+        columns = _safe_list(getattr(value, "columns", []))
+        return (
+            f"DataFrame shape={shape!r} columns={columns!r}",
+            False,
+            dataframe_children,
+        )
+
+    try:
+        val_repr = repr(value)
+    except Exception:
+        val_repr = "<repr failed>"
+    truncated = len(val_repr) > repr_budget
+    if truncated:
+        val_repr = val_repr[: max(repr_budget - 3, 0)] + "..."
+    return val_repr, truncated, []
+
+
+def _dataframe_children(value, repr_budget: int) -> list[dict[str, str]] | None:
+    if not _is_dataframe_like(value):
+        return None
+    return [
+        {"name": "shape", "value": repr(getattr(value, "shape", None)), "type": "tuple"},
+        {"name": "columns", "value": repr(_safe_list(getattr(value, "columns", []))), "type": "list"},
+        {"name": "dtypes", "value": _safe_repr(_dataframe_dtypes(value), repr_budget), "type": "dict"},
+        {"name": "head", "value": _dataframe_to_string(value, "head", repr_budget), "type": "DataFrame"},
+        {"name": "tail", "value": _dataframe_to_string(value, "tail", repr_budget), "type": "DataFrame"},
+    ]
+
+
+def _is_dataframe_like(value) -> bool:
+    return (
+        type(value).__name__ == "DataFrame"
+        and hasattr(value, "shape")
+        and hasattr(value, "columns")
+        and hasattr(value, "dtypes")
+        and callable(getattr(value, "head", None))
+        and callable(getattr(value, "tail", None))
+    )
+
+
+def _safe_list(value) -> list[str]:
+    try:
+        return [str(item) for item in value]
+    except Exception:
+        return []
+
+
+def _dataframe_dtypes(value) -> dict[str, str]:
+    try:
+        return {str(column): str(dtype) for column, dtype in value.dtypes.items()}
+    except Exception:
+        return {}
+
+
+def _dataframe_to_string(value, method: str, repr_budget: int) -> str:
+    try:
+        sample = getattr(value, method)(5)
+        text = sample.to_string(max_rows=5)
+    except Exception:
+        text = "<preview failed>"
+    return _truncate(text, repr_budget)
+
+
+def _safe_repr(value, repr_budget: int) -> str:
+    try:
+        text = repr(value)
+    except Exception:
+        text = "<repr failed>"
+    return _truncate(text, repr_budget)
+
+
+def _truncate(text: str, budget: int) -> str:
+    if len(text) <= budget:
+        return text
+    return text[: max(budget - 3, 0)] + "..."
 
 
 def _normalize_breakpoint(raw: dict[str, Any]) -> dict[str, Any]:
@@ -980,6 +1059,33 @@ def _code_classification(code: CodeType) -> str:
 def _is_control_flow_exception(exception: BaseException) -> bool:
     return not isinstance(exception, Exception) or isinstance(exception, GeneratorExit)
 
+def _is_traced_shutdown_exception() -> bool:
+    frame = sys._getframe(1)
+    while frame is not None:
+        if (
+            frame.f_code.co_name == "traced_shutdown_callback"
+            and os.path.realpath(frame.f_code.co_filename) == _INSTALL_INIT
+        ):
+            return True
+        frame = frame.f_back
+    return False
+
+def _is_handled_shutdown_probe_exception(code: CodeType, exception: BaseException) -> bool:
+    """Return true for private shutdown probes that are expected to be caught.
+
+    ``multiprocess.process._cleanup`` calls ``Popen.poll()`` during interpreter
+    shutdown.  In forked children that inherited the parent's process registry,
+    that private poll raises ``ChildProcessError`` and catches it immediately to
+    mean "not my child".  Stopping there hides the later shutdown assertion that
+    explains the actual failure.
+    """
+    if not isinstance(exception, ChildProcessError):
+        return False
+    if code.co_name != "poll":
+        return False
+    filename = os.path.realpath(code.co_filename)
+    return filename.endswith(os.path.join("multiprocess", "popen_fork.py"))
+
 def _find_user_frame():
     """Walk the call stack to find the first frame outside retracesoftware internals."""
     frame = sys._getframe(1)
@@ -1284,7 +1390,13 @@ class Controller:
         self._failure_monitor = monitor
 
         def _on_raise(code, offset, exception):
-            if self._done or not _is_application_stop_code(code):
+            is_shutdown_exception = _is_traced_shutdown_exception()
+            if is_shutdown_exception and _is_handled_shutdown_probe_exception(code, exception):
+                return None
+            if self._done or not (
+                _is_application_stop_code(code)
+                or (is_shutdown_exception and not _is_retrace_internal_code(code))
+            ):
                 return None
             if _is_control_flow_exception(exception):
                 return None

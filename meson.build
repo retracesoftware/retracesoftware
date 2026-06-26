@@ -141,6 +141,8 @@ install_data(
   _py_root / 'modules/huggingface_hub.file_download.toml',
   _py_root / 'modules/llama_cpp.llama.toml',
   _py_root / 'modules/mmap.toml',
+  _py_root / 'modules/multiprocess.popen_fork.toml',
+  _py_root / 'modules/multiprocess.process.toml',
   _py_root / 'modules/numpy.random.toml',
   _py_root / 'modules/psycopg2._psycopg.toml',
   _py_root / 'modules/psycopg_c._psycopg.toml',

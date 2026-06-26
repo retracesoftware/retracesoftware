@@ -222,11 +222,23 @@ func (c *Cursor) Stack(ctx context.Context) ([]map[string]any, error) {
 }
 
 func (c *Cursor) Locals(ctx context.Context) ([]map[string]any, error) {
+	return c.LocalsForFrame(ctx, 0)
+}
+
+func (c *Cursor) LocalsForFrame(ctx context.Context, frameIndex int) ([]map[string]any, error) {
 	rp, err := c.ensureReplay(ctx)
 	if err != nil {
 		return nil, err
 	}
-	return rp.Locals(ctx)
+	return rp.LocalsForFrame(ctx, frameIndex)
+}
+
+func (c *Cursor) Evaluate(ctx context.Context, expression string, frameIndex int, reprBudget int) (map[string]any, error) {
+	rp, err := c.ensureReplay(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return rp.Evaluate(ctx, expression, frameIndex, reprBudget)
 }
 
 func (c *Cursor) InstructionToLineno(ctx context.Context) (InstructionInfo, error) {
