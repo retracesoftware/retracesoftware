@@ -42,6 +42,21 @@ TOOLS: list[dict[str, Any]] = [
         },
     },
     {
+        "name": "retrace_replay_divergence_workflow",
+        "description": (
+            "Use this when debugging Retrace itself and replay fails before or differently "
+            "from the expected application failure. It returns the loop for finding the "
+            "first record/replay mismatch instead of treating the final replay exception "
+            "as root cause."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {},
+            "required": [],
+            "additionalProperties": False,
+        },
+    },
+    {
         "name": "retrace_diagnose",
         "description": (
             "Use this first when you want an agentic debugging loop. It inspects the "
@@ -323,6 +338,90 @@ def retrace_agent_workflow() -> dict[str, Any]:
     }
 
 
+def retrace_replay_divergence_workflow() -> dict[str, Any]:
+    """Return the canonical workflow for debugging Retrace replay divergence."""
+    return {
+        "kind": "retrace_replay_divergence_workflow",
+        "goal": "Find the first record/replay mismatch when debugging Retrace itself.",
+        "core_question": "Why did replay stop consuming the same logical event stream that record produced?",
+        "documentation": "docs/REPLAY_DIVERGENCE_LOOP.md",
+        "required_loop": [
+            "Reproduce with a fresh recording and fresh extraction.",
+            "Preserve record, extract, and replay logs plus Python, OS, package, command, cwd, and env details.",
+            "Confirm whether the application failure is expected.",
+            "Identify whether replay fails before the expected application failure.",
+            "Locate the earliest mismatch rather than the final exception.",
+            "Classify the mismatch.",
+            "Reduce the repro while preserving the first mismatch.",
+            "Add a natural regression test.",
+            "Fix only the owning layer.",
+            "Verify the reduced repro, original repro, and sentinel tests.",
+            "Report root cause only with evidence.",
+        ],
+        "decision_gates": [
+            "If replay reaches the same expected application failure, stop this loop and use the ordinary application-failure workflow.",
+            "If replay fails before or differently from the expected application failure, continue this replay-divergence loop.",
+            "If the only available trace or extracted directory is stale, regenerate before claiming root cause.",
+            "If a fresh run no longer reproduces the issue, classify the old result as stale-extraction or packaging evidence.",
+        ],
+        "evidence_commands": [
+            "RETRACE_DEBUG=1 python -m retracesoftware --recording <fresh>.retrace --verbose --stacktraces -- <target command>",
+            "python -m retracesoftware --recording <fresh>.retrace --list_pids",
+            "<fresh>.retrace --extract",
+            "<fresh>.d/<root-pid>.bin",
+            "python -VV",
+            "python -c \"import platform, sys; print(platform.platform()); print(sys.executable)\"",
+            "python -m pip freeze",
+        ],
+        "first_mismatch_questions": [
+            "What logical event did record produce next?",
+            "What logical event did replay expect next?",
+            "What logical event did replay consume instead?",
+            "Which gate, phase, message, binding, materialization, thread, process, path predicate, fd provenance, or control-plane path made them differ?",
+        ],
+        "mismatch_categories": [
+            "boundary",
+            "binding/materialization",
+            "message-order",
+            "control-plane",
+            "scheduling",
+            "pathpredicate/fd-provenance",
+            "finalizer/GC",
+            "subprocess/fork/thread",
+            "packaging",
+            "unknown",
+        ],
+        "owning_layer_ladder": [
+            "src/retracesoftware/modules/*.toml",
+            "src/retracesoftware/install/",
+            "src/retracesoftware/proxy/",
+            "src/retracesoftware/stream/ or src/retracesoftware/protocol/ or cpp/stream/",
+            "go/replay/ or src/retracesoftware/dap/",
+        ],
+        "rules": [
+            "Do not treat the final stack trace as root cause.",
+            "Do not patch the app or library symptom before finding the record/replay mismatch.",
+            "Do not add broad edge-case code if config can disable or control the framework path.",
+            "Do not proxy returned data types unless they are the true external boundary.",
+            "Do not use stale extracted recordings.",
+            "If proxy behavior is involved, name the violated proxy DESIGN.md contract before editing.",
+        ],
+        "report_schema": {
+            "status": "current investigation status",
+            "expected_application_failure": "failure replay should preserve, or pass if the app should pass",
+            "replay_failure_before_expected_failure": "yes|no|unknown",
+            "first_mismatch": "record event vs replay expected/consumed event",
+            "classification": "one mismatch category",
+            "smallest_reproducer": "path or command",
+            "regression_test": "test path/name",
+            "owning_layer": "narrowest responsible layer",
+            "fix_summary": "only after evidence supports the root cause",
+            "validation": ["reduced repro", "original repro", "sentinel tests"],
+            "remaining_risk": "known gaps or unverified platforms",
+        },
+    }
+
+
 def retrace_diagnose(
     recording: str,
     max_frames: int = 5,
@@ -464,6 +563,7 @@ def call_tool(name: str, arguments: dict[str, Any]) -> dict[str, Any]:
     """Call one MCP tool and return an MCP content result."""
     dispatch: dict[str, Callable[..., dict[str, Any]]] = {
         "retrace_agent_workflow": retrace_agent_workflow,
+        "retrace_replay_divergence_workflow": retrace_replay_divergence_workflow,
         "retrace_diagnose": retrace_diagnose,
         "retrace_inspect": retrace_inspect,
         "retrace_failures": retrace_failures,

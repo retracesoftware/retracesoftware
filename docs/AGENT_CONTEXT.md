@@ -61,6 +61,13 @@ retrace_diagnose -> retrace_failures -> retrace_frame -> retrace_function_code
 It also returns rules for when the agent may claim root cause and a structured
 root-cause report schema.
 
+This workflow is for debugging the user's application failure inside a valid
+recording. If Retrace replay itself crashes, consumes the wrong message, fails
+before the expected application failure, or otherwise diverges from record, use
+`retrace_replay_divergence_workflow` through MCP or the canonical loop in
+`docs/REPLAY_DIVERGENCE_LOOP.md` instead. That workflow asks why replay stopped
+consuming the same logical event stream that record produced.
+
 `--latest` is supported through a generic pointer file:
 
 ```text

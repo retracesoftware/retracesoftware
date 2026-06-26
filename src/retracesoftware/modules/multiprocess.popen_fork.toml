@@ -1,0 +1,12 @@
+# multiprocess private child status bookkeeping.
+#
+# ``Popen.poll`` is used by ``multiprocess.process._cleanup`` during
+# interpreter shutdown.  That cleanup can run in forked children that inherited
+# the parent's ``_children`` set, and the live number of poll calls may differ
+# from record before the shutdown assertion is raised.  Keep the private status
+# probe outside the trace so replay reaches the Python shutdown failure itself.
+
+package = "multiprocess"
+
+[type_attributes.Popen]
+disable = ["poll"]

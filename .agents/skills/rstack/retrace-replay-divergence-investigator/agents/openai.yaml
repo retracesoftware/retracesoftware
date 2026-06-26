@@ -1,0 +1,5 @@
+interface:
+  display_name: "Retrace Replay Divergence Investigator"
+  short_description: "Find first record/replay mismatch"
+  default_prompt: "Use $retrace-replay-divergence-investigator to debug this Retrace replay divergence from the first record/replay mismatch."
+

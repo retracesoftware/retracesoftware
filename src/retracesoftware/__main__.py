@@ -305,6 +305,8 @@ def replay(args):
                 get_thread_id=system.thread_id,
             )
             controller_ref[0] = controller
+            if replay_options.trace_shutdown:
+                atexit.register(controller.on_replay_finished)
 
         try:
             with _cli_module_overrides():
@@ -348,7 +350,7 @@ def replay(args):
                         finally:
                             uninstall()
         finally:
-            if controller:
+            if controller and not replay_options.trace_shutdown:
                 controller.on_replay_finished()
 
 def cmd_uninstall(args):

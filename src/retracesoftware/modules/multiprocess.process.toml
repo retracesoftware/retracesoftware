@@ -1,0 +1,12 @@
+# multiprocess process registry cleanup.
+#
+# ``BaseProcess.join`` asserts that the Process belongs to the current live PID.
+# Forked children can inherit the parent's ``_children`` set and hit that
+# assertion during ``multiprocess.util._exit_function``.  The assertion is the
+# useful shutdown failure; wrap join so the inherited-child assertion is raised
+# without consuming replay messages for its private PID probe.
+
+package = "multiprocess"
+
+[type_attributes.BaseProcess.system_wrap]
+join = "retracesoftware.install.edgecases.multiprocess_baseprocess_join"

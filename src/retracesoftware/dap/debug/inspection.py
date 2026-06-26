@@ -245,6 +245,9 @@ class Inspector:
             return [self._var_entry(f"[{i}]", v) for i, v in enumerate(obj)]
         if isinstance(obj, set):
             return [self._var_entry(f"{{{i}}}", v) for i, v in enumerate(obj)]
+        dataframe_entries = _dataframe_entries(obj)
+        if dataframe_entries is not None:
+            return dataframe_entries
 
         # Object attributes
         entries: list[dict[str, Any]] = []
@@ -273,10 +276,16 @@ class Inspector:
 
 
 def _has_children(value: Any) -> bool:
-    return isinstance(value, (dict, list, tuple, set)) and len(value) > 0
+    return (
+        isinstance(value, (dict, list, tuple, set)) and len(value) > 0
+    ) or _is_dataframe_like(value)
 
 
 def _repr(value: Any) -> str:
+    if _is_dataframe_like(value):
+        shape = getattr(value, "shape", None)
+        columns = _safe_list(getattr(value, "columns", []))
+        return f"DataFrame shape={shape!r} columns={columns!r}"
     try:
         r = repr(value)
         if len(r) > 200:
@@ -284,3 +293,57 @@ def _repr(value: Any) -> str:
         return r
     except Exception:
         return "<error>"
+
+
+def _dataframe_entries(value: Any) -> list[dict[str, Any]] | None:
+    if not _is_dataframe_like(value):
+        return None
+    return [
+        {"name": "shape", "value": repr(getattr(value, "shape", None)), "type": "tuple", "variablesReference": 0},
+        {"name": "columns", "value": repr(_safe_list(getattr(value, "columns", []))), "type": "list", "variablesReference": 0},
+        {"name": "dtypes", "value": _safe_repr(_dataframe_dtypes(value)), "type": "dict", "variablesReference": 0},
+        {"name": "head", "value": _dataframe_to_string(value, "head"), "type": "DataFrame", "variablesReference": 0},
+        {"name": "tail", "value": _dataframe_to_string(value, "tail"), "type": "DataFrame", "variablesReference": 0},
+    ]
+
+
+def _is_dataframe_like(value: Any) -> bool:
+    return (
+        type(value).__name__ == "DataFrame"
+        and hasattr(value, "shape")
+        and hasattr(value, "columns")
+        and hasattr(value, "dtypes")
+        and callable(getattr(value, "head", None))
+        and callable(getattr(value, "tail", None))
+    )
+
+
+def _safe_list(value: Any) -> list[str]:
+    try:
+        return [str(item) for item in value]
+    except Exception:
+        return []
+
+
+def _dataframe_dtypes(value: Any) -> dict[str, str]:
+    try:
+        return {str(column): str(dtype) for column, dtype in value.dtypes.items()}
+    except Exception:
+        return {}
+
+
+def _dataframe_to_string(value: Any, method: str) -> str:
+    try:
+        sample = getattr(value, method)(5)
+        text = sample.to_string(max_rows=5)
+    except Exception:
+        text = "<preview failed>"
+    return text[:197] + "..." if len(text) > 200 else text
+
+
+def _safe_repr(value: Any) -> str:
+    try:
+        text = repr(value)
+    except Exception:
+        text = "<error>"
+    return text[:197] + "..." if len(text) > 200 else text
