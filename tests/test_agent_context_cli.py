@@ -506,6 +506,21 @@ def test_mcp_agent_workflow_guides_tool_order() -> None:
     assert payload["root_cause_report_schema"]["confidence"] == "low|medium|high"
 
 
+def test_mcp_replay_divergence_workflow_guides_first_mismatch_loop() -> None:
+    tool_names = {tool["name"] for tool in agent_mcp.list_tools()}
+
+    result = agent_mcp.call_tool("retrace_replay_divergence_workflow", {})
+    payload = json.loads(result["content"][0]["text"])
+
+    assert "retrace_replay_divergence_workflow" in tool_names
+    assert payload["kind"] == "retrace_replay_divergence_workflow"
+    assert "logical event stream" in payload["core_question"]
+    assert payload["required_loop"][0] == "Reproduce with a fresh recording and fresh extraction."
+    assert "binding/materialization" in payload["mismatch_categories"]
+    assert "Do not treat the final stack trace as root cause." in payload["rules"]
+    assert payload["report_schema"]["classification"] == "one mismatch category"
+
+
 def test_mcp_diagnose_tool_uses_environment_fallback(monkeypatch) -> None:
     calls = []
 

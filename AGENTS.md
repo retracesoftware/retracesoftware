@@ -213,6 +213,10 @@ if needed.
 - For changes touching replay-sensitive boundary logic, threading, weakrefs,
   finalizers, fork behavior, or module interception coverage, consider running
   the repo skill `$determinism-check`.
+- For Retrace-internal replay divergence bugs, use the repo skill
+  `$retrace-replay-divergence-investigator` and the canonical loop in
+  `docs/REPLAY_DIVERGENCE_LOOP.md`. This is different from debugging a user's
+  application failure inside a good recording.
 - Replay failures must be debugged in this order:
   1. Find the fundamental divergence between record and replay.
   2. Build the smallest failing regression that reproduces that divergence
@@ -240,6 +244,7 @@ Architecture / behavior:
 - `docs/STREAM.md`
 - `docs/cursors.md`
 - `docs/DEBUGGING.md`
+- `docs/REPLAY_DIVERGENCE_LOOP.md`
 - `MODULES_AUDIT.md`
 - `LIBRARIES_AUDIT.md`
 

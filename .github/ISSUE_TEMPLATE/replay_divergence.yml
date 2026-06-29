@@ -1,0 +1,133 @@
+name: Retrace replay divergence
+description: Report a Retrace record/replay mismatch, not a user application bug.
+title: "Replay divergence: "
+labels: []
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Use this for bugs where Retrace replay fails before, differently from,
+        or instead of the expected application failure. The goal is to identify
+        the first record/replay mismatch, not just the final stack trace.
+  - type: textarea
+    id: summary
+    attributes:
+      label: Summary
+      description: What diverges, and what expected application behavior should replay preserve?
+    validations:
+      required: true
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+      description: OS, architecture, Python version, Retrace version/commit, key dependency versions, install mode, and relevant env with secrets redacted.
+      placeholder: |
+        OS:
+        arch:
+        Python:
+        Retrace:
+        install mode:
+        dependencies:
+        env:
+    validations:
+      required: true
+  - type: textarea
+    id: expected_failure
+    attributes:
+      label: Expected application failure
+      description: If the user program/test is supposed to fail, paste that expected failure. If it should pass, say so.
+    validations:
+      required: true
+  - type: textarea
+    id: fresh_commands
+    attributes:
+      label: Fresh record / extract / replay commands
+      description: Paste the exact commands, cwd, and exit codes. Do not use stale extracted recordings.
+      placeholder: |
+        record cwd:
+        record command:
+        record exit:
+
+        extract cwd:
+        extract command:
+        extract exit:
+
+        replay cwd:
+        replay command:
+        replay exit:
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Preserved logs / artifacts
+      description: Link or paste paths for record log, extract log, replay log, recording, and extracted replay directory.
+      placeholder: |
+        recording:
+        extract dir:
+        record log:
+        extract log:
+        replay log:
+    validations:
+      required: true
+  - type: dropdown
+    id: replay_before_expected
+    attributes:
+      label: Does replay fail before the expected application failure?
+      options:
+        - "yes"
+        - "no"
+        - "unknown"
+    validations:
+      required: true
+  - type: dropdown
+    id: classification
+    attributes:
+      label: First mismatch classification
+      options:
+        - boundary
+        - binding/materialization
+        - message-order
+        - control-plane
+        - scheduling
+        - pathpredicate/fd-provenance
+        - finalizer/GC
+        - subprocess/fork/thread
+        - packaging
+        - unknown
+    validations:
+      required: true
+  - type: textarea
+    id: first_mismatch
+    attributes:
+      label: First observed mismatch
+      description: Describe the earliest point where replay stopped consuming the same logical event stream record produced.
+      placeholder: |
+        record next event:
+        replay expected:
+        replay consumed:
+        gate/phase/message/bind/thread/process evidence:
+    validations:
+      required: true
+  - type: textarea
+    id: reduction
+    attributes:
+      label: Reduced repro
+      description: Smallest repro found so far that preserves the first mismatch.
+    validations:
+      required: false
+  - type: textarea
+    id: regression
+    attributes:
+      label: Regression test
+      description: Test file/name added or proposed. The test should fail naturally on the replay divergence.
+    validations:
+      required: false
+  - type: textarea
+    id: validation
+    attributes:
+      label: Validation / sentinel tests
+      description: Reduced repro, original repro, and sentinel tests run or still needed.
+    validations:
+      required: false
+

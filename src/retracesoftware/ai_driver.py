@@ -21,6 +21,7 @@ from retracesoftware.retracepython import DEFAULT_AI_SERVER
 
 DAP_SESSION_ID = "dap-replay-1"
 DEFAULT_TIMEOUT = 30.0
+MAX_SOURCE_CONTEXT_LINE_CHARS = 4096
 AVAILABLE_TOOLS = [
     "start_replay_session",
     "set_breakpoints",
@@ -389,6 +390,8 @@ class DAPExecutor:
         try:
             if name == "start_replay_session":
                 return self.start_replay_session(arguments)
+            if name == "set_exception_breakpoints":
+                return self.set_exception_breakpoints(arguments)
             if name == "set_breakpoints":
                 return self.set_breakpoints(arguments)
             if name in {
@@ -431,8 +434,29 @@ class DAPExecutor:
         arg_trace = arguments.get("trace")
         if isinstance(arg_trace, dict) and isinstance(arg_trace.get("path"), str):
             trace = arg_trace["path"]
+        resolved_trace = str(Path(trace).resolve())
+        if (
+            self.session is not None
+            and not self.session.closed
+            and self.session.trace == resolved_trace
+            and not bool(arguments.get("restart"))
+        ):
+            return {
+                "ok": True,
+                "summary": "Retrace DAP replay session is already active.",
+                "data": {
+                    "session_id": DAP_SESSION_ID,
+                    "trace": resolved_trace,
+                    "dap": {
+                        "enabled": True,
+                        "capabilities": self.session.capabilities,
+                    },
+                    "note": "Pass restart=true to force a fresh replay session.",
+                },
+                "session": self.session.state,
+            }
         self.close()
-        session = DAPSession(self.replay_bin, trace)
+        session = DAPSession(self.replay_bin, resolved_trace)
         self.session = session
         session.initialize()
         session.launch()
@@ -480,6 +504,25 @@ class DAPExecutor:
         )
         data = resp.get("body") if isinstance(resp.get("body"), dict) else {}
         return {"ok": True, "summary": "DAP setBreakpoints completed.", "data": data, "session": session.state}
+
+    def set_exception_breakpoints(self, arguments: dict[str, Any]) -> dict[str, Any]:
+        session = self._require_session("set_exception_breakpoints")
+        raw_filters = arguments.get("filters")
+        filters = [
+            item
+            for item in raw_filters
+            if isinstance(item, str)
+        ] if isinstance(raw_filters, list) else []
+        resp = session.request("setExceptionBreakpoints", {"filters": filters})
+        data = resp.get("body") if isinstance(resp.get("body"), dict) else {}
+        session.capabilities["exception_breakpoints"] = ",".join(filters) if filters else "disabled"
+        session.state["capabilities"] = session._capability_state()
+        summary = (
+            "DAP exception breakpoints disabled."
+            if not filters
+            else f"DAP exception breakpoints set to {', '.join(filters)}."
+        )
+        return {"ok": True, "summary": summary, "data": data, "session": session.state}
 
     def navigate(self, tool: str, dap_command: str, arguments: dict[str, Any]) -> dict[str, Any]:
         session = self._require_session(tool)
@@ -710,27 +753,7 @@ class DAPExecutor:
         return _parse_python_traceback((completed.stdout or "") + (completed.stderr or ""))
 
     def _pidfile_for_trace(self, trace: str) -> Path | None:
-        path = Path(trace)
-        if path.suffix != ".retrace":
-            return path
-        try:
-            subprocess.run(
-                [self.replay_bin, "--recording", str(path), "--extract"],
-                capture_output=True,
-                text=True,
-                timeout=60,
-            )
-        except (OSError, subprocess.TimeoutExpired):
-            return None
-        index_path = path.with_suffix(".d") / "index.json"
-        try:
-            decoded = json.loads(index_path.read_text(encoding="utf-8"))
-            pid = int(decoded.get("root", {}).get("pid") or 0)
-        except (OSError, ValueError, TypeError, json.JSONDecodeError):
-            return None
-        if pid <= 0:
-            return None
-        return index_path.parent / f"{pid}.bin"
+        return _control_recording_for_trace(trace, replay_bin=self.replay_bin)
 
 
 class StubExecutor:
@@ -749,6 +772,8 @@ def run_driver(args: argparse.Namespace) -> dict[str, Any]:
     executor = _build_executor(args)
     transcript: list[dict[str, Any]] = []
     try:
+        initial_observation = _initial_observation(args, executor, transcript)
+        initial_session = _executor_session_state(executor)
         start_payload = {
             "task": {
                 "goal": "diagnose_failure",
@@ -757,8 +782,8 @@ def run_driver(args: argparse.Namespace) -> dict[str, Any]:
             },
             "trace": str(Path(args.trace).resolve()) if args.trace else "",
             "available_tools": executor.available_tools(),
-            "initial_observation": {"summary": "Driver initialized. No replay tool has been called yet."},
-            "session": {"state": "not_started"},
+            "initial_observation": initial_observation,
+            "session": initial_session,
             "max_tool_calls": args.max_tool_calls,
         }
         if args.time_budget_ms is not None:
@@ -791,6 +816,284 @@ def run_driver(args: argparse.Namespace) -> dict[str, Any]:
         raise DriverError("Retrace AI service did not produce a final report before the tool budget was exhausted")
     finally:
         executor.close()
+
+
+def _initial_observation(
+    args: argparse.Namespace,
+    executor: DAPExecutor | StubExecutor,
+    transcript: list[dict[str, Any]],
+) -> dict[str, Any]:
+    observation: dict[str, Any] = {
+        "summary": "Driver initialized. No replay tool has been called yet.",
+    }
+    if not _task_mentions_pytest(args.task) or not isinstance(executor, DAPExecutor):
+        return observation
+
+    hint = _pytest_failure_hint(args.trace)
+    if not hint:
+        observation["summary"] = (
+            "Driver initialized for a pytest failure. No ranked pytest failure candidate "
+            "was available before AI tool selection. Do not treat the initial DAP entry "
+            "stop as an invalid recording; if a failure line is known, use a source "
+            "breakpoint there before inspecting stack/source/locals."
+        )
+        return observation
+
+    observation["summary"] = (
+        "Driver initialized for a pytest failure with a ranked failure candidate. "
+        "Pytest catches assertion failures, and pytest/plugin startup can raise handled "
+        "exceptions; the driver prefers source-breakpoint positioning over generic "
+        "exception breakpoints."
+    )
+    observation["tool_result"] = {
+        "pytest_failure_candidate": hint,
+        "guidance": (
+            "Inspect the stopped source-breakpoint frame and its locals. Do not restart "
+            "the replay session unless the current session is unusable."
+        ),
+    }
+
+    prelude = _prime_pytest_failure_breakpoint(executor, hint)
+    transcript.extend(prelude)
+    if prelude:
+        final = prelude[-1].get("result") if isinstance(prelude[-1].get("result"), dict) else {}
+        observation["summary"] = (
+            "Driver initialized and pre-positioned DAP replay at the highest-ranked pytest "
+            "failure candidate."
+        )
+        observation["tool_result"] = {
+            **observation["tool_result"],
+            "prelude": {
+                "tool_count": len(prelude),
+                "last_result_summary": final.get("summary", ""),
+                "session": final.get("session", {}),
+            },
+        }
+    else:
+        observation["summary"] = "Driver initialized with a pytest failure candidate."
+    return observation
+
+
+def _task_mentions_pytest(task: str) -> bool:
+    return bool(re.search(r"(^|\s|/|\\|-)pytest(\s|$|/|\\)", task))
+
+
+def _pytest_failure_hint(trace: str) -> dict[str, Any] | None:
+    if not trace:
+        return None
+    try:
+        timeout = int(os.environ.get("RETRACE_AI_FAILURE_SEARCH_TIMEOUT", "20") or "20")
+        limit = int(os.environ.get("RETRACE_AI_FAILURE_SEARCH_LIMIT", "5000") or "5000")
+    except ValueError:
+        timeout = 20
+        limit = 5000
+    control_recording = _control_recording_for_trace(trace)
+    if control_recording is None:
+        return None
+
+    try:
+        from retracesoftware.agent_inspect import inspect_failures
+
+        report = inspect_failures(str(control_recording), limit=limit, timeout_seconds=timeout)
+        hint = _select_pytest_failure_candidate(report)
+        if hint is not None:
+            return hint
+    except Exception:
+        pass
+
+    return _pytest_failure_hint_from_replay_output(
+        control_recording,
+        cwd=_recording_cwd_for_trace(trace),
+        timeout=timeout,
+    )
+
+
+def _control_recording_for_trace(trace: str, replay_bin: str | None = None) -> Path | None:
+    """Return the recording shape expected by Python replay-control tools."""
+    path = Path(trace)
+    if path.suffix != ".retrace":
+        return path
+
+    replay = replay_bin or replay_binary_path()
+    try:
+        completed = subprocess.run(
+            [replay, "--recording", str(path), "--extract"],
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    if completed.returncode != 0:
+        return None
+
+    index_path = path.with_suffix(".d") / "index.json"
+    try:
+        decoded = json.loads(index_path.read_text(encoding="utf-8"))
+        pid = int(decoded.get("root", {}).get("pid") or 0)
+    except (OSError, ValueError, TypeError, json.JSONDecodeError):
+        return None
+    if pid <= 0:
+        return None
+
+    pidfile = index_path.parent / f"{pid}.bin"
+    return pidfile if pidfile.exists() else None
+
+
+def _recording_cwd_for_trace(trace: str) -> Path | None:
+    path = Path(trace)
+    index_path = path.with_suffix(".d") / "index.json" if path.suffix == ".retrace" else path.parent / "index.json"
+    try:
+        decoded = json.loads(index_path.read_text(encoding="utf-8"))
+        cwd = decoded.get("root", {}).get("preamble", {}).get("cwd")
+    except (OSError, TypeError, json.JSONDecodeError):
+        return None
+    return Path(cwd).resolve() if isinstance(cwd, str) and cwd else None
+
+
+def _select_pytest_failure_candidate(report: dict[str, Any]) -> dict[str, Any] | None:
+    candidates = report.get("ranked_candidates")
+    if not isinstance(candidates, list):
+        return None
+
+    def usable(candidate: Any) -> bool:
+        if not isinstance(candidate, dict):
+            return False
+        location = candidate.get("location")
+        if not isinstance(location, dict):
+            return False
+        filename = location.get("filename") or location.get("file")
+        return bool(filename) and int(location.get("line") or 0) > 0
+
+    usable_candidates = [candidate for candidate in candidates if usable(candidate)]
+    if not usable_candidates:
+        return None
+
+    def priority(candidate: dict[str, Any]) -> tuple[int, int]:
+        exception = candidate.get("exception") if isinstance(candidate.get("exception"), dict) else {}
+        classification = str(candidate.get("classification") or "")
+        exc_type = str(exception.get("type") or "")
+        score = int(candidate.get("score") or 0)
+        preferred = 0
+        if classification == "application":
+            preferred += 10
+        if exc_type == "AssertionError":
+            preferred += 5
+        return (preferred, score)
+
+    selected = max(usable_candidates, key=priority)
+    location = selected["location"]
+    exception = selected.get("exception") if isinstance(selected.get("exception"), dict) else {}
+    filename = location.get("filename") or location.get("file") or ""
+    return {
+        "filename": str(filename),
+        "line": int(location.get("line") or 0),
+        "function": str(location.get("function") or ""),
+        "exception_type": str(exception.get("type") or ""),
+        "exception_message": str(exception.get("message") or ""),
+        "classification": str(selected.get("classification") or ""),
+        "rank": selected.get("rank"),
+        "score": selected.get("score"),
+    }
+
+
+_PYTEST_FAILURE_LOCATION_RE = re.compile(
+    r"^(?P<file>.+?\.py):(?P<line>[0-9]+):\s+in\s+(?P<function>\S+)\s*$"
+)
+_PYTEST_EXCEPTION_RE = re.compile(r"^E\s+(?P<type>[A-Za-z_][A-Za-z0-9_.]*)(?::\s*(?P<message>.*))?$")
+
+
+def _pytest_failure_hint_from_replay_output(
+    recording: Path,
+    *,
+    cwd: Path | None,
+    timeout: int,
+) -> dict[str, Any] | None:
+    """Extract a pytest failure location from replay output as a fallback.
+
+    The primary path uses Retrace's failure-candidate inspection. Python 3.11
+    cannot yet provide the same monitoring-backed search, so fall back to
+    replaying the extracted pidfile and parsing pytest's own failure location.
+    This still uses replay evidence from the recording, not the live target run.
+    """
+    try:
+        completed = subprocess.run(
+            [replay_binary_path(), str(recording)],
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    return _pytest_failure_hint_from_output(
+        (completed.stdout or "") + (completed.stderr or ""),
+        cwd=cwd,
+    )
+
+
+def _pytest_failure_hint_from_output(text: str, *, cwd: Path | None = None) -> dict[str, Any] | None:
+    for idx, line in enumerate(text.splitlines()):
+        match = _PYTEST_FAILURE_LOCATION_RE.match(line.strip())
+        if not match:
+            continue
+        filename = match.group("file")
+        path = Path(filename)
+        if not path.is_absolute() and cwd is not None:
+            path = cwd / path
+        exception_type, exception_message = _pytest_exception_near(text.splitlines(), idx)
+        return {
+            "filename": str(path.resolve()),
+            "line": int(match.group("line")),
+            "function": match.group("function"),
+            "exception_type": exception_type,
+            "exception_message": exception_message,
+            "classification": "application",
+            "rank": None,
+            "score": 0,
+        }
+    return None
+
+
+def _pytest_exception_near(lines: list[str], start: int) -> tuple[str, str]:
+    for line in lines[start + 1:start + 8]:
+        match = _PYTEST_EXCEPTION_RE.match(line.strip())
+        if match:
+            return match.group("type"), match.group("message") or ""
+    return "AssertionError", ""
+
+
+def _prime_pytest_failure_breakpoint(executor: DAPExecutor, hint: dict[str, Any]) -> list[dict[str, Any]]:
+    path = str(hint.get("filename") or "")
+    line = int(hint.get("line") or 0)
+    if not path or line <= 0:
+        return []
+
+    steps: list[tuple[str, dict[str, Any]]] = [
+        ("start_replay_session", {}),
+        ("set_exception_breakpoints", {"filters": []}),
+        (
+            "set_breakpoints",
+            {
+                "source": {"path": path},
+                "breakpoints": [{"line": line}],
+            },
+        ),
+        ("continue_execution", {"thread_id": 1}),
+        ("get_stack_trace", {"thread_id": 1, "levels": 20}),
+    ]
+    transcript: list[dict[str, Any]] = []
+    for tool, arguments in steps:
+        result = _json_clone(executor.execute(tool, arguments))
+        transcript.append({"tool": tool, "arguments": arguments, "result": result})
+        if not result.get("ok"):
+            break
+    return transcript
+
+
+def _executor_session_state(executor: DAPExecutor | StubExecutor) -> dict[str, Any]:
+    session = getattr(executor, "session", None)
+    state = getattr(session, "state", None)
+    return _json_clone(state) if isinstance(state, dict) else {"state": "not_started"}
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -1087,9 +1390,17 @@ def _source_window(content: str, line: int, before: int, after: int) -> list[dic
     start = max(1, line - before)
     end = min(len(lines), line + after)
     return [
-        {"line": idx, "text": lines[idx - 1], "current": idx == line}
+        {"line": idx, "text": _bounded_source_line(lines[idx - 1]), "current": idx == line}
         for idx in range(start, end + 1)
+        if lines[idx - 1].strip()
     ]
+
+
+def _bounded_source_line(text: str) -> str:
+    if len(text) <= MAX_SOURCE_CONTEXT_LINE_CHARS:
+        return text
+    suffix = " ... <truncated>"
+    return text[: MAX_SOURCE_CONTEXT_LINE_CHARS - len(suffix)] + suffix
 
 
 def _tool_error(tool: str, code: str, message: str) -> dict[str, Any]:

@@ -78,7 +78,6 @@ def replay_stdio(trace_path, commands):
     return responses, result
 
 
-@needs_monitoring
 def test_stop_at_failure_exposes_application_frame_state(tmpdir):
     """stop_at_failure stops on the user exception and keeps the frame inspectable."""
     script = os.path.join(tmpdir, "failure_target.py")

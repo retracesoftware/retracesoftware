@@ -89,8 +89,9 @@ recordings. Useful entry points include:
 - `retrace mcp --recording <file>`
 
 The MCP server exposes tools such as `retrace_agent_workflow`,
-`retrace_diagnose`, `retrace_inspect`, `retrace_frame`,
-`retrace_failures`, `retrace_function_code`, `retrace_eval`, `retrace_var`,
+`retrace_replay_divergence_workflow`, `retrace_diagnose`,
+`retrace_inspect`, `retrace_frame`, `retrace_failures`,
+`retrace_function_code`, `retrace_eval`, `retrace_var`,
 `retrace_provenance`, and `retrace_external_calls`.
 
 Agents should call `retrace_agent_workflow` when they need the canonical
@@ -101,6 +102,14 @@ then inspect external calls when boundary data may be involved.
 
 These tools provide evidence and next inspection steps. Do not describe them as
 a fully autonomous root-cause engine.
+
+When debugging Retrace itself, and replay fails before or differently from the
+expected application failure, use the replay-divergence loop rather than the
+ordinary application-failure workflow. The core question is why replay stopped
+consuming the same logical event stream that record produced. Find the first
+record/replay mismatch, classify it, reduce it, add a natural regression, and
+fix only the owning layer. See `docs/REPLAY_DIVERGENCE_LOOP.md` and the
+`$retrace-replay-divergence-investigator` skill.
 
 ## Contributor Notes
 

@@ -1261,6 +1261,70 @@ class Controller:
         if self._failure_monitor is not None:
             self._failure_monitor.close()
 
+        if not _HAS_MONITORING:
+            owner = self
+
+            class SetTraceFailureMonitor:
+                def __init__(self):
+                    self._previous_trace = None
+                    self._trace_func = owner._disable_for(self._trace)
+                    self._closed = False
+
+                def install(self):
+                    self._previous_trace = sys.gettrace()
+                    sys.settrace(self._trace_func)
+
+                def close(self):
+                    if self._closed:
+                        return
+                    if sys.gettrace() is self._trace_func:
+                        sys.settrace(self._previous_trace)
+                    self._closed = True
+
+                def _trace(self, frame: FrameType, event: str, arg):
+                    if event == "call":
+                        return self._trace_func
+                    if event != "exception":
+                        return self._trace_func
+                    if owner._done or not _is_application_stop_code(frame.f_code):
+                        return self._trace_func
+                    exc_type, exception, tb = arg  # noqa: F841
+                    if _is_control_flow_exception(exception):
+                        return self._trace_func
+
+                    self.close()
+                    owner._failure_monitor = None
+                    owner._last_code = frame.f_code
+                    owner._stopped_frame = frame
+                    snapshot = owner._cursor_dict(cursor.cursor_snapshot().to_dict())
+                    snapshot["f_lasti"] = frame.f_lasti
+                    snapshot["lineno"] = FrameInspector._frame_lineno(frame)
+                    location = {
+                        "filename": frame.f_code.co_filename,
+                        "line": FrameInspector._frame_lineno(frame),
+                        "function": frame.f_code.co_name,
+                    }
+                    stop_result = {
+                        "reason": "exception",
+                        "message_index": owner._message_index,
+                        "cursor": snapshot,
+                        "thread_cursors": {},
+                        "exception": {
+                            "type": exc_type.__name__,
+                            "message": str(exception),
+                            "assertion_text": str(exception) if isinstance(exception, AssertionError) else "",
+                        },
+                        "location": location,
+                        "application_frame_confidence": "high",
+                    }
+                    owner._send_and_handle_locked(stop_result)
+                    return None
+
+            monitor = SetTraceFailureMonitor()
+            self._failure_monitor = monitor
+            monitor.install()
+            return
+
         tool_id = _acquire_tool_id("retrace_stop_failure")
         E = sys.monitoring.events
 
