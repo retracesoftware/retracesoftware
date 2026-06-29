@@ -12,6 +12,7 @@ import retracesoftware.utils as utils
 from retracesoftware.install.installation import Installation
 from retracesoftware.install.edgecases import (
     coverage_collector_start_tracer,
+    multiprocess_baseprocess_join,
     pytest_cache_for_config,
     pytest_main_control_env,
     pytest_get_config_invocation_dir,
@@ -481,6 +482,65 @@ def test_coverage_execfile_config_disables_runner_prepare_methods():
     runner_config = cfg["type_attributes"]["PyRunner"]
 
     assert {"prepare", "_prepare2"}.issubset(runner_config["disable"])
+
+
+def test_multiprocess_popen_fork_config_disables_private_poll_probe():
+    pytest.importorskip("multiprocess")
+
+    cfg = ModuleConfigResolver()["multiprocess.popen_fork"]
+    popen_config = cfg["type_attributes"]["Popen"]
+
+    assert "poll" in popen_config["disable"]
+
+
+def test_multiprocess_baseprocess_config_wraps_join_for_inherited_children():
+    pytest.importorskip("multiprocess")
+
+    cfg = ModuleConfigResolver()["multiprocess.process"]
+    process_config = cfg["type_attributes"]["BaseProcess"]
+
+    assert process_config["system_wrap"]["join"] == (
+        "retracesoftware.install.edgecases.multiprocess_baseprocess_join"
+    )
+
+
+def test_multiprocess_baseprocess_join_wraps_only_inherited_child_pid(monkeypatch):
+    class Process:
+        _parent_pid = 10
+
+    calls = []
+
+    def target(self, *args, **kwargs):
+        calls.append(("target", args, kwargs))
+        return "target"
+
+    class FakeSystem:
+        def disable_for(self, fn, *, unwrap_args=True):
+            def disabled(*args, **kwargs):
+                calls.append(("disabled", args, kwargs, unwrap_args))
+                return fn(*args, **kwargs)
+
+            return disabled
+
+    monkeypatch.setattr(
+        "retracesoftware.install.edgecases._live_getpid",
+        lambda: 11,
+    )
+    wrapped = multiprocess_baseprocess_join(target, FakeSystem())
+    process = Process()
+    assert wrapped(process, "x", flag=True) == "target"
+    assert calls == [
+        ("disabled", (process, "x"), {"flag": True}, False),
+        ("target", ("x",), {"flag": True}),
+    ]
+
+    calls.clear()
+    monkeypatch.setattr(
+        "retracesoftware.install.edgecases._live_getpid",
+        lambda: 10,
+    )
+    assert wrapped(process, "y") == "target"
+    assert calls == [("target", ("y",), {})]
 
 
 def test_pyodbc_config_proxies_connection_and_cursor_boundary():

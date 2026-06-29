@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 from pathlib import Path
 import sys
+import sysconfig
 import textwrap
 
 from tests.helpers import PYTHON, _run_for_pidfile, local_pythonpath, tail
@@ -34,6 +35,22 @@ def minimal_project_pythonpath(tmp_path: Path) -> str:
         path = build_root / relpath
         if path.exists():
             paths.append(str(path))
+    return os.pathsep.join(paths)
+
+
+def pytest_project_pythonpath(tmp_path: Path) -> str:
+    """PYTHONPATH for temp-project pytest runs, including runner packages.
+
+    Some regressions intentionally create a nested Retrace venv with
+    ``--without-pip --system-site-packages``.  In a clean outer venv, pytest
+    lives in the outer venv's site-packages, not in the base interpreter's
+    system site-packages, so make that dependency explicit for those tests.
+    """
+    paths = [minimal_project_pythonpath(tmp_path)]
+    for key in ("purelib", "platlib"):
+        path = sysconfig.get_paths().get(key)
+        if path and path not in paths:
+            paths.append(path)
     return os.pathsep.join(paths)
 
 

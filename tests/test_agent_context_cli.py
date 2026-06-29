@@ -2,7 +2,10 @@ from __future__ import annotations
 
 import json
 import subprocess
+import sys
 from pathlib import Path
+
+import pytest
 
 from retracesoftware import agent_diagnose, agent_inspect, agent_mcp, cli
 
@@ -33,6 +36,109 @@ def _inspect_report(recording: Path) -> dict:
         "control": {"returncode": 0, "responses": 4},
         "limitations": [],
     }
+
+
+def test_control_recording_path_extracts_framed_recording_root_pid(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    recording = tmp_path / "trace.retrace"
+    recording.write_bytes(b"framed recording")
+    extract_dir = tmp_path / "trace.d"
+    extract_dir.mkdir()
+    pidfile = extract_dir / "1234.bin"
+    pidfile.write_bytes(b"raw pidfile")
+    (extract_dir / "index.json").write_text(
+        json.dumps({"root": {"pid": 1234}}),
+        encoding="utf-8",
+    )
+    calls = []
+
+    monkeypatch.setattr(agent_inspect.stream, "detect_raw_trace", lambda path: False)
+
+    def fake_binary_path() -> str:
+        return "/fake/replay"
+
+    def fake_run(args, **kwargs):
+        calls.append((args, kwargs))
+        return subprocess.CompletedProcess(args=args, returncode=0, stdout="", stderr="")
+
+    import retracesoftware.replay
+
+    monkeypatch.setattr(retracesoftware.replay, "binary_path", fake_binary_path)
+    monkeypatch.setattr(agent_inspect.subprocess, "run", fake_run)
+
+    assert (
+        agent_inspect._control_recording_path(recording, pid=None, timeout_seconds=17)
+        == pidfile
+    )
+    assert calls == [
+        (
+            ["/fake/replay", "--recording", str(recording), "--extract"],
+            {
+                "capture_output": True,
+                "text": True,
+                "timeout": 17,
+            },
+        )
+    ]
+
+
+def test_inspect_recording_reads_unhandled_exception_from_binary_recording(tmp_path: Path) -> None:
+    script = tmp_path / "repro_unhandled_exception.py"
+    script.write_text(
+        "\n".join(
+            [
+                'marker = {"where": "single-process-unhandled"}',
+                'raise RuntimeError(f"baseline failure marker={marker}")',
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    recording = tmp_path / "unhandled_exception.retrace"
+
+    record = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "retracesoftware",
+            "--recording",
+            str(recording),
+            "--format",
+            "binary",
+            "--",
+            str(script),
+        ],
+        capture_output=True,
+        text=True,
+        timeout=30,
+        cwd=tmp_path,
+    )
+
+    assert record.returncode != 0
+    assert "baseline failure marker" in record.stderr
+    assert recording.is_file()
+
+    report = agent_inspect.inspect_recording(
+        str(recording),
+        max_frames=20,
+        max_vars=20,
+        python_executable=sys.executable,
+        timeout_seconds=30,
+    )
+
+    assert report["availability"]["cursor_available"] is True
+    assert report["availability"]["exception_available"] is True
+    assert report["availability"]["locals_available"] is True
+    assert report["exception"]["type"] == "RuntimeError"
+    assert "baseline failure marker" in report["exception"]["message"]
+    assert any(
+        frame["filename"] == str(script) and frame["function"] == "<module>"
+        for frame in report["application_stack"]
+    )
+    local_values = {local["name"]: local for local in report["locals"]}
+    assert local_values["marker"]["repr"] == "{'where': 'single-process-unhandled'}"
 
 
 def test_agent_context_text_for_existing_recording(tmp_path: Path, capsys) -> None:
@@ -516,7 +622,11 @@ def test_mcp_replay_divergence_workflow_guides_first_mismatch_loop() -> None:
     assert payload["kind"] == "retrace_replay_divergence_workflow"
     assert "logical event stream" in payload["core_question"]
     assert payload["required_loop"][0] == "Reproduce with a fresh recording and fresh extraction."
+    assert "same expected application failure" in payload["decision_gates"][0]
+    assert any("--list_pids" in command for command in payload["evidence_commands"])
+    assert payload["first_mismatch_questions"][0] == "What logical event did record produce next?"
     assert "binding/materialization" in payload["mismatch_categories"]
+    assert "subprocess/fork/thread" in payload["mismatch_categories"]
     assert "Do not treat the final stack trace as root cause." in payload["rules"]
     assert payload["report_schema"]["classification"] == "one mismatch category"
 

@@ -181,10 +181,6 @@ func extractRecording(recording, outDir string) error {
 		return err
 	}
 	indexPath := filepath.Join(outDir, "index.json")
-	if err := replay.WriteIndex(idx, indexPath); err != nil {
-		return err
-	}
-	log.Printf("wrote %s", indexPath)
 
 	shebang := "#!/usr/bin/env replay"
 	if bin := selfPath(); bin != "" {
@@ -197,6 +193,10 @@ func extractRecording(recording, outDir string) error {
 	for _, p := range outputs {
 		log.Printf("wrote %s", p)
 	}
+	if err := replay.WriteIndex(idx, indexPath); err != nil {
+		return err
+	}
+	log.Printf("wrote %s", indexPath)
 	log.Printf("extracted %d PidFile(s) to %s", len(outputs), outDir)
 	return nil
 }
@@ -207,7 +207,14 @@ func ensureExtracted(recording string, pid int) (string, error) {
 	outDir := extractDir(recording)
 	indexPath := filepath.Join(outDir, "index.json")
 
-	if _, err := os.Stat(indexPath); os.IsNotExist(err) {
+	needsRebuild, err := extractionNeedsRebuild(recording, indexPath)
+	if err != nil {
+		return "", err
+	}
+	if needsRebuild {
+		if err := os.RemoveAll(outDir); err != nil {
+			return "", fmt.Errorf("remove stale extraction: %w", err)
+		}
 		if err := extractRecording(recording, outDir); err != nil {
 			return "", err
 		}
@@ -226,4 +233,19 @@ func ensureExtracted(recording string, pid int) (string, error) {
 		return "", fmt.Errorf("PidFile not found for pid %d: %s", pid, pidFile)
 	}
 	return pidFile, nil
+}
+
+func extractionNeedsRebuild(recording, indexPath string) (bool, error) {
+	recordingStat, err := os.Stat(recording)
+	if err != nil {
+		return false, fmt.Errorf("stat recording: %w", err)
+	}
+	indexStat, err := os.Stat(indexPath)
+	if os.IsNotExist(err) {
+		return true, nil
+	}
+	if err != nil {
+		return true, nil
+	}
+	return !indexStat.ModTime().After(recordingStat.ModTime()), nil
 }

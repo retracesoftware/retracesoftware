@@ -38,6 +38,13 @@ body:
       description: If the user program/test is supposed to fail, paste that expected failure. If it should pass, say so.
     validations:
       required: true
+  - type: markdown
+    attributes:
+      value: |
+        Decision gate: if replay reaches the same expected application failure,
+        this is probably not a Retrace replay-divergence issue for that run.
+        Use this template when replay fails before, differently from, or instead
+        of that expected behavior.
   - type: textarea
     id: fresh_commands
     attributes:
@@ -55,6 +62,11 @@ body:
         replay cwd:
         replay command:
         replay exit:
+
+        python -VV:
+        python executable:
+        OS / arch:
+        dependency versions:
     validations:
       required: true
   - type: textarea
@@ -110,6 +122,18 @@ body:
     validations:
       required: true
   - type: textarea
+    id: stale_extraction_check
+    attributes:
+      label: Stale extraction check
+      description: State how you proved the recording and extracted .d directory were regenerated with the current code.
+      placeholder: |
+        deleted old extraction:
+        regenerated recording:
+        regenerated extraction:
+        current retrace commit/version:
+    validations:
+      required: true
+  - type: textarea
     id: reduction
     attributes:
       label: Reduced repro
@@ -130,4 +154,3 @@ body:
       description: Reduced repro, original repro, and sentinel tests run or still needed.
     validations:
       required: false
-

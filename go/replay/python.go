@@ -18,9 +18,32 @@ func pythonCommand(name string, args ...string) *exec.Cmd {
 }
 
 func pythonCommandForTarget(target runnerTarget, args ...string) *exec.Cmd {
-	cmd := exec.Command(target.PythonBin, args...)
+	cmd := exec.Command(pythonBinForReplay(target), args...)
 	cmd.Env = pythonEnvForTarget(target, cmd.Environ())
 	return cmd
+}
+
+func pythonBinForReplay(target runnerTarget) string {
+	env := preambleEnv(target.Preamble)
+	realPython := envValue(env, "RETRACE_REAL_PYTHON")
+	if realPython == "" {
+		return target.PythonBin
+	}
+
+	hasWrapperIdentity := envValue(env, "RETRACE_PYTHON_WRAPPER") != "" ||
+		envValue(env, "PYTHONEXECUTABLE") != ""
+	if !hasWrapperIdentity {
+		return target.PythonBin
+	}
+
+	return resolveTargetPath(target.CWD, realPython)
+}
+
+func resolveTargetPath(cwd, path string) string {
+	if path == "" || filepath.IsAbs(path) || cwd == "" {
+		return path
+	}
+	return filepath.Join(cwd, path)
 }
 
 func pythonEnvForTarget(target runnerTarget, fallback []string) []string {

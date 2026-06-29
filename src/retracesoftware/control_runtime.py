@@ -15,6 +15,7 @@ import sys
 import sysconfig
 import socket as socket_lib
 import _thread
+import threading
 from dataclasses import dataclass
 from types import CodeType, FrameType
 from typing import Any, Callable, Generator, Optional, Protocol, TextIO
@@ -26,6 +27,7 @@ from retracesoftware.utils.breakpoint import BreakpointSpec, install_breakpoint,
 
 _real_fork = os.fork
 _RETRACE_PACKAGE_DIR = os.path.dirname(os.path.realpath(__file__))
+_INSTALL_INIT = os.path.join(_RETRACE_PACKAGE_DIR, "install", "__init__.py")
 _HAS_MONITORING = hasattr(sys, "monitoring")
 _STDLIB_DIR = os.path.realpath(sysconfig.get_path("stdlib") or "")
 _PLATSTDLIB_DIR = os.path.realpath(sysconfig.get_path("platstdlib") or "")
@@ -232,19 +234,16 @@ class FrameInspector:
         for name, value in frame.f_locals.items():
             if name_filter is not None and name != name_filter:
                 continue
-            try:
-                val_repr = repr(value)
-            except Exception:
-                val_repr = "<repr failed>"
-            truncated = len(val_repr) > repr_budget
-            if truncated:
-                val_repr = val_repr[: max(repr_budget - 3, 0)] + "..."
-            result.append({
+            val_repr, truncated, children = _debug_value_preview(value, repr_budget)
+            item = {
                 "name": name,
                 "value": val_repr,
                 "type": type(value).__name__,
                 "truncated": truncated,
-            })
+            }
+            if children:
+                item["children"] = children
+            result.append(item)
         return {"variables": result}
 
     def inspect(self, params: dict[str, Any]) -> dict[str, Any]:
@@ -288,6 +287,87 @@ class FrameInspector:
             "filename": self._frame.f_code.co_filename,
             "line": self._frame_lineno(self._frame),
         }
+
+
+def _debug_value_preview(value, repr_budget: int) -> tuple[str, bool, list[dict[str, str]]]:
+    dataframe_children = _dataframe_children(value, repr_budget)
+    if dataframe_children is not None:
+        shape = getattr(value, "shape", None)
+        columns = _safe_list(getattr(value, "columns", []))
+        return (
+            f"DataFrame shape={shape!r} columns={columns!r}",
+            False,
+            dataframe_children,
+        )
+
+    try:
+        val_repr = repr(value)
+    except Exception:
+        val_repr = "<repr failed>"
+    truncated = len(val_repr) > repr_budget
+    if truncated:
+        val_repr = val_repr[: max(repr_budget - 3, 0)] + "..."
+    return val_repr, truncated, []
+
+
+def _dataframe_children(value, repr_budget: int) -> list[dict[str, str]] | None:
+    if not _is_dataframe_like(value):
+        return None
+    return [
+        {"name": "shape", "value": repr(getattr(value, "shape", None)), "type": "tuple"},
+        {"name": "columns", "value": repr(_safe_list(getattr(value, "columns", []))), "type": "list"},
+        {"name": "dtypes", "value": _safe_repr(_dataframe_dtypes(value), repr_budget), "type": "dict"},
+        {"name": "head", "value": _dataframe_to_string(value, "head", repr_budget), "type": "DataFrame"},
+        {"name": "tail", "value": _dataframe_to_string(value, "tail", repr_budget), "type": "DataFrame"},
+    ]
+
+
+def _is_dataframe_like(value) -> bool:
+    return (
+        type(value).__name__ == "DataFrame"
+        and hasattr(value, "shape")
+        and hasattr(value, "columns")
+        and hasattr(value, "dtypes")
+        and callable(getattr(value, "head", None))
+        and callable(getattr(value, "tail", None))
+    )
+
+
+def _safe_list(value) -> list[str]:
+    try:
+        return [str(item) for item in value]
+    except Exception:
+        return []
+
+
+def _dataframe_dtypes(value) -> dict[str, str]:
+    try:
+        return {str(column): str(dtype) for column, dtype in value.dtypes.items()}
+    except Exception:
+        return {}
+
+
+def _dataframe_to_string(value, method: str, repr_budget: int) -> str:
+    try:
+        sample = getattr(value, method)(5)
+        text = sample.to_string(max_rows=5)
+    except Exception:
+        text = "<preview failed>"
+    return _truncate(text, repr_budget)
+
+
+def _safe_repr(value, repr_budget: int) -> str:
+    try:
+        text = repr(value)
+    except Exception:
+        text = "<repr failed>"
+    return _truncate(text, repr_budget)
+
+
+def _truncate(text: str, budget: int) -> str:
+    if len(text) <= budget:
+        return text
+    return text[: max(budget - 3, 0)] + "..."
 
 
 def _normalize_breakpoint(raw: dict[str, Any]) -> dict[str, Any]:
@@ -931,6 +1011,46 @@ class _SetTraceNextInstructionMonitor:
         return None
 
 
+class _SetTraceExceptionMonitor:
+    """Exception monitor fallback for Python versions without sys.monitoring."""
+
+    def __init__(
+        self,
+        callback: Callable[[FrameType, int, BaseException], Any],
+        disable_for: Callable[[Callable], Callable],
+    ):
+        self._callback = callback
+        self._previous_trace = None
+        self._previous_thread_trace = None
+        self._trace_func = disable_for(self._trace)
+        self._closed = False
+
+    def install(self) -> None:
+        self._previous_trace = sys.gettrace()
+        self._previous_thread_trace = threading.gettrace()
+        sys.settrace(self._trace_func)
+        threading.settrace(self._trace_func)
+
+    def close(self) -> None:
+        if self._closed:
+            return
+        if sys.gettrace() is self._trace_func:
+            sys.settrace(self._previous_trace)
+        if threading.gettrace() is self._trace_func:
+            threading.settrace(self._previous_thread_trace)
+        self._closed = True
+
+    def _trace(self, frame: FrameType, event: str, arg):  # noqa: ARG002
+        if self._closed:
+            return None
+        if event == "exception":
+            _, exception, _ = arg
+            self._callback(frame, frame.f_lasti, exception)
+            if self._closed:
+                return None
+        return self._trace_func
+
+
 def _is_retrace_internal_code(code: CodeType) -> bool:
     filename = code.co_filename
     if not filename:
@@ -979,6 +1099,34 @@ def _code_classification(code: CodeType) -> str:
 
 def _is_control_flow_exception(exception: BaseException) -> bool:
     return not isinstance(exception, Exception) or isinstance(exception, GeneratorExit)
+
+def _is_traced_shutdown_exception(frame: FrameType | None = None) -> bool:
+    if frame is None:
+        frame = sys._getframe(1)
+    while frame is not None:
+        if (
+            frame.f_code.co_name == "traced_shutdown_callback"
+            and os.path.realpath(frame.f_code.co_filename) == _INSTALL_INIT
+        ):
+            return True
+        frame = frame.f_back
+    return False
+
+def _is_handled_shutdown_probe_exception(code: CodeType, exception: BaseException) -> bool:
+    """Return true for private shutdown probes that are expected to be caught.
+
+    ``multiprocess.process._cleanup`` calls ``Popen.poll()`` during interpreter
+    shutdown.  In forked children that inherited the parent's process registry,
+    that private poll raises ``ChildProcessError`` and catches it immediately to
+    mean "not my child".  Stopping there hides the later shutdown assertion that
+    explains the actual failure.
+    """
+    if not isinstance(exception, ChildProcessError):
+        return False
+    if code.co_name != "poll":
+        return False
+    filename = os.path.realpath(code.co_filename)
+    return filename.endswith(os.path.join("multiprocess", "popen_fork.py"))
 
 def _find_user_frame():
     """Walk the call stack to find the first frame outside retracesoftware internals."""
@@ -1162,8 +1310,14 @@ class Controller:
         else:
             raise RuntimeError(f"unexpected intent: {intent}")
 
-    def _failure_candidate(self, code: CodeType, offset: int, exception: BaseException) -> dict[str, Any]:
-        frame = _find_frame_for_code(code)
+    def _failure_candidate(
+        self,
+        code: CodeType,
+        offset: int,
+        exception: BaseException,
+        frame: FrameType | None = None,
+    ) -> dict[str, Any]:
+        frame = frame or _find_frame_for_code(code)
         line = self._lineno_from_code(code, offset)
         snapshot = self._cursor_dict(cursor.cursor_snapshot().to_dict())
         snapshot["f_lasti"] = offset
@@ -1206,13 +1360,11 @@ class Controller:
         if self._failure_search_monitor is not None:
             self._failure_search_monitor.close()
 
-        tool_id = _acquire_tool_id("retrace_search_failures")
-        E = sys.monitoring.events
         owner = self
 
         class FailureSearchMonitor:
-            def __init__(self, tool_id, limit):
-                self._tool_id = tool_id
+            def __init__(self, close_hook, limit):
+                self._close_hook = close_hook
                 self._limit = limit
                 self._closed = False
                 self.candidates: list[dict[str, Any]] = []
@@ -1220,12 +1372,7 @@ class Controller:
             def close(self):
                 if self._closed:
                     return
-                sys.monitoring.set_events(self._tool_id, 0)
-                sys.monitoring.register_callback(self._tool_id, E.RAISE, None)
-                try:
-                    sys.monitoring.free_tool_id(self._tool_id)
-                except Exception:
-                    pass
+                self._close_hook()
                 self._closed = True
 
             def add(self, candidate: dict[str, Any]) -> bool:
@@ -1241,19 +1388,54 @@ class Controller:
                     "message_index": message_index,
                 }
 
-        monitor = FailureSearchMonitor(tool_id, intent.limit)
-        self._failure_search_monitor = monitor
-
-        def _on_raise(code, offset, exception):
+        def _on_raise(
+            code: CodeType,
+            offset: int,
+            exception: BaseException,
+            frame: FrameType | None = None,
+        ):
             if self._done:
                 return None
-            candidate = owner._failure_candidate(code, offset, exception)
+            candidate = owner._failure_candidate(code, offset, exception, frame)
             if not monitor.add(candidate):
                 return None
             owner._failure_search_monitor = None
             owner._send_and_handle_locked(monitor.finish(reason="limit", message_index=owner._message_index))
             return None
 
+        if not _HAS_MONITORING:
+            trace_monitor = None
+
+            def close_trace_monitor():
+                if trace_monitor is not None:
+                    trace_monitor.close()
+
+            monitor = FailureSearchMonitor(close_trace_monitor, intent.limit)
+            self._failure_search_monitor = monitor
+
+            def _on_trace_exception(frame: FrameType, offset: int, exception: BaseException):
+                return _on_raise(frame.f_code, offset, exception, frame)
+
+            trace_monitor = _SetTraceExceptionMonitor(
+                callback=_on_trace_exception,
+                disable_for=self._disable_for,
+            )
+            trace_monitor.install()
+            return
+
+        tool_id = _acquire_tool_id("retrace_search_failures")
+        E = sys.monitoring.events
+
+        def close_monitoring():
+            sys.monitoring.set_events(tool_id, 0)
+            sys.monitoring.register_callback(tool_id, E.RAISE, None)
+            try:
+                sys.monitoring.free_tool_id(tool_id)
+            except Exception:
+                pass
+
+        monitor = FailureSearchMonitor(close_monitoring, intent.limit)
+        self._failure_search_monitor = monitor
         sys.monitoring.register_callback(tool_id, E.RAISE, self._disable_for(_on_raise))
         sys.monitoring.set_events(tool_id, E.RAISE)
 
@@ -1261,98 +1443,34 @@ class Controller:
         if self._failure_monitor is not None:
             self._failure_monitor.close()
 
-        if not _HAS_MONITORING:
-            owner = self
-
-            class SetTraceFailureMonitor:
-                def __init__(self):
-                    self._previous_trace = None
-                    self._trace_func = owner._disable_for(self._trace)
-                    self._closed = False
-
-                def install(self):
-                    self._previous_trace = sys.gettrace()
-                    sys.settrace(self._trace_func)
-
-                def close(self):
-                    if self._closed:
-                        return
-                    if sys.gettrace() is self._trace_func:
-                        sys.settrace(self._previous_trace)
-                    self._closed = True
-
-                def _trace(self, frame: FrameType, event: str, arg):
-                    if event == "call":
-                        return self._trace_func
-                    if event != "exception":
-                        return self._trace_func
-                    if owner._done or not _is_application_stop_code(frame.f_code):
-                        return self._trace_func
-                    exc_type, exception, tb = arg  # noqa: F841
-                    if _is_control_flow_exception(exception):
-                        return self._trace_func
-
-                    self.close()
-                    owner._failure_monitor = None
-                    owner._last_code = frame.f_code
-                    owner._stopped_frame = frame
-                    snapshot = owner._cursor_dict(cursor.cursor_snapshot().to_dict())
-                    snapshot["f_lasti"] = frame.f_lasti
-                    snapshot["lineno"] = FrameInspector._frame_lineno(frame)
-                    location = {
-                        "filename": frame.f_code.co_filename,
-                        "line": FrameInspector._frame_lineno(frame),
-                        "function": frame.f_code.co_name,
-                    }
-                    stop_result = {
-                        "reason": "exception",
-                        "message_index": owner._message_index,
-                        "cursor": snapshot,
-                        "thread_cursors": {},
-                        "exception": {
-                            "type": exc_type.__name__,
-                            "message": str(exception),
-                            "assertion_text": str(exception) if isinstance(exception, AssertionError) else "",
-                        },
-                        "location": location,
-                        "application_frame_confidence": "high",
-                    }
-                    owner._send_and_handle_locked(stop_result)
-                    return None
-
-            monitor = SetTraceFailureMonitor()
-            self._failure_monitor = monitor
-            monitor.install()
-            return
-
-        tool_id = _acquire_tool_id("retrace_stop_failure")
-        E = sys.monitoring.events
-
         class FailureMonitor:
-            def __init__(self, tool_id):
-                self._tool_id = tool_id
+            def __init__(self, close_hook):
+                self._close_hook = close_hook
                 self._closed = False
 
             def close(self):
                 if self._closed:
                     return
-                sys.monitoring.set_events(self._tool_id, 0)
-                sys.monitoring.register_callback(self._tool_id, E.RAISE, None)
-                try:
-                    sys.monitoring.free_tool_id(self._tool_id)
-                except Exception:
-                    pass
+                self._close_hook()
                 self._closed = True
 
-        monitor = FailureMonitor(tool_id)
-        self._failure_monitor = monitor
-
-        def _on_raise(code, offset, exception):
-            if self._done or not _is_application_stop_code(code):
+        def _on_raise(
+            code: CodeType,
+            offset: int,
+            exception: BaseException,
+            frame: FrameType | None = None,
+        ):
+            is_shutdown_exception = _is_traced_shutdown_exception(frame)
+            if is_shutdown_exception and _is_handled_shutdown_probe_exception(code, exception):
+                return None
+            if self._done or not (
+                _is_application_stop_code(code)
+                or (is_shutdown_exception and not _is_retrace_internal_code(code))
+            ):
                 return None
             if _is_control_flow_exception(exception):
                 return None
-            frame = _find_frame_for_code(code) or _find_user_frame()
+            frame = frame or _find_frame_for_code(code) or _find_user_frame()
             if frame is None:
                 return None
             monitor.close()
@@ -1383,6 +1501,39 @@ class Controller:
             self._send_and_handle_locked(stop_result)
             return None
 
+        if not _HAS_MONITORING:
+            trace_monitor = None
+
+            def close_trace_monitor():
+                if trace_monitor is not None:
+                    trace_monitor.close()
+
+            monitor = FailureMonitor(close_trace_monitor)
+            self._failure_monitor = monitor
+
+            def _on_trace_exception(frame: FrameType, offset: int, exception: BaseException):
+                return _on_raise(frame.f_code, offset, exception, frame)
+
+            trace_monitor = _SetTraceExceptionMonitor(
+                callback=_on_trace_exception,
+                disable_for=self._disable_for,
+            )
+            trace_monitor.install()
+            return
+
+        tool_id = _acquire_tool_id("retrace_stop_failure")
+        E = sys.monitoring.events
+
+        def close_monitoring():
+            sys.monitoring.set_events(tool_id, 0)
+            sys.monitoring.register_callback(tool_id, E.RAISE, None)
+            try:
+                sys.monitoring.free_tool_id(tool_id)
+            except Exception:
+                pass
+
+        monitor = FailureMonitor(close_monitoring)
+        self._failure_monitor = monitor
         sys.monitoring.register_callback(tool_id, E.RAISE, self._disable_for(_on_raise))
         sys.monitoring.set_events(tool_id, E.RAISE)
 

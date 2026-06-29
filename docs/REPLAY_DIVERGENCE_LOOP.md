@@ -35,6 +35,73 @@ Every investigation should preserve these artifacts before editing code:
 Do not debug from stale extracted `.d/` directories. Regenerate the recording
 and extraction unless the issue is specifically stale extraction.
 
+## Freshness And Evidence Commands
+
+Use commands like these as the starting point. Adjust the target command, but
+preserve the shape: record fresh, extract fresh, replay fresh, and keep logs.
+
+```bash
+rm -rf /tmp/retrace-divergence-case
+mkdir -p /tmp/retrace-divergence-case
+
+RETRACE_DEBUG=1 python -m retracesoftware \
+  --recording /tmp/retrace-divergence-case/case.retrace \
+  --verbose \
+  --stacktraces \
+  -- \
+  <target command> \
+  > /tmp/retrace-divergence-case/record.stdout \
+  2> /tmp/retrace-divergence-case/record.stderr
+
+python -m retracesoftware \
+  --recording /tmp/retrace-divergence-case/case.retrace \
+  --list_pids \
+  > /tmp/retrace-divergence-case/pids.txt
+
+/tmp/retrace-divergence-case/case.retrace --extract \
+  > /tmp/retrace-divergence-case/extract.stdout \
+  2> /tmp/retrace-divergence-case/extract.stderr
+
+ROOT_PID="$(head -n 1 /tmp/retrace-divergence-case/pids.txt)"
+/tmp/retrace-divergence-case/case.d/${ROOT_PID}.bin \
+  > /tmp/retrace-divergence-case/replay.stdout \
+  2> /tmp/retrace-divergence-case/replay.stderr
+```
+
+If the recording uses the installed `replay` command instead of executable
+recording files, keep the same evidence layout:
+
+```bash
+replay --recording /tmp/retrace-divergence-case/case.retrace --extract
+replay /tmp/retrace-divergence-case/case.d/${ROOT_PID}.bin
+```
+
+Always capture the exact Python executable and package versions:
+
+```bash
+python -VV
+python -c "import platform, sys; print(platform.platform()); print(sys.executable)"
+python -m pip freeze
+```
+
+Search logs for mismatch markers only after the fresh run exists:
+
+```bash
+rg -n "Checkpoint difference|bind marker|ExpectedBindMarker|SYNC|CallMarkerMessage|Could not read|Traceback" \
+  /tmp/retrace-divergence-case
+```
+
+## Decision Gates
+
+- If replay reaches the same expected application failure, stop using this loop
+  for that run and switch to the ordinary application-failure workflow.
+- If replay fails before or differently from the expected application failure,
+  continue this loop.
+- If the only available trace is stale or was extracted by older code,
+  regenerate before making any root-cause claim.
+- If the failure disappears when regenerated, classify the old result as
+  stale-extraction or packaging evidence, not as proof of a replay bug.
+
 ## The Loop
 
 1. **Reproduce fresh.** Record, extract, and replay from scratch.
@@ -123,6 +190,35 @@ Bad regressions:
 - require live external services during replay, unless the bug is specifically
   that replay incorrectly touches them
 
+## Evidence Ledger Template
+
+Keep this ledger in the issue or investigation notes for every serious replay
+bug:
+
+```text
+status:
+record command:
+extract command:
+replay command:
+python executable:
+python version:
+os / arch:
+dependency versions:
+expected application failure:
+actual replay failure:
+does replay fail before expected failure:
+record next logical event:
+replay expected next logical event:
+replay consumed next logical event:
+first mismatch:
+classification:
+owning layer:
+smallest reproducer:
+regression test:
+sentinel tests:
+remaining uncertainty:
+```
+
 ## Issue Template Checklist
 
 Every replay-divergence issue should answer:
@@ -153,3 +249,21 @@ bind marker at that point:
 Only after answering that first-mismatch question should the issue claim root
 cause or propose a fix.
 
+For this class of issue, a weak report says:
+
+```text
+SQLAlchemy crashed with RuntimeError: bind marker returned when bind was expected.
+```
+
+A useful report says:
+
+```text
+Expected app failure: pandas assertion in the test.
+Replay failed first: yes.
+Record next event: <specific connection/cursor/bind/checkpoint event>.
+Replay expected: <specific bind/message/checkpoint>.
+Replay consumed: <specific wrong bind/message/checkpoint>.
+Classification: binding/materialization or message-order.
+Owning layer: <module config/proxy/stream/go replay/etc>.
+Regression: <test path> fails naturally before the fix.
+```

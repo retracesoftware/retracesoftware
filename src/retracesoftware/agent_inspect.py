@@ -10,6 +10,8 @@ import ast
 from pathlib import Path
 from typing import Any, Sequence
 
+import retracesoftware.stream as stream
+
 
 LIMITATIONS = [
     "This command reports observed replay/debugger state.",
@@ -84,6 +86,7 @@ def inspect_recording(
         commands,
         python_executable=python_executable or sys.executable,
         timeout_seconds=timeout_seconds,
+        pid=pid,
     )
     responses = _parse_control_responses(result.stdout)
     report = _build_report(
@@ -115,6 +118,7 @@ def inspect_failures(
         commands,
         python_executable=python_executable or sys.executable,
         timeout_seconds=timeout_seconds,
+        pid=pid,
     )
     responses = _parse_control_responses(result.stdout)
     return _build_failures_report(
@@ -151,6 +155,7 @@ def inspect_frame(
         commands,
         python_executable=python_executable or sys.executable,
         timeout_seconds=timeout_seconds,
+        pid=pid,
     )
     responses = _parse_control_responses(result.stdout)
     return _build_frame_report(
@@ -190,6 +195,7 @@ def inspect_variable(
         commands,
         python_executable=python_executable or sys.executable,
         timeout_seconds=timeout_seconds,
+        pid=pid,
     )
     responses = _parse_control_responses(result.stdout)
     return _build_var_report(
@@ -229,6 +235,7 @@ def inspect_provenance(
         commands,
         python_executable=python_executable or sys.executable,
         timeout_seconds=timeout_seconds,
+        pid=pid,
     )
     responses = _parse_control_responses(result.stdout)
     return _build_provenance_report(
@@ -266,6 +273,7 @@ def inspect_external_calls(
         commands,
         python_executable=python_executable or sys.executable,
         timeout_seconds=timeout_seconds,
+        pid=pid,
     )
     responses = _parse_control_responses(result.stdout)
     return _build_external_calls_report(
@@ -301,6 +309,7 @@ def inspect_external_call(
         commands,
         python_executable=python_executable or sys.executable,
         timeout_seconds=timeout_seconds,
+        pid=pid,
     )
     responses = _parse_control_responses(result.stdout)
     return _build_external_call_report(
@@ -332,6 +341,7 @@ def inspect_function_code(
         commands,
         python_executable=python_executable or sys.executable,
         timeout_seconds=timeout_seconds,
+        pid=pid,
     )
     responses = _parse_control_responses(result.stdout)
     return _build_function_code_report(
@@ -370,6 +380,7 @@ def inspect_expression(
         commands,
         python_executable=python_executable or sys.executable,
         timeout_seconds=timeout_seconds,
+        pid=pid,
     )
     responses = _parse_control_responses(result.stdout)
     return _build_expression_report(
@@ -918,7 +929,13 @@ def _run_replay_control(
     *,
     python_executable: str,
     timeout_seconds: int,
+    pid: str | None = None,
 ) -> subprocess.CompletedProcess[str]:
+    control_recording_path = _control_recording_path(
+        recording_path,
+        pid=pid,
+        timeout_seconds=timeout_seconds,
+    )
     stdin = "\n".join(json.dumps(command, separators=(",", ":")) for command in commands) + "\n"
     cwd = _control_replay_cwd(recording_path)
     env = os.environ.copy()
@@ -930,7 +947,7 @@ def _run_replay_control(
             "-m",
             "retracesoftware",
             "--recording",
-            str(recording_path),
+            str(control_recording_path),
             "--stdio",
         ],
         input=stdin,
@@ -940,6 +957,64 @@ def _run_replay_control(
         cwd=str(cwd) if cwd is not None else None,
         env=env,
     )
+
+
+def _control_recording_path(
+    recording_path: Path,
+    *,
+    pid: str | None,
+    timeout_seconds: int,
+) -> Path:
+    """Return an unframed recording path suitable for Python stdio replay."""
+    if stream.detect_raw_trace(recording_path):
+        return recording_path
+    return _extracted_pidfile_path(
+        recording_path,
+        pid=pid,
+        timeout_seconds=timeout_seconds,
+    )
+
+
+def _extracted_pidfile_path(
+    recording_path: Path,
+    *,
+    pid: str | None,
+    timeout_seconds: int,
+) -> Path:
+    from retracesoftware.replay import binary_path
+
+    replay_bin = binary_path()
+    result = subprocess.run(
+        [replay_bin, "--recording", str(recording_path), "--extract"],
+        capture_output=True,
+        text=True,
+        timeout=timeout_seconds,
+    )
+    if result.returncode != 0:
+        detail = (result.stderr or result.stdout or "").strip()
+        raise OSError(f"extract framed recording for inspection failed: {detail}")
+
+    extract_dir = recording_path.with_suffix(".d")
+    selected_pid = str(pid) if pid is not None else _root_pid_from_index(extract_dir / "index.json")
+    pidfile = extract_dir / f"{selected_pid}.bin"
+    if not pidfile.is_file():
+        raise OSError(f"extracted pidfile not found for pid {selected_pid}: {pidfile}")
+    return pidfile
+
+
+def _root_pid_from_index(index_path: Path) -> str:
+    try:
+        payload = json.loads(index_path.read_text(encoding="utf-8"))
+    except OSError as exc:
+        raise OSError(f"extracted recording index not found: {index_path}") from exc
+    except json.JSONDecodeError as exc:
+        raise OSError(f"extracted recording index is invalid JSON: {index_path}") from exc
+
+    root = payload.get("root") if isinstance(payload, dict) else None
+    pid = root.get("pid") if isinstance(root, dict) else None
+    if pid is None:
+        raise OSError(f"extracted recording index has no root pid: {index_path}")
+    return str(pid)
 
 
 def _control_replay_cwd(recording_path: Path) -> Path | None:

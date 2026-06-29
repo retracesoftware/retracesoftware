@@ -490,11 +490,27 @@ func (r *Replay) Stack(ctx context.Context) ([]map[string]any, error) {
 // Locals asks the Python inspector for local variables in the current frame.
 // Each variable is a map with keys like "name", "value", "type".
 func (r *Replay) Locals(ctx context.Context) ([]map[string]any, error) {
-	resp, err := r.client.Request(ctx, "locals", nil)
+	return r.LocalsForFrame(ctx, 0)
+}
+
+func (r *Replay) LocalsForFrame(ctx context.Context, frameIndex int) ([]map[string]any, error) {
+	resp, err := r.client.Request(ctx, "locals", map[string]any{"frame_index": frameIndex})
 	if err != nil {
 		return nil, r.wrapErr(fmt.Errorf("locals: %w", err))
 	}
 	return parseFrameList(resp.Result, "variables")
+}
+
+func (r *Replay) Evaluate(ctx context.Context, expression string, frameIndex int, reprBudget int) (map[string]any, error) {
+	resp, err := r.client.Request(ctx, "eval", map[string]any{
+		"expression":  expression,
+		"frame_index": frameIndex,
+		"repr_budget": reprBudget,
+	})
+	if err != nil {
+		return nil, r.wrapErr(fmt.Errorf("eval: %w", err))
+	}
+	return resp.Result, nil
 }
 
 // SourceLocation asks the Python inspector for the source file and line

@@ -43,6 +43,57 @@ For full rationale and examples, see `docs/REPLAY_DIVERGENCE_LOOP.md`.
     tests.
 11. Report root cause only with evidence from the first mismatch.
 
+## Decision Gates
+
+- If replay reaches the same expected application failure, stop using this
+  skill for that run and switch to the normal application-failure workflow.
+- If replay fails before or differently from the expected application failure,
+  continue this skill.
+- If the only trace or extracted directory is stale, regenerate it before
+  making a root-cause claim.
+- If a fresh run no longer reproduces the failure, classify the old evidence as
+  stale-extraction or packaging evidence rather than a confirmed replay bug.
+
+## Evidence Commands
+
+Preserve a fresh evidence directory before editing code:
+
+```bash
+rm -rf /tmp/retrace-divergence-case
+mkdir -p /tmp/retrace-divergence-case
+
+RETRACE_DEBUG=1 python -m retracesoftware \
+  --recording /tmp/retrace-divergence-case/case.retrace \
+  --verbose \
+  --stacktraces \
+  -- \
+  <target command> \
+  > /tmp/retrace-divergence-case/record.stdout \
+  2> /tmp/retrace-divergence-case/record.stderr
+
+python -m retracesoftware \
+  --recording /tmp/retrace-divergence-case/case.retrace \
+  --list_pids \
+  > /tmp/retrace-divergence-case/pids.txt
+
+/tmp/retrace-divergence-case/case.retrace --extract \
+  > /tmp/retrace-divergence-case/extract.stdout \
+  2> /tmp/retrace-divergence-case/extract.stderr
+
+ROOT_PID="$(head -n 1 /tmp/retrace-divergence-case/pids.txt)"
+/tmp/retrace-divergence-case/case.d/${ROOT_PID}.bin \
+  > /tmp/retrace-divergence-case/replay.stdout \
+  2> /tmp/retrace-divergence-case/replay.stderr
+```
+
+Also capture:
+
+```bash
+python -VV
+python -c "import platform, sys; print(platform.platform()); print(sys.executable)"
+python -m pip freeze
+```
+
 ## Mismatch Evidence
 
 For every iteration, keep a short ledger:
@@ -97,4 +148,3 @@ fix summary:
 validation:
 remaining risk:
 ```
-

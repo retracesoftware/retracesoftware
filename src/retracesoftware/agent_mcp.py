@@ -358,6 +358,27 @@ def retrace_replay_divergence_workflow() -> dict[str, Any]:
             "Verify the reduced repro, original repro, and sentinel tests.",
             "Report root cause only with evidence.",
         ],
+        "decision_gates": [
+            "If replay reaches the same expected application failure, stop this loop and use the ordinary application-failure workflow.",
+            "If replay fails before or differently from the expected application failure, continue this replay-divergence loop.",
+            "If the only available trace or extracted directory is stale, regenerate before claiming root cause.",
+            "If a fresh run no longer reproduces the issue, classify the old result as stale-extraction or packaging evidence.",
+        ],
+        "evidence_commands": [
+            "RETRACE_DEBUG=1 python -m retracesoftware --recording <fresh>.retrace --verbose --stacktraces -- <target command>",
+            "python -m retracesoftware --recording <fresh>.retrace --list_pids",
+            "<fresh>.retrace --extract",
+            "<fresh>.d/<root-pid>.bin",
+            "python -VV",
+            "python -c \"import platform, sys; print(platform.platform()); print(sys.executable)\"",
+            "python -m pip freeze",
+        ],
+        "first_mismatch_questions": [
+            "What logical event did record produce next?",
+            "What logical event did replay expect next?",
+            "What logical event did replay consume instead?",
+            "Which gate, phase, message, binding, materialization, thread, process, path predicate, fd provenance, or control-plane path made them differ?",
+        ],
         "mismatch_categories": [
             "boundary",
             "binding/materialization",
