@@ -19,6 +19,7 @@ RAW_PIPE_REPLAY_UNSUPPORTED = {
     "exec_replacement.py",
     "fork_child.py",
     "fork_tree.py",
+    "issue75_dap_probe.py",
     "multiprocess_values.py",
     "socket_makefile_replay_socket_dealloc_crash.py",
     "subprocess_echo.py",

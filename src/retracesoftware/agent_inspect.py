@@ -57,7 +57,8 @@ FAILURE_SEARCH_LIMITATIONS = [
 
 
 INTERNAL_PATH_PARTS = (
-    "/retracesoftware/",
+    "/site-packages/retracesoftware/",
+    "/src/retracesoftware/",
     "/site-packages/_pytest/",
     "/site-packages/pytest/",
     "/pytest/",

@@ -10,6 +10,8 @@ import tempfile
 
 import pytest
 
+collect_ignore = ["fixtures"]
+
 _REPO_ROOT = Path(__file__).resolve().parents[1]
 _BUILD_TAG = f"cp{sys.version_info.major}{sys.version_info.minor}{getattr(sys, 'abiflags', '')}"
 _LOCAL_BUILD_DIR = _REPO_ROOT / "build" / _BUILD_TAG
