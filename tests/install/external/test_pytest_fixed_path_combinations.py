@@ -11,6 +11,7 @@ from tests.install.external._pytest_replay_regression_helpers import (
     assert_successful_replay,
     clean_env,
     minimal_project_pythonpath,
+    pytest_project_pythonpath,
     record_extract_replay_pytest,
     write_files,
 )
@@ -144,7 +145,7 @@ def test_retrace_venv_pytest_child_process_cache_and_capfd_replays(
     install_env = clean_env(
         tmp_path,
         {
-            "PYTHONPATH": minimal_project_pythonpath(tmp_path),
+            "PYTHONPATH": pytest_project_pythonpath(tmp_path),
             "PYTEST_DISABLE_PLUGIN_AUTOLOAD": "1",
         },
     )

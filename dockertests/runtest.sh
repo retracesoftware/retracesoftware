@@ -361,7 +361,7 @@ if [ "$DEBUG_MODE" = true ]; then
         -e "RETRACE_CONFIG=debug" \
         "$TEST_IMAGE" \
         bash -c "apt-get update -qq && apt-get install -qq -y gdb > /dev/null && \
-                 python -m retracesoftware install && \
+                 python -m retracesoftware enable-hook && \
                  gdb -ex 'set confirm off' \
                      -ex 'handle SIGPIPE nostop noprint pass' \
                      -ex 'run' \

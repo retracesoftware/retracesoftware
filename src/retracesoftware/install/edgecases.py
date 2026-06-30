@@ -226,6 +226,31 @@ def multiprocessing_finalize_call(target):
     return wrapper
 
 
+def multiprocess_baseprocess_join(target, system):
+    """Keep inherited-child ``multiprocess`` join assertions inspectable.
+
+    ``multiprocess`` tracks live Process objects in a module-level ``_children``
+    set.  A plain ``os.fork()`` inherits that set into the forked child.  During
+    shutdown, ``multiprocess.util._exit_function`` may then try to join a
+    Process object owned by the parent process.  The resulting assertion is the
+    useful failure, but the assertion expression calls ``os.getpid()`` before it
+    raises.  In the inherited-child case, run the join body with Retrace gates
+    disabled so replay can surface the assertion instead of consuming a process
+    bookkeeping call.
+    """
+
+    disabled_target = system.disable_for(target, unwrap_args=False)
+
+    @functools.wraps(target)
+    @utils.exclude_from_stacktrace
+    def wrapper(self, *args, **kwargs):
+        if getattr(self, "_parent_pid", None) != _live_getpid():
+            return disabled_target(self, *args, **kwargs)
+        return target(self, *args, **kwargs)
+
+    return wrapper
+
+
 def concurrent_futures_threadpool_shutdown_sentinel(*args, **kwargs):
     if len(args) < 2 or args[1] is not None:
         return False

@@ -1,5 +1,6 @@
 """Tests for oversized messages and message boundary framing."""
 import pytest
+import time
 
 pytest.importorskip("retracesoftware.stream")
 import retracesoftware.stream as stream
@@ -23,6 +24,21 @@ def _read_all(reader):
 def _read_values(reader):
     """Read all non-control values from a reader until EOF."""
     return [v for v in _read_all(reader) if not isinstance(v, stream.Control)]
+
+
+def _wait_for_inflight_below(queue, limit, *, timeout=5):
+    """Wait for asynchronous queue accounting to settle below ``limit``."""
+    deadline = time.monotonic() + timeout
+    last = queue.inflight_bytes
+    while time.monotonic() < deadline:
+        last = queue.inflight_bytes
+        if last < limit:
+            return last
+        time.sleep(0.01)
+    pytest.fail(
+        f"inflight_bytes did not drop below {limit} within {timeout}s; "
+        f"last value was {last}"
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -170,7 +186,6 @@ def test_inflight_limit_configurable(tmp_path):
 
 def test_inflight_bytes_tracks_data(tmp_path):
     """inflight_bytes increases as data is written and returns to ~0 after flush."""
-    import time
     path = tmp_path / "trace.bin"
     with stream.writer(path, thread=_thread_id, format="unframed_binary") as w:
         baseline = w.queue.inflight_bytes
@@ -178,8 +193,7 @@ def test_inflight_bytes_tracks_data(tmp_path):
         w(big)
         assert w.queue.inflight_bytes > baseline
         w.flush()
-        time.sleep(0.2)
-        assert w.queue.inflight_bytes < 1000
+        assert _wait_for_inflight_below(w.queue, 1000) < 1000
 
 
 def test_inflight_no_data_loss_under_pressure(tmp_path):

@@ -11,7 +11,7 @@ the failing manual flow:
 ```bash
 cd /path/to/cookbook/examples/flight-search-assistant
 source /path/to/retrace-venv/bin/activate
-python -m retracesoftware install
+python -m retracesoftware enable-hook
 
 rm -f flight-relative-autoenable.retrace
 rm -rf flight-relative-autoenable.d

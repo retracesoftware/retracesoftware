@@ -147,7 +147,7 @@ For tests needing postgres, redis, etc., create a custom `docker-compose.yml`:
        environment:
          DATABASE_URL: postgres://postgres:test@postgres:5432/testdb
          RETRACE_RECORDING: /recording/trace.bin
-       command: bash -c "python -m retracesoftware install && python /app/test/test.py"
+       command: bash -c "python -m retracesoftware enable-hook && python /app/test/test.py"
 
      replay:
        network_mode: none

@@ -79,7 +79,7 @@ services:
       interval: 2s
       retries: 10
       start_period: 5s
-    command: bash -c "python -m retracesoftware install && python /app/test/test.py"
+    command: bash -c "python -m retracesoftware enable-hook && python /app/test/test.py"
 
   record:
     image: ${TEST_IMAGE:-retracesoftware-test}

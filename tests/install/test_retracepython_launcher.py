@@ -298,6 +298,43 @@ def test_retracepython_auto_debug_deletes_default_recording_on_success(
     assert not recording.exists()
 
 
+@pytest.mark.xfail(
+    strict=True,
+    reason=(
+        "auto-debug should invalidate stale extracted replay state before "
+        "handing a rewritten recording to DAP"
+    ),
+)
+def test_retracepython_auto_debug_invalidates_extracted_dir_before_ai_debugger(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    recording = tmp_path / "pytest.retrace"
+    extracted = tmp_path / "pytest.d"
+    recording.write_text("new trace", encoding="utf-8")
+    extracted.mkdir()
+    (extracted / "index.json").write_text("{}", encoding="utf-8")
+
+    def fake_run(command, *, env):
+        return subprocess.CompletedProcess(command, 1)
+
+    def fake_ai_debugger(*, recording, target_exit, target_argv):
+        assert not extracted.exists()
+        return 0
+
+    monkeypatch.setattr(retracepython.subprocess, "run", fake_run)
+    monkeypatch.setattr(retracepython, "run_ai_debugger", fake_ai_debugger)
+
+    rc = retracepython.run_with_auto_debug(
+        "/real/python",
+        ["/real/python", "-m", "retracesoftware", "--", "app.py"],
+        {"RETRACE_RECORDING": str(recording)},
+        ["app.py"],
+    )
+
+    assert rc == 1
+
+
 def test_retracepython_auto_debug_keeps_explicit_recording_on_success(
     monkeypatch,
     tmp_path: Path,
@@ -369,7 +406,14 @@ def test_current_hook_enable_and_disable_write_pth_files(tmp_path: Path) -> None
 
     assert enable_current_hook(target) == (target, paths_target)
     assert target.read_text(encoding="utf-8") == activation_pth_source()
-    assert "retracesoftware" in paths_target.read_text(encoding="utf-8")
+    linked_paths = [
+        Path(line)
+        for line in paths_target.read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+    assert linked_paths
+    assert all(path.is_absolute() for path in linked_paths)
+    assert all(path.exists() for path in linked_paths)
     assert disable_current_hook(target) == [target, paths_target]
     assert not target.exists()
     assert not paths_target.exists()

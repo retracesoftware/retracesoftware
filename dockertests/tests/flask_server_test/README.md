@@ -139,7 +139,7 @@ lifecycles clean:
 flask-record:      # Flask under retrace
   environment:
     RETRACE_RECORDING: /recording/trace.bin
-  command: bash -c "python -m retracesoftware install && python /app/test/test.py"
+  command: bash -c "python -m retracesoftware enable-hook && python /app/test/test.py"
   
 record:            # Test client (plain Python)
   depends_on:
@@ -280,7 +280,7 @@ Both tests use **separate containers** for client and server. The key difference
 record:  # Test client UNDER retrace
   environment:
     RETRACE_RECORDING: /recording/trace.bin
-  command: bash -c "python -m retracesoftware install && python /app/test/test.py"
+  command: bash -c "python -m retracesoftware enable-hook && python /app/test/test.py"
 
 flask:   # Normal Flask server
   command: python app.py
@@ -291,7 +291,7 @@ flask:   # Normal Flask server
 flask-record:  # test.py (Flask) UNDER retrace
   environment:
     RETRACE_RECORDING: /recording/trace.bin
-  command: bash -c "python -m retracesoftware install && python /app/test/test.py"
+  command: bash -c "python -m retracesoftware enable-hook && python /app/test/test.py"
 
 record:  # client.py (load generator)
   command: python /app/client.py

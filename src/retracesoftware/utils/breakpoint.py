@@ -20,6 +20,7 @@ class BreakpointSpec:
 class Breakpoint:
     code_predicate: Callable[[CodeType], bool]
     frame_predicate: Callable[[FrameType], bool]
+    line_predicate: Callable[[FrameType, int], bool]
 
 
 class BreakpointMonitor:
@@ -105,7 +106,21 @@ def _compile_breakpoint(spec: BreakpointSpec) -> Breakpoint:
         except Exception:
             return False
 
-    return Breakpoint(code_predicate=code_predicate, frame_predicate=frame_predicate)
+    def line_predicate(frame: FrameType, line: int) -> bool:
+        if line != target_line:
+            return False
+        if cond_code is None:
+            return True
+        try:
+            return bool(eval(cond_code, frame.f_globals, frame.f_locals))
+        except Exception:
+            return False
+
+    return Breakpoint(
+        code_predicate=code_predicate,
+        frame_predicate=frame_predicate,
+        line_predicate=line_predicate,
+    )
 
 
 def _find_monitored_frame(code: CodeType) -> Optional[FrameType]:
@@ -171,7 +186,7 @@ def install_breakpoint(
 
     def on_line(code: CodeType, line: int):
         frame = _find_monitored_frame(code)
-        if frame is not None and compiled.frame_predicate(frame):
+        if frame is not None and compiled.line_predicate(frame, line):
             _log(f"LINE hit: {code.co_filename}:{line}")
             callback(cursor_snapshot().to_dict())
         return None

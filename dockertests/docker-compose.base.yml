@@ -44,7 +44,7 @@ services:
       RETRACE_RECORDING: /recording/trace.bin
       RETRACE_REPLAY_BIN: /app/packages/bin/replay
       RETRACE_STACKTRACES: ${RETRACE_STACKTRACES:-0}
-    command: bash -c "python -m retracesoftware install && python /app/test/test.py"
+    command: bash -c "python -m retracesoftware enable-hook && python /app/test/test.py"
 
   replay:
     image: ${TEST_IMAGE:-retracesoftware-test}

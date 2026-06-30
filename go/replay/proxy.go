@@ -62,8 +62,21 @@ type Proxy struct {
 	hasCurrentHit        bool
 	navHistory           []*Cursor
 	navigatedFromHit     bool // true after step/nav, false after continue lands on a hit
+	frameRefs            map[int]dapFrameRef
+	variableRefs         map[int]dapVariableRef
+	nextVariableRef      int
 	navTimeout           time.Duration
 	seq                  atomic.Int64
+}
+
+type dapFrameRef struct {
+	frameIndex int
+}
+
+type dapVariableRef struct {
+	kind       string
+	frameIndex int
+	children   []map[string]any
 }
 
 func NewProxy(pidFile string, clientIn io.Reader, clientW *Writer) *Proxy {
@@ -213,6 +226,7 @@ func (p *Proxy) handlePostLaunch() error {
 
 		switch env.Command {
 		case "configurationDone":
+			p.invalidateDAPReferences()
 			if err := p.clientW.Write(p.successResponse(env.Seq, env.Command, nil)); err != nil {
 				return err
 			}
@@ -245,6 +259,7 @@ func (p *Proxy) handlePostLaunch() error {
 				return err
 			}
 		case "continue", "next", "stepIn", "stepOut", "stepBack", "reverseContinue":
+			p.invalidateDAPReferences()
 			if err := p.clientW.Write(p.successResponse(env.Seq, env.Command, json.RawMessage(`{"allThreadsContinued":true}`))); err != nil {
 				return err
 			}
@@ -264,12 +279,12 @@ func (p *Proxy) handlePostLaunch() error {
 				return err
 			}
 		case "scopes":
-			body := p.handleScopes()
+			body := p.handleScopes(env.Arguments)
 			if err := p.clientW.Write(p.successResponse(env.Seq, env.Command, body)); err != nil {
 				return err
 			}
 		case "variables":
-			body, err := p.handleVariables()
+			body, err := p.handleVariables(env.Arguments)
 			if err != nil {
 				log.Printf("variables: %v", err)
 				if err := p.clientW.Write(p.categorizedErrorResponse(env.Seq, env.Command, err)); err != nil {
@@ -281,7 +296,7 @@ func (p *Proxy) handlePostLaunch() error {
 				return err
 			}
 		case "evaluate":
-			body := json.RawMessage(`{"result":"<evaluation unavailable>","variablesReference":0}`)
+			body := p.handleEvaluate(env.Arguments)
 			if err := p.clientW.Write(p.successResponse(env.Seq, env.Command, body)); err != nil {
 				return err
 			}
@@ -299,6 +314,7 @@ func (p *Proxy) handlePostLaunch() error {
 			if p.debugger != nil {
 				_ = p.debugger.Close()
 			}
+			p.invalidateDAPReferences()
 			p.currentCursor = nil
 			p.hasCurrentHit = false
 			if err := p.clientW.Write(p.successResponse(env.Seq, env.Command, nil)); err != nil {
@@ -652,6 +668,7 @@ func (p *Proxy) handleStackTrace() (json.RawMessage, error) {
 	}
 	dapFrames := make([]map[string]any, 0, len(frames))
 	for i, f := range frames {
+		p.rememberFrameRef(i, i)
 		df := map[string]any{
 			"id":     i,
 			"name":   stringOr(f, "function", "<unknown>"),
@@ -756,33 +773,54 @@ func (p *Proxy) resolveSourcePath(filename string) string {
 	return filename
 }
 
-func (p *Proxy) handleScopes() json.RawMessage {
+func (p *Proxy) handleScopes(args json.RawMessage) json.RawMessage {
+	frameIndex, ok := p.frameIndexForScopes(args)
+	if !ok {
+		return json.RawMessage(`{"scopes":[]}`)
+	}
+	localsRef := p.rememberVariableRef(dapVariableRef{kind: "locals", frameIndex: frameIndex})
 	body, _ := json.Marshal(map[string]any{
 		"scopes": []map[string]any{
-			{"name": "Locals", "variablesReference": 1, "expensive": false},
+			{"name": "Locals", "variablesReference": localsRef, "expensive": false},
 		},
 	})
 	return body
 }
 
-func (p *Proxy) handleVariables() (json.RawMessage, error) {
+func (p *Proxy) handleVariables(args json.RawMessage) (json.RawMessage, error) {
+	var a struct {
+		VariablesReference int `json:"variablesReference"`
+	}
+	if len(args) > 0 {
+		_ = json.Unmarshal(args, &a)
+	}
+	ref, ok := p.variableRefs[a.VariablesReference]
+	if !ok || ref.kind == "" {
+		body, err := json.Marshal(map[string]any{"variables": []any{}})
+		if err != nil {
+			return nil, err
+		}
+		return body, nil
+	}
+	if ref.kind == "children" {
+		body, err := json.Marshal(map[string]any{"variables": ref.children})
+		if err != nil {
+			return nil, err
+		}
+		return body, nil
+	}
 	if p.currentCursor == nil {
 		return nil, fmt.Errorf("no active cursor: replay is not stopped at an inspectable position")
 	}
+
 	ctx := context.Background()
-	vars, err := p.currentCursor.Locals(ctx)
+	vars, err := p.currentCursor.LocalsForFrame(ctx, ref.frameIndex)
 	if err != nil {
 		return nil, err
 	}
 	dapVars := make([]map[string]any, 0, len(vars))
 	for _, v := range vars {
-		dv := map[string]any{
-			"name":               stringOr(v, "name", "?"),
-			"value":              stringOr(v, "value", ""),
-			"type":               stringOr(v, "type", ""),
-			"variablesReference": 0,
-		}
-		dapVars = append(dapVars, dv)
+		dapVars = append(dapVars, p.dapVariable(v))
 	}
 	body, err := json.Marshal(map[string]any{"variables": dapVars})
 	if err != nil {
@@ -836,6 +874,135 @@ func (p *Proxy) categorizedErrorResponse(reqSeq int, command string, err error) 
 		},
 	}
 	out, _ := json.Marshal(m)
+	return out
+}
+
+func (p *Proxy) handleEvaluate(args json.RawMessage) json.RawMessage {
+	var a struct {
+		Expression string `json:"expression"`
+		FrameID    *int   `json:"frameId"`
+	}
+	if len(args) > 0 {
+		_ = json.Unmarshal(args, &a)
+	}
+	frameIndex := 0
+	if a.FrameID != nil {
+		ref, ok := p.frameRefs[*a.FrameID]
+		if !ok {
+			body, _ := json.Marshal(map[string]any{
+				"result":             "<frame unavailable>",
+				"type":               "error",
+				"variablesReference": 0,
+			})
+			return body
+		}
+		frameIndex = ref.frameIndex
+	}
+	if p.currentCursor == nil {
+		return json.RawMessage(`{"result":"<evaluation unavailable>","variablesReference":0}`)
+	}
+
+	result, err := p.currentCursor.Evaluate(context.Background(), a.Expression, frameIndex, 1200)
+	if err != nil {
+		body, _ := json.Marshal(map[string]any{
+			"result":             err.Error(),
+			"type":               "error",
+			"variablesReference": 0,
+		})
+		return body
+	}
+	if available, _ := result["available"].(bool); !available {
+		body, _ := json.Marshal(map[string]any{
+			"result":             stringOr(result, "reason", "<evaluation unavailable>"),
+			"type":               "error",
+			"variablesReference": 0,
+		})
+		return body
+	}
+	body, _ := json.Marshal(map[string]any{
+		"result":             stringOr(result, "result", ""),
+		"type":               stringOr(result, "type", ""),
+		"variablesReference": 0,
+	})
+	return body
+}
+
+func (p *Proxy) frameIndexForScopes(args json.RawMessage) (int, bool) {
+	if p.currentCursor == nil {
+		return 0, false
+	}
+	var a struct {
+		FrameID int `json:"frameId"`
+	}
+	if len(args) > 0 {
+		_ = json.Unmarshal(args, &a)
+	}
+	if ref, ok := p.frameRefs[a.FrameID]; ok {
+		return ref.frameIndex, true
+	}
+	if a.FrameID == 0 && len(p.frameRefs) == 0 {
+		return 0, true
+	}
+	return 0, false
+}
+
+func (p *Proxy) rememberFrameRef(frameID, frameIndex int) {
+	if p.frameRefs == nil {
+		p.frameRefs = make(map[int]dapFrameRef)
+	}
+	p.frameRefs[frameID] = dapFrameRef{frameIndex: frameIndex}
+}
+
+func (p *Proxy) rememberVariableRef(ref dapVariableRef) int {
+	if p.variableRefs == nil {
+		p.variableRefs = make(map[int]dapVariableRef)
+	}
+	p.nextVariableRef++
+	id := p.nextVariableRef
+	p.variableRefs[id] = ref
+	return id
+}
+
+func (p *Proxy) invalidateDAPReferences() {
+	p.frameRefs = make(map[int]dapFrameRef)
+	p.variableRefs = make(map[int]dapVariableRef)
+}
+
+func (p *Proxy) dapVariable(v map[string]any) map[string]any {
+	dv := map[string]any{
+		"name":               stringOr(v, "name", "?"),
+		"value":              stringOr(v, "value", ""),
+		"type":               stringOr(v, "type", ""),
+		"variablesReference": 0,
+	}
+	children := dapChildVariables(v["children"])
+	if len(children) > 0 {
+		dv["variablesReference"] = p.rememberVariableRef(dapVariableRef{
+			kind:     "children",
+			children: children,
+		})
+	}
+	return dv
+}
+
+func dapChildVariables(raw any) []map[string]any {
+	rawList, ok := raw.([]any)
+	if !ok {
+		return nil
+	}
+	out := make([]map[string]any, 0, len(rawList))
+	for _, item := range rawList {
+		child, ok := item.(map[string]any)
+		if !ok {
+			continue
+		}
+		out = append(out, map[string]any{
+			"name":               stringOr(child, "name", "?"),
+			"value":              stringOr(child, "value", ""),
+			"type":               stringOr(child, "type", ""),
+			"variablesReference": 0,
+		})
+	}
 	return out
 }
 

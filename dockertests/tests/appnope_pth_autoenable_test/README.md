@@ -8,7 +8,7 @@ Run from this directory on macOS:
 ```bash
 cd /path/to/retracesoftware/dockertests/tests/appnope_pth_autoenable_test
 [ -f requirements.txt ] && python -m pip install -q -r requirements.txt
-python -m retracesoftware install
+python -m retracesoftware enable-hook
 
 rm -f test.retrace
 rm -rf test.d
