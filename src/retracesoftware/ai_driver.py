@@ -22,10 +22,10 @@ from retracesoftware.retracepython import DEFAULT_AI_SERVER
 
 DAP_SESSION_ID = "dap-replay-1"
 DEFAULT_TIMEOUT = 30.0
+MAX_SOURCE_CONTEXT_LINE_CHARS = 4096
 AVAILABLE_TOOLS = [
     "start_replay_session",
     "set_breakpoints",
-    "set_exception_breakpoints",
     "continue_execution",
     "reverse_continue",
     "step_over",
@@ -448,8 +448,29 @@ class DAPExecutor:
         arg_trace = arguments.get("trace")
         if isinstance(arg_trace, dict) and isinstance(arg_trace.get("path"), str):
             trace = arg_trace["path"]
+        resolved_trace = str(Path(trace).resolve())
+        if (
+            self.session is not None
+            and not self.session.closed
+            and self.session.trace == resolved_trace
+            and not bool(arguments.get("restart"))
+        ):
+            return {
+                "ok": True,
+                "summary": "Retrace DAP replay session is already active.",
+                "data": {
+                    "session_id": DAP_SESSION_ID,
+                    "trace": resolved_trace,
+                    "dap": {
+                        "enabled": True,
+                        "capabilities": self.session.capabilities,
+                    },
+                    "note": "Pass restart=true to force a fresh replay session.",
+                },
+                "session": self.session.state,
+            }
         self.close()
-        session = DAPSession(self.replay_bin, trace)
+        session = DAPSession(self.replay_bin, resolved_trace)
         self.session = session
         session.initialize()
         session.launch()
@@ -500,18 +521,22 @@ class DAPExecutor:
 
     def set_exception_breakpoints(self, arguments: dict[str, Any]) -> dict[str, Any]:
         session = self._require_session("set_exception_breakpoints")
-        filters = arguments.get("filters") if isinstance(arguments.get("filters"), list) else []
-        session.request("setExceptionBreakpoints", {"filters": filters})
-        return {
-            "ok": True,
-            "summary": (
-                "DAP exception breakpoints disabled."
-                if not filters
-                else f"DAP exception breakpoints set to {', '.join(str(item) for item in filters)}."
-            ),
-            "data": {"filters": filters},
-            "session": session.state,
-        }
+        raw_filters = arguments.get("filters")
+        filters = [
+            item
+            for item in raw_filters
+            if isinstance(item, str)
+        ] if isinstance(raw_filters, list) else []
+        resp = session.request("setExceptionBreakpoints", {"filters": filters})
+        data = resp.get("body") if isinstance(resp.get("body"), dict) else {}
+        session.capabilities["exception_breakpoints"] = ",".join(filters) if filters else "disabled"
+        session.state["capabilities"] = session._capability_state()
+        summary = (
+            "DAP exception breakpoints disabled."
+            if not filters
+            else f"DAP exception breakpoints set to {', '.join(filters)}."
+        )
+        return {"ok": True, "summary": summary, "data": data, "session": session.state}
 
     def navigate(self, tool: str, dap_command: str, arguments: dict[str, Any]) -> dict[str, Any]:
         session = self._require_session(tool)
@@ -859,6 +884,8 @@ def run_driver(args: argparse.Namespace) -> dict[str, Any]:
     executor = _build_executor(args)
     transcript: list[dict[str, Any]] = []
     try:
+        initial_observation = _initial_observation(args, executor, transcript)
+        initial_session = _executor_session_state(executor)
         start_payload = {
             "task": {
                 "goal": "diagnose_failure",
@@ -867,8 +894,8 @@ def run_driver(args: argparse.Namespace) -> dict[str, Any]:
             },
             "trace": str(Path(args.trace).resolve()) if args.trace else "",
             "available_tools": executor.available_tools(),
-            "initial_observation": _initial_observation(args, executor, transcript),
-            "session": {"state": "not_started"},
+            "initial_observation": initial_observation,
+            "session": initial_session,
             "max_tool_calls": args.max_tool_calls,
         }
         if args.time_budget_ms is not None:
@@ -914,7 +941,7 @@ def _initial_observation(
     if not _task_mentions_pytest(args.task) or not isinstance(executor, DAPExecutor):
         return observation
 
-    hint = _pytest_failure_hint(args.trace, replay_bin=executor.replay_bin)
+    hint = _pytest_failure_hint(args.trace)
     if not hint:
         observation["summary"] = (
             "Driver initialized for a pytest failure. No application failure candidate "
@@ -971,7 +998,10 @@ def _pytest_failure_hint(trace: str, *, replay_bin: str | None = None) -> dict[s
     except ValueError:
         timeout = 20
         limit = 5000
-    control_recording = _control_recording_for_trace(trace, replay_bin=replay_bin)
+    if replay_bin is not None:
+        control_recording = _control_recording_for_trace(trace, replay_bin=replay_bin)
+    else:
+        control_recording = _control_recording_for_trace(trace)
     if control_recording is None:
         return None
 
@@ -979,7 +1009,7 @@ def _pytest_failure_hint(trace: str, *, replay_bin: str | None = None) -> dict[s
         control_recording,
         cwd=_recording_cwd_for_trace(trace),
         timeout=timeout,
-        replay_bin=replay_bin,
+        **({"replay_bin": replay_bin} if replay_bin is not None else {}),
     )
     if output_hint is not None and output_hint.get("classification") == "application":
         return output_hint
@@ -1215,6 +1245,12 @@ def _prime_pytest_failure_breakpoint(executor: DAPExecutor, hint: dict[str, Any]
         if not result.get("ok"):
             break
     return transcript
+
+
+def _executor_session_state(executor: DAPExecutor | StubExecutor) -> dict[str, Any]:
+    session = getattr(executor, "session", None)
+    state = getattr(session, "state", None)
+    return _json_clone(state) if isinstance(state, dict) else {"state": "not_started"}
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -1564,9 +1600,17 @@ def _source_window(content: str, line: int, before: int, after: int) -> list[dic
     start = max(1, line - before)
     end = min(len(lines), line + after)
     return [
-        {"line": idx, "text": lines[idx - 1], "current": idx == line}
+        {"line": idx, "text": _bounded_source_line(lines[idx - 1]), "current": idx == line}
         for idx in range(start, end + 1)
+        if lines[idx - 1].strip()
     ]
+
+
+def _bounded_source_line(text: str) -> str:
+    if len(text) <= MAX_SOURCE_CONTEXT_LINE_CHARS:
+        return text
+    suffix = " ... <truncated>"
+    return text[: MAX_SOURCE_CONTEXT_LINE_CHARS - len(suffix)] + suffix
 
 
 def _tool_error(tool: str, code: str, message: str) -> dict[str, Any]:
