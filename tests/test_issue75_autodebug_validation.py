@@ -16,11 +16,15 @@ from retracesoftware.ai_driver import (
     _pytest_failure_hint,
     _pytest_failure_hint_from_output,
 )
+from retracesoftware.replay import binary_path as replay_binary_path
 
 
 FIXTURE = Path(__file__).resolve().parent / "fixtures" / "issue75_period_rates"
 REPO_ROOT = Path(__file__).resolve().parents[1]
-REPLAY_BIN = os.environ.get("RETRACE_REPLAY_BIN") or str(REPO_ROOT / ".retrace-replay-bin")
+
+
+def _replay_bin() -> str:
+    return replay_binary_path()
 
 
 def _python() -> str:
@@ -32,7 +36,7 @@ def _env(extra: dict[str, str] | None = None) -> dict[str, str]:
     env["PYTHONPATH"] = os.pathsep.join(
         [str(REPO_ROOT / "src"), str(FIXTURE), env.get("PYTHONPATH", "")]
     ).strip(os.pathsep)
-    env["RETRACE_REPLAY_BIN"] = REPLAY_BIN
+    env["RETRACE_REPLAY_BIN"] = _replay_bin()
     env["PYTEST_DISABLE_PLUGIN_AUTOLOAD"] = "1"
     if extra:
         env.update(extra)
@@ -87,14 +91,14 @@ def test_issue75_recorded_pytest_output_is_parseable(issue75_trace):
         "unit_tests/test_period_rates.py"
     )
 
-    replay_hint = _pytest_failure_hint(str(trace_path), replay_bin=REPLAY_BIN)
+    replay_hint = _pytest_failure_hint(str(trace_path))
     assert replay_hint is not None
     assert replay_hint["line"] > 0
 
 
 def test_issue75_prepositioning_returns_application_stack(issue75_trace):
     trace_path, _ = issue75_trace
-    executor = DAPExecutor(str(trace_path), REPLAY_BIN)
+    executor = DAPExecutor(str(trace_path))
     transcript: list[dict] = []
     observation = _initial_observation(
         type(
@@ -134,7 +138,7 @@ def test_issue75_prepositioning_returns_application_stack(issue75_trace):
 def test_issue75_bad_pytest_internal_stop_is_not_swallowed_as_empty_stack(issue75_trace):
     """Reproduce issue comment DAP sequence: pytest-internal BP must not fake empty stack."""
     trace_path, _ = issue75_trace
-    replay = REPLAY_BIN
+    replay = _replay_bin()
     extract = subprocess.run(
         [replay, "--recording", str(trace_path), "--extract"],
         capture_output=True,

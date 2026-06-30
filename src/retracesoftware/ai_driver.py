@@ -1147,6 +1147,7 @@ def _pytest_failure_hint_from_replay_output(
 
 def _pytest_failure_hint_from_output(text: str, *, cwd: Path | None = None) -> dict[str, Any] | None:
     lines = text.splitlines()
+    candidates: list[dict[str, Any]] = []
     for idx, line in enumerate(lines):
         match = _PYTEST_FAILURE_LOCATION_RE.match(line.strip())
         if not match:
@@ -1159,17 +1160,27 @@ def _pytest_failure_hint_from_output(text: str, *, cwd: Path | None = None) -> d
         exception_type, exception_message = _pytest_exception_near(lines, idx)
         if match.group("exception_type") and not exception_type:
             exception_type = match.group("exception_type")
-        return {
-            "filename": str(path.resolve()),
-            "line": int(match.group("line")),
-            "function": function or "<module>",
-            "exception_type": exception_type,
-            "exception_message": exception_message,
-            "classification": "application",
-            "rank": None,
-            "score": 0,
-        }
-    return None
+        candidates.append(
+            {
+                "filename": str(path.resolve()),
+                "line": int(match.group("line")),
+                "function": function or "<module>",
+                "exception_type": exception_type,
+                "exception_message": exception_message,
+                "classification": "application",
+                "rank": None,
+                "score": 0,
+            }
+        )
+    if not candidates:
+        return None
+    for hint in candidates:
+        if hint["function"].startswith("test_"):
+            return hint
+    for hint in candidates:
+        if hint["function"] != "<module>":
+            return hint
+    return candidates[0]
 
 
 def _pytest_failed_function_near(lines: list[str], filename: str) -> str:
