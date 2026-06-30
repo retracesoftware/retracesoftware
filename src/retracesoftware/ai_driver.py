@@ -1157,6 +1157,8 @@ def _pytest_failure_hint_from_output(text: str, *, cwd: Path | None = None) -> d
         if not path.is_absolute() and cwd is not None:
             path = cwd / path
         function = match.group("function") or _pytest_failed_function_near(lines, filename)
+        if function == "<module>":
+            function = _pytest_failed_function_near(lines, filename) or function
         exception_type, exception_message = _pytest_exception_near(lines, idx)
         if match.group("exception_type") and not exception_type:
             exception_type = match.group("exception_type")
@@ -1180,7 +1182,12 @@ def _pytest_failure_hint_from_output(text: str, *, cwd: Path | None = None) -> d
     for hint in candidates:
         if hint["function"] != "<module>":
             return hint
-    return candidates[0]
+    failed_node = _pytest_failed_function_near(lines, candidates[-1]["filename"])
+    if failed_node:
+        best = max(candidates, key=lambda item: item["line"])
+        best = {**best, "function": failed_node}
+        return best
+    return max(candidates, key=lambda item: item["line"])
 
 
 def _pytest_failed_function_near(lines: list[str], filename: str) -> str:
