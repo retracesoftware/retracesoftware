@@ -183,6 +183,23 @@ unit_tests/test_period_rates.py:30: AssertionError
     assert hint["exception_type"] == "AssertionError"
 
 
+def test_pytest_failure_hint_from_pytest311_short_summary_suffix(tmp_path):
+    output = """
+unit_tests/test_period_rates.py:1: in <module>
+    import report_test_demo.report as report
+
+unit_tests/test_period_rates.py:19: AssertionError
+=========================== short test summary info ============================
+FAILED unit_tests/test_period_rates.py::test_period_rates_uses_latest_date_for_closing_rate - AssertionError
+"""
+    hint = _pytest_failure_hint_from_output(output, cwd=tmp_path)
+
+    assert hint is not None
+    assert hint["line"] == 19
+    assert "test_period_rates" in hint["function"]
+    assert hint["exception_type"] == "AssertionError"
+
+
 def test_exception_and_frames_from_pytest_hint_builds_application_frame(tmp_path):
     hint = {
         "filename": str(tmp_path / "unit_tests/test_period_rates.py"),

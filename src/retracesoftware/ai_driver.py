@@ -1119,7 +1119,9 @@ def _select_pytest_failure_candidate(report: dict[str, Any]) -> dict[str, Any] |
 _PYTEST_FAILURE_LOCATION_RE = re.compile(
     r"^(?P<file>.+?\.py):(?P<line>[0-9]+)(?::\s+in\s+(?P<function>\S+)|:\s+(?P<exception_type>[A-Za-z_][A-Za-z0-9_.]*))\s*$"
 )
-_PYTEST_FAILED_NODE_RE = re.compile(r"^FAILED\s+(?P<file>.+?\.py)::(?P<function>\S+)\s*$")
+_PYTEST_FAILED_NODE_RE = re.compile(
+    r"^FAILED\s+(?P<file>.+?\.py)::(?P<function>\S+)(?:\s+-\s+.*)?$"
+)
 _PYTEST_EXCEPTION_RE = re.compile(r"^E\s+(?P<type>[A-Za-z_][A-Za-z0-9_.]*)(?::\s*(?P<message>.*))?$")
 
 
@@ -1156,9 +1158,12 @@ def _pytest_failure_hint_from_output(text: str, *, cwd: Path | None = None) -> d
         path = Path(filename)
         if not path.is_absolute() and cwd is not None:
             path = cwd / path
-        function = match.group("function") or _pytest_failed_function_near(lines, filename)
-        if function == "<module>":
-            function = _pytest_failed_function_near(lines, filename) or function
+        explicit_function = match.group("function")
+        if explicit_function == "<module>":
+            explicit_function = None
+        function = explicit_function
+        if not function and match.group("exception_type"):
+            function = _pytest_failed_function_near(lines, filename)
         exception_type, exception_message = _pytest_exception_near(lines, idx)
         if match.group("exception_type") and not exception_type:
             exception_type = match.group("exception_type")
@@ -1167,6 +1172,7 @@ def _pytest_failure_hint_from_output(text: str, *, cwd: Path | None = None) -> d
                 "filename": str(path.resolve()),
                 "line": int(match.group("line")),
                 "function": function or "<module>",
+                "explicit_function": explicit_function,
                 "exception_type": exception_type,
                 "exception_message": exception_message,
                 "classification": "application",
@@ -1177,17 +1183,42 @@ def _pytest_failure_hint_from_output(text: str, *, cwd: Path | None = None) -> d
     if not candidates:
         return None
     for hint in candidates:
-        if hint["function"].startswith("test_"):
-            return hint
+        explicit = hint.get("explicit_function")
+        if isinstance(explicit, str) and explicit.startswith("test_"):
+            return _finalize_pytest_failure_hint(hint, lines)
     for hint in candidates:
-        if hint["function"] != "<module>":
-            return hint
-    failed_node = _pytest_failed_function_near(lines, candidates[-1]["filename"])
-    if failed_node:
-        best = max(candidates, key=lambda item: item["line"])
-        best = {**best, "function": failed_node}
-        return best
-    return max(candidates, key=lambda item: item["line"])
+        if hint["function"].startswith("test_"):
+            return _finalize_pytest_failure_hint(hint, lines)
+    failure_lines = [
+        hint
+        for hint in candidates
+        if hint.get("exception_type") and not hint.get("explicit_function")
+    ]
+    if failure_lines:
+        return _finalize_pytest_failure_hint(
+            max(failure_lines, key=lambda item: item["line"]),
+            lines,
+        )
+    non_module = [hint for hint in candidates if hint["function"] != "<module>"]
+    if non_module:
+        return _finalize_pytest_failure_hint(
+            max(non_module, key=lambda item: item["line"]),
+            lines,
+        )
+    return _finalize_pytest_failure_hint(
+        max(candidates, key=lambda item: item["line"]),
+        lines,
+    )
+
+
+def _finalize_pytest_failure_hint(hint: dict[str, Any], lines: list[str]) -> dict[str, Any]:
+    finalized = {key: value for key, value in hint.items() if key != "explicit_function"}
+    if finalized["function"] == "<module>":
+        filename = Path(finalized["filename"]).name
+        function = _pytest_failed_function_near(lines, filename)
+        if function:
+            finalized["function"] = function
+    return finalized
 
 
 def _pytest_failed_function_near(lines: list[str], filename: str) -> str:

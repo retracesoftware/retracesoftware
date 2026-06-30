@@ -12,7 +12,7 @@ def test_period_rates_uses_latest_date_for_closing_rate(monkeypatch):
     def read_sql(query, database, params=None):
         return returned_without_order_by
 
-    monkeypatch.setattr(report.db, "read_sql", read_sql)
+    monkeypatch.setattr("report_test_demo.db.read_sql", read_sql)
 
     rates = report._period_rates("EUR", "2025-01-01", "2025-03-31")
 
