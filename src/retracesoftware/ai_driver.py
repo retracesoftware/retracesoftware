@@ -1151,6 +1151,7 @@ _PYTEST_FAILED_NODE_INLINE_RE = re.compile(
     r"^(?P<file>.+?\.py)::(?P<function>test_\S+)\s+FAILED\b"
 )
 _PYTEST_EXCEPTION_RE = re.compile(r"^E\s+(?P<type>[A-Za-z_][A-Za-z0-9_.]*)(?::\s*(?P<message>.*))?$")
+_PYTEST_ASSERTION_CONTINUATION_MAX = 30
 
 
 def _pytest_failure_hint_from_replay_output(
@@ -1342,8 +1343,12 @@ def _pytest_assertion_exception_in_output(lines: list[str]) -> tuple[str, str]:
         if not match or match.group("type") != "AssertionError":
             continue
         message = match.group("message") or ""
-        for follow in lines[idx + 1:idx + 6]:
+        for follow in lines[idx + 1:idx + 1 + _PYTEST_ASSERTION_CONTINUATION_MAX]:
             follow_stripped = follow.strip()
+            if not follow_stripped.startswith("E"):
+                break
+            if follow_stripped == "E":
+                continue
             if not follow_stripped.startswith("E   "):
                 break
             if _PYTEST_EXCEPTION_RE.match(follow_stripped):
