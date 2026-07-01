@@ -2027,8 +2027,10 @@ def _application_frames(frames: Any, max_frames: int) -> list[dict[str, Any]]:
 
 def _is_internal_path(path: str) -> bool:
     normalized = path.replace(os.sep, "/")
+    basename = Path(normalized).name
     return (
         normalized.startswith("<frozen ")
+        or basename.startswith("<frozen ")
         or "importlib" in normalized
         or any(part in normalized for part in INTERNAL_PATH_PARTS)
     )
