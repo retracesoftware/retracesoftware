@@ -1141,7 +1141,8 @@ def _select_pytest_failure_candidate(report: dict[str, Any]) -> dict[str, Any] |
 
 
 _PYTEST_FAILURE_LOCATION_RE = re.compile(
-    r"^(?P<file>.+?\.py):(?P<line>[0-9]+)(?::\s+in\s+(?P<function>\S+)|:\s+(?P<exception_type>[A-Za-z_][A-Za-z0-9_.]*))\s*$"
+    r"^(?P<file>.+?\.py):(?P<line>[0-9]+)"
+    r"(?::\s+in\s+(?P<function>\S+)|:\s+(?P<exception_type>[A-Za-z_][A-Za-z0-9_.]*)|:)\s*$"
 )
 _PYTEST_FAILED_NODE_RE = re.compile(
     r"^FAILED\s+(?P<file>.+?\.py)::(?P<function>\S+)(?:\s+-\s+.*)?$"
@@ -1201,8 +1202,11 @@ def _pytest_location_candidates(lines: list[str], *, cwd: Path | None) -> list[d
         explicit_function = match.group("function")
         if explicit_function == "<module>":
             explicit_function = None
+        is_bare_location = match.group("function") is None and match.group("exception_type") is None
         function = explicit_function
         if not function and match.group("exception_type"):
+            function = _pytest_failed_function_near(lines, filename)
+        elif not function and is_bare_location:
             function = _pytest_failed_function_near(lines, filename)
         exception_type, exception_message = _pytest_exception_near(lines, idx)
         if match.group("exception_type") and not exception_type:

@@ -229,6 +229,46 @@ def test_initial_observation_reports_prepositioned_pytest_session(monkeypatch):
     assert _executor_session_state(executor)["last_stop"]["reason"] == "breakpoint"
 
 
+def test_pytest_failure_hint_prefers_bare_traceback_location_over_failed_node(tmp_path):
+    test_file = tmp_path / "tests" / "test_financial_report.py"
+    test_file.parent.mkdir(parents=True)
+    test_file.write_text(
+        "\n".join(
+            [
+                "def test_generate_financial_report():",
+                "    expected = 59463.2",
+                "    actual = 63750.41",
+                "    assert actual == expected",
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    output = """
+tests/test_financial_report.py::test_generate_financial_report FAILED [100%]
+=================================== FAILURES ===================================
+________________________ test_generate_financial_report ________________________
+
+    def test_generate_financial_report():
+        expected = 59463.2
+        actual = 63750.41
+>       assert actual == expected
+
+tests/test_financial_report.py:4:
+E   AssertionError: assert 63750.41 == 59463.2
+=========================== short test summary info ============================
+FAILED tests/test_financial_report.py::test_generate_financial_report - AssertionError: assert 63750.41 == 59463.2
+"""
+    hint = _pytest_failure_hint_from_output(output, cwd=tmp_path)
+
+    assert hint is not None
+    assert hint["filename"] == str(test_file.resolve())
+    assert hint["line"] == 4
+    assert hint["function"] == "test_generate_financial_report"
+    assert hint["exception_type"] == "AssertionError"
+    assert "63750.41" in hint["exception_message"]
+
+
 def test_pytest_failure_hint_from_dataframe_style_output_without_file_line(tmp_path):
     test_file = tmp_path / "tests" / "test_financial_report.py"
     test_file.parent.mkdir(parents=True)
