@@ -13,6 +13,25 @@ from retracesoftware.ai_driver import (
 )
 
 
+def test_application_dap_frames_drop_pathified_frozen_runpy():
+    frames = [
+        {
+            "name": "_assertion_supported",
+            "line": 2023,
+            "source": {
+                "path": "/tmp/project/.venv/lib/python3.11/site-packages/_pytest/config/__init__.py",
+            },
+        },
+        {
+            "name": "_run_code",
+            "line": 88,
+            "source": {"path": "/tmp/project/<frozen runpy>"},
+        },
+    ]
+
+    assert _application_dap_frames(frames) == []
+
+
 def test_parse_dap_error_response_preserves_retrace_category():
     exc = _parse_dap_error_response(
         {

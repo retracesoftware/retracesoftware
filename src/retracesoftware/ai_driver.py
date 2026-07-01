@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import ast
 import json
 import os
 from pathlib import Path
@@ -542,7 +543,10 @@ class DAPExecutor:
         session = self._require_session(tool)
         thread_id = int(arguments.get("thread_id") or 1)
         session.request(dap_command, {"threadId": thread_id})
-        event = session.wait_for_event("stopped", "terminated")
+        wait_timeout = DEFAULT_TIMEOUT
+        if dap_command in {"continue", "reverseContinue"}:
+            wait_timeout = max(DEFAULT_TIMEOUT, 90.0)
+        event = session.wait_for_event("stopped", "terminated", timeout=wait_timeout)
         session._apply_stop_event(event)
         if session.state.get("state") == "terminated":
             session.drain_output()
@@ -965,7 +969,7 @@ def _initial_observation(
 
     prelude = _prime_pytest_failure_breakpoint(executor, hint)
     transcript.extend(prelude)
-    if prelude:
+    if _prelude_reached_application_stack(prelude):
         final = prelude[-1].get("result") if isinstance(prelude[-1].get("result"), dict) else {}
         stack = final.get("data") if isinstance(final.get("data"), dict) else {}
         frames = stack.get("stack_frames") if isinstance(stack.get("stack_frames"), list) else []
@@ -979,6 +983,22 @@ def _initial_observation(
                 "tool_count": len(prelude),
                 "last_result_summary": final.get("summary", ""),
                 "application_frame_count": len(frames),
+                "session": final.get("session", {}),
+            },
+        }
+    elif prelude:
+        final = prelude[-1].get("result") if isinstance(prelude[-1].get("result"), dict) else {}
+        observation["summary"] = (
+            "Driver initialized for a pytest failure with an application failure candidate, "
+            "but DAP pre-positioning did not reach an inspectable application stack. "
+            "Set a source breakpoint on the failing test or application code before inspecting."
+        )
+        observation["tool_result"] = {
+            **observation["tool_result"],
+            "prelude": {
+                "tool_count": len(prelude),
+                "last_result_summary": final.get("summary", ""),
+                "application_frame_count": 0,
                 "session": final.get("session", {}),
             },
         }
@@ -1025,7 +1045,7 @@ def _pytest_failure_hint(trace: str, *, replay_bin: str | None = None) -> dict[s
     except Exception:
         pass
 
-    return output_hint or inspect_hint
+    return None
 
 
 def _control_recording_for_trace(trace: str, replay_bin: str | None = None) -> Path | None:
@@ -1084,7 +1104,11 @@ def _select_pytest_failure_candidate(report: dict[str, Any]) -> dict[str, Any] |
         filename = location.get("filename") or location.get("file")
         return bool(filename) and int(location.get("line") or 0) > 0
 
-    usable_candidates = [candidate for candidate in candidates if usable(candidate)]
+    usable_candidates = [
+        candidate
+        for candidate in candidates
+        if usable(candidate) and str(candidate.get("classification") or "") == "application"
+    ]
     if not usable_candidates:
         return None
 
@@ -1122,6 +1146,9 @@ _PYTEST_FAILURE_LOCATION_RE = re.compile(
 _PYTEST_FAILED_NODE_RE = re.compile(
     r"^FAILED\s+(?P<file>.+?\.py)::(?P<function>\S+)(?:\s+-\s+.*)?$"
 )
+_PYTEST_FAILED_NODE_INLINE_RE = re.compile(
+    r"^(?P<file>.+?\.py)::(?P<function>test_\S+)\s+FAILED\b"
+)
 _PYTEST_EXCEPTION_RE = re.compile(r"^E\s+(?P<type>[A-Za-z_][A-Za-z0-9_.]*)(?::\s*(?P<message>.*))?$")
 
 
@@ -1149,6 +1176,16 @@ def _pytest_failure_hint_from_replay_output(
 
 def _pytest_failure_hint_from_output(text: str, *, cwd: Path | None = None) -> dict[str, Any] | None:
     lines = text.splitlines()
+    location_candidates = _pytest_location_candidates(lines, cwd=cwd)
+    if location_candidates:
+        return _select_pytest_output_hint(location_candidates, lines)
+    failed_node_candidates = _pytest_failed_node_candidates(lines, cwd=cwd)
+    if failed_node_candidates:
+        return _select_pytest_output_hint(failed_node_candidates, lines)
+    return None
+
+
+def _pytest_location_candidates(lines: list[str], *, cwd: Path | None) -> list[dict[str, Any]]:
     candidates: list[dict[str, Any]] = []
     for idx, line in enumerate(lines):
         match = _PYTEST_FAILURE_LOCATION_RE.match(line.strip())
@@ -1158,6 +1195,9 @@ def _pytest_failure_hint_from_output(text: str, *, cwd: Path | None = None) -> d
         path = Path(filename)
         if not path.is_absolute() and cwd is not None:
             path = cwd / path
+        resolved = str(path.resolve())
+        if _is_internal_path(resolved):
+            continue
         explicit_function = match.group("function")
         if explicit_function == "<module>":
             explicit_function = None
@@ -1167,9 +1207,14 @@ def _pytest_failure_hint_from_output(text: str, *, cwd: Path | None = None) -> d
         exception_type, exception_message = _pytest_exception_near(lines, idx)
         if match.group("exception_type") and not exception_type:
             exception_type = match.group("exception_type")
+        rich_type, rich_message = _pytest_assertion_exception_in_output(lines)
+        if rich_type and not exception_type:
+            exception_type = rich_type
+        if rich_message and (not exception_message or len(rich_message) > len(exception_message)):
+            exception_message = rich_message
         candidates.append(
             {
-                "filename": str(path.resolve()),
+                "filename": resolved,
                 "line": int(match.group("line")),
                 "function": function or "<module>",
                 "explicit_function": explicit_function,
@@ -1180,8 +1225,52 @@ def _pytest_failure_hint_from_output(text: str, *, cwd: Path | None = None) -> d
                 "score": 0,
             }
         )
-    if not candidates:
-        return None
+    return candidates
+
+
+def _pytest_failed_node_candidates(lines: list[str], *, cwd: Path | None) -> list[dict[str, Any]]:
+    candidates: list[dict[str, Any]] = []
+    seen: set[tuple[str, str]] = set()
+    for idx, line in enumerate(lines):
+        stripped = line.strip()
+        match = _PYTEST_FAILED_NODE_RE.match(stripped) or _PYTEST_FAILED_NODE_INLINE_RE.match(stripped)
+        if not match:
+            continue
+        filename = match.group("file")
+        function = match.group("function")
+        key = (filename, function)
+        if key in seen:
+            continue
+        seen.add(key)
+        path = Path(filename)
+        if not path.is_absolute() and cwd is not None:
+            path = cwd / path
+        resolved_path = path.resolve()
+        if _is_internal_path(str(resolved_path)):
+            continue
+        line_no = _pytest_test_function_line(resolved_path, function)
+        if line_no is None:
+            continue
+        exception_type, exception_message = _pytest_assertion_exception_in_output(lines)
+        if not exception_type:
+            exception_type, exception_message = _pytest_exception_near(lines, idx)
+        candidates.append(
+            {
+                "filename": str(resolved_path),
+                "line": line_no,
+                "function": function,
+                "explicit_function": function,
+                "exception_type": exception_type,
+                "exception_message": exception_message,
+                "classification": "application",
+                "rank": None,
+                "score": 0,
+            }
+        )
+    return candidates
+
+
+def _select_pytest_output_hint(candidates: list[dict[str, Any]], lines: list[str]) -> dict[str, Any]:
     for hint in candidates:
         explicit = hint.get("explicit_function")
         if isinstance(explicit, str) and explicit.startswith("test_"):
@@ -1224,10 +1313,42 @@ def _finalize_pytest_failure_hint(hint: dict[str, Any], lines: list[str]) -> dic
 def _pytest_failed_function_near(lines: list[str], filename: str) -> str:
     stem = Path(filename).name
     for line in lines:
-        match = _PYTEST_FAILED_NODE_RE.match(line.strip())
+        stripped = line.strip()
+        match = _PYTEST_FAILED_NODE_RE.match(stripped) or _PYTEST_FAILED_NODE_INLINE_RE.match(stripped)
         if match and match.group("file").endswith(stem):
             return match.group("function")
     return ""
+
+
+def _pytest_test_function_line(path: Path, function_name: str) -> int | None:
+    try:
+        text = path.read_text(encoding="utf-8")
+        tree = ast.parse(text, filename=str(path))
+    except (OSError, SyntaxError, UnicodeDecodeError):
+        return None
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name == function_name:
+            return int(node.lineno)
+    return None
+
+
+def _pytest_assertion_exception_in_output(lines: list[str]) -> tuple[str, str]:
+    for idx, line in enumerate(lines):
+        match = _PYTEST_EXCEPTION_RE.match(line.strip())
+        if not match or match.group("type") != "AssertionError":
+            continue
+        message = match.group("message") or ""
+        for follow in lines[idx + 1:idx + 6]:
+            follow_stripped = follow.strip()
+            if not follow_stripped.startswith("E   "):
+                break
+            if _PYTEST_EXCEPTION_RE.match(follow_stripped):
+                break
+            continuation = follow_stripped[4:].strip()
+            if continuation:
+                message = f"{message}\n{continuation}".strip() if message else continuation
+        return "AssertionError", message
+    return "", ""
 
 
 def _pytest_exception_near(lines: list[str], start: int) -> tuple[str, str]:
@@ -1287,13 +1408,34 @@ def _prime_pytest_failure_breakpoint(executor: DAPExecutor, hint: dict[str, Any]
         ("continue_execution", {"thread_id": 1}),
         ("get_stack_trace", {"thread_id": 1, "levels": 20}),
     ]
-    transcript: list[dict[str, Any]] = []
-    for tool, arguments in steps:
-        result = _json_clone(executor.execute(tool, arguments))
-        transcript.append({"tool": tool, "arguments": arguments, "result": result})
-        if not result.get("ok"):
-            break
-    return transcript
+    last_transcript: list[dict[str, Any]] = []
+    for attempt in range(3):
+        if attempt > 0:
+            executor.close()
+            time.sleep(0.25)
+        transcript: list[dict[str, Any]] = []
+        for tool, arguments in steps:
+            result = _json_clone(executor.execute(tool, arguments))
+            transcript.append({"tool": tool, "arguments": arguments, "result": result})
+            if not result.get("ok"):
+                break
+        last_transcript = transcript
+        if _prelude_reached_application_stack(transcript):
+            return transcript
+    return last_transcript
+
+
+def _prelude_reached_application_stack(transcript: list[dict[str, Any]]) -> bool:
+    if not transcript or transcript[-1].get("tool") != "get_stack_trace":
+        return False
+    result = transcript[-1].get("result")
+    if not isinstance(result, dict) or not result.get("ok"):
+        return False
+    data = result.get("data")
+    if not isinstance(data, dict):
+        return False
+    frames = data.get("stack_frames")
+    return isinstance(frames, list) and bool(frames)
 
 
 def _executor_session_state(executor: DAPExecutor | StubExecutor) -> dict[str, Any]:

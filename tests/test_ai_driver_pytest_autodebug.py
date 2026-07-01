@@ -18,6 +18,110 @@ from retracesoftware.ai_driver import (
 )
 
 
+def test_select_pytest_failure_candidate_skips_site_packages():
+    report = {
+        "ranked_candidates": [
+            {
+                "rank": 1,
+                "score": 80,
+                "classification": "site_packages",
+                "exception": {"type": "AssertionError", "message": ""},
+                "location": {
+                    "filename": "/venv/lib/python3.11/site-packages/_pytest/config/__init__.py",
+                    "line": 2023,
+                    "function": "_assertion_supported",
+                },
+            },
+            {
+                "rank": 2,
+                "score": 150,
+                "classification": "application",
+                "exception": {"type": "AssertionError", "message": "real failure"},
+                "location": {"file": "/tmp/tests/test_financial_report.py", "line": 42, "function": "test_generate_financial_report"},
+            },
+        ],
+    }
+
+    hint = _select_pytest_failure_candidate(report)
+
+    assert hint is not None
+    assert hint["classification"] == "application"
+    assert hint["function"] == "test_generate_financial_report"
+
+
+def test_select_pytest_failure_candidate_returns_none_without_application_candidate():
+    report = {
+        "ranked_candidates": [
+            {
+                "rank": 1,
+                "score": 80,
+                "classification": "site_packages",
+                "exception": {"type": "AssertionError", "message": ""},
+                "location": {
+                    "filename": "/venv/lib/python3.11/site-packages/_pytest/config/__init__.py",
+                    "line": 2023,
+                    "function": "_assertion_supported",
+                },
+            },
+        ],
+    }
+
+    assert _select_pytest_failure_candidate(report) is None
+
+
+def test_pytest_failure_hint_returns_none_when_only_site_packages_candidate(monkeypatch, tmp_path):
+    recording = tmp_path / "pid.bin"
+    recording.write_bytes(b"fake")
+
+    monkeypatch.setattr("retracesoftware.ai_driver._control_recording_for_trace", lambda trace: recording)
+    monkeypatch.setattr("retracesoftware.ai_driver._recording_cwd_for_trace", lambda trace: tmp_path)
+    monkeypatch.setattr("retracesoftware.ai_driver.replay_binary_path", lambda: "/fake/replay")
+    monkeypatch.setattr(
+        "retracesoftware.ai_driver.subprocess.run",
+        lambda *a, **kw: SimpleNamespace(stdout="", stderr="", returncode=1),
+    )
+    monkeypatch.setattr(
+        "retracesoftware.agent_inspect.inspect_failures",
+        lambda *a, **kw: {
+            "ranked_candidates": [
+                {
+                    "rank": 1,
+                    "score": 80,
+                    "classification": "site_packages",
+                    "exception": {"type": "AssertionError", "message": ""},
+                    "location": {
+                        "filename": str(tmp_path / ".venv/lib/python3.11/site-packages/_pytest/config/__init__.py"),
+                        "line": 2023,
+                        "function": "_assertion_supported",
+                    },
+                },
+            ],
+        },
+    )
+
+    assert _pytest_failure_hint(str(tmp_path / "case.retrace")) is None
+
+
+def test_initial_observation_skips_priming_without_application_hint(monkeypatch):
+    executor = object.__new__(DAPExecutor)
+    monkeypatch.setattr("retracesoftware.ai_driver._pytest_failure_hint", lambda trace: None)
+    monkeypatch.setattr(
+        "retracesoftware.ai_driver._prime_pytest_failure_breakpoint",
+        lambda executor, hint: pytest.fail("should not prime without application hint"),
+    )
+
+    transcript = []
+    observation = _initial_observation(
+        SimpleNamespace(task="Target command: -m pytest tests.", trace="/tmp/trace.retrace"),
+        executor,
+        transcript,
+    )
+
+    assert transcript == []
+    assert "No application failure candidate" in observation["summary"]
+    assert "tool_result" not in observation
+
+
 def test_select_pytest_failure_candidate_prefers_application_assertion():
     report = {
         "ranked_candidates": [
@@ -94,6 +198,15 @@ def test_initial_observation_reports_prepositioned_pytest_session(monkeypatch):
             "result": {
                 "ok": True,
                 "summary": "DAP stack trace returned 1 frame.",
+                "data": {
+                    "stack_frames": [
+                        {
+                            "name": "test_case",
+                            "source": {"path": "/tmp/test_case.py"},
+                            "line": 7,
+                        }
+                    ],
+                },
                 "session": executor.session.state,
             },
         }
@@ -114,6 +227,43 @@ def test_initial_observation_reports_prepositioned_pytest_session(monkeypatch):
     assert observation["tool_result"]["prelude"]["session"]["last_stop"]["reason"] == "breakpoint"
     assert transcript == prelude
     assert _executor_session_state(executor)["last_stop"]["reason"] == "breakpoint"
+
+
+def test_pytest_failure_hint_from_dataframe_style_output_without_file_line(tmp_path):
+    test_file = tmp_path / "tests" / "test_financial_report.py"
+    test_file.parent.mkdir(parents=True)
+    test_file.write_text(
+        "\n".join(
+            [
+                "import pandas as pd",
+                "",
+                "def test_generate_financial_report():",
+                "    expected = 1",
+                "    actual = 2",
+                "    assert expected == actual",
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    output = """
+tests/test_financial_report.py::test_generate_financial_report FAILED    [100%]
+=================================== FAILURES ===================================
+E   AssertionError: DataFrame.iloc[:, 3] (column name="amount_gbp") are different
+E   At positional index 249, first diff: 63750.41 != 59463.2
+=========================== short test summary info ============================
+FAILED tests/test_financial_report.py::test_generate_financial_report - AssertionError
+1 failed in 1.2s
+"""
+    hint = _pytest_failure_hint_from_output(output, cwd=tmp_path)
+
+    assert hint is not None
+    assert hint["filename"] == str(test_file.resolve())
+    assert hint["line"] == 3
+    assert hint["function"] == "test_generate_financial_report"
+    assert hint["exception_type"] == "AssertionError"
+    assert "63750.41" in hint["exception_message"]
+    assert hint["classification"] == "application"
 
 
 def test_pytest_failure_hint_from_replay_output_resolves_relative_pytest_frame(tmp_path):
