@@ -282,6 +282,41 @@ FAILED tests/test_financial_report.py::test_generate_financial_report - Assertio
     assert "63750.41" in hint["exception_message"]
 
 
+def test_pytest_failure_hint_preserves_pandas_positional_diff(tmp_path):
+    test_file = tmp_path / "tests" / "test_financial_report.py"
+    test_file.parent.mkdir(parents=True)
+    test_file.write_text(
+        "def test_generate_financial_report():\n"
+        "    assert False\n",
+        encoding="utf-8",
+    )
+    output = """
+tests/test_financial_report.py::test_generate_financial_report FAILED [100%]
+=================================== FAILURES ===================================
+________________________ test_generate_financial_report ________________________
+
+>       pd.testing.assert_frame_equal(result, expected)
+
+tests/test_financial_report.py:2:
+E   AssertionError: DataFrame.iloc[:, 3] (column name="amount_gbp") are different
+E
+E   DataFrame.iloc[:, 3] (column name="amount_gbp") values are different (3.15789 %)
+E   [index]: [0, 1, 2, 3, 4, 5, ...]
+E   [left]:  [7000.65, 45412.74, ...]
+E   [right]: [7000.65, 45412.74, ...]
+E   At positional index 249, first diff: 63750.41 != 59463.2
+=========================== short test summary info ============================
+FAILED tests/test_financial_report.py::test_generate_financial_report - AssertionError
+"""
+    hint = _pytest_failure_hint_from_output(output, cwd=tmp_path)
+
+    assert hint is not None
+    assert hint["filename"] == str(test_file.resolve())
+    assert hint["line"] == 2
+    assert "At positional index 249" in hint["exception_message"]
+    assert "63750.41 != 59463.2" in hint["exception_message"]
+
+
 def test_pytest_failure_hint_from_dataframe_style_output_without_file_line(tmp_path):
     test_file = tmp_path / "tests" / "test_financial_report.py"
     test_file.parent.mkdir(parents=True)
