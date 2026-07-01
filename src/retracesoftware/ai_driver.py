@@ -351,7 +351,7 @@ class DAPSession:
             "conditional_breakpoints": bool(self.capabilities.get("supportsConditionalBreakpoints")),
             "step_back": bool(self.capabilities.get("supportsStepBack")),
             "reverse_continue": True,
-            "evaluate": "unavailable",
+            "evaluate": True,
             "source_context": True,
             "stack_trace": True,
             "locals": True,
