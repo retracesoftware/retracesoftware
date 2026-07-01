@@ -7,6 +7,7 @@ import pytest
 from retracesoftware.ai_driver import (
     AVAILABLE_TOOLS,
     DAPExecutor,
+    DAPSession,
     MAX_SOURCE_CONTEXT_LINE_CHARS,
     _executor_session_state,
     _initial_observation,
@@ -178,6 +179,18 @@ def test_source_window_truncates_long_lines_for_hosted_service_contract():
 
 def test_available_tools_match_hosted_service_contract():
     assert "set_exception_breakpoints" not in AVAILABLE_TOOLS
+
+
+def test_dap_session_does_not_report_evaluate_unavailable_when_tool_is_exposed():
+    session = object.__new__(DAPSession)
+    session.capabilities = {
+        "supportsConditionalBreakpoints": True,
+        "supportsStepBack": True,
+    }
+
+    assert "evaluate_expression" in AVAILABLE_TOOLS
+    assert session._capability_state()["evaluate"] != "unavailable"
+    assert session._capability_state()["evaluate"] is True
 
 
 def test_initial_observation_reports_prepositioned_pytest_session(monkeypatch):
