@@ -18,6 +18,22 @@ type ControlError struct {
 	Data    map[string]any `json:"data,omitempty"`
 }
 
+// ControlRequestError is returned when the Python control runtime rejects a
+// request. It preserves the control error code so DAP callers can categorize
+// failures instead of treating them as empty successful responses.
+type ControlRequestError struct {
+	Method  string
+	Code    string
+	Message string
+}
+
+func (e *ControlRequestError) Error() string {
+	if e.Method != "" {
+		return fmt.Sprintf("%s: %s: %s", e.Method, e.Code, e.Message)
+	}
+	return fmt.Sprintf("%s: %s", e.Code, e.Message)
+}
+
 type ControlResponse struct {
 	ID     string         `json:"id"`
 	Type   string         `json:"type"`

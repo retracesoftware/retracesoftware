@@ -1138,6 +1138,25 @@ def _find_user_frame():
     return None
 
 
+def _find_inspection_frame():
+    """Return the best frame for stopped-state inspection at the current stop."""
+    application = _find_user_frame()
+    if application is not None:
+        return application
+    frame = sys._getframe(2)
+    while frame is not None:
+        if not _is_retrace_internal_code(frame.f_code):
+            return frame
+        frame = frame.f_back
+    return None
+
+
+def _coerce_inspection_frame(frame):
+    if frame is not None and hasattr(frame, "f_code"):
+        return frame
+    return _find_inspection_frame()
+
+
 class Controller:
 
     def __init__(
@@ -1763,12 +1782,13 @@ class Controller:
         finally:
             self._event_loop_lock.release()
 
-    def _on_breakpoint_hit(self, frame):
+    def _on_breakpoint_hit(self, cursor_snapshot):
         self._event_loop_lock.acquire()
         try:
             if self._done:
                 return
-            self._stopped_frame = _find_user_frame()
+            # Breakpoint callbacks pass a cursor dict, not a live frame object.
+            self._stopped_frame = _find_inspection_frame()
             try:
                 intent = self.event_loop.send(self._stopped_cursor_snapshot())
                 self._handle_intent(intent)
@@ -1782,7 +1802,7 @@ class Controller:
         try:
             if self._done:
                 return
-            self._stopped_frame = frame if frame is not None else _find_user_frame()
+            self._stopped_frame = _coerce_inspection_frame(frame)
             try:
                 intent = self.event_loop.send(self._stopped_cursor_snapshot())
                 self._handle_intent(intent)

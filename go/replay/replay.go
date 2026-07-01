@@ -482,7 +482,7 @@ func (r *Replay) InstructionToLineno(ctx context.Context) (InstructionInfo, erro
 func (r *Replay) Stack(ctx context.Context) ([]map[string]any, error) {
 	resp, err := r.client.Request(ctx, "stack", nil)
 	if err != nil {
-		return nil, r.wrapErr(fmt.Errorf("stack: %w", err))
+		return nil, r.wrapErr(err)
 	}
 	return parseFrameList(resp.Result, "frames")
 }
@@ -496,7 +496,7 @@ func (r *Replay) Locals(ctx context.Context) ([]map[string]any, error) {
 func (r *Replay) LocalsForFrame(ctx context.Context, frameIndex int) ([]map[string]any, error) {
 	resp, err := r.client.Request(ctx, "locals", map[string]any{"frame_index": frameIndex})
 	if err != nil {
-		return nil, r.wrapErr(fmt.Errorf("locals: %w", err))
+		return nil, r.wrapErr(err)
 	}
 	return parseFrameList(resp.Result, "variables")
 }
@@ -518,7 +518,7 @@ func (r *Replay) Evaluate(ctx context.Context, expression string, frameIndex int
 func (r *Replay) SourceLocation(ctx context.Context) (map[string]any, error) {
 	resp, err := r.client.Request(ctx, "source_location", nil)
 	if err != nil {
-		return nil, r.wrapErr(fmt.Errorf("source_location: %w", err))
+		return nil, r.wrapErr(err)
 	}
 	return resp.Result, nil
 }

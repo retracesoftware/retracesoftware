@@ -15,6 +15,7 @@ from urllib import error, request
 from urllib.parse import quote, urljoin
 import uuid
 
+from retracesoftware.agent_inspect import _is_internal_path
 from retracesoftware.replay import binary_path as replay_binary_path
 from retracesoftware.retracepython import DEFAULT_AI_SERVER
 
@@ -43,6 +44,25 @@ AVAILABLE_TOOLS = [
 
 class DriverError(RuntimeError):
     pass
+
+
+class DAPRequestError(DriverError):
+    """Raised when the Go DAP proxy rejects an inspection or control request."""
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        command: str = "",
+        category: str = "dap_protocol",
+        code: str = "dap_request_failed",
+        control_method: str | None = None,
+    ) -> None:
+        super().__init__(message)
+        self.command = command
+        self.category = category
+        self.code = code
+        self.control_method = control_method
 
 
 class ServiceClient:
@@ -342,13 +362,7 @@ class DAPSession:
     def _raise_response_error(self, resp: dict[str, Any]) -> None:
         if resp.get("success", False):
             return
-        message = resp.get("message") or f"DAP {resp.get('command', '<unknown>')} request failed"
-        details = [str(message)]
-        if self.output.strip():
-            details.append("dap output: " + _tail(self.output.strip(), 3000))
-        if self.stderr_text.strip():
-            details.append("stderr: " + _tail(self.stderr_text.strip(), 1000))
-        raise DriverError("; ".join(details))
+        raise _parse_dap_error_response(resp, self.output, self.stderr_text)
 
     def _timeout_message(self) -> str:
         details = ["DAP request timed out"]
@@ -390,10 +404,10 @@ class DAPExecutor:
         try:
             if name == "start_replay_session":
                 return self.start_replay_session(arguments)
-            if name == "set_exception_breakpoints":
-                return self.set_exception_breakpoints(arguments)
             if name == "set_breakpoints":
                 return self.set_breakpoints(arguments)
+            if name == "set_exception_breakpoints":
+                return self.set_exception_breakpoints(arguments)
             if name in {
                 "continue_execution",
                 "reverse_continue",
@@ -562,51 +576,107 @@ class DAPExecutor:
 
     def get_stack_trace(self, arguments: dict[str, Any]) -> dict[str, Any]:
         session = self._require_session("get_stack_trace")
+        thread_id = int(arguments.get("thread_id") or 1)
         if session.synthetic_exception is not None and session.frames:
-            return {
-                "ok": True,
-                "summary": _stack_summary(session.frames),
-                "data": {
-                    "stack_frames": session.frames,
-                    "total_frames": len(session.frames),
-                    "source": "dap.output.traceback",
+            return self._application_stack_result(
+                session,
+                session.frames,
+                source="dap.output.traceback",
+            )
+
+        dap_frames: list[dict[str, Any]] = []
+        recovery_note: str | None = None
+        try:
+            resp = session.request(
+                "stackTrace",
+                {
+                    "threadId": thread_id,
+                    "startFrame": int(arguments.get("start_frame") or 0),
+                    "levels": int(arguments.get("levels") or 20),
                 },
-                "session": session.state,
-            }
-        resp = session.request(
-            "stackTrace",
-            {
-                "threadId": int(arguments.get("thread_id") or 1),
-                "startFrame": int(arguments.get("start_frame") or 0),
-                "levels": int(arguments.get("levels") or 20),
-            },
-        )
-        body = resp.get("body") if isinstance(resp.get("body"), dict) else {}
-        frames = _stack_frames(body)
+            )
+            body = resp.get("body") if isinstance(resp.get("body"), dict) else {}
+            dap_frames = _stack_frames(body)
+        except DAPRequestError as exc:
+            if exc.category != "inspection_unavailable":
+                raise
+            recovery_note = (
+                "Replay stopped at a non-application location that DAP cannot inspect; "
+                "recovering application context from recorded failure output."
+            )
+
+        application_frames = _application_dap_frames(dap_frames)
         source = "dap.stackTrace"
-        if not frames:
-            exception, fallback_frames = self._direct_replay_traceback(session.trace)
-            if exception is not None and fallback_frames:
-                session.synthetic_exception = exception
-                session.state["state"] = "stopped"
-                session.state["last_stop"] = {
-                    "reason": "exception",
-                    "thread_id": int(arguments.get("thread_id") or 1),
-                    "description": exception.get("message", ""),
-                }
-                frames = fallback_frames
+        if not application_frames:
+            exception, fallback_frames = self._recover_application_traceback(session)
+            if fallback_frames:
+                application_frames = _application_dap_frames(fallback_frames)
                 source = "replay.traceback"
-        session.frames = frames
+                if exception is not None:
+                    session.synthetic_exception = exception
+                    session.state["state"] = "stopped"
+                    session.state["last_stop"] = {
+                        "reason": "exception",
+                        "thread_id": thread_id,
+                        "description": exception.get("message", ""),
+                    }
+                if recovery_note is None:
+                    recovery_note = (
+                        "Recovered application stack frames from recorded pytest/failure output."
+                    )
+
+        session.frames = application_frames
+        if not application_frames:
+            return _application_context_unavailable(session, recovery_note)
+
+        return self._application_stack_result(
+            session,
+            application_frames,
+            source=source,
+            recovery_note=recovery_note,
+        )
+
+    def _application_stack_result(
+        self,
+        session: DAPSession,
+        frames: list[dict[str, Any]],
+        *,
+        source: str,
+        recovery_note: str | None = None,
+    ) -> dict[str, Any]:
+        data: dict[str, Any] = {
+            "stack_frames": frames,
+            "total_frames": len(frames),
+            "source": source,
+        }
+        if recovery_note:
+            data["recovery_note"] = recovery_note
         return {
             "ok": True,
-            "summary": _stack_summary(frames),
-            "data": {
-                "stack_frames": frames,
-                "total_frames": int(body.get("totalFrames") or len(frames)),
-                "source": source,
-            },
+            "summary": _application_stack_summary(frames),
+            "data": data,
             "session": session.state,
         }
+
+    def _recover_application_traceback(
+        self,
+        session: DAPSession,
+    ) -> tuple[dict[str, str] | None, list[dict[str, Any]]]:
+        cwd = _recording_cwd_for_trace(session.trace)
+        hint = _pytest_failure_hint_from_output(session.output, cwd=cwd)
+        if hint is not None:
+            exception, frames = _exception_and_frames_from_pytest_hint(hint, session.output)
+            application = _application_dap_frames(frames)
+            if application:
+                return exception, application
+            if frames:
+                return exception, frames
+
+        exception, frames = _parse_python_traceback(session.output)
+        application = _application_dap_frames(frames) if frames else []
+        if application:
+            return exception, application
+        return self._direct_replay_traceback(session.trace)
 
     def get_exception_info(self, arguments: dict[str, Any]) -> dict[str, Any]:
         session = self._require_session("get_exception_info")
@@ -665,7 +735,16 @@ class DAPExecutor:
     def get_variables(self, arguments: dict[str, Any]) -> dict[str, Any]:
         session = self._require_session("get_variables")
         ref = int(arguments.get("variables_reference") or arguments.get("variablesReference") or 1)
-        resp = session.request("variables", {"variablesReference": ref})
+        try:
+            resp = session.request("variables", {"variablesReference": ref})
+        except DAPRequestError as exc:
+            if exc.category == "inspection_unavailable":
+                return _application_inspection_unavailable(
+                    "get_variables",
+                    session.state,
+                    "Set a source breakpoint on application code, continue, then inspect locals there.",
+                )
+            raise
         body = resp.get("body") if isinstance(resp.get("body"), dict) else {}
         variables = []
         for var in body.get("variables") if isinstance(body.get("variables"), list) else []:
@@ -750,10 +829,43 @@ class DAPExecutor:
             )
         except (OSError, subprocess.TimeoutExpired):
             return None, []
-        return _parse_python_traceback((completed.stdout or "") + (completed.stderr or ""))
+        text = (completed.stdout or "") + (completed.stderr or "")
+        hint = _pytest_failure_hint_from_output(text, cwd=_recording_cwd_for_trace(trace))
+        if hint is not None:
+            exception, frames = _exception_and_frames_from_pytest_hint(hint, text)
+            application = _application_dap_frames(frames)
+            if application:
+                return exception, application
+            if frames:
+                return exception, frames
+        exception, frames = _parse_python_traceback(text)
+        application = _application_dap_frames(frames) if frames else []
+        if application:
+            return exception, application
+        return None, []
 
     def _pidfile_for_trace(self, trace: str) -> Path | None:
-        return _control_recording_for_trace(trace, replay_bin=self.replay_bin)
+        path = Path(trace)
+        if path.suffix != ".retrace":
+            return path
+        try:
+            subprocess.run(
+                [self.replay_bin, "--recording", str(path), "--extract"],
+                capture_output=True,
+                text=True,
+                timeout=60,
+            )
+        except (OSError, subprocess.TimeoutExpired):
+            return None
+        index_path = path.with_suffix(".d") / "index.json"
+        try:
+            decoded = json.loads(index_path.read_text(encoding="utf-8"))
+            pid = int(decoded.get("root", {}).get("pid") or 0)
+        except (OSError, ValueError, TypeError, json.JSONDecodeError):
+            return None
+        if pid <= 0:
+            return None
+        return index_path.parent / f"{pid}.bin"
 
 
 class StubExecutor:
@@ -832,24 +944,22 @@ def _initial_observation(
     hint = _pytest_failure_hint(args.trace)
     if not hint:
         observation["summary"] = (
-            "Driver initialized for a pytest failure. No ranked pytest failure candidate "
-            "was available before AI tool selection. Do not treat the initial DAP entry "
-            "stop as an invalid recording; if a failure line is known, use a source "
-            "breakpoint there before inspecting stack/source/locals."
+            "Driver initialized for a pytest failure. No application failure candidate "
+            "was available before AI tool selection. Prefer a source breakpoint on the "
+            "failing test or application code before inspecting stack/source/locals."
         )
         return observation
 
     observation["summary"] = (
-        "Driver initialized for a pytest failure with a ranked failure candidate. "
-        "Pytest catches assertion failures, and pytest/plugin startup can raise handled "
-        "exceptions; the driver prefers source-breakpoint positioning over generic "
-        "exception breakpoints."
+        "Driver initialized for a pytest failure with an application failure candidate. "
+        "The driver will pre-position replay at the application assertion instead of "
+        "pytest-internal or exception breakpoints."
     )
     observation["tool_result"] = {
         "pytest_failure_candidate": hint,
         "guidance": (
-            "Inspect the stopped source-breakpoint frame and its locals. Do not restart "
-            "the replay session unless the current session is unusable."
+            "Inspect application frames and locals at the pre-positioned source breakpoint. "
+            "Do not restart the replay session unless the current session is unusable."
         ),
     }
 
@@ -857,8 +967,10 @@ def _initial_observation(
     transcript.extend(prelude)
     if prelude:
         final = prelude[-1].get("result") if isinstance(prelude[-1].get("result"), dict) else {}
+        stack = final.get("data") if isinstance(final.get("data"), dict) else {}
+        frames = stack.get("stack_frames") if isinstance(stack.get("stack_frames"), list) else []
         observation["summary"] = (
-            "Driver initialized and pre-positioned DAP replay at the highest-ranked pytest "
+            "Driver initialized and pre-positioned DAP replay at the application pytest "
             "failure candidate."
         )
         observation["tool_result"] = {
@@ -866,11 +978,10 @@ def _initial_observation(
             "prelude": {
                 "tool_count": len(prelude),
                 "last_result_summary": final.get("summary", ""),
+                "application_frame_count": len(frames),
                 "session": final.get("session", {}),
             },
         }
-    else:
-        observation["summary"] = "Driver initialized with a pytest failure candidate."
     return observation
 
 
@@ -878,7 +989,7 @@ def _task_mentions_pytest(task: str) -> bool:
     return bool(re.search(r"(^|\s|/|\\|-)pytest(\s|$|/|\\)", task))
 
 
-def _pytest_failure_hint(trace: str) -> dict[str, Any] | None:
+def _pytest_failure_hint(trace: str, *, replay_bin: str | None = None) -> dict[str, Any] | None:
     if not trace:
         return None
     try:
@@ -887,29 +998,37 @@ def _pytest_failure_hint(trace: str) -> dict[str, Any] | None:
     except ValueError:
         timeout = 20
         limit = 5000
-    control_recording = _control_recording_for_trace(trace)
+    if replay_bin is not None:
+        control_recording = _control_recording_for_trace(trace, replay_bin=replay_bin)
+    else:
+        control_recording = _control_recording_for_trace(trace)
     if control_recording is None:
         return None
 
+    output_hint = _pytest_failure_hint_from_replay_output(
+        control_recording,
+        cwd=_recording_cwd_for_trace(trace),
+        timeout=timeout,
+        **({"replay_bin": replay_bin} if replay_bin is not None else {}),
+    )
+    if output_hint is not None and output_hint.get("classification") == "application":
+        return output_hint
+
+    inspect_hint: dict[str, Any] | None = None
     try:
         from retracesoftware.agent_inspect import inspect_failures
 
         report = inspect_failures(str(control_recording), limit=limit, timeout_seconds=timeout)
-        hint = _select_pytest_failure_candidate(report)
-        if hint is not None:
-            return hint
+        inspect_hint = _select_pytest_failure_candidate(report)
+        if inspect_hint is not None and inspect_hint.get("classification") == "application":
+            return inspect_hint
     except Exception:
         pass
 
-    return _pytest_failure_hint_from_replay_output(
-        control_recording,
-        cwd=_recording_cwd_for_trace(trace),
-        timeout=timeout,
-    )
+    return output_hint or inspect_hint
 
 
 def _control_recording_for_trace(trace: str, replay_bin: str | None = None) -> Path | None:
-    """Return the recording shape expected by Python replay-control tools."""
     path = Path(trace)
     if path.suffix != ".retrace":
         return path
@@ -998,7 +1117,10 @@ def _select_pytest_failure_candidate(report: dict[str, Any]) -> dict[str, Any] |
 
 
 _PYTEST_FAILURE_LOCATION_RE = re.compile(
-    r"^(?P<file>.+?\.py):(?P<line>[0-9]+):\s+in\s+(?P<function>\S+)\s*$"
+    r"^(?P<file>.+?\.py):(?P<line>[0-9]+)(?::\s+in\s+(?P<function>\S+)|:\s+(?P<exception_type>[A-Za-z_][A-Za-z0-9_.]*))\s*$"
+)
+_PYTEST_FAILED_NODE_RE = re.compile(
+    r"^FAILED\s+(?P<file>.+?\.py)::(?P<function>\S+)(?:\s+-\s+.*)?$"
 )
 _PYTEST_EXCEPTION_RE = re.compile(r"^E\s+(?P<type>[A-Za-z_][A-Za-z0-9_.]*)(?::\s*(?P<message>.*))?$")
 
@@ -1008,17 +1130,11 @@ def _pytest_failure_hint_from_replay_output(
     *,
     cwd: Path | None,
     timeout: int,
+    replay_bin: str | None = None,
 ) -> dict[str, Any] | None:
-    """Extract a pytest failure location from replay output as a fallback.
-
-    The primary path uses Retrace's failure-candidate inspection. Python 3.11
-    cannot yet provide the same monitoring-backed search, so fall back to
-    replaying the extracted pidfile and parsing pytest's own failure location.
-    This still uses replay evidence from the recording, not the live target run.
-    """
     try:
         completed = subprocess.run(
-            [replay_binary_path(), str(recording)],
+            [replay_bin or replay_binary_path(), str(recording)],
             capture_output=True,
             text=True,
             timeout=timeout,
@@ -1032,7 +1148,9 @@ def _pytest_failure_hint_from_replay_output(
 
 
 def _pytest_failure_hint_from_output(text: str, *, cwd: Path | None = None) -> dict[str, Any] | None:
-    for idx, line in enumerate(text.splitlines()):
+    lines = text.splitlines()
+    candidates: list[dict[str, Any]] = []
+    for idx, line in enumerate(lines):
         match = _PYTEST_FAILURE_LOCATION_RE.match(line.strip())
         if not match:
             continue
@@ -1040,18 +1158,76 @@ def _pytest_failure_hint_from_output(text: str, *, cwd: Path | None = None) -> d
         path = Path(filename)
         if not path.is_absolute() and cwd is not None:
             path = cwd / path
-        exception_type, exception_message = _pytest_exception_near(text.splitlines(), idx)
-        return {
-            "filename": str(path.resolve()),
-            "line": int(match.group("line")),
-            "function": match.group("function"),
-            "exception_type": exception_type,
-            "exception_message": exception_message,
-            "classification": "application",
-            "rank": None,
-            "score": 0,
-        }
-    return None
+        explicit_function = match.group("function")
+        if explicit_function == "<module>":
+            explicit_function = None
+        function = explicit_function
+        if not function and match.group("exception_type"):
+            function = _pytest_failed_function_near(lines, filename)
+        exception_type, exception_message = _pytest_exception_near(lines, idx)
+        if match.group("exception_type") and not exception_type:
+            exception_type = match.group("exception_type")
+        candidates.append(
+            {
+                "filename": str(path.resolve()),
+                "line": int(match.group("line")),
+                "function": function or "<module>",
+                "explicit_function": explicit_function,
+                "exception_type": exception_type,
+                "exception_message": exception_message,
+                "classification": "application",
+                "rank": None,
+                "score": 0,
+            }
+        )
+    if not candidates:
+        return None
+    for hint in candidates:
+        explicit = hint.get("explicit_function")
+        if isinstance(explicit, str) and explicit.startswith("test_"):
+            return _finalize_pytest_failure_hint(hint, lines)
+    for hint in candidates:
+        if hint["function"].startswith("test_"):
+            return _finalize_pytest_failure_hint(hint, lines)
+    failure_lines = [
+        hint
+        for hint in candidates
+        if hint.get("exception_type") and not hint.get("explicit_function")
+    ]
+    if failure_lines:
+        return _finalize_pytest_failure_hint(
+            max(failure_lines, key=lambda item: item["line"]),
+            lines,
+        )
+    non_module = [hint for hint in candidates if hint["function"] != "<module>"]
+    if non_module:
+        return _finalize_pytest_failure_hint(
+            max(non_module, key=lambda item: item["line"]),
+            lines,
+        )
+    return _finalize_pytest_failure_hint(
+        max(candidates, key=lambda item: item["line"]),
+        lines,
+    )
+
+
+def _finalize_pytest_failure_hint(hint: dict[str, Any], lines: list[str]) -> dict[str, Any]:
+    finalized = {key: value for key, value in hint.items() if key != "explicit_function"}
+    if finalized["function"] == "<module>":
+        filename = Path(finalized["filename"]).name
+        function = _pytest_failed_function_near(lines, filename)
+        if function:
+            finalized["function"] = function
+    return finalized
+
+
+def _pytest_failed_function_near(lines: list[str], filename: str) -> str:
+    stem = Path(filename).name
+    for line in lines:
+        match = _PYTEST_FAILED_NODE_RE.match(line.strip())
+        if match and match.group("file").endswith(stem):
+            return match.group("function")
+    return ""
 
 
 def _pytest_exception_near(lines: list[str], start: int) -> tuple[str, str]:
@@ -1060,6 +1236,36 @@ def _pytest_exception_near(lines: list[str], start: int) -> tuple[str, str]:
         if match:
             return match.group("type"), match.group("message") or ""
     return "AssertionError", ""
+
+
+def _exception_and_frames_from_pytest_hint(
+    hint: dict[str, Any],
+    text: str,
+) -> tuple[dict[str, str] | None, list[dict[str, Any]]]:
+    exception = None
+    if hint.get("exception_type"):
+        exception = {
+            "type": str(hint["exception_type"]),
+            "message": str(hint.get("exception_message") or ""),
+        }
+    path = str(hint.get("filename") or "")
+    function = str(hint.get("function") or "<module>")
+    line = int(hint.get("line") or 0)
+    frames = [
+        {
+            "id": 0,
+            "name": function,
+            "source": {"name": Path(path).name or path, "path": path},
+            "line": line,
+            "column": 0,
+        }
+    ]
+    parsed_exception, parsed_frames = _parse_python_traceback(text)
+    if parsed_frames:
+        application_frames = _application_dap_frames(parsed_frames)
+        if application_frames:
+            return parsed_exception or exception, application_frames
+    return exception, frames
 
 
 def _prime_pytest_failure_breakpoint(executor: DAPExecutor, hint: dict[str, Any]) -> list[dict[str, Any]]:
@@ -1257,6 +1463,55 @@ def _read_dap_message(stream) -> dict[str, Any] | None:
     return json.loads(body.decode("utf-8"))
 
 
+def _parse_dap_error_response(
+    resp: dict[str, Any],
+    output: str,
+    stderr_text: str,
+) -> DAPRequestError:
+    command = str(resp.get("command") or "")
+    message = str(resp.get("message") or f"DAP {command or '<unknown>'} request failed")
+    category = "dap_protocol"
+    code = "dap_request_failed"
+    control_method: str | None = None
+    body = resp.get("body") if isinstance(resp.get("body"), dict) else {}
+    retrace = body.get("retrace") if isinstance(body.get("retrace"), dict) else {}
+    if isinstance(retrace.get("category"), str) and retrace["category"]:
+        category = retrace["category"]
+    if isinstance(retrace.get("code"), str) and retrace["code"]:
+        code = retrace["code"]
+    if isinstance(retrace.get("control_method"), str) and retrace["control_method"]:
+        control_method = retrace["control_method"]
+    details = [message]
+    if output.strip():
+        details.append("dap output: " + _tail(output.strip(), 3000))
+    if stderr_text.strip():
+        details.append("stderr: " + _tail(stderr_text.strip(), 1000))
+    return DAPRequestError(
+        "; ".join(details),
+        command=command,
+        category=category,
+        code=code,
+        control_method=control_method,
+    )
+
+
+def _dap_frame_path(frame: dict[str, Any]) -> str:
+    source = frame.get("source") if isinstance(frame.get("source"), dict) else {}
+    return str(source.get("path") or "")
+
+
+def _application_dap_frames(frames: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    selected: list[dict[str, Any]] = []
+    for frame in frames:
+        if not isinstance(frame, dict):
+            continue
+        path = _dap_frame_path(frame)
+        if path and _is_internal_path(path):
+            continue
+        selected.append(frame)
+    return selected
+
+
 def _stack_frames(body: dict[str, Any]) -> list[dict[str, Any]]:
     frames = []
     raw_frames = body.get("stackFrames") if isinstance(body.get("stackFrames"), list) else []
@@ -1342,17 +1597,21 @@ def _parse_python_traceback(text: str) -> tuple[dict[str, str] | None, list[dict
     return exception, frames
 
 
-def _stack_summary(frames: list[dict[str, Any]]) -> str:
+def _application_stack_summary(frames: list[dict[str, Any]]) -> str:
     if not frames:
-        return "DAP stack trace returned no frames at the current replay stop."
+        return "No application stack frames are available for the current failure."
     top = frames[0]
     top_source = top.get("source") if isinstance(top.get("source"), dict) else {}
     path = str(top_source.get("path") or top_source.get("name") or "<unknown>")
     return (
-        f"DAP stack trace has {len(frames)} frame(s); "
+        f"Application stack has {len(frames)} frame(s); "
         f"top frame is {Path(path).name}:{top.get('line', 0)} "
         f"in {top.get('name', '<unknown>')}."
     )
+
+
+def _stack_summary(frames: list[dict[str, Any]]) -> str:
+    return _application_stack_summary(frames)
 
 
 def _exception_summary(data: dict[str, Any]) -> str:
@@ -1416,19 +1675,83 @@ def _tool_error(tool: str, code: str, message: str) -> dict[str, Any]:
     }
 
 
-def _dap_error(tool: str, exc: Exception, session: dict[str, Any] | None) -> dict[str, Any]:
+def _application_context_unavailable(
+    session: DAPSession,
+    recovery_note: str | None,
+) -> dict[str, Any]:
+    message = recovery_note or (
+        "No application stack frames were recovered from the current stop or recorded failure output."
+    )
+    return {
+        "ok": False,
+        "summary": "Could not recover application stack frames from the recording.",
+        "error": {
+            "domain": "application",
+            "category": "context_unavailable",
+            "code": "no_application_frames",
+            "message": message,
+        },
+        "session": session.state,
+    }
+
+
+def _application_inspection_unavailable(
+    tool: str,
+    session_state: dict[str, Any] | None,
+    guidance: str,
+) -> dict[str, Any]:
+    result = {
+        "ok": False,
+        "summary": (
+            f"{tool} needs an inspectable application stop; "
+            "reposition at application source and continue before inspecting."
+        ),
+        "error": {
+            "domain": "application",
+            "category": "wrong_stop_location",
+            "code": "inspection_unavailable",
+            "message": guidance,
+        },
+    }
+    if session_state is not None:
+        result["session"] = session_state
+    return result
+
+
+def _dap_error(tool: str, exc: Exception, session: dict[str, Any] | DAPSession | None) -> dict[str, Any]:
+    session_state: dict[str, Any] | None
+    if isinstance(session, DAPSession):
+        session_state = session.state
+    elif isinstance(session, dict):
+        session_state = session
+    else:
+        session_state = None
+
+    if isinstance(exc, DAPRequestError) and exc.category == "inspection_unavailable":
+        return _application_inspection_unavailable(
+            tool,
+            session_state,
+            "Set a source breakpoint on application code, continue, then retry this tool.",
+        )
+
     result = {
         "ok": False,
         "summary": f"{tool} failed through the DAP proxy.",
         "error": {
-            "domain": "retrace",
+            "domain": "driver",
             "category": "dap_protocol",
             "code": "dap_request_failed",
             "message": str(exc),
         },
     }
-    if session is not None:
-        result["session"] = session
+    if isinstance(exc, DAPRequestError):
+        result["error"]["code"] = exc.code
+        if exc.category != "dap_protocol":
+            result["error"]["category"] = exc.category
+        if exc.control_method:
+            result["error"]["control_method"] = exc.control_method
+    if session_state is not None:
+        result["session"] = session_state
     return result
 
 

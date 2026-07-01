@@ -124,7 +124,11 @@ func (c *ControlClient) Request(ctx context.Context, method string, params map[s
 			Error:  msg.Error,
 		}
 		if !resp.OK && resp.Error != nil {
-			return resp, fmt.Errorf("%s: %s", resp.Error.Code, resp.Error.Message)
+			return resp, &ControlRequestError{
+				Method:  method,
+				Code:    resp.Error.Code,
+				Message: resp.Error.Message,
+			}
 		}
 		return resp, nil
 	}

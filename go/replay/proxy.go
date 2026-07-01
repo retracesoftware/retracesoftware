@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -266,7 +267,14 @@ func (p *Proxy) handlePostLaunch() error {
 				return p.clientW.Write(p.errorResponse(env.Seq, env.Command, err.Error()))
 			}
 		case "stackTrace":
-			body := p.handleStackTrace()
+			body, err := p.handleStackTrace()
+			if err != nil {
+				log.Printf("stackTrace: %v", err)
+				if err := p.clientW.Write(p.categorizedErrorResponse(env.Seq, env.Command, err)); err != nil {
+					return err
+				}
+				continue
+			}
 			if err := p.clientW.Write(p.successResponse(env.Seq, env.Command, body)); err != nil {
 				return err
 			}
@@ -276,7 +284,14 @@ func (p *Proxy) handlePostLaunch() error {
 				return err
 			}
 		case "variables":
-			body := p.handleVariables(env.Arguments)
+			body, err := p.handleVariables(env.Arguments)
+			if err != nil {
+				log.Printf("variables: %v", err)
+				if err := p.clientW.Write(p.categorizedErrorResponse(env.Seq, env.Command, err)); err != nil {
+					return err
+				}
+				continue
+			}
 			if err := p.clientW.Write(p.successResponse(env.Seq, env.Command, body)); err != nil {
 				return err
 			}
@@ -635,15 +650,21 @@ func (p *Proxy) handleCursorNav(ctx context.Context, reason string, nav func() (
 	}))
 }
 
-func (p *Proxy) handleStackTrace() json.RawMessage {
+func (p *Proxy) handleStackTrace() (json.RawMessage, error) {
 	if p.currentCursor == nil {
-		return json.RawMessage(`{"stackFrames":[],"totalFrames":0}`)
+		return nil, fmt.Errorf("no active cursor: replay is not stopped at an inspectable position")
 	}
 	ctx := context.Background()
 	frames, err := p.currentCursor.Stack(ctx)
 	if err != nil {
-		log.Printf("stackTrace: %v", err)
-		return json.RawMessage(`{"stackFrames":[],"totalFrames":0}`)
+		return nil, err
+	}
+	if len(frames) == 0 {
+		return nil, &ControlRequestError{
+			Method:  "stack",
+			Code:    "not_stopped",
+			Message: "stopped-state inspection is unavailable",
+		}
 	}
 	dapFrames := make([]map[string]any, 0, len(frames))
 	for i, f := range frames {
@@ -663,11 +684,14 @@ func (p *Proxy) handleStackTrace() json.RawMessage {
 		}
 		dapFrames = append(dapFrames, df)
 	}
-	body, _ := json.Marshal(map[string]any{
+	body, err := json.Marshal(map[string]any{
 		"stackFrames": dapFrames,
 		"totalFrames": len(dapFrames),
 	})
-	return body
+	if err != nil {
+		return nil, err
+	}
+	return body, nil
 }
 
 func (p *Proxy) handleSource(args json.RawMessage) json.RawMessage {
@@ -763,7 +787,7 @@ func (p *Proxy) handleScopes(args json.RawMessage) json.RawMessage {
 	return body
 }
 
-func (p *Proxy) handleVariables(args json.RawMessage) json.RawMessage {
+func (p *Proxy) handleVariables(args json.RawMessage) (json.RawMessage, error) {
 	var a struct {
 		VariablesReference int `json:"variablesReference"`
 	}
@@ -772,28 +796,85 @@ func (p *Proxy) handleVariables(args json.RawMessage) json.RawMessage {
 	}
 	ref, ok := p.variableRefs[a.VariablesReference]
 	if !ok || ref.kind == "" {
-		return json.RawMessage(`{"variables":[]}`)
+		body, err := json.Marshal(map[string]any{"variables": []any{}})
+		if err != nil {
+			return nil, err
+		}
+		return body, nil
 	}
 	if ref.kind == "children" {
-		body, _ := json.Marshal(map[string]any{"variables": ref.children})
-		return body
+		body, err := json.Marshal(map[string]any{"variables": ref.children})
+		if err != nil {
+			return nil, err
+		}
+		return body, nil
 	}
 	if p.currentCursor == nil {
-		return json.RawMessage(`{"variables":[]}`)
+		return nil, fmt.Errorf("no active cursor: replay is not stopped at an inspectable position")
 	}
 
 	ctx := context.Background()
 	vars, err := p.currentCursor.LocalsForFrame(ctx, ref.frameIndex)
 	if err != nil {
-		log.Printf("variables: %v", err)
-		return json.RawMessage(`{"variables":[]}`)
+		return nil, err
 	}
 	dapVars := make([]map[string]any, 0, len(vars))
 	for _, v := range vars {
 		dapVars = append(dapVars, p.dapVariable(v))
 	}
-	body, _ := json.Marshal(map[string]any{"variables": dapVars})
-	return body
+	body, err := json.Marshal(map[string]any{"variables": dapVars})
+	if err != nil {
+		return nil, err
+	}
+	return body, nil
+}
+
+func controlErrorCategory(code string) string {
+	switch code {
+	case "not_stopped":
+		return "inspection_unavailable"
+	case "not_available":
+		return "not_supported"
+	case "unknown_command":
+		return "protocol_error"
+	case "invalid_params":
+		return "invalid_request"
+	default:
+		return "control_error"
+	}
+}
+
+func (p *Proxy) categorizedErrorResponse(reqSeq int, command string, err error) json.RawMessage {
+	message := err.Error()
+	retrace := map[string]any{
+		"category": "internal",
+	}
+	var ctrlErr *ControlRequestError
+	if errors.As(err, &ctrlErr) {
+		message = fmt.Sprintf("%s: %s", ctrlErr.Code, ctrlErr.Message)
+		retrace["category"] = controlErrorCategory(ctrlErr.Code)
+		retrace["code"] = ctrlErr.Code
+		if ctrlErr.Method != "" {
+			retrace["control_method"] = ctrlErr.Method
+		}
+	}
+	m := map[string]any{
+		"seq":         p.nextSeq(),
+		"type":        "response",
+		"request_seq": reqSeq,
+		"command":     command,
+		"success":     false,
+		"message":     message,
+		"body": map[string]any{
+			"error": map[string]any{
+				"id":     1,
+				"format": message,
+			},
+			"retrace": retrace,
+		},
+	}
+	out, _ := json.Marshal(m)
+	return out
 }
 
 func (p *Proxy) handleEvaluate(args json.RawMessage) json.RawMessage {
