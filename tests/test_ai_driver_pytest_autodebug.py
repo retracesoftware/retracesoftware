@@ -317,6 +317,35 @@ FAILED tests/test_financial_report.py::test_generate_financial_report - Assertio
     assert "63750.41 != 59463.2" in hint["exception_message"]
 
 
+def test_pytest_failure_hint_preserves_setup_error_exception_type(tmp_path):
+    conftest = tmp_path / "tests" / "conftest.py"
+    conftest.parent.mkdir(parents=True)
+    conftest.write_text("import pytest\n", encoding="utf-8")
+    output = """tests/conftest.py:39:
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+report_test_demo/db_utils.py:61: in execute
+    with engine.connect() as connection:
+.venv/lib/python3.11/site-packages/sqlalchemy/engine/base.py:3293: in connect
+    return self._connection_cls(self)
+.venv/lib/python3.11/site-packages/sqlalchemy/engine/base.py:145: in __init__
+    Connection._handle_dbapi_exception_noconnection(
+.venv/lib/python3.11/site-packages/sqlalchemy/engine/base.py:2448: in _handle_dbapi_exception_noconnection
+    raise sqlalchemy_exception.with_traceback(exc_info[2]) from e
+.venv/lib/python3.11/site-packages/sqlalchemy/engine/default.py:630: in connect
+    return self.loaded_dbapi.connect(*cargs, **cparams)
+E   sqlalchemy.exc.OperationalError: (pyodbc.OperationalError) ('HYT00', '[HYT00] Login timeout expired')
+E   (Background on this error at: https://sqlalche.me/e/20/e3q8)
+"""
+    hint = _pytest_failure_hint_from_output(output, cwd=tmp_path)
+
+    assert hint is not None
+    assert hint["filename"] == str(conftest.resolve())
+    assert hint["line"] == 39
+    assert hint["exception_type"] == "sqlalchemy.exc.OperationalError"
+    assert "Login timeout expired" in hint["exception_message"]
+    assert hint["exception_type"] != "AssertionError"
+
+
 def test_pytest_failure_hint_from_dataframe_style_output_without_file_line(tmp_path):
     test_file = tmp_path / "tests" / "test_financial_report.py"
     test_file.parent.mkdir(parents=True)
