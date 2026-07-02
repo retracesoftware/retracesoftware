@@ -1152,6 +1152,8 @@ _PYTEST_FAILED_NODE_INLINE_RE = re.compile(
 )
 _PYTEST_EXCEPTION_RE = re.compile(r"^E\s+(?P<type>[A-Za-z_][A-Za-z0-9_.]*)(?::\s*(?P<message>.*))?$")
 _PYTEST_ASSERTION_CONTINUATION_MAX = 30
+_PYTEST_EXCEPTION_TRACE_MAX = 50
+_PYTEST_FAILURE_SECTION_END_RE = re.compile(r"^=+\s")
 
 
 def _pytest_failure_hint_from_replay_output(
@@ -1361,11 +1363,20 @@ def _pytest_assertion_exception_in_output(lines: list[str]) -> tuple[str, str]:
 
 
 def _pytest_exception_near(lines: list[str], start: int) -> tuple[str, str]:
-    for line in lines[start + 1:start + 8]:
-        match = _PYTEST_EXCEPTION_RE.match(line.strip())
+    last_type = ""
+    last_message = ""
+    for line in lines[start + 1:start + 1 + _PYTEST_EXCEPTION_TRACE_MAX]:
+        stripped = line.strip()
+        if _PYTEST_FAILURE_SECTION_END_RE.match(stripped):
+            break
+        match = _PYTEST_EXCEPTION_RE.match(stripped)
         if match:
-            return match.group("type"), match.group("message") or ""
-    return "AssertionError", ""
+            last_type = match.group("type")
+            last_message = match.group("message") or ""
+        elif stripped.startswith("E   assert "):
+            last_type = "AssertionError"
+            last_message = stripped[4:].strip()
+    return last_type, last_message
 
 
 def _exception_and_frames_from_pytest_hint(
