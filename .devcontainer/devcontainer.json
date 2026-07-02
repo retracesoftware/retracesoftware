@@ -1,0 +1,36 @@
+{
+  "name": "Retrace Software",
+  "build": {
+    "dockerfile": "Dockerfile"
+  },
+  "features": {
+    "ghcr.io/devcontainers/features/node:1": {
+      "version": "20"
+    }
+  },
+  "postCreateCommand": "bash .devcontainer/post-create.sh",
+  "remoteEnv": {
+    "GOTOOLCHAIN": "local",
+    "PYTHONUNBUFFERED": "1",
+    "RETRACE_REPLAY_BIN": "${containerWorkspaceFolder}/.retrace-replay-bin"
+  },
+  "customizations": {
+    "vscode": {
+      "extensions": [
+        "golang.go",
+        "ms-python.debugpy",
+        "ms-python.python"
+      ],
+      "settings": {
+        "go.toolsManagement.checkForUpdates": "local",
+        "python.defaultInterpreterPath": "/usr/local/bin/python",
+        "python.testing.pytestArgs": [
+          "tests"
+        ],
+        "python.testing.pytestEnabled": true,
+        "python.testing.unittestEnabled": false
+      }
+    }
+  },
+  "remoteUser": "vscode"
+}
