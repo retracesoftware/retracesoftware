@@ -194,6 +194,18 @@ py.install_sources(
   subdir: 'retracesoftware/replay',
 )
 
+_fs = import('fs')
+_retrace_dap_src = meson.project_source_root() / '..' / 'retrace-dap'
+if not _fs.exists(_retrace_dap_src / 'cmd' / 'replay' / 'main.go')
+  _retrace_dap_env = run_command('sh', '-c', 'printf %s "${RETRACE_DAP_SRC}"', check: false).stdout().strip()
+  if _retrace_dap_env != ''
+    _retrace_dap_src = _retrace_dap_env
+  endif
+endif
+if not _fs.exists(_retrace_dap_src / 'cmd' / 'replay' / 'main.go')
+  error('retrace-dap source not found. Clone github.com/retracesoftware/retrace-dap beside this repo or set RETRACE_DAP_SRC.')
+endif
+
 _go = find_program('go')
 _go_env = environment()
 _go_env.set('CGO_ENABLED', '0')
@@ -220,11 +232,11 @@ else
 endif
 
 custom_target(
-  'go-replay-binary',
+  'retrace-dap-binary',
   output: 'replay',
   command: [
     _go,
-    '-C', meson.project_source_root() / 'go',
+    '-C', _retrace_dap_src,
     'build',
     '-trimpath',
     '-o', meson.current_build_dir() / 'replay',

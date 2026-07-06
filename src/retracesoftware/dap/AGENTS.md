@@ -22,8 +22,8 @@ not interfere with replay correctness.
 - `replay/transport.py`
   Trace reader / replay transport helpers.
 
-The Go side in `go/replay/` is closely related. Changes here often require
-checking the Go DAP proxy and replay tooling too.
+The Go DAP adapter lives in [`retrace-dap`](https://github.com/retracesoftware/retrace-dap).
+Changes here often require checking that repo and replay tooling too.
 
 ## Mental Model
 
@@ -64,7 +64,7 @@ checking the Go DAP proxy and replay tooling too.
 - Do not assume debugger-visible state can outlive resume. Be careful with
   references tied to a paused frame.
 - If a DAP change relies on Go replay behavior, verify the matching assumptions
-  in `go/replay/`.
+  in `retrace-dap`.
 - Preserve low-overhead behavior on Python 3.12+ by respecting the existing
   `sys.monitoring` design where possible.
 - Assume paused-frame state is fragile. After resume, references derived from a
@@ -76,8 +76,7 @@ checking the Go DAP proxy and replay tooling too.
 ## Build And Test
 
 - Python-side DAP/replay tests live in the main Python test suite.
-- Go-side debugger/replay tests:
-  `cd go && go test ./...`
+- Go-side debugger/replay tests live in the `retrace-dap` repository.
 - When debugging protocol issues, check both the Python DAP layer and the Go
   replay proxy behavior.
 
@@ -89,6 +88,6 @@ checking the Go DAP proxy and replay tooling too.
 - `src/retracesoftware/dap/protocol/dispatch.py`
 - `src/retracesoftware/dap/replay/gate.py`
 - `src/retracesoftware/dap/replay/transport.py`
-- `go/replay/proxy.go`
+- `retrace-dap` (`proxy.go`, etc.)
 - `docs/cursors.md`
 - `docs/DEBUGGING.md`

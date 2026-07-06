@@ -70,9 +70,16 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
+          path: retracesoftware
+
+      - uses: actions/checkout@v4
+        with:
+          repository: retracesoftware/retrace-dap
+          path: retrace-dap
 
       - name: Apply manual release tag locally
         if: github.event_name == 'workflow_dispatch'
+        working-directory: retracesoftware
         run: git tag "${{ needs.prepare_release.outputs.tag }}" "${GITHUB_SHA}"
 
       - uses: actions/setup-python@v5
@@ -82,16 +89,19 @@ jobs:
 
       - uses: actions/setup-go@v5
         with:
-          go-version-file: go/go.mod
-          cache: false
+          go-version: '1.25'
+          cache-dependency-path: retrace-dap/go.mod
 
       - name: Install Build & Test Dependencies
+        working-directory: retracesoftware
         run: pip install meson-python meson ninja pytest setuptools_scm
 
       - name: Build & Install
+        working-directory: retracesoftware
         run: pip install . --no-build-isolation
 
       - name: Run Tests
+        working-directory: retracesoftware
         run: python -m pytest tests -vv -rs
 
   build_wheels:
@@ -112,9 +122,16 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
+          path: retracesoftware
+
+      - uses: actions/checkout@v4
+        with:
+          repository: retracesoftware/retrace-dap
+          path: retrace-dap
 
       - name: Apply manual release tag locally
         if: github.event_name == 'workflow_dispatch'
+        working-directory: retracesoftware
         run: git tag "${{ needs.prepare_release.outputs.tag }}" "${GITHUB_SHA}"
 
       - uses: actions/setup-python@v5
@@ -123,16 +140,19 @@ jobs:
 
       - uses: actions/setup-go@v5
         with:
-          go-version-file: go/go.mod
-          cache: false
+          go-version: '1.25'
+          cache-dependency-path: retrace-dap/go.mod
 
       - name: Install build tools
+        working-directory: retracesoftware
         run: pip install cibuildwheel==2.21.3 meson-python meson ninja setuptools_scm
 
       - name: Print version
+        working-directory: retracesoftware
         run: python -m setuptools_scm
 
       - name: Build wheels
+        working-directory: retracesoftware
         run: python -m cibuildwheel --output-dir wheelhouse
         env:
           CIBW_BUILD: ${{ matrix.py-tag }}
@@ -169,7 +189,11 @@ jobs:
               tar -C /usr/local -xzf /tmp/go.tgz
               /usr/local/go/bin/go version
             '
-          CIBW_BEFORE_BUILD: pip install meson-python meson ninja
+          CIBW_BEFORE_BUILD: >
+            pip install meson-python meson ninja &&
+            git clone --depth 1
+            https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/retracesoftware/retrace-dap.git
+            ../retrace-dap
           CIBW_TEST_REQUIRES: pytest
           CIBW_TEST_COMMAND: RETRACE_TEST_INSTALLED_WHEEL=1 PYTHONPATH={project} pytest {project}/tests
 

@@ -23,11 +23,11 @@ def _find_repo_root(start: str) -> str | None:
 
 
 def _find_go_source(repo_root: str) -> str | None:
-    """Locate the Go replay source tree (contains cmd/replay/main.go)."""
+    """Locate the retrace-dap source tree (contains cmd/replay/main.go)."""
     candidates = [
         os.environ.get('RETRACE_REPLAY_SRC', ''),
-        os.path.join(repo_root, 'go'),
-        os.path.join(os.path.dirname(repo_root), 'replay'),
+        os.environ.get('RETRACE_DAP_SRC', ''),
+        os.path.join(os.path.dirname(repo_root), 'retrace-dap'),
     ]
     for d in candidates:
         if d and os.path.isfile(os.path.join(d, 'cmd', 'replay', 'main.go')):
@@ -96,9 +96,8 @@ def binary_path() -> str:
             )
         raise FileNotFoundError(
             f"Go replay binary not found at {_BINARY} and cannot find "
-            f"Go source (checked {repo_root}/go and "
-            f"{os.path.dirname(repo_root)}/replay); "
-            "set RETRACE_REPLAY_SRC or RETRACE_REPLAY_BIN"
+            f"retrace-dap source (checked {os.path.dirname(repo_root)}/retrace-dap); "
+            "set RETRACE_DAP_SRC or RETRACE_REPLAY_BIN"
         )
 
     _build_go_binary(go_dir)

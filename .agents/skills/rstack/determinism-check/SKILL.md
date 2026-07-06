@@ -17,7 +17,7 @@ this repo, the most common high-risk areas are:
 - `src/retracesoftware/install/`
 - `src/retracesoftware/modules/*.toml`
 - `src/retracesoftware/dap/`
-- `go/replay/`
+- `retrace-dap/`
 - `cpp/stream/`
 - `cpp/utils/`
 - `cpp/cursor/`
