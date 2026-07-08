@@ -194,61 +194,6 @@ py.install_sources(
   subdir: 'retracesoftware/replay',
 )
 
-_fs = import('fs')
-_retrace_dap_src = meson.project_source_root() / '..' / 'retrace-dap'
-if not _fs.exists(_retrace_dap_src / 'cmd' / 'replay' / 'main.go')
-  _retrace_dap_env = run_command('sh', '-c', 'printf %s "${RETRACE_DAP_SRC}"', check: false).stdout().strip()
-  if _retrace_dap_env != ''
-    _retrace_dap_src = _retrace_dap_env
-  endif
-endif
-if not _fs.exists(_retrace_dap_src / 'cmd' / 'replay' / 'main.go')
-  error('retrace-dap source not found. Clone github.com/retracesoftware/retrace-dap beside this repo or set RETRACE_DAP_SRC.')
-endif
-
-_go = find_program('go')
-_go_env = environment()
-_go_env.set('CGO_ENABLED', '0')
-_go_env.set('GOTOOLCHAIN', 'local')
-
-_go_system = host_machine.system()
-if _go_system == 'darwin'
-  _go_env.set('GOOS', 'darwin')
-elif _go_system == 'linux'
-  _go_env.set('GOOS', 'linux')
-else
-  error('Unsupported Go replay binary platform: ' + _go_system)
-endif
-
-_go_cpu_family = host_machine.cpu_family()
-if _go_cpu_family == 'aarch64'
-  _go_env.set('GOARCH', 'arm64')
-elif _go_cpu_family == 'x86_64'
-  _go_env.set('GOARCH', 'amd64')
-elif _go_cpu_family == 'x86'
-  _go_env.set('GOARCH', '386')
-else
-  error('Unsupported Go replay binary architecture: ' + _go_cpu_family)
-endif
-
-custom_target(
-  'retrace-dap-binary',
-  output: 'replay',
-  command: [
-    _go,
-    '-C', _retrace_dap_src,
-    'build',
-    '-trimpath',
-    '-o', meson.current_build_dir() / 'replay',
-    './cmd/replay',
-  ],
-  env: _go_env,
-  build_by_default: true,
-  install: true,
-  install_dir: py.get_install_dir() / 'retracesoftware/replay',
-  install_mode: 'rwxr-xr-x',
-)
-
 # dap
 py.install_sources(
   _py_root / 'dap/__init__.py',

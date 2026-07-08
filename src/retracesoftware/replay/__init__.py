@@ -1,115 +1,40 @@
+from __future__ import annotations
+
 import os
 import sys
 
-_REPO_MARKERS = ('meson.build', 'pyproject.toml', '.git')
-
-# The Go replay binary lives inside this package directory.
-# In a shipped wheel it is included as package data; during
-# development it is built from source into the same location.
-_PKG_DIR = os.path.dirname(os.path.abspath(__file__))
-_BINARY = os.path.join(_PKG_DIR, 'replay')
-
-
-def _find_repo_root(start: str) -> str | None:
-    """Walk up from *start* looking for a directory that contains a repo marker."""
-    d = os.path.abspath(start)
-    while True:
-        if any(os.path.exists(os.path.join(d, m)) for m in _REPO_MARKERS):
-            return d
-        parent = os.path.dirname(d)
-        if parent == d:
-            return None
-        d = parent
-
-
-def _find_go_source(repo_root: str) -> str | None:
-    """Locate the retrace-dap source tree (contains cmd/replay/main.go)."""
-    candidates = [
-        os.environ.get('RETRACE_REPLAY_SRC', ''),
-        os.environ.get('RETRACE_DAP_SRC', ''),
-        os.path.join(os.path.dirname(repo_root), 'retrace-dap'),
-    ]
-    for d in candidates:
-        if d and os.path.isfile(os.path.join(d, 'cmd', 'replay', 'main.go')):
-            return d
-    return None
-
-
-def _go_source_newer_than(binary: str, go_dir: str) -> bool:
-    try:
-        binary_mtime = os.path.getmtime(binary)
-    except OSError:
-        return True
-
-    for root, dirs, files in os.walk(go_dir):
-        dirs[:] = [
-            d for d in dirs
-            if d not in {'.git', 'tmp', 'vendor'} and not d.startswith('.')
-        ]
-        for filename in files:
-            if not filename.endswith('.go'):
-                continue
-            try:
-                if os.path.getmtime(os.path.join(root, filename)) > binary_mtime:
-                    return True
-            except OSError:
-                continue
-    return False
-
-
-def _build_go_binary(go_dir: str) -> None:
-    import subprocess
-
-    print(f"replay: building Go binary -> {_BINARY}", file=sys.stderr)
-    subprocess.check_call(['go', 'build', '-o', _BINARY, './cmd/replay'], cwd=go_dir)
-
 
 def binary_path() -> str:
-    """Return the absolute path to the Go replay binary, building it if needed.
+    """Return the packaged replay/DAP binary path.
 
-    The binary lives inside the retracesoftware package directory so that
-    ``import retracesoftware`` is all that's needed to locate it.  In a
-    shipped wheel the binary is included as package data.  During
-    development, if the binary is missing it is built from the Go source
-    tree into the same package-relative location.
-
-    RETRACE_REPLAY_BIN overrides everything for unusual setups.
+    The binary is provided by the ``retracesoftware-dap`` distribution.
+    ``RETRACE_REPLAY_BIN`` is still supported by that package for local
+    development and unusual deployments.
     """
-    env_bin = os.environ.get('RETRACE_REPLAY_BIN')
+
+    env_bin = os.environ.get("RETRACE_REPLAY_BIN")
     if env_bin and os.path.isfile(env_bin) and os.access(env_bin, os.X_OK):
         return env_bin
 
-    repo_root = _find_repo_root(_PKG_DIR)
-    go_dir = _find_go_source(repo_root) if repo_root is not None else None
-
-    if os.path.isfile(_BINARY) and os.access(_BINARY, os.X_OK):
-        if go_dir is not None and _go_source_newer_than(_BINARY, go_dir):
-            _build_go_binary(go_dir)
-        return _BINARY
-
-    # Binary missing — try to build from source into the package dir.
-    if go_dir is None:
-        if repo_root is None:
-            raise FileNotFoundError(
-                f"Go replay binary not found at {_BINARY} and cannot locate "
-                f"repo root from {_PKG_DIR}; set RETRACE_REPLAY_BIN"
-            )
+    try:
+        from retrace_dap import binary_path as _dap_binary_path
+    except ImportError as exc:
         raise FileNotFoundError(
-            f"Go replay binary not found at {_BINARY} and cannot find "
-            f"retrace-dap source (checked {os.path.dirname(repo_root)}/retrace-dap); "
-            "set RETRACE_DAP_SRC or RETRACE_REPLAY_BIN"
-        )
+            "Retrace replay/DAP binary package is not installed. Install "
+            "retracesoftware-dap or set RETRACE_REPLAY_BIN."
+        ) from exc
 
-    _build_go_binary(go_dir)
-    return _BINARY
+    return _dap_binary_path()
 
 
 def extract_binary_path() -> str:
-    """Return the path to the binary for extraction (now unified into replay)."""
+    """Return the path to the binary for extraction (unified into replay)."""
+
     return binary_path()
 
 
-def _exec_replay():
-    """Find (or build) the Go replay binary and exec it."""
-    go_bin = binary_path()
-    os.execvp(go_bin, [go_bin] + sys.argv[1:])
+def _exec_replay() -> None:
+    """Find the replay/DAP binary and exec it."""
+
+    replay = binary_path()
+    os.execvp(replay, [replay] + sys.argv[1:])
