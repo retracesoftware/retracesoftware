@@ -369,7 +369,7 @@ Run Go tests:
 - `src/retracesoftware/modules/` stdlib and third-party interception config
 - `src/retracesoftware/stream/` and `cpp/stream/` trace serialization
 - `src/retracesoftware/dap/` Python debugger protocol pieces
-- `go/` replay extraction, indexing, and debug adapter tooling
+- `retrace-dap/` replay extraction, indexing, and debug adapter tooling
 - `vscode/` VS Code extension
 - `tests/` and `dockertests/` unit, replay, and scenario tests
 - `docs/` user and maintainer documentation

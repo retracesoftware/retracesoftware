@@ -396,7 +396,7 @@ def retrace_replay_divergence_workflow() -> dict[str, Any]:
             "src/retracesoftware/install/",
             "src/retracesoftware/proxy/",
             "src/retracesoftware/stream/ or src/retracesoftware/protocol/ or cpp/stream/",
-            "go/replay/ or src/retracesoftware/dap/",
+            "retrace-dap/ or src/retracesoftware/dap/",
         ],
         "rules": [
             "Do not treat the final stack trace as root cause.",

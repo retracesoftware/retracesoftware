@@ -209,6 +209,7 @@ test/.DS_Store
 
 # Meson build
 builddir/
+.mesonpy-*/
 subprojects/
 
 # Go

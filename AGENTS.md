@@ -76,10 +76,10 @@ is the operational contributor guide for making safe changes in this repo.
 - `cpp/utils/`, `cpp/cursor/`, `cpp/common/`, `cpp/functional/`
   CPython internals, gates, demux, cursor/call-count machinery, shared C++
   helpers, and pure-functional helpers used by the native extensions.
-- `src/retracesoftware/dap/` and `go/replay/`, `go/cmd/replay/`
-  Replay debugger, DAP control plane, extraction/index tooling. The Go binary
-  built from `go/cmd/replay/` is what `RETRACE_REPLAY_BIN` / `REPLAY_BIN`
-  point at.
+- `src/retracesoftware/dap/` and [`retrace-dap`](https://github.com/retracesoftware/retrace-dap)
+  Replay debugger, DAP control plane, extraction/index tooling. The Go replay
+  binary is built from `retrace-dap` and installed as `retracesoftware/replay/replay`.
+  `RETRACE_REPLAY_BIN` / `REPLAY_BIN` override discovery.
 - `vscode/`
   VS Code extension UI and launch wiring for opening `.retrace` recordings and
   starting the Go-owned DAP adapter. Read `vscode/AGENTS.md` before editing it.
@@ -150,8 +150,8 @@ is the operational contributor guide for making safe changes in this repo.
   `python -m pip install -e . --no-build-isolation`
 - Run Python tests:
   `python -m pytest tests/ -v --tb=short`
-- Run Go tests:
-  `cd go && go test ./...`
+- Run Go tests (in the `retrace-dap` repo):
+  `cd ../retrace-dap && go test ./...`
 - List docker tests:
   `cd dockertests && python run.py --list`
 - Run one docker test:
@@ -168,7 +168,7 @@ is the operational contributor guide for making safe changes in this repo.
   binary discovery as `python -m retracesoftware`).
 - Build local Go replay binary if auto-discovery does not work in the
   current checkout layout:
-  `cd go && go build -o ../.retrace-replay-bin ./cmd/replay`
+  `cd ../retrace-dap && go build -o ../retracesoftware/.retrace-replay-bin ./cmd/replay`
   then export `RETRACE_REPLAY_BIN=/absolute/path/to/retracesoftware/.retrace-replay-bin`
   (or `REPLAY_BIN=/absolute/path/to/retracesoftware/.retrace-replay-bin` for
   direct `__main__.py` resolution paths)
@@ -203,9 +203,9 @@ if needed.
 - If you touch `cpp/`, `src/retracesoftware/dap/`,
   `src/retracesoftware/stream/`, `src/retracesoftware/protocol/`,
   `src/retracesoftware/install/`, `src/retracesoftware/modules/`,
-  `tests/`, `dockertests/`, `vscode/`, or `go/`, read the local `AGENTS.md` in that
-  directory before editing — and any `DESIGN.md` in that directory if one
-  exists.
+  `tests/`, `dockertests/`, `vscode/`, or the external `retrace-dap` repo,
+  read the local `AGENTS.md` in that directory before editing — and any
+  `DESIGN.md` in that directory if one exists.
 - If you touch `meson.build`, package install lists, or runtime entrypoints,
   run packaging smoke checks in addition to ordinary tests.
 - If a task depends on a test-directory-specific manual replay loop, inspect
@@ -257,7 +257,6 @@ their own design docs):
 Per-directory AGENTS.md files (read before editing the matching area):
 
 - `cpp/AGENTS.md`
-- `go/AGENTS.md`
 - `vscode/AGENTS.md`
 - `tests/AGENTS.md`
 - `dockertests/AGENTS.md`
