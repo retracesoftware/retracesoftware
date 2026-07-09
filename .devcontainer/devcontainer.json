@@ -10,19 +10,15 @@
   },
   "postCreateCommand": "bash .devcontainer/post-create.sh",
   "remoteEnv": {
-    "GOTOOLCHAIN": "local",
-    "PYTHONUNBUFFERED": "1",
-    "RETRACE_REPLAY_BIN": "${containerWorkspaceFolder}/.retrace-replay-bin"
+    "PYTHONUNBUFFERED": "1"
   },
   "customizations": {
     "vscode": {
       "extensions": [
-        "golang.go",
         "ms-python.debugpy",
         "ms-python.python"
       ],
       "settings": {
-        "go.toolsManagement.checkForUpdates": "local",
         "python.defaultInterpreterPath": "/usr/local/bin/python",
         "python.testing.pytestArgs": [
           "tests"

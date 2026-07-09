@@ -1,12 +1,6 @@
-FROM golang:1.25-bookworm AS go
-
 FROM mcr.microsoft.com/devcontainers/python:3.11-bookworm
 
-COPY --from=go /usr/local/go /usr/local/go
-
 ENV DEBIAN_FRONTEND=noninteractive \
-    GOTOOLCHAIN=local \
-    PATH="/usr/local/go/bin:${PATH}" \
     PIP_DISABLE_PIP_VERSION_CHECK=1 \
     PIP_NO_CACHE_DIR=1 \
     PYTHONUNBUFFERED=1
