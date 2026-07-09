@@ -13,10 +13,6 @@ from tests.install.external._pytest_replay_regression_helpers import (
 )
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="pytest-asyncio warning summary currently desyncs terminal/time probes",
-)
 def test_pytest_asyncio_warning_summary_replays_cleanly(tmp_path: Path) -> None:
     pytest.importorskip("pytest_asyncio")
 

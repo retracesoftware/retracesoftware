@@ -227,6 +227,7 @@ def test_retrace_venv_child_python_process_root_pidfile_replays(
     record_env["PYTHONFAULTHANDLER"] = "1"
     record_env["RETRACE_CONFIG"] = "debug"
     record_env["RETRACE_RECORDING"] = recording.name
+    _prepend_pythonpath(record_env, _test_runner_site_packages())
 
     record = _run([str(retrace_python), parent.name], cwd=tmp_path, env=record_env)
     assert record.returncode == 0, (
