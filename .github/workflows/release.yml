@@ -153,7 +153,8 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: retracesoftware-${{ matrix.os }}-${{ matrix.python-version }}-wheels
-          path: wheelhouse/*.whl
+          path: retracesoftware/wheelhouse/*.whl
+          if-no-files-found: error
 
   publish_release:
     name: Create GitHub Release
