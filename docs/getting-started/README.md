@@ -24,6 +24,7 @@ python -m pip install --upgrade pip
 python -m pip install --upgrade retracesoftware
 python -m pip show retracesoftware
 python -m pip show retracesoftware-dap
+retrace quickstart
 mkdir -p recordings
 export RETRACE_AUTO_DEBUG=1
 retracepython --recording recordings/pytest.retrace -m pytest tests

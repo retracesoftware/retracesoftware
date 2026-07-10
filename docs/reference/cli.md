@@ -12,6 +12,17 @@ There are also `retracepython`, `retrace-venv`, `retrace-ai-driver`, and
 Run `python -m retracesoftware --help` to inspect the top-level command. Record
 flags are parsed when the invocation contains a target command after `--`.
 
+## Terminal Quickstart
+
+Print the current pytest AI-debugger setup instructions:
+
+```
+retrace quickstart
+```
+
+This command only prints instructions. It does not create files, install
+packages, run pytest, or contact the hosted AI service.
+
 ## One-Shot Recording
 
 Record a single Python command:
