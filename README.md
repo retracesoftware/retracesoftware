@@ -1,8 +1,11 @@
 # Retrace
 
-Turn failed Python tests and CI runs into replayable debug sessions.
+Turn failed Python tests and CI runs into AI-debuggable replay sessions.
 
-Retrace records a Python execution as a `.retrace` artifact. When pytest or CI fails, open the artifact locally in VS Code, replay the same failed run, and step backwards from the failure to inspect the runtime state that caused it.
+Retrace records a Python execution as a `.retrace` artifact. When pytest or CI
+fails, Retrace can replay the same failed run through the AI debugger and write
+a report, or you can open the artifact locally in VS Code and inspect the
+runtime state yourself.
 
 The same recording model works for Python apps and production crashes. Start with tests today; move to production when the trust is there.
 
@@ -10,7 +13,8 @@ The same recording model works for Python apps and production crashes. Start wit
   <img src="docs/images/A_test_fails_in_CI.gif" alt="Failed pytest run replayed in VS Code with Retrace, stepping backwards from the assertion failure to the runtime state that caused it." width="800">
 </p>
 
-**Start here:** [Replay a failed pytest run with the full quickstart](quickstart/README.md).
+**Start here:** use the pytest AI-debugger quick start below, or follow the
+[manual VS Code replay quickstart](quickstart/README.md).
 
 ## Why Retrace
 
@@ -27,19 +31,67 @@ Retrace preserves the failed run itself.
 
 The failed execution becomes something you can inspect, replay, and share.
 
-## Quick Start: Replay a Failed pytest Run
+## Quick Start: AI-Debug a Failed pytest Run
 
 Install Retrace in your virtual environment:
 
-    python -m pip install retracesoftware pytest
+    python -m pip install --upgrade pip
+    python -m pip install --upgrade retracesoftware pytest
 
-Run pytest through Retrace's explicit runner:
+Check that both the Python package and the split DAP/replay package installed:
 
+    python -m pip show retracesoftware
+    python -m pip show retracesoftware-dap
+
+Set auto-debug once for the current terminal, create a recordings directory, and
+run your normal pytest command through `retracepython`:
+
+    export RETRACE_AUTO_DEBUG=1
+    mkdir -p recordings
+    retracepython --recording recordings/pytest.retrace -m pytest tests
+
+You can keep your usual pytest arguments:
+
+    retracepython --recording recordings/pytest.retrace -m pytest tests -vs
+    retracepython --recording recordings/pytest.retrace -m pytest tests/test_example.py
+    retracepython --recording recordings/pytest.retrace -m pytest tests/test_example.py -k "some_test"
+
+This runs the real pytest command, records the execution to
+`recordings/pytest.retrace`, and, if pytest fails, replays the recording through
+the DAP AI debugger. Retrace preserves pytest's original exit code and writes an
+AI report next to the trace:
+
+    recordings/pytest.ai-report.md
+
+Open that report in your editor. On macOS:
+
+    open recordings/pytest.ai-report.md
+
+The default hosted auto-debug flow can request a free client token
+automatically. You normally do not need `RETRACE_API_KEY` for a first run; set
+it only when you want to use an authenticated Retrace AI service account.
+
+There is also a shorter form:
+
+    RETRACE_AUTO_DEBUG=1 retracepython -m pytest tests
+
+The short form writes default artifacts in the current directory, usually
+`pytest.retrace` and `pytest.ai-report.md`. The explicit `--recording
+recordings/pytest.retrace` form is recommended because it keeps artifacts in a
+predictable location across environments.
+
+## Quick Start: Replay a Failed pytest Run In VS Code
+
+If you want a manual replay/debugging session instead of an AI report, run
+pytest through Retrace's explicit runner:
+
+    mkdir -p recordings
     PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 python -m retracesoftware --recording recordings/pytest.retrace -- -m pytest tests -q --tb=short
 
 If pytest fails, Retrace leaves behind a `.retrace` artifact for that exact failed run.
 
-This is the recommended preview command for pytest. It keeps pytest plugin loading explicit so the first-run demo stays focused, repeatable, and easy to inspect.
+This preview command keeps pytest plugin loading explicit so the first-run demo
+stays focused, repeatable, and easy to inspect.
 
 Open the same project in VS Code:
 
@@ -105,11 +157,11 @@ The recording is the failed run. No reproduction steps, no retry loop, no guessi
 
 3. **Replay**
 
-   Open the artifact locally in VS Code and debug the same execution.
+   Replay the artifact through the AI debugger or open it locally in VS Code.
 
-4. **Step backwards**
+4. **Inspect**
 
-   Move backwards from the failure and inspect the runtime state that caused it.
+   Inspect the runtime state that caused the failure instead of rerunning live.
 
 Under the hood, Retrace records the boundary between your Python code and the nondeterministic outside world: network responses, filesystem state, clocks, randomness, subprocess behavior, thread scheduling, API calls, database calls, and other external effects.
 
@@ -188,7 +240,7 @@ Retrace is not `rr` for Python. It does not record an entire machine process at 
 - CPython 3.11 or 3.12
 - macOS or Linux, 64-bit
 - `pip`
-- VS Code for the current replay/debugging workflow
+- VS Code is optional for manual replay/debugging
 
 Supported PyPI wheels include Retrace's replay binary, so normal `pip install retracesoftware` users do not need Go installed. Go is only required when building Retrace from source or on unsupported platforms where `pip` has to build from source.
 
@@ -209,7 +261,8 @@ Use `retracepython` when you want to record one command:
 
 Record a pytest run:
 
-    PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 retracepython --recording recordings/tests.retrace -m pytest tests/ -q --tb=short
+    mkdir -p recordings
+    retracepython --recording recordings/tests.retrace -m pytest tests/ -q --tb=short
 
 Record a module-based CLI:
 
@@ -223,15 +276,24 @@ Record a one-off command:
 runs ordinary `python`, that child process is not automatically recorded.
 
 To automatically run the AI debugger when the recorded command fails, set
-`RETRACE_AUTO_DEBUG=1`:
+`RETRACE_AUTO_DEBUG=1`. You can set it once for the current terminal:
+
+    export RETRACE_AUTO_DEBUG=1
+    mkdir -p recordings
+    retracepython --recording recordings/run.retrace my_script.py
+
+Or prefix one command:
 
     RETRACE_AUTO_DEBUG=1 retracepython my_script.py
 
 On failure, Retrace runs `retrace-ai-driver` with the DAP tool executor against
-the recording. The driver starts the Retrace DAP server and drives it through
-the `retrace-ai-service`/provider configuration supplied to the driver.
-Configure that driver with environment variables such as
-`RETRACE_AI_SERVER`, `RETRACE_API_KEY`, and `RETRACE_REPLAY_BIN`.
+the recording and writes a report next to the trace, for example
+`recordings/run.ai-report.md`. The driver starts the Retrace DAP server and
+drives it through the `retrace-ai-service`/provider configuration supplied to
+the driver. The default hosted service can request a free client token when
+`RETRACE_API_KEY` is unset. Configure the driver with environment variables
+such as `RETRACE_AI_SERVER`, `RETRACE_API_KEY`, and `RETRACE_REPLAY_BIN` when
+you need a custom service, authenticated account, or local replay binary.
 `RETRACE_AI_SERVER` defaults to
 `https://retrace-ai-service.retracesoftware.workers.dev`.
 `RETRACE_AI_DRIVER_COMMAND` can override the packaged driver command for

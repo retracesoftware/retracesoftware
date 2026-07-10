@@ -62,12 +62,31 @@ the default config even when `RETRACE` is not set. If the command exits nonzero,
 Retrace preserves that exit code and runs `retrace-ai-driver` against the
 recording with `--tool-executor dap`.
 
+For a pytest workflow, set it once in the active terminal and use an explicit
+recording path:
+
+```
+export RETRACE_AUTO_DEBUG=1
+mkdir -p recordings
+retracepython --recording recordings/pytest.retrace -m pytest tests
+```
+
+This writes the trace to `recordings/pytest.retrace` and, on failure, writes the
+AI report to `recordings/pytest.ai-report.md`. The explicit `--recording` path
+is recommended because it keeps artifacts in a predictable location. Without an
+explicit recording path, auto-debug uses the default trace name for the command
+and writes artifacts in the current directory.
+
 The driver starts the Retrace DAP server and drives it through the
 `retrace-ai-service`/provider configuration supplied to the driver. The launcher
 passes through driver-oriented variables such as `RETRACE_AI_DRIVER_COMMAND`,
 `RETRACE_AI_DRIVER`, `RETRACE_AI_SERVER`, `RETRACE_API_KEY`,
 `RETRACE_AI_MAX_TOOL_CALLS`, `RETRACE_AI_TIME_BUDGET`,
 `RETRACE_AI_MAX_OUTPUT_TOKENS`, and `RETRACE_REPLAY_BIN`.
+
+If `RETRACE_API_KEY` is unset, the default hosted service can request a free
+client token automatically. Set `RETRACE_API_KEY` when using an authenticated
+Retrace AI service account.
 
 Unset `RETRACE_AUTO_DEBUG`, or set it to `0` or `false`, to keep the normal
 exec-based launcher behavior.
