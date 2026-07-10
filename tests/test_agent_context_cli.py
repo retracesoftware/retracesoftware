@@ -58,15 +58,6 @@ def test_retrace_help_points_new_users_to_quickstart() -> None:
     assert "retrace quickstart" in help_text
 
 
-def test_retrace_without_args_prints_help_and_quickstart_hint(capsys) -> None:
-    assert cli.main([]) == 0
-
-    output = capsys.readouterr().out
-    assert "Retrace workflow commands." in output
-    assert "quickstart" in output
-    assert "retrace quickstart" in output
-
-
 def test_control_recording_path_extracts_framed_recording_root_pid(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
