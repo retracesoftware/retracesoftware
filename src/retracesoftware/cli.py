@@ -472,6 +472,10 @@ def _build_parser() -> argparse.ArgumentParser:
 
 
 def _dispatch(argv: list[str], *, prog: str = "retrace") -> int:
+    if not argv:
+        parser = _build_parser()
+        parser.print_help()
+        return 0
     if argv and argv[0] == "agent-context":
         args = _build_agent_context_parser().parse_args(argv[1:])
         return args.func(args)

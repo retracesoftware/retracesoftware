@@ -43,7 +43,8 @@ Check that both the Python package and the split DAP/replay package installed:
     python -m pip show retracesoftware
     python -m pip show retracesoftware-dap
 
-Print the same pytest AI-debugger setup in your terminal at any time:
+Print the same pytest AI-debugger setup in your terminal at any time. Running
+plain `retrace` also shows this discovery hint:
 
     retrace quickstart
 

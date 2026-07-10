@@ -62,7 +62,8 @@ python -m pip show retracesoftware-dap
 `retracesoftware-dap` provides the packaged replay/DAP binary used by
 `retracesoftware`. Normal PyPI installs should include it automatically.
 
-Print the pytest AI-debugger setup in your terminal at any time:
+Print the pytest AI-debugger setup in your terminal at any time. Running plain
+`retrace` also shows this discovery hint:
 
 ```
 retrace quickstart

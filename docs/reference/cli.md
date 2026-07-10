@@ -20,8 +20,9 @@ Print the current pytest AI-debugger setup instructions:
 retrace quickstart
 ```
 
-This command only prints instructions. It does not create files, install
-packages, run pytest, or contact the hosted AI service.
+Running plain `retrace` also prints top-level help with a pointer to
+`retrace quickstart`. Neither command creates files, installs packages, runs
+pytest, or contacts the hosted AI service.
 
 ## One-Shot Recording
 
