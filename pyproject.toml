@@ -9,7 +9,7 @@ authors = [
 ]
 requires-python = ">=3.11"
 dependencies = [
-    "retracesoftware-dap==0.2.17",
+    "retracesoftware-dap==0.2.18",
 ]
 classifiers = [
     "Development Status :: 4 - Beta",

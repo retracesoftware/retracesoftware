@@ -287,7 +287,11 @@ class DAPSession:
             remaining = deadline - time.monotonic()
             if remaining <= 0:
                 raise TimeoutError(self._timeout_message())
-            item = self.messages.get(timeout=remaining)
+            try:
+                item = self.messages.get(timeout=remaining)
+            except queue.Empty as exc:
+                # queue.Empty stringifies to "", which is not a valid tool error message.
+                raise TimeoutError(self._timeout_message()) from exc
             if item is None:
                 raise DriverError(self._stream_closed_message())
             if isinstance(item, BaseException):
@@ -1983,6 +1987,7 @@ def _dap_error(tool: str, exc: Exception, session: dict[str, Any] | DAPSession |
             "Set a source breakpoint on application code, continue, then retry this tool.",
         )
 
+    message = str(exc).strip() or f"{tool} failed without an error message"
     result = {
         "ok": False,
         "summary": f"{tool} failed through the DAP proxy.",
@@ -1990,7 +1995,7 @@ def _dap_error(tool: str, exc: Exception, session: dict[str, Any] | DAPSession |
             "domain": "driver",
             "category": "dap_protocol",
             "code": "dap_request_failed",
-            "message": str(exc),
+            "message": message,
         },
     }
     if isinstance(exc, DAPRequestError):

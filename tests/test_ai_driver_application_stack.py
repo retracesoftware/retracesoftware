@@ -1,3 +1,4 @@
+import queue
 from types import SimpleNamespace
 
 import pytest
@@ -5,6 +6,7 @@ import pytest
 from retracesoftware.ai_driver import (
     DAPExecutor,
     DAPRequestError,
+    DAPSession,
     _application_dap_frames,
     _dap_error,
     _exception_and_frames_from_pytest_hint,
@@ -247,3 +249,21 @@ def test_dap_error_maps_inspection_unavailable_to_application_guidance():
     assert result["error"]["domain"] == "application"
     assert result["error"]["category"] == "wrong_stop_location"
     assert "application code" in result["error"]["message"]
+
+
+def test_dap_wait_timeout_has_nonempty_protocol_message():
+    session = object.__new__(DAPSession)
+    session.pending = []
+    session.messages = queue.Queue()
+    session.output = ""
+    session.stderr_text = ""
+
+    with pytest.raises(TimeoutError, match="DAP request timed out"):
+        session._wait_for(lambda _message: False, timeout=0.001)
+
+
+def test_dap_error_never_serializes_empty_message():
+    result = _dap_error("get_variables", queue.Empty(), None)
+
+    assert result["ok"] is False
+    assert result["error"]["message"] == "get_variables failed without an error message"
