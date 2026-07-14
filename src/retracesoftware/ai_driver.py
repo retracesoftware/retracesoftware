@@ -1584,21 +1584,108 @@ def _render_markdown(artifact: dict[str, Any]) -> str:
     report = artifact.get("report") if isinstance(artifact.get("report"), dict) else {}
     title = str(report.get("title") or "Retrace AI Driver Report")
     lines = [f"# {title}", ""]
+    status = report.get("status")
+    if isinstance(status, str) and status:
+        lines.extend([f"**Status:** {status}", ""])
     summary = report.get("summary")
     if isinstance(summary, str) and summary:
         lines.extend([summary, ""])
     root = report.get("root_cause")
     if isinstance(root, dict) and isinstance(root.get("claim"), str):
         lines.extend(["## Root Cause", "", root["claim"], ""])
+        confidence = root.get("confidence")
+        why = root.get("why")
+        if isinstance(confidence, str) and confidence:
+            lines.append(f"**Confidence:** {confidence}")
+        if isinstance(why, str) and why:
+            lines.extend(["", why])
+        lines.append("")
     evidence = report.get("evidence")
     if isinstance(evidence, list) and evidence:
         lines.extend(["## Evidence", ""])
         for item in evidence:
             if isinstance(item, dict):
-                lines.append(f"- {item.get('summary') or item.get('source') or item}")
+                claim = item.get("claim") or item.get("summary") or "Observed evidence"
+                details = []
+                tool = item.get("tool")
+                if isinstance(tool, str) and tool:
+                    details.append(f"`{tool}`")
+                location = item.get("location")
+                if isinstance(location, dict) and isinstance(location.get("path"), str):
+                    rendered_location = location["path"]
+                    if isinstance(location.get("line"), int):
+                        rendered_location += f":{location['line']}"
+                    details.append(f"`{rendered_location}`")
+                suffix = f" ({', '.join(details)})" if details else ""
+                lines.append(f"- **{claim}**{suffix}")
+                observed = item.get("observed")
+                if isinstance(observed, str) and observed:
+                    lines.append(f"  {observed}")
             else:
                 lines.append(f"- {item}")
         lines.append("")
+    walkthrough = report.get("replay_walkthrough")
+    if isinstance(walkthrough, list) and walkthrough:
+        lines.extend(["## Replay Walkthrough", ""])
+        for index, item in enumerate(walkthrough, 1):
+            if not isinstance(item, dict):
+                continue
+            step = item.get("step") if isinstance(item.get("step"), int) else index
+            action = item.get("action") or "inspection"
+            finding = item.get("finding") or ""
+            lines.append(f"{step}. **{action}**: {finding}")
+        lines.append("")
+    suggested_fix = report.get("suggested_fix")
+    if isinstance(suggested_fix, dict):
+        fix_summary = suggested_fix.get("summary")
+        fix_files = suggested_fix.get("files")
+        fix_test = suggested_fix.get("test")
+        if (
+            isinstance(fix_summary, str)
+            or isinstance(fix_files, list)
+            or isinstance(fix_test, str)
+        ):
+            lines.extend(["## Suggested Fix", ""])
+            if isinstance(fix_summary, str) and fix_summary:
+                lines.extend([fix_summary, ""])
+            if isinstance(fix_files, list):
+                for item in fix_files:
+                    if not isinstance(item, dict):
+                        continue
+                    path = item.get("path") or "application source"
+                    if isinstance(item.get("line"), int):
+                        path = f"{path}:{item['line']}"
+                    change = item.get("change") or "Apply the supported change."
+                    lines.append(f"- `{path}`: {change}")
+                if fix_files:
+                    lines.append("")
+            if isinstance(fix_test, str) and fix_test:
+                lines.extend([f"**Regression test:** {fix_test}", ""])
+    reproducibility = report.get("reproducibility")
+    if isinstance(reproducibility, dict):
+        lines.extend(["## Reproducibility", ""])
+        for label, key in (
+            ("Data dependency", "data_dependency"),
+            ("Intermittency", "intermittency"),
+            ("Determinism", "determinism"),
+            ("Confidence", "confidence"),
+        ):
+            value = reproducibility.get(key)
+            if isinstance(value, str) and value:
+                lines.append(f"- **{label}:** {value}")
+        why = reproducibility.get("why")
+        if isinstance(why, str) and why:
+            lines.extend(["", why])
+        lines.append("")
+    for heading, key in (
+        ("Open Questions", "open_questions"),
+        ("Limitations", "limitations"),
+    ):
+        values = report.get(key)
+        if isinstance(values, list) and values:
+            lines.extend([f"## {heading}", ""])
+            lines.extend(f"- {value}" for value in values if isinstance(value, str))
+            lines.append("")
     if artifact.get("transcript"):
         lines.extend(["## Tool Transcript", ""])
         for idx, action in enumerate(artifact["transcript"], 1):
