@@ -1029,16 +1029,10 @@ def _pytest_failure_hint(trace: str, *, replay_bin: str | None = None) -> dict[s
     if control_recording is None:
         return None
 
-    output_hint = _pytest_failure_hint_from_replay_output(
-        control_recording,
-        cwd=_recording_cwd_for_trace(trace),
-        timeout=timeout,
-        **({"replay_bin": replay_bin} if replay_bin is not None else {}),
-    )
-    if output_hint is not None and output_hint.get("classification") == "application":
-        return output_hint
-
-    inspect_hint: dict[str, Any] | None = None
+    # Prefer Retrace's ranked failure search. Direct replay output is the
+    # compatibility fallback for runtimes (notably Python 3.11) where richer
+    # monitoring may return no candidate; it must not override a ranked pytest
+    # assertion merely because replay first surfaces a setup-path exception.
     try:
         from retracesoftware.agent_inspect import inspect_failures
 
@@ -1049,6 +1043,14 @@ def _pytest_failure_hint(trace: str, *, replay_bin: str | None = None) -> dict[s
     except Exception:
         pass
 
+    output_hint = _pytest_failure_hint_from_replay_output(
+        control_recording,
+        cwd=_recording_cwd_for_trace(trace),
+        timeout=timeout,
+        **({"replay_bin": replay_bin} if replay_bin is not None else {}),
+    )
+    if output_hint is not None and output_hint.get("classification") == "application":
+        return output_hint
     return None
 
 
