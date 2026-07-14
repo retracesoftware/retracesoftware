@@ -443,66 +443,6 @@ FAILED tests/test_partner_shape.py::test_partner_shape_fails - assert 41 == 42
     assert hint["exception_type"] == "AssertionError"
 
 
-def test_pytest_failure_hint_prefers_ranked_assertion_over_replay_setup_error(
-    monkeypatch, tmp_path
-):
-    recording = tmp_path / "pid.bin"
-    recording.write_bytes(b"fake")
-    test_file = tmp_path / "tests" / "test_financial_report.py"
-    conftest = tmp_path / "tests" / "conftest.py"
-    test_file.parent.mkdir(parents=True)
-    test_file.write_text("def test_report():\n    assert False\n", encoding="utf-8")
-    conftest.write_text("def seed_database():\n    pass\n", encoding="utf-8")
-    replay_output = """
-tests/conftest.py:1:
-E   RuntimeError: setup replay failed before pytest rendered the assertion
-"""
-
-    monkeypatch.setattr(
-        "retracesoftware.ai_driver._control_recording_for_trace", lambda trace: recording
-    )
-    monkeypatch.setattr(
-        "retracesoftware.ai_driver._recording_cwd_for_trace", lambda trace: tmp_path
-    )
-    monkeypatch.setattr(
-        "retracesoftware.agent_inspect.inspect_failures",
-        lambda *a, **kw: {
-            "ranked_candidates": [
-                {
-                    "rank": 1,
-                    "score": 150,
-                    "classification": "application",
-                    "exception": {
-                        "type": "AssertionError",
-                        "message": "63750.41 != 59463.2",
-                    },
-                    "location": {
-                        "filename": str(test_file),
-                        "line": 2,
-                        "function": "test_report",
-                    },
-                }
-            ]
-        },
-    )
-    replay_called = False
-
-    def replay_run(*args, **kwargs):
-        nonlocal replay_called
-        replay_called = True
-        return SimpleNamespace(stdout=replay_output, stderr="", returncode=1)
-
-    monkeypatch.setattr("retracesoftware.ai_driver.subprocess.run", replay_run)
-
-    hint = _pytest_failure_hint(str(tmp_path / "case.retrace"))
-
-    assert hint is not None
-    assert hint["filename"] == str(test_file)
-    assert hint["line"] == 2
-    assert hint["exception_type"] == "AssertionError"
-    assert replay_called is False
-
-
 @pytest.mark.skipif(
     sys.version_info < (3, 12),
     reason="raw-script failure-candidate search still uses sys.monitoring-backed search",

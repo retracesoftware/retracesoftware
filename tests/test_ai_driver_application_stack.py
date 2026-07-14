@@ -1,60 +1,16 @@
-import queue
 from types import SimpleNamespace
-from urllib import request
 
 import pytest
 
 from retracesoftware.ai_driver import (
     DAPExecutor,
     DAPRequestError,
-    DAPSession,
-    ServiceClient,
     _application_dap_frames,
     _dap_error,
     _exception_and_frames_from_pytest_hint,
     _parse_dap_error_response,
-    _parse_output_tokens,
     _pytest_failure_hint_from_output,
 )
-
-
-def test_hosted_service_request_uses_reasoning_turn_timeout(monkeypatch):
-    seen = {}
-
-    class Response:
-        def __enter__(self):
-            return self
-
-        def __exit__(self, *_args):
-            return None
-
-        def read(self):
-            return b"{}"
-
-    def fake_urlopen(_request, *, timeout):
-        seen["timeout"] = timeout
-        return Response()
-
-    monkeypatch.setattr(request, "urlopen", fake_urlopen)
-
-    ServiceClient("https://service.example").post(
-        "/v1/client-tokens",
-        {},
-        authenticated=False,
-    )
-
-    assert seen["timeout"] == 90.0
-
-
-@pytest.mark.parametrize("value, expected", [("", None), ("2400", 2400)])
-def test_parse_output_tokens(value, expected):
-    assert _parse_output_tokens(value) == expected
-
-
-@pytest.mark.parametrize("value", ["0", "-1", "many"])
-def test_parse_output_tokens_rejects_invalid_values(value):
-    with pytest.raises(RuntimeError, match="max-output-tokens"):
-        _parse_output_tokens(value)
 
 
 def test_application_dap_frames_drop_pathified_frozen_runpy():
@@ -291,58 +247,3 @@ def test_dap_error_maps_inspection_unavailable_to_application_guidance():
     assert result["error"]["domain"] == "application"
     assert result["error"]["category"] == "wrong_stop_location"
     assert "application code" in result["error"]["message"]
-
-
-def test_dap_wait_timeout_has_nonempty_protocol_message():
-    session = object.__new__(DAPSession)
-    session.pending = []
-    session.messages = queue.Queue()
-    session.output = ""
-    session.stderr_text = ""
-
-    with pytest.raises(TimeoutError, match="DAP request timed out"):
-        session._wait_for(lambda _message: False, timeout=0.001)
-
-
-def test_dap_error_never_serializes_empty_message():
-    result = _dap_error("get_variables", queue.Empty(), None)
-
-    assert result["ok"] is False
-    assert result["error"]["message"] == "get_variables failed without an error message"
-
-
-def test_step_back_uses_navigation_timeout_for_response_and_stop_event():
-    executor = object.__new__(DAPExecutor)
-    calls = []
-
-    class Session:
-        closed = False
-        synthetic_exception = {"type": "AssertionError", "message": "old pause"}
-        frames = [{"name": "old_frame", "line": 99}]
-        output = ""
-        trace = "/tmp/trace.retrace"
-        state = {"state": "stopped", "last_stop": {"reason": "step", "thread_id": 1}}
-
-        def request(self, command, arguments=None, *, timeout):
-            calls.append(("request", command, timeout))
-            return {"body": {}}
-
-        def wait_for_event(self, *events, timeout):
-            calls.append(("event", events, timeout))
-            return {"type": "event", "event": "stopped", "body": {"reason": "step", "threadId": 1}}
-
-        def _apply_stop_event(self, event):
-            self.state["state"] = "stopped"
-            self.state["last_stop"] = {"reason": "step", "thread_id": 1}
-
-    executor.session = Session()
-
-    result = executor.navigate("step_back", "stepBack", {"thread_id": 1})
-
-    assert result["ok"] is True
-    assert executor.session.synthetic_exception is None
-    assert executor.session.frames == []
-    assert calls == [
-        ("request", "stepBack", 90.0),
-        ("event", ("stopped", "terminated"), 90.0),
-    ]

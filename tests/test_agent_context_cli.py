@@ -38,26 +38,6 @@ def _inspect_report(recording: Path) -> dict:
     }
 
 
-def test_quickstart_cli_outputs_pytest_auto_debug_instructions(capsys) -> None:
-    assert cli.main(["quickstart"]) == 0
-
-    output = capsys.readouterr().out
-    assert "How to run Retrace AI debugger with pytest" in output
-    assert "python -m pip install --upgrade retracesoftware" in output
-    assert "python -m pip show retracesoftware-dap" in output
-    assert "mkdir -p recordings" in output
-    assert "export RETRACE_AUTO_DEBUG=1" in output
-    assert "retracepython --recording recordings/pytest.retrace -m pytest tests" in output
-    assert "open recordings/pytest.ai-report.md" in output
-
-
-def test_retrace_help_points_new_users_to_quickstart() -> None:
-    help_text = cli._build_parser().format_help()
-
-    assert "quickstart" in help_text
-    assert "retrace quickstart" in help_text
-
-
 def test_control_recording_path_extracts_framed_recording_root_pid(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

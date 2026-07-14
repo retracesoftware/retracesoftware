@@ -3,9 +3,10 @@
 These guides cover the public workflow for a new Retrace user.
 
 The included pytest quickstart takes about 5 minutes. Before starting it,
-check that Python 3.12 and Git are installed. The guides show how to confirm
-the Retrace packages are installed, record a failed pytest run, generate an AI
-debugger report, and optionally open the `.retrace` recording in VS Code.
+check that Python 3.12, Git, and VS Code are installed. The
+guide also shows how to confirm the Retrace package is installed, record a
+failed pytest run, create a preview replay bundle, and open the `.retrace`
+recording in VS Code.
 
 Read them in order:
 
@@ -14,34 +15,15 @@ Read them in order:
 3. [Recording Python Commands](recording-python-commands.md)
 4. [VS Code Extension](vscode-extension.md)
 
-The current recommended pytest AI-debugger flow is:
-
-```
-cd /path/to/your/project
-python3.12 -m venv .venv
-source .venv/bin/activate
-python -m pip install --upgrade pip
-python -m pip install --upgrade retracesoftware
-python -m pip show retracesoftware
-python -m pip show retracesoftware-dap
-retrace quickstart
-mkdir -p recordings
-export RETRACE_AUTO_DEBUG=1
-retracepython --recording recordings/pytest.retrace -m pytest tests
-```
-
-If pytest fails, Retrace writes `recordings/pytest.retrace` and
-`recordings/pytest.ai-report.md`.
-
-For the bundled demo and VS Code replay walkthrough:
+The current recommended flow is:
 
 ```
 git clone https://github.com/retracesoftware/retracesoftware.git
 cd retracesoftware/quickstart
 python3.12 -m venv .venv
 source .venv/bin/activate
-python -m pip install --upgrade pip
 python -m pip install retracesoftware
+python -m pip show retracesoftware
 python -m pip install -r requirements.txt
 PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 python -m retracesoftware --recording recordings/pytest.retrace -- -m pytest pytest_demo -q --tb=short
 code .

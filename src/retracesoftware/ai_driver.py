@@ -23,8 +23,6 @@ from retracesoftware.retracepython import DEFAULT_AI_SERVER
 
 DAP_SESSION_ID = "dap-replay-1"
 DEFAULT_TIMEOUT = 30.0
-NAVIGATION_TIMEOUT = 90.0
-SERVICE_REQUEST_TIMEOUT = 90.0
 MAX_SOURCE_CONTEXT_LINE_CHARS = 4096
 AVAILABLE_TOOLS = [
     "start_replay_session",
@@ -103,11 +101,7 @@ class ServiceClient:
         for attempt in range(attempts):
             req = request.Request(url, data=body, headers=headers, method="POST")
             try:
-                # A model turn can legitimately take longer than a simple API
-                # request, especially when the provider performs reasoning.
-                # Keep this aligned with the slow-navigation DAP allowance so
-                # the client does not abandon a healthy hosted turn at 60s.
-                with request.urlopen(req, timeout=SERVICE_REQUEST_TIMEOUT) as resp:
+                with request.urlopen(req, timeout=60) as resp:
                     data = resp.read()
                 break
             except error.HTTPError as exc:
@@ -218,15 +212,9 @@ class DAPSession:
         self.stdin.flush()
         return self.seq
 
-    def request(
-        self,
-        command: str,
-        arguments: dict[str, Any] | None = None,
-        *,
-        timeout: float = DEFAULT_TIMEOUT,
-    ) -> dict[str, Any]:
+    def request(self, command: str, arguments: dict[str, Any] | None = None) -> dict[str, Any]:
         seq = self.send_request(command, arguments or {})
-        resp = self.wait_for_response(seq, timeout=timeout)
+        resp = self.wait_for_response(seq)
         self._raise_response_error(resp)
         return resp
 
@@ -299,11 +287,7 @@ class DAPSession:
             remaining = deadline - time.monotonic()
             if remaining <= 0:
                 raise TimeoutError(self._timeout_message())
-            try:
-                item = self.messages.get(timeout=remaining)
-            except queue.Empty as exc:
-                # queue.Empty stringifies to "", which is not a valid tool error message.
-                raise TimeoutError(self._timeout_message()) from exc
+            item = self.messages.get(timeout=remaining)
             if item is None:
                 raise DriverError(self._stream_closed_message())
             if isinstance(item, BaseException):
@@ -558,24 +542,12 @@ class DAPExecutor:
     def navigate(self, tool: str, dap_command: str, arguments: dict[str, Any]) -> dict[str, Any]:
         session = self._require_session(tool)
         thread_id = int(arguments.get("thread_id") or 1)
+        session.request(dap_command, {"threadId": thread_id})
         wait_timeout = DEFAULT_TIMEOUT
-        if dap_command in {"continue", "reverseContinue", "stepBack"}:
-            wait_timeout = max(DEFAULT_TIMEOUT, NAVIGATION_TIMEOUT)
-        # Reverse navigation can synchronously replay many instructions before
-        # the Go adapter acknowledges the request. Give the response and the
-        # following stop event the same navigation deadline so a valid stop is
-        # not discarded moments before it arrives.
-        session.request(dap_command, {"threadId": thread_id}, timeout=wait_timeout)
+        if dap_command in {"continue", "reverseContinue"}:
+            wait_timeout = max(DEFAULT_TIMEOUT, 90.0)
         event = session.wait_for_event("stopped", "terminated", timeout=wait_timeout)
         session._apply_stop_event(event)
-        if session.state.get("state") != "terminated":
-            # A traceback recovered from process output is valid only for the
-            # terminal exception pause that produced it. Reverse/step
-            # navigation creates a new live DAP pause; retaining the fallback
-            # here would make every later stack request report the old failure
-            # line even when the adapter stopped at a different breakpoint.
-            session.synthetic_exception = None
-            session.frames = []
         if session.state.get("state") == "terminated":
             session.drain_output()
             exception, frames = _parse_python_traceback(session.output)
@@ -932,9 +904,6 @@ def run_driver(args: argparse.Namespace) -> dict[str, Any]:
         }
         if args.time_budget_ms is not None:
             start_payload["time_budget_ms"] = args.time_budget_ms
-        max_output_tokens = _parse_output_tokens(args.max_output_tokens)
-        if max_output_tokens is not None:
-            start_payload["max_output_tokens"] = max_output_tokens
 
         response = client.post("/v1/debug-sessions", start_payload)
         debug_session_id = str(response.get("debug_session_id") or "")
@@ -1056,10 +1025,16 @@ def _pytest_failure_hint(trace: str, *, replay_bin: str | None = None) -> dict[s
     if control_recording is None:
         return None
 
-    # Prefer Retrace's ranked failure search. Direct replay output is the
-    # compatibility fallback for runtimes (notably Python 3.11) where richer
-    # monitoring may return no candidate; it must not override a ranked pytest
-    # assertion merely because replay first surfaces a setup-path exception.
+    output_hint = _pytest_failure_hint_from_replay_output(
+        control_recording,
+        cwd=_recording_cwd_for_trace(trace),
+        timeout=timeout,
+        **({"replay_bin": replay_bin} if replay_bin is not None else {}),
+    )
+    if output_hint is not None and output_hint.get("classification") == "application":
+        return output_hint
+
+    inspect_hint: dict[str, Any] | None = None
     try:
         from retracesoftware.agent_inspect import inspect_failures
 
@@ -1070,14 +1045,6 @@ def _pytest_failure_hint(trace: str, *, replay_bin: str | None = None) -> dict[s
     except Exception:
         pass
 
-    output_hint = _pytest_failure_hint_from_replay_output(
-        control_recording,
-        cwd=_recording_cwd_for_trace(trace),
-        timeout=timeout,
-        **({"replay_bin": replay_bin} if replay_bin is not None else {}),
-    )
-    if output_hint is not None and output_hint.get("classification") == "application":
-        return output_hint
     return None
 
 
@@ -1617,108 +1584,21 @@ def _render_markdown(artifact: dict[str, Any]) -> str:
     report = artifact.get("report") if isinstance(artifact.get("report"), dict) else {}
     title = str(report.get("title") or "Retrace AI Driver Report")
     lines = [f"# {title}", ""]
-    status = report.get("status")
-    if isinstance(status, str) and status:
-        lines.extend([f"**Status:** {status}", ""])
     summary = report.get("summary")
     if isinstance(summary, str) and summary:
         lines.extend([summary, ""])
     root = report.get("root_cause")
     if isinstance(root, dict) and isinstance(root.get("claim"), str):
         lines.extend(["## Root Cause", "", root["claim"], ""])
-        confidence = root.get("confidence")
-        why = root.get("why")
-        if isinstance(confidence, str) and confidence:
-            lines.append(f"**Confidence:** {confidence}")
-        if isinstance(why, str) and why:
-            lines.extend(["", why])
-        lines.append("")
     evidence = report.get("evidence")
     if isinstance(evidence, list) and evidence:
         lines.extend(["## Evidence", ""])
         for item in evidence:
             if isinstance(item, dict):
-                claim = item.get("claim") or item.get("summary") or "Observed evidence"
-                details = []
-                tool = item.get("tool")
-                if isinstance(tool, str) and tool:
-                    details.append(f"`{tool}`")
-                location = item.get("location")
-                if isinstance(location, dict) and isinstance(location.get("path"), str):
-                    rendered_location = location["path"]
-                    if isinstance(location.get("line"), int):
-                        rendered_location += f":{location['line']}"
-                    details.append(f"`{rendered_location}`")
-                suffix = f" ({', '.join(details)})" if details else ""
-                lines.append(f"- **{claim}**{suffix}")
-                observed = item.get("observed")
-                if isinstance(observed, str) and observed:
-                    lines.append(f"  {observed}")
+                lines.append(f"- {item.get('summary') or item.get('source') or item}")
             else:
                 lines.append(f"- {item}")
         lines.append("")
-    walkthrough = report.get("replay_walkthrough")
-    if isinstance(walkthrough, list) and walkthrough:
-        lines.extend(["## Replay Walkthrough", ""])
-        for index, item in enumerate(walkthrough, 1):
-            if not isinstance(item, dict):
-                continue
-            step = item.get("step") if isinstance(item.get("step"), int) else index
-            action = item.get("action") or "inspection"
-            finding = item.get("finding") or ""
-            lines.append(f"{step}. **{action}**: {finding}")
-        lines.append("")
-    suggested_fix = report.get("suggested_fix")
-    if isinstance(suggested_fix, dict):
-        fix_summary = suggested_fix.get("summary")
-        fix_files = suggested_fix.get("files")
-        fix_test = suggested_fix.get("test")
-        if (
-            isinstance(fix_summary, str)
-            or isinstance(fix_files, list)
-            or isinstance(fix_test, str)
-        ):
-            lines.extend(["## Suggested Fix", ""])
-            if isinstance(fix_summary, str) and fix_summary:
-                lines.extend([fix_summary, ""])
-            if isinstance(fix_files, list):
-                for item in fix_files:
-                    if not isinstance(item, dict):
-                        continue
-                    path = item.get("path") or "application source"
-                    if isinstance(item.get("line"), int):
-                        path = f"{path}:{item['line']}"
-                    change = item.get("change") or "Apply the supported change."
-                    lines.append(f"- `{path}`: {change}")
-                if fix_files:
-                    lines.append("")
-            if isinstance(fix_test, str) and fix_test:
-                lines.extend([f"**Regression test:** {fix_test}", ""])
-    reproducibility = report.get("reproducibility")
-    if isinstance(reproducibility, dict):
-        lines.extend(["## Reproducibility", ""])
-        for label, key in (
-            ("Data dependency", "data_dependency"),
-            ("Intermittency", "intermittency"),
-            ("Determinism", "determinism"),
-            ("Confidence", "confidence"),
-        ):
-            value = reproducibility.get(key)
-            if isinstance(value, str) and value:
-                lines.append(f"- **{label}:** {value}")
-        why = reproducibility.get("why")
-        if isinstance(why, str) and why:
-            lines.extend(["", why])
-        lines.append("")
-    for heading, key in (
-        ("Open Questions", "open_questions"),
-        ("Limitations", "limitations"),
-    ):
-        values = report.get(key)
-        if isinstance(values, list) and values:
-            lines.extend([f"## {heading}", ""])
-            lines.extend(f"- {value}" for value in values if isinstance(value, str))
-            lines.append("")
     if artifact.get("transcript"):
         lines.extend(["## Tool Transcript", ""])
         for idx, action in enumerate(artifact["transcript"], 1):
@@ -2016,7 +1896,6 @@ def _dap_error(tool: str, exc: Exception, session: dict[str, Any] | DAPSession |
             "Set a source breakpoint on application code, continue, then retry this tool.",
         )
 
-    message = str(exc).strip() or f"{tool} failed without an error message"
     result = {
         "ok": False,
         "summary": f"{tool} failed through the DAP proxy.",
@@ -2024,7 +1903,7 @@ def _dap_error(tool: str, exc: Exception, session: dict[str, Any] | DAPSession |
             "domain": "driver",
             "category": "dap_protocol",
             "code": "dap_request_failed",
-            "message": message,
+            "message": str(exc),
         },
     }
     if isinstance(exc, DAPRequestError):
@@ -2052,19 +1931,6 @@ def _parse_duration_ms(value: str) -> int | None:
         return int(float(value) * 1000)
     except ValueError as exc:
         raise DriverError(f"invalid --time-budget {value!r}") from exc
-
-
-def _parse_output_tokens(value: str) -> int | None:
-    value = value.strip()
-    if not value:
-        return None
-    try:
-        parsed = int(value)
-    except ValueError as exc:
-        raise DriverError(f"invalid --max-output-tokens {value!r}") from exc
-    if parsed <= 0:
-        raise DriverError("--max-output-tokens must be greater than zero")
-    return parsed
 
 
 def _package_version() -> str:

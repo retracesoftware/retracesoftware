@@ -33,18 +33,6 @@ python -m retracesoftware --recording ... -- -m pytest ...
 That command shape focuses the preview on Retrace's core loop: record a failed
 pytest execution once, replay it locally, and inspect the same runtime state.
 
-For the hosted AI-debugger report workflow in your own project, use
-`retracepython` with `RETRACE_AUTO_DEBUG=1` and an explicit recording path:
-
-```
-mkdir -p recordings
-export RETRACE_AUTO_DEBUG=1
-retracepython --recording recordings/pytest.retrace -m pytest tests
-```
-
-If pytest fails, Retrace writes `recordings/pytest.retrace` and
-`recordings/pytest.ai-report.md`.
-
 ## What This Preview Shows
 
 This preview shows the core product shape:
@@ -67,10 +55,12 @@ and a realistic failure where one calculation happens in the wrong order.
 The next pass is focused on making this workflow feel even more natural in
 everyday pytest and CI use:
 
-- simpler pytest command aliases
+- a first-class `retrace pytest -- ...` command
 - a built-in replay bundle command for CI artifacts
 - broader pytest plugin coverage, including coverage, parallel workers,
   timeout handling, and async combinations
+- richer AI-facing replay context, such as structured locals, stack, and
+  failure-state summaries
 
 The point here is to validate the first user-visible loop: record a failed
 pytest run once, replay it locally, and inspect the same execution instead of

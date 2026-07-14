@@ -34,52 +34,6 @@ from retracesoftware.recording_context import (
     resolve_recording,
 )
 
-QUICKSTART_TEXT = """How to run Retrace AI debugger with pytest
-
-cd /path/to/your/project
-source .venv/bin/activate
-
-python -m pip install --upgrade pip
-python -m pip install --upgrade retracesoftware
-
-python -m pip show retracesoftware
-python -m pip show retracesoftware-dap
-
-mkdir -p recordings
-export RETRACE_AUTO_DEBUG=1
-
-retracepython --recording recordings/pytest.retrace -m pytest tests
-
-What this does:
-- Runs your real pytest command.
-- Records the failing run to recordings/pytest.retrace.
-- If pytest fails, Retrace replays the recording.
-- The AI debugger inspects the replay through DAP.
-- Retrace writes an AI report.
-- The original pytest exit code is preserved.
-
-After the run, open the generated report:
-
-open recordings/pytest.ai-report.md
-
-You can keep your normal pytest arguments, for example:
-
-retracepython --recording recordings/pytest.retrace -m pytest tests -vs
-retracepython --recording recordings/pytest.retrace -m pytest tests/test_example.py
-retracepython --recording recordings/pytest.retrace -m pytest tests/test_example.py -k "some_test"
-
-There is also a shorter command:
-
-RETRACE_AUTO_DEBUG=1 retracepython -m pytest tests
-
-The short command writes default artifacts in the current directory, usually:
-- pytest.retrace
-- pytest.ai-report.md
-
-For now, the explicit --recording command is recommended because it is the most
-predictable across environments.
-"""
-
 
 def _validate_recording(path: Path, *, command: str) -> bool:
     if not path.exists():
@@ -338,11 +292,6 @@ def _run_failures(args: argparse.Namespace) -> int:
     return 0
 
 
-def _run_quickstart(args: argparse.Namespace) -> int:
-    print(QUICKSTART_TEXT, end="")
-    return 0
-
-
 def _add_recording_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--recording", help="Retrace recording path")
     parser.add_argument("--latest", action="store_true", help="Use .retrace/latest-recording.json")
@@ -444,21 +393,8 @@ def _build_failures_parser(*, prog: str = "retrace failures") -> argparse.Argume
     return parser
 
 
-def _build_quickstart_parser(*, prog: str = "retrace quickstart") -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(
-        prog=prog,
-        description="Print pytest AI-debugger quickstart instructions.",
-    )
-    parser.set_defaults(func=_run_quickstart)
-    return parser
-
-
 def _build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(
-        prog="retrace",
-        description="Retrace workflow commands.",
-        epilog="New to Retrace? Run `retrace quickstart` for pytest AI-debugger setup instructions.",
-    )
+    parser = argparse.ArgumentParser(prog="retrace", description="Retrace workflow commands.")
     subparsers = parser.add_subparsers(dest="command", required=True)
     subparsers.add_parser("agent-context", help="Print an evidence-only recording handoff.")
     subparsers.add_parser("diagnose", help="Emit an evidence-driven agent diagnosis loop.")
@@ -467,7 +403,6 @@ def _build_parser() -> argparse.ArgumentParser:
     subparsers.add_parser("function-code", help="Return source for a selected application frame.")
     subparsers.add_parser("mcp", help="Run the Retrace MCP server for a recording.")
     subparsers.add_parser("inspect", help="Inspect observed replay/debugger state from a recording.")
-    subparsers.add_parser("quickstart", help="Print pytest AI-debugger quickstart instructions.")
     return parser
 
 
@@ -492,9 +427,6 @@ def _dispatch(argv: list[str], *, prog: str = "retrace") -> int:
         return args.func(args)
     if argv and argv[0] == "failures":
         args = _build_failures_parser(prog=f"{prog} failures").parse_args(argv[1:])
-        return args.func(args)
-    if argv and argv[0] == "quickstart":
-        args = _build_quickstart_parser(prog=f"{prog} quickstart").parse_args(argv[1:])
         return args.func(args)
     parser = _build_parser()
     parser.parse_args(argv)

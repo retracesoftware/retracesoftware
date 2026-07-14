@@ -33,36 +33,12 @@ retracepython --recording recordings/server.retrace -m flask --app app run
 
 ## Pytest
 
-For pytest AI debugging, run your normal pytest command through `retracepython`
-with an explicit recording path:
+For pytest, use the explicit runner from the quickstart:
 
 ```
-mkdir -p recordings
-export RETRACE_AUTO_DEBUG=1
-retracepython --recording recordings/pytest.retrace -m pytest tests
-```
-
-This records the failing run to `recordings/pytest.retrace`. If pytest exits
-nonzero, Retrace replays that recording through the DAP AI debugger and writes:
-
-```
-recordings/pytest.ai-report.md
-```
-
-Keep your normal pytest arguments:
-
-```
-retracepython --recording recordings/pytest.retrace -m pytest tests -vs
-retracepython --recording recordings/pytest.retrace -m pytest tests/test_example.py
-retracepython --recording recordings/pytest.retrace -m pytest tests/test_example.py -k "some_test"
-```
-
-For manual replay or VS Code debugging without the AI report, omit
-`RETRACE_AUTO_DEBUG`:
-
-```
-mkdir -p recordings
-retracepython --recording recordings/pytest.retrace -m pytest tests -q --tb=short
+PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 retracepython \
+  --recording recordings/pytest.retrace \
+  -m pytest tests/ -q --tb=short
 ```
 
 ## Other Python Tools
@@ -85,26 +61,15 @@ Set `RETRACE_AUTO_DEBUG=1` to run the AI debugger automatically if the recorded
 command exits nonzero:
 
 ```
-export RETRACE_AUTO_DEBUG=1
-mkdir -p recordings
-retracepython --recording recordings/app.retrace app.py
-```
-
-You can also prefix a single command:
-
-```
-RETRACE_AUTO_DEBUG=1 retracepython --recording recordings/app.retrace app.py
+RETRACE_AUTO_DEBUG=1 retracepython app.py
 ```
 
 On failure, Retrace runs `retrace-ai-driver` with `--tool-executor dap` against
-the recording and writes `recordings/app.ai-report.md`. The driver starts the
-Retrace DAP server and drives it through the `retrace-ai-service`/provider
-configuration supplied to the driver. The default hosted service can request a
-free client token when `RETRACE_API_KEY` is unset. Configure the driver with
-`RETRACE_AI_SERVER`, `RETRACE_API_KEY`, and `RETRACE_REPLAY_BIN` when you need a
-custom service, authenticated account, or local replay binary.
-`RETRACE_AI_DRIVER_COMMAND` can override the packaged driver command for
-development.
+the recording. The driver starts the Retrace DAP server and drives it through
+the `retrace-ai-service`/provider configuration supplied to the driver.
+Configure the driver with `RETRACE_AI_SERVER`, `RETRACE_API_KEY`, and
+`RETRACE_REPLAY_BIN`. `RETRACE_AI_DRIVER_COMMAND` can override the packaged
+driver command for development.
 `RETRACE_AI_SERVER` defaults to
 `https://retrace-ai-service.retracesoftware.workers.dev`.
 

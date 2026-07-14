@@ -77,19 +77,6 @@ def _editable_skip() -> str:
     return os.environ.get("MESONPY_EDITABLE_SKIP", "1")
 
 
-def _replay_bin() -> str | None:
-    configured = os.environ.get("RETRACE_REPLAY_BIN")
-    if configured:
-        return configured
-
-    try:
-        import retrace_dap
-    except Exception:
-        return None
-
-    return str(retrace_dap.binary_path())
-
-
 def _record_and_replay_pth_script(
     *,
     tmp_path: Path,
@@ -106,9 +93,6 @@ def _record_and_replay_pth_script(
     install_env = os.environ.copy()
     install_env["MESONPY_EDITABLE_SKIP"] = _editable_skip()
     install_env["PYTHONPATH"] = _local_pythonpath()
-    replay_bin = _replay_bin()
-    if replay_bin is not None:
-        install_env["RETRACE_REPLAY_BIN"] = replay_bin
     install_env.pop("RETRACE_RECORDING", None)
     install_env.pop("RETRACE_CONFIG", None)
     install_env.pop("RETRACE_RECORDING_INODE", None)
@@ -231,73 +215,6 @@ def test_threading_barrier_queue_pth_pidfile_replay_does_not_overfill_dispatcher
 
     assert replay.returncode == 0, (
         f"barrier pidfile replay diverged (exit {replay.returncode})\n"
-        f"record stdout:\n{_tail(record.stdout)}\n"
-        f"record stderr tail:\n{_tail(record.stderr)}\n"
-        f"replay stdout:\n{_tail(replay.stdout)}\n"
-        f"replay stderr tail:\n{_tail(replay.stderr)}"
-    )
-    assert replay.stdout == record.stdout
-    assert "Dispatcher: too many threads waiting for item" not in combined_replay
-    assert "Checkpoint difference:" not in combined_replay
-
-
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "PidFile replay can diverge ThreadPoolExecutor worker routing when "
-        "Semaphore-released workers contend on Queue.put() notification "
-        "checkpoints; this reproduces design-partner ThreadPoolExecutor-3_1 "
-        "dispatcher overfill traces."
-    ),
-)
-def test_threadpool_executor_3_1_semaphore_queue_pth_pidfile_replay_is_stable(
-    tmp_path: Path,
-):
-    record, replay = _record_and_replay_pth_script(
-        tmp_path=tmp_path,
-        script_name="threadpool_executor_3_1_semaphore_queue_repro.py",
-        script_source="""
-            import queue
-            import threading
-            from concurrent.futures import ThreadPoolExecutor
-
-
-            def main():
-                print("=== threadpool_executor_3_1_semaphore_queue_repro ===", flush=True)
-
-                # Burn executor ids 0, 1, and 2 so the reproducing executor is
-                # named ThreadPoolExecutor-3_*, matching the design-partner
-                # trace shape instead of a generic ThreadPoolExecutor-0_*.
-                for _ in range(3):
-                    with ThreadPoolExecutor(max_workers=1) as executor:
-                        assert executor.submit(lambda: "warmup").result() == "warmup"
-
-                semaphore = threading.Semaphore(2)
-                results = queue.Queue()
-
-                def worker(index):
-                    with semaphore:
-                        results.put(index * 3)
-
-                with ThreadPoolExecutor(max_workers=6) as executor:
-                    futures = [executor.submit(worker, index) for index in range(6)]
-                    for future in futures:
-                        future.result()
-
-                values = sorted(results.get() for _ in range(6))
-                assert values == [0, 3, 6, 9, 12, 15]
-                print("threadpool executor 3_1 semaphore queue ok", flush=True)
-
-
-            if __name__ == "__main__":
-                main()
-        """,
-    )
-    combined_replay = replay.stdout + replay.stderr
-
-    assert replay.returncode == 0, (
-        "ThreadPoolExecutor-3_1 semaphore/Queue pidfile replay diverged "
-        f"(exit {replay.returncode})\n"
         f"record stdout:\n{_tail(record.stdout)}\n"
         f"record stderr tail:\n{_tail(record.stderr)}\n"
         f"replay stdout:\n{_tail(replay.stdout)}\n"

@@ -56,16 +56,6 @@ Check that Python can see the package:
 
 ```
 python -m pip show retracesoftware
-python -m pip show retracesoftware-dap
-```
-
-`retracesoftware-dap` provides the packaged replay/DAP binary used by
-`retracesoftware`. Normal PyPI installs should include it automatically.
-
-Print the pytest AI-debugger setup in your terminal at any time:
-
-```
-retrace quickstart
 ```
 
 ## One-Shot Recording
@@ -84,26 +74,6 @@ retracepython --recording recordings/example.retrace -m your_package.cli
 
 `retracepython` is one-shot: child processes that explicitly run ordinary
 `python` are not automatically recorded.
-
-## Pytest AI Debugging
-
-To run pytest and automatically generate an AI debugger report when pytest
-fails:
-
-```
-mkdir -p recordings
-export RETRACE_AUTO_DEBUG=1
-retracepython --recording recordings/pytest.retrace -m pytest tests
-```
-
-This runs your real pytest command, records the run to
-`recordings/pytest.retrace`, and writes `recordings/pytest.ai-report.md` when
-pytest exits nonzero. You can keep your normal pytest arguments, for example:
-
-```
-retracepython --recording recordings/pytest.retrace -m pytest tests -vs
-retracepython --recording recordings/pytest.retrace -m pytest tests/test_example.py -k "some_test"
-```
 
 ## Create A Retrace-Aware Venv
 

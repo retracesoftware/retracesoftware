@@ -12,17 +12,6 @@ There are also `retracepython`, `retrace-venv`, `retrace-ai-driver`, and
 Run `python -m retracesoftware --help` to inspect the top-level command. Record
 flags are parsed when the invocation contains a target command after `--`.
 
-## Terminal Quickstart
-
-Print the current pytest AI-debugger setup instructions:
-
-```
-retrace quickstart
-```
-
-This command only prints instructions. It does not create files, install
-packages, run pytest, or contact the hosted AI service.
-
 ## One-Shot Recording
 
 Record a single Python command:
@@ -40,28 +29,15 @@ retracepython --recording recordings/example.retrace -m your_package.cli arg1 ar
 Run the AI debugger automatically when the recorded command fails:
 
 ```
-export RETRACE_AUTO_DEBUG=1
-mkdir -p recordings
-retracepython --recording recordings/example.retrace your_script.py
-```
-
-For pytest:
-
-```
-mkdir -p recordings
-export RETRACE_AUTO_DEBUG=1
-retracepython --recording recordings/pytest.retrace -m pytest tests
+RETRACE_AUTO_DEBUG=1 retracepython your_script.py
 ```
 
 On failure, Retrace runs `retrace-ai-driver` with `--tool-executor dap` against
-the recording and writes a Markdown report next to the trace, for example
-`recordings/pytest.ai-report.md`. The driver starts the Retrace DAP server and
-drives it through the `retrace-ai-service`/provider configuration supplied to
-the driver. The default hosted service can request a free client token when
-`RETRACE_API_KEY` is unset. Configure the driver with `RETRACE_AI_SERVER`,
-`RETRACE_API_KEY`, and `RETRACE_REPLAY_BIN` when you need a custom service,
-authenticated account, or local replay binary. `RETRACE_AI_DRIVER_COMMAND` can
-override the packaged driver command for development.
+the recording. The driver starts the Retrace DAP server and drives it through
+the `retrace-ai-service`/provider configuration supplied to the driver.
+Configure the driver with `RETRACE_AI_SERVER`, `RETRACE_API_KEY`, and
+`RETRACE_REPLAY_BIN`. `RETRACE_AI_DRIVER_COMMAND` can override the packaged
+driver command for development.
 `RETRACE_AI_SERVER` defaults to
 `https://retrace-ai-service.retracesoftware.workers.dev`.
 
