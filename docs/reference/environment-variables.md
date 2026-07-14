@@ -83,6 +83,8 @@ passes through driver-oriented variables such as `RETRACE_AI_DRIVER_COMMAND`,
 `RETRACE_AI_DRIVER`, `RETRACE_AI_SERVER`, `RETRACE_API_KEY`,
 `RETRACE_AI_MAX_TOOL_CALLS`, `RETRACE_AI_TIME_BUDGET`,
 `RETRACE_AI_MAX_OUTPUT_TOKENS`, and `RETRACE_REPLAY_BIN`.
+The AI driver defaults to 60 tool calls per debug session;
+`RETRACE_AI_MAX_TOOL_CALLS` overrides that budget when needed.
 
 If `RETRACE_API_KEY` is unset, the default hosted service can request a free
 client token automatically. Set `RETRACE_API_KEY` when using an authenticated
