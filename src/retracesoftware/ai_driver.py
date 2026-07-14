@@ -1496,7 +1496,7 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--report-out", default="")
     parser.add_argument("--report-md", default="")
     parser.add_argument("--task", default=os.environ.get("RETRACE_AI_TASK", ""))
-    parser.add_argument("--max-tool-calls", type=int, default=int(os.environ.get("RETRACE_AI_MAX_TOOL_CALLS", "40") or "40"))
+    parser.add_argument("--max-tool-calls", type=int, default=int(os.environ.get("RETRACE_AI_MAX_TOOL_CALLS", "70") or "70"))
     parser.add_argument("--time-budget", default=os.environ.get("RETRACE_AI_TIME_BUDGET", ""))
     parser.add_argument("--max-output-tokens", default=os.environ.get("RETRACE_AI_MAX_OUTPUT_TOKENS", ""))
     parser.add_argument("task_args", nargs="*")

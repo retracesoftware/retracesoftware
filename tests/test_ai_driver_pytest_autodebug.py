@@ -11,12 +11,25 @@ from retracesoftware.ai_driver import (
     MAX_SOURCE_CONTEXT_LINE_CHARS,
     _executor_session_state,
     _initial_observation,
+    _parser,
     _prime_pytest_failure_breakpoint,
     _pytest_failure_hint_from_output,
     _pytest_failure_hint,
     _select_pytest_failure_candidate,
     _source_window,
 )
+
+
+def test_ai_driver_defaults_to_seventy_tool_calls(monkeypatch):
+    monkeypatch.delenv("RETRACE_AI_MAX_TOOL_CALLS", raising=False)
+
+    assert _parser().parse_args([]).max_tool_calls == 70
+
+
+def test_ai_driver_tool_call_default_can_be_overridden(monkeypatch):
+    monkeypatch.setenv("RETRACE_AI_MAX_TOOL_CALLS", "17")
+
+    assert _parser().parse_args([]).max_tool_calls == 17
 
 
 def test_select_pytest_failure_candidate_skips_site_packages():
