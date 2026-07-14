@@ -317,8 +317,8 @@ def test_step_back_uses_navigation_timeout_for_response_and_stop_event():
 
     class Session:
         closed = False
-        synthetic_exception = None
-        frames = []
+        synthetic_exception = {"type": "AssertionError", "message": "old pause"}
+        frames = [{"name": "old_frame", "line": 99}]
         output = ""
         trace = "/tmp/trace.retrace"
         state = {"state": "stopped", "last_stop": {"reason": "step", "thread_id": 1}}
@@ -340,6 +340,8 @@ def test_step_back_uses_navigation_timeout_for_response_and_stop_event():
     result = executor.navigate("step_back", "stepBack", {"thread_id": 1})
 
     assert result["ok"] is True
+    assert executor.session.synthetic_exception is None
+    assert executor.session.frames == []
     assert calls == [
         ("request", "stepBack", 90.0),
         ("event", ("stopped", "terminated"), 90.0),

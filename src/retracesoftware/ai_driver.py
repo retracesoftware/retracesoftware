@@ -568,6 +568,14 @@ class DAPExecutor:
         session.request(dap_command, {"threadId": thread_id}, timeout=wait_timeout)
         event = session.wait_for_event("stopped", "terminated", timeout=wait_timeout)
         session._apply_stop_event(event)
+        if session.state.get("state") != "terminated":
+            # A traceback recovered from process output is valid only for the
+            # terminal exception pause that produced it. Reverse/step
+            # navigation creates a new live DAP pause; retaining the fallback
+            # here would make every later stack request report the old failure
+            # line even when the adapter stopped at a different breakpoint.
+            session.synthetic_exception = None
+            session.frames = []
         if session.state.get("state") == "terminated":
             session.drain_output()
             exception, frames = _parse_python_traceback(session.output)
