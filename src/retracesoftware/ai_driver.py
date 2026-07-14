@@ -24,6 +24,7 @@ from retracesoftware.retracepython import DEFAULT_AI_SERVER
 DAP_SESSION_ID = "dap-replay-1"
 DEFAULT_TIMEOUT = 30.0
 NAVIGATION_TIMEOUT = 90.0
+SERVICE_REQUEST_TIMEOUT = 90.0
 MAX_SOURCE_CONTEXT_LINE_CHARS = 4096
 AVAILABLE_TOOLS = [
     "start_replay_session",
@@ -102,7 +103,11 @@ class ServiceClient:
         for attempt in range(attempts):
             req = request.Request(url, data=body, headers=headers, method="POST")
             try:
-                with request.urlopen(req, timeout=60) as resp:
+                # A model turn can legitimately take longer than a simple API
+                # request, especially when the provider performs reasoning.
+                # Keep this aligned with the slow-navigation DAP allowance so
+                # the client does not abandon a healthy hosted turn at 60s.
+                with request.urlopen(req, timeout=SERVICE_REQUEST_TIMEOUT) as resp:
                     data = resp.read()
                 break
             except error.HTTPError as exc:
@@ -919,6 +924,9 @@ def run_driver(args: argparse.Namespace) -> dict[str, Any]:
         }
         if args.time_budget_ms is not None:
             start_payload["time_budget_ms"] = args.time_budget_ms
+        max_output_tokens = _parse_output_tokens(args.max_output_tokens)
+        if max_output_tokens is not None:
+            start_payload["max_output_tokens"] = max_output_tokens
 
         response = client.post("/v1/debug-sessions", start_payload)
         debug_session_id = str(response.get("debug_session_id") or "")
@@ -2036,6 +2044,19 @@ def _parse_duration_ms(value: str) -> int | None:
         return int(float(value) * 1000)
     except ValueError as exc:
         raise DriverError(f"invalid --time-budget {value!r}") from exc
+
+
+def _parse_output_tokens(value: str) -> int | None:
+    value = value.strip()
+    if not value:
+        return None
+    try:
+        parsed = int(value)
+    except ValueError as exc:
+        raise DriverError(f"invalid --max-output-tokens {value!r}") from exc
+    if parsed <= 0:
+        raise DriverError("--max-output-tokens must be greater than zero")
+    return parsed
 
 
 def _package_version() -> str:

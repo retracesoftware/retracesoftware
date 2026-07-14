@@ -1,5 +1,6 @@
 import queue
 from types import SimpleNamespace
+from urllib import request
 
 import pytest
 
@@ -7,12 +8,53 @@ from retracesoftware.ai_driver import (
     DAPExecutor,
     DAPRequestError,
     DAPSession,
+    ServiceClient,
     _application_dap_frames,
     _dap_error,
     _exception_and_frames_from_pytest_hint,
     _parse_dap_error_response,
+    _parse_output_tokens,
     _pytest_failure_hint_from_output,
 )
+
+
+def test_hosted_service_request_uses_reasoning_turn_timeout(monkeypatch):
+    seen = {}
+
+    class Response:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return None
+
+        def read(self):
+            return b"{}"
+
+    def fake_urlopen(_request, *, timeout):
+        seen["timeout"] = timeout
+        return Response()
+
+    monkeypatch.setattr(request, "urlopen", fake_urlopen)
+
+    ServiceClient("https://service.example").post(
+        "/v1/client-tokens",
+        {},
+        authenticated=False,
+    )
+
+    assert seen["timeout"] == 90.0
+
+
+@pytest.mark.parametrize("value, expected", [("", None), ("2400", 2400)])
+def test_parse_output_tokens(value, expected):
+    assert _parse_output_tokens(value) == expected
+
+
+@pytest.mark.parametrize("value", ["0", "-1", "many"])
+def test_parse_output_tokens_rejects_invalid_values(value):
+    with pytest.raises(RuntimeError, match="max-output-tokens"):
+        _parse_output_tokens(value)
 
 
 def test_application_dap_frames_drop_pathified_frozen_runpy():
