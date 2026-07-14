@@ -267,3 +267,38 @@ def test_dap_error_never_serializes_empty_message():
 
     assert result["ok"] is False
     assert result["error"]["message"] == "get_variables failed without an error message"
+
+
+def test_step_back_uses_navigation_timeout_for_response_and_stop_event():
+    executor = object.__new__(DAPExecutor)
+    calls = []
+
+    class Session:
+        closed = False
+        synthetic_exception = None
+        frames = []
+        output = ""
+        trace = "/tmp/trace.retrace"
+        state = {"state": "stopped", "last_stop": {"reason": "step", "thread_id": 1}}
+
+        def request(self, command, arguments=None, *, timeout):
+            calls.append(("request", command, timeout))
+            return {"body": {}}
+
+        def wait_for_event(self, *events, timeout):
+            calls.append(("event", events, timeout))
+            return {"type": "event", "event": "stopped", "body": {"reason": "step", "threadId": 1}}
+
+        def _apply_stop_event(self, event):
+            self.state["state"] = "stopped"
+            self.state["last_stop"] = {"reason": "step", "thread_id": 1}
+
+    executor.session = Session()
+
+    result = executor.navigate("step_back", "stepBack", {"thread_id": 1})
+
+    assert result["ok"] is True
+    assert calls == [
+        ("request", "stepBack", 90.0),
+        ("event", ("stopped", "terminated"), 90.0),
+    ]

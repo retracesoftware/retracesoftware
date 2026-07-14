@@ -23,6 +23,7 @@ from retracesoftware.retracepython import DEFAULT_AI_SERVER
 
 DAP_SESSION_ID = "dap-replay-1"
 DEFAULT_TIMEOUT = 30.0
+NAVIGATION_TIMEOUT = 90.0
 MAX_SOURCE_CONTEXT_LINE_CHARS = 4096
 AVAILABLE_TOOLS = [
     "start_replay_session",
@@ -212,9 +213,15 @@ class DAPSession:
         self.stdin.flush()
         return self.seq
 
-    def request(self, command: str, arguments: dict[str, Any] | None = None) -> dict[str, Any]:
+    def request(
+        self,
+        command: str,
+        arguments: dict[str, Any] | None = None,
+        *,
+        timeout: float = DEFAULT_TIMEOUT,
+    ) -> dict[str, Any]:
         seq = self.send_request(command, arguments or {})
-        resp = self.wait_for_response(seq)
+        resp = self.wait_for_response(seq, timeout=timeout)
         self._raise_response_error(resp)
         return resp
 
@@ -546,10 +553,14 @@ class DAPExecutor:
     def navigate(self, tool: str, dap_command: str, arguments: dict[str, Any]) -> dict[str, Any]:
         session = self._require_session(tool)
         thread_id = int(arguments.get("thread_id") or 1)
-        session.request(dap_command, {"threadId": thread_id})
         wait_timeout = DEFAULT_TIMEOUT
-        if dap_command in {"continue", "reverseContinue"}:
-            wait_timeout = max(DEFAULT_TIMEOUT, 90.0)
+        if dap_command in {"continue", "reverseContinue", "stepBack"}:
+            wait_timeout = max(DEFAULT_TIMEOUT, NAVIGATION_TIMEOUT)
+        # Reverse navigation can synchronously replay many instructions before
+        # the Go adapter acknowledges the request. Give the response and the
+        # following stop event the same navigation deadline so a valid stop is
+        # not discarded moments before it arrives.
+        session.request(dap_command, {"threadId": thread_id}, timeout=wait_timeout)
         event = session.wait_for_event("stopped", "terminated", timeout=wait_timeout)
         session._apply_stop_event(event)
         if session.state.get("state") == "terminated":
