@@ -23,6 +23,7 @@ from retracesoftware.retracepython import DEFAULT_AI_SERVER
 
 DAP_SESSION_ID = "dap-replay-1"
 DEFAULT_TIMEOUT = 30.0
+DEFAULT_MAX_TOOL_CALLS = 60
 MAX_SOURCE_CONTEXT_LINE_CHARS = 4096
 AVAILABLE_TOOLS = [
     "start_replay_session",
@@ -1496,7 +1497,14 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--report-out", default="")
     parser.add_argument("--report-md", default="")
     parser.add_argument("--task", default=os.environ.get("RETRACE_AI_TASK", ""))
-    parser.add_argument("--max-tool-calls", type=int, default=int(os.environ.get("RETRACE_AI_MAX_TOOL_CALLS", "40") or "40"))
+    parser.add_argument(
+        "--max-tool-calls",
+        type=int,
+        default=int(
+            os.environ.get("RETRACE_AI_MAX_TOOL_CALLS", str(DEFAULT_MAX_TOOL_CALLS))
+            or str(DEFAULT_MAX_TOOL_CALLS)
+        ),
+    )
     parser.add_argument("--time-budget", default=os.environ.get("RETRACE_AI_TIME_BUDGET", ""))
     parser.add_argument("--max-output-tokens", default=os.environ.get("RETRACE_AI_MAX_OUTPUT_TOKENS", ""))
     parser.add_argument("task_args", nargs="*")
