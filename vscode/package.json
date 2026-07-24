@@ -139,6 +139,8 @@
   "scripts": {
     "vscode:prepublish": "npm run build",
     "build": "node esbuild.js",
+    "test": "npm run typecheck && npm run lint && npm run build",
+    "typecheck": "tsc --noEmit",
     "watch": "node esbuild.js --watch",
     "package": "vsce package",
     "lint": "eslint src --ext ts"
