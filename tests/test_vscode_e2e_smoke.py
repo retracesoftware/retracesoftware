@@ -135,35 +135,17 @@ async function run() {
             message.type === "event" &&
             message.event === "stopped" &&
             message.body &&
-            message.body.reason === "entry"
-          );
-        }),
-      "entry stopped event",
-      60000,
-    );
-
-    const session = vscode.debug.activeDebugSession || sessionFromTracker;
-    if (!session) {
-      throw new Error("No active VS Code debug session after entry stop");
-    }
-
-    await session.customRequest("continue", { threadId: 1 });
-
-    await waitFor(
-      () =>
-        messages.find((entry) => {
-          const message = entry.message || {};
-          return (
-            entry.direction === "fromAdapter" &&
-            message.type === "event" &&
-            message.event === "stopped" &&
-            message.body &&
             message.body.reason === "breakpoint"
           );
         }),
       "breakpoint stopped event",
       60000,
     );
+
+    const session = vscode.debug.activeDebugSession || sessionFromTracker;
+    if (!session) {
+      throw new Error("No active VS Code debug session after breakpoint stop");
+    }
 
     const stack = await session.customRequest("stackTrace", {
       threadId: 1,

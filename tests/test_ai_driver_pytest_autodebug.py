@@ -206,6 +206,51 @@ def test_dap_session_does_not_report_evaluate_unavailable_when_tool_is_exposed()
     assert session._capability_state()["evaluate"] is True
 
 
+@pytest.mark.parametrize(
+    ("stop_reason", "expected_summary"),
+    [
+        ("breakpoint", "Started Retrace DAP replay session and stopped at breakpoint."),
+        ("exception", "Started Retrace DAP replay session and stopped at exception."),
+        ("terminated", "Started Retrace DAP replay session; replay terminated without a stop."),
+    ],
+)
+def test_start_replay_summary_reports_actual_configuration_outcome(
+    monkeypatch,
+    stop_reason,
+    expected_summary,
+):
+    class FakeDAPSession:
+        def __init__(self, replay_bin, trace):
+            self.replay_bin = replay_bin
+            self.trace = trace
+            self.closed = False
+            self.capabilities = {}
+            self.state = {
+                "state": "terminated" if stop_reason == "terminated" else "stopped",
+                "last_stop": {"reason": stop_reason},
+            }
+
+        def initialize(self):
+            pass
+
+        def launch(self):
+            pass
+
+        def probe_exception_breakpoints(self):
+            pass
+
+        def configuration_done(self):
+            pass
+
+    monkeypatch.setattr("retracesoftware.ai_driver.DAPSession", FakeDAPSession)
+    executor = DAPExecutor("/tmp/case.retrace", replay_bin="/tmp/replay")
+
+    result = executor.start_replay_session({})
+
+    assert result["summary"] == expected_summary
+    assert result["session"]["last_stop"]["reason"] == stop_reason
+
+
 def test_initial_observation_reports_prepositioned_pytest_session(monkeypatch):
     executor = object.__new__(DAPExecutor)
     executor.session = SimpleNamespace(
