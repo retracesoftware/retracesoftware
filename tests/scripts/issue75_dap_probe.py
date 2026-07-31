@@ -95,14 +95,12 @@ def main() -> int:
         seq,
     )
     seq, _ = send(proc, "configurationDone", {}, seq)
-    read_until_event(proc.stdout, "stopped")
-    seq, _ = send(proc, "continue", {"threadId": 1}, seq)
-    post_continue = read_until_stopped_or_terminated(proc.stdout)
+    post_configuration = read_until_stopped_or_terminated(proc.stdout)
 
     result: dict[str, object] = {
-        "postContinueEvent": post_continue.get("event"),
+        "postConfigurationEvent": post_configuration.get("event"),
     }
-    if post_continue.get("event") == "stopped":
+    if post_configuration.get("event") == "stopped":
         seq, stack = send(proc, "stackTrace", {"threadId": 1}, seq)
         body = stack.get("body") if isinstance(stack.get("body"), dict) else {}
         retrace = body.get("retrace") if isinstance(body.get("retrace"), dict) else {}

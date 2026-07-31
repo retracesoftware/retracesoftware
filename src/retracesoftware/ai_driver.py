@@ -477,9 +477,17 @@ class DAPExecutor:
         session.launch()
         session.probe_exception_breakpoints()
         session.configuration_done()
+        stop = session.state.get("last_stop")
+        stop_reason = stop.get("reason") if isinstance(stop, dict) else ""
+        if stop_reason == "terminated":
+            summary = "Started Retrace DAP replay session; replay terminated without a stop."
+        elif stop_reason:
+            summary = f"Started Retrace DAP replay session and stopped at {stop_reason}."
+        else:
+            summary = "Started Retrace DAP replay session."
         return {
             "ok": True,
-            "summary": "Started Retrace DAP replay session and stopped at entry.",
+            "summary": summary,
             "data": {
                 "session_id": DAP_SESSION_ID,
                 "trace": str(Path(trace).resolve()),

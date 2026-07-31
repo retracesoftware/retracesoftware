@@ -147,7 +147,7 @@ def test_issue75_bad_pytest_internal_stop_is_not_swallowed_as_empty_stack(issue7
         pytest.skip("DAP probe subprocess exited before configurationDone completed")
     assert completed.returncode == 0, completed.stdout + completed.stderr
     payload = json.loads(completed.stdout)
-    if payload.get("postContinueEvent") == "terminated":
+    if payload.get("postConfigurationEvent") == "terminated":
         pytest.skip(
             "pytest config line 2023 is not executed in the minimal issue75 fixture; "
             "not_stopped propagation is covered by Go TestProxyStackTraceDoesNotHideNotStoppedControlError"

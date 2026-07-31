@@ -1,9 +1,9 @@
 """Regression coverage for the medium VS Code DAP breakpoint repro.
 
 VS Code sends ``setBreakpoints`` once per source file. The medium repro sets
-breakpoints in ``main.py`` and ``service.py`` back-to-back, then continues from
-entry. The first user-code breakpoint should be ``main.py:9`` because that line
-executes before the service loop.
+breakpoints in ``main.py`` and ``service.py`` back-to-back. Completing DAP
+configuration starts replay, and the first user-code breakpoint should be
+``main.py:9`` because that line executes before the service loop.
 """
 
 from __future__ import annotations
@@ -71,7 +71,6 @@ def test_medium_vscode_dap_keeps_breakpoints_across_source_files(tmp_path: Path)
         assert _verified_count(service_response) == 1
 
         controller.configuration_done()
-        controller.continue_thread()
         top_frame = controller.top_stack_frame()
 
     assert top_frame["source"]["path"] == str(paths["main"])
@@ -149,12 +148,6 @@ class DummyVSCodeDAPController:
         self.send("configurationDone")
         self.response("configurationDone")
         stopped = self.event("stopped")
-        assert stopped.get("body", {}).get("reason") == "entry"
-
-    def continue_thread(self) -> None:
-        self.send("continue", {"threadId": 1})
-        self.response("continue")
-        stopped = self.event("stopped", timeout=30)
         assert stopped.get("body", {}).get("reason") == "breakpoint"
 
     def top_stack_frame(self) -> dict:
