@@ -957,25 +957,37 @@ class _SetTraceNextInstructionMonitor:
         self._start_offset = start_offset
         self._skipped_start_offset = False
         self._previous_trace = None
+        self._installed_trace = None
         self._trace_func = cursor.call_counter_disable_for(self._trace)
         self._closed = False
 
     def install(self, frame: FrameType | None = None) -> None:
+        if frame is not None:
+            self._target_code = frame.f_code
+            self._start_offset = frame.f_lasti
+        self._skipped_start_offset = False
         self._previous_trace = sys.gettrace()
         sys.settrace(self._trace_func)
-        if frame is not None:
-            frame.f_trace = self._trace_func
+        self._installed_trace = sys.gettrace()
+        while frame is not None:
+            # sys.settrace only applies automatically to frames entered after
+            # installation. Navigation resumes an existing stopped frame, and
+            # may return into an existing caller, so arm that live chain too.
+            frame.f_trace = self._installed_trace
             frame.f_trace_lines = True
             frame.f_trace_opcodes = True
+            frame = frame.f_back
 
     def close(self) -> None:
         if self._closed:
             return
-        if sys.gettrace() is self._trace_func:
+        if sys.gettrace() is self._installed_trace:
             sys.settrace(self._previous_trace)
         self._closed = True
 
     def _trace(self, frame: FrameType, event: str, arg):  # noqa: ARG002
+        if self._closed:
+            return None
         if os.getenv("RETRACE_NEXT_TRACE_DEBUG") == "1":
             print(
                 "NEXT_TRACE",
@@ -998,8 +1010,10 @@ class _SetTraceNextInstructionMonitor:
         if _is_retrace_internal_code(frame.f_code):
             return self._trace_func
         if (
-            self._start_offset is not None
+            frame.f_code is self._target_code
+            and self._start_offset is not None
             and frame.f_lasti == self._start_offset
+            and not self._skipped_start_offset
         ):
             self._skipped_start_offset = True
             return self._trace_func
@@ -1008,7 +1022,10 @@ class _SetTraceNextInstructionMonitor:
         frame.f_trace_lines = False
         frame.f_trace_opcodes = False
         self._callback(frame)
-        return None
+        # A command handled by the callback can install the monitor for the
+        # next navigation operation. Return the effective current hook rather
+        # than clearing that newly installed tracer on callback unwind.
+        return sys.gettrace()
 
 
 class _SetTraceExceptionMonitor:
@@ -1659,8 +1676,6 @@ class Controller:
                         )
                     if frame is not None:
                         self._stopped_frame = frame
-                        monitor._target_code = frame.f_code
-                        monitor._start_offset = frame.f_lasti
                     monitor.install(frame)
 
                 cursor.watch(
