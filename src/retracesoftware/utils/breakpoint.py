@@ -56,14 +56,16 @@ class SetTraceBreakpointMonitor:
         self._closed = False
         self._trace_func = trace_func
         sys.settrace(trace_func)
+        self._installed_trace = sys.gettrace()
         threading.settrace(trace_func)
+        self._installed_thread_trace = threading.gettrace()
 
     def close(self) -> None:
         if self._closed:
             return
-        if sys.gettrace() is self._trace_func:
+        if sys.gettrace() is self._installed_trace:
             sys.settrace(self._previous_trace)
-        if threading.gettrace() is self._trace_func:
+        if threading.gettrace() is self._installed_thread_trace:
             threading.settrace(self._previous_thread_trace)
         self._closed = True
 
@@ -166,6 +168,12 @@ def install_breakpoint(
                 if compiled.code_predicate(frame.f_code) and compiled.frame_predicate(frame):
                     _log(f"TRACE hit: {frame.f_code.co_filename}:{frame.f_lineno}")
                     callback(cursor_snapshot().to_dict())
+                    # The callback blocks in the debugger control loop. A
+                    # navigation command may replace the global trace function
+                    # while it is blocked. Return the currently installed hook
+                    # so CPython does not restore this stale breakpoint tracer
+                    # over the navigation tracer when the callback unwinds.
+                    return sys.gettrace()
                 return trace_func
             return trace_func
 
