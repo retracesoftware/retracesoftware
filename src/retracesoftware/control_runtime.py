@@ -1074,7 +1074,12 @@ def _is_retrace_internal_code(code: CodeType) -> bool:
         return False
     if filename.startswith("<"):
         return True
-    return os.path.realpath(filename).startswith(_RETRACE_PACKAGE_DIR + os.sep)
+    # This predicate runs inside replay tracing callbacks. Resolving the path
+    # can call os.lstat(), crossing the recorded filesystem boundary at a
+    # debugger-only point and disabling the trace callback after the resulting
+    # replay mismatch. Loaded Retrace modules use absolute co_filename values,
+    # so a pure string check is both sufficient and deterministic.
+    return filename.startswith(_RETRACE_PACKAGE_DIR + os.sep)
 
 def _is_stdlib_code(code: CodeType) -> bool:
     filename = code.co_filename

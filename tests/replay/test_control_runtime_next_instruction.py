@@ -110,6 +110,27 @@ def test_next_instruction_skips_target_start_offset_only_once():
     assert hits == [repeated_offset]
 
 
+def test_next_instruction_classification_does_not_touch_filesystem(monkeypatch):
+    target_code = _code("target", "/tmp/target.py")
+    target_frame = _frame(target_code, 4)
+    hits = []
+
+    def unexpected_realpath(path):
+        raise AssertionError(f"instruction tracing resolved {path!r}")
+
+    monkeypatch.setattr(control_runtime.os.path, "realpath", unexpected_realpath)
+    monitor = _SetTraceNextInstructionMonitor(
+        callback=hits.append,
+        thread_id=_thread.get_ident(),
+        target_code=target_code,
+        start_offset=2,
+    )
+
+    monitor._trace(target_frame, "opcode", None)
+
+    assert hits == [target_frame]
+
+
 def test_breakpoint_callback_returns_replacement_trace(monkeypatch):
     target_code = _code("target", "/tmp/target.py")
     target_frame = _frame(target_code, 2)
