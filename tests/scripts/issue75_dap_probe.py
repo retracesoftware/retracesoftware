@@ -97,6 +97,24 @@ def main() -> int:
     seq, _ = send(proc, "configurationDone", {}, seq)
     post_configuration = read_until_stopped_or_terminated(proc.stdout)
 
+    # Core CI still installs the currently published DAP package, whose
+    # configurationDone lifecycle includes a synthetic entry stop. Current
+    # DAP starts replay immediately and reports only the materialized stop.
+    # Issue #75 is about the latter stop's inspection result, so cross the
+    # legacy entry state when it is present without changing the assertion
+    # exercised by this probe.
+    stop_body = (
+        post_configuration.get("body")
+        if isinstance(post_configuration.get("body"), dict)
+        else {}
+    )
+    if (
+        post_configuration.get("event") == "stopped"
+        and stop_body.get("reason") == "entry"
+    ):
+        seq, _ = send(proc, "continue", {"threadId": 1}, seq)
+        post_configuration = read_until_stopped_or_terminated(proc.stdout)
+
     result: dict[str, object] = {
         "postConfigurationEvent": post_configuration.get("event"),
     }
