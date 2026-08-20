@@ -1,8 +1,23 @@
 import sys
+from types import SimpleNamespace
 
 import pytest
 
 from retracesoftware.control_runtime import Controller, FrameInspector, _find_user_frame
+
+
+def test_frame_inspector_handles_artificial_bytecode_without_source_line():
+    code = SimpleNamespace(
+        co_firstlineno=41,
+        co_lines=lambda: iter([(0, 2, None)]),
+    )
+    frame = SimpleNamespace(
+        f_code=code,
+        f_lasti=0,
+        f_lineno=None,
+    )
+
+    assert FrameInspector._frame_lineno(frame) == 41
 
 
 def test_find_user_frame_keeps_user_path_containing_retracesoftware():

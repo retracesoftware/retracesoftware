@@ -204,7 +204,7 @@ class FrameInspector:
     @staticmethod
     def _frame_lineno(frame) -> int:
         lineno = frame.f_lineno
-        if lineno > 0:
+        if lineno is not None and lineno > 0:
             return lineno
         lasti = frame.f_lasti
         for start, end, line in frame.f_code.co_lines():
@@ -1637,7 +1637,9 @@ class Controller:
                     "thread_id": self._get_thread_id(),
                     "function_counts": list(cursor.current_call_counts()),
                     "f_lasti": frame.f_lasti,
-                    "lineno": FrameInspector._frame_lineno(frame),
+                    # Cursor line 0 marks artificial bytecode. The inspector's
+                    # display fallback must not turn it into a valid stop line.
+                    "lineno": self._lineno_from_code(frame.f_code, frame.f_lasti),
                 }
                 self._send_and_handle_locked(cursor_dict)
 

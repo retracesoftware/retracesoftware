@@ -180,27 +180,33 @@ provides DAP navigation methods:
 | Method | Target counts | Watch slot |
 |---|---|---|
 | `Next` | Same depth, advance by instruction until line changes | Instruction stepping |
-| `StepInto` | `[..., N+1, 0]` — one level deeper | `on_start` at callee entry |
+| `StepInto` | Follow recorded instructions to a child frame or the next inspectable source line | Instruction stepping |
 | `Return` | Same depth via `RunToReturn` | `on_return` at current frame |
 | `Previous` | Replay from snapshot, walk forward to last different line | Instruction iteration |
 | `StepBackInto` | Replay from `ClosestBeforeReturn` snapshot | `on_return` |
 
-### StepInto target calculation
+### StepInto replay traversal
 
-Given current `function_counts = [a, b, c]`:
+`StepInto` follows `next_instruction` stops from the current replay position.
+It does not synthesize a child cursor because a call expression is not
+guaranteed to enter a Python frame: it may call native code, return directly,
+or raise while evaluating the call.
 
-```
-target = [a, b, c+1, 0]
-```
+The call-count depth and source line determine the destination:
 
-The parent's count is incremented (because `PY_START` bumps `cursor_stack.back()`)
-and a zero is appended for the child frame. This matches the exact stack state
-at the callee's `PY_START` event.
+- A greater depth means replay entered a Python child frame, so Step Into stops.
+- The same depth follows normal instruction stepping until the source line
+  changes.
+- A smaller depth means the current frame returned or unwound. Step Into stops
+  only when that caller position has a real source line.
+- Line `0` represents artificial bytecode with no PEP 626 source line. These
+  positions are never exposed as DAP stops; traversal continues to the first
+  inspectable position.
 
-**Why not `[a, b, c+1]`?** That would match at the same depth — which only
-happens *after* the callee returns, not when it starts. The `fire_start` exact
-depth check (`n == target_size`) would skip the callee entry and fire when the
-stack pops back to the caller.
+This distinction matters for exception handling. A failed call can reduce the
+stack depth before CPython reaches the caller's `except` line. Treating every
+depth change as a successful Step Into would publish an artificial, uninspectable
+stop to the editor.
 
 ## Control protocol
 
