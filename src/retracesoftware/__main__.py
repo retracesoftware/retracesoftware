@@ -234,6 +234,7 @@ def replay(args):
 
         controller = None
         controller_ref = [None]
+        activate_cursor_context = None
 
         class TapeReaderAdapter:
             __slots__ = ["reader", "controller_ref"]
@@ -303,7 +304,12 @@ def replay(args):
                 on_after_fork=_after_fork,
                 disable_for=system.disable_for,
                 get_thread_id=system.thread_id,
+                cursor_context_ready=False,
             )
+            activate_cursor_context = functional.sequence(
+                cursor.call_counter_disable_for,
+                system.disable_for,
+            )(controller.activate_cursor_context)
             controller_ref[0] = controller
             if replay_options.trace_shutdown:
                 atexit.register(controller.on_replay_finished)
@@ -341,6 +347,10 @@ def replay(args):
                     cursor._get_shared_cc()() if controller is not None else nullcontext()
                 )
                 with replay_cursor_context:
+                    # ThreadCallCounts.__enter__ resets the application cursor
+                    # epoch. Arm count-only targets only after that reset.
+                    if activate_cursor_context is not None:
+                        activate_cursor_context()
                     if replay_options.trace_shutdown:
                         atexit.register(uninstall)
                         system.run(run_python_command, header["argv"])
