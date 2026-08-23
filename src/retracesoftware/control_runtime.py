@@ -1188,6 +1188,7 @@ class Controller:
         on_after_fork: Optional[Callable[[Any], None]] = None,
         disable_for: Optional[Callable] = None,
         get_thread_id: Optional[Callable[[], Any]] = None,
+        cursor_context_ready: bool = True,
     ):
         self._get_thread_id = get_thread_id or _thread.get_ident
         self._disable_for = functional.sequence(cursor.call_counter_disable_for, disable_for)
@@ -1204,6 +1205,8 @@ class Controller:
         self._stopped_frame = None
         self._last_code: CodeType | None = None
         self._returning_to_counts: tuple[int, ...] | None = None
+        self._cursor_context_ready = cursor_context_ready
+        self._pending_cursor_intent: StopAtCursor | None = None
         self._event_loop_lock = _thread.allocate_lock()
 
         self.event_loop = control_event_loop(
@@ -1327,11 +1330,12 @@ class Controller:
                 )
 
         elif isinstance(intent, StopAtCursor):
-            register_cursor_callback(
-                intent.cursor,
-                self._disable_for(self._on_cursor_hit),
-                on_missed=self._disable_for(lambda: self._send_reason("overshoot")),
-            )
+            if intent.cursor.get("f_lasti") is None and not self._cursor_context_ready:
+                if self._pending_cursor_intent is not None:
+                    raise RuntimeError("a cursor intent is already pending")
+                self._pending_cursor_intent = intent
+            else:
+                self._install_cursor_callback(intent)
 
         elif isinstance(intent, RunToReturn):
             self._install_run_to_return(intent)
@@ -1350,6 +1354,23 @@ class Controller:
 
         else:
             raise RuntimeError(f"unexpected intent: {intent}")
+
+    def _install_cursor_callback(self, intent: StopAtCursor) -> None:
+        register_cursor_callback(
+            intent.cursor,
+            self._disable_for(self._on_cursor_hit),
+            on_missed=self._disable_for(lambda: self._send_reason("overshoot")),
+        )
+
+    def activate_cursor_context(self) -> None:
+        """Arm a deferred count-only cursor after replay resets its call counts."""
+        if self._cursor_context_ready:
+            return
+        self._cursor_context_ready = True
+        intent = self._pending_cursor_intent
+        self._pending_cursor_intent = None
+        if intent is not None:
+            self._install_cursor_callback(intent)
 
     def _failure_candidate(
         self,

@@ -8,14 +8,14 @@ Controller initialization is wrapped in call_counter_disable_for and exec()
 is called directly from the test (not via a helper function) so the only
 frames tracked by the call counter are the target code frames.
 """
+from collections import deque
 import sys
 import textwrap
-from collections import deque
 
 import pytest
-
-import retracesoftware.utils as utils
+import retracesoftware.control_runtime as control_runtime
 from retracesoftware.control_runtime import Controller, StopAtCursor, control_event_loop
+import retracesoftware.utils as utils
 
 requires_312 = pytest.mark.skipif(
     sys.version_info < (3, 12),
@@ -223,6 +223,52 @@ def test_run_to_cursor_overshoot_reports_stop_reason():
             "thread_cursors": {},
         },
     }]
+
+
+def test_controller_defers_initial_count_only_cursor_until_context_ready(monkeypatch):
+    calls = []
+
+    def register(cursor_dict, callback, on_missed=None):
+        calls.append((cursor_dict, callback, on_missed))
+
+    monkeypatch.setattr(control_runtime, "register_cursor_callback", register)
+    socket = RunToCursorSocket({"thread_id": 1, "function_counts": [1, 2, 3]})
+    controller = Controller(control_socket=socket, cursor_context_ready=False)
+
+    assert calls == []
+
+    controller.activate_cursor_context()
+
+    assert len(calls) == 1
+    assert calls[0][0] == {"thread_id": 1, "function_counts": [1, 2, 3]}
+    assert callable(calls[0][1])
+    assert callable(calls[0][2])
+
+    controller.activate_cursor_context()
+    assert len(calls) == 1
+
+
+def test_controller_installs_initial_exact_cursor_before_context_ready(monkeypatch):
+    calls = []
+
+    def register(cursor_dict, callback, on_missed=None):
+        calls.append((cursor_dict, callback, on_missed))
+
+    monkeypatch.setattr(control_runtime, "register_cursor_callback", register)
+    exact_cursor = {
+        "thread_id": 1,
+        "function_counts": [1, 2, 3],
+        "f_lasti": 42,
+    }
+    Controller(
+        control_socket=RunToCursorSocket(exact_cursor),
+        cursor_context_ready=False,
+    )
+
+    assert len(calls) == 1
+    assert calls[0][0] == exact_cursor
+    assert callable(calls[0][1])
+    assert callable(calls[0][2])
 
 
 @pytest.fixture

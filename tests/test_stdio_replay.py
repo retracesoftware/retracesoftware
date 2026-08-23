@@ -457,6 +457,116 @@ def test_run_to_cursor_then_next_instruction(tmpdir):
     assert stack["result"]["frames"][0]["filename"] == bp_file
 
 
+def test_run_to_count_only_cursor_after_sibling_calls(tmpdir):
+    """A count-only cursor must survive earlier calls with a shared prefix."""
+    script = os.path.join(tmpdir, "count_only_cursor_target.py")
+    with open(script, "w", encoding="utf-8") as f:
+        f.write(
+            "\n".join([
+                "import json",
+                "",
+                "def canonical_json(value):",
+                "    return json.dumps(value, sort_keys=True)",
+                "",
+                "def parse_response(response):",
+                "    return int(response['score']), response['reason']",
+                "",
+                "def route_score(score):",
+                "    if score < 65:",
+                "        return 'approve'",
+                "    if score < 70:",
+                "        return 'request_more_information'",
+                "    return 'escalate'",
+                "",
+                "def run():",
+                "    response = {'score': 65, 'reason': 'borderline'}",
+                "    score, reason = parse_response(response)",
+                "    decision = route_score(score)",
+                "    first = canonical_json(response)",
+                "    evidence = {'score': score, 'reason': reason, 'decision': decision}",
+                "    second = canonical_json(evidence)",
+                "    return first, second",
+                "",
+                "run()",
+                "",
+            ])
+        )
+    trace = os.path.join(tmpdir, "trace.retrace")
+    record_raw(script, trace)
+
+    bp_file = os.path.realpath(script)
+    bp_line = 4
+    scan_responses, scan_result = replay_stdio(trace, [
+        {"command": "hello"},
+        {"command": "hit_breakpoints", "params": {
+            "breakpoint": {"file": bp_file, "line": bp_line},
+            "max_hits": 1,
+        }},
+    ])
+    assert scan_result.returncode == 0, f"Replay failed:\n{scan_result.stderr}"
+
+    bp_event = next(
+        response for response in scan_responses
+        if response.get("kind") == "event"
+        and response.get("event") == "breakpoint_hit"
+    )
+    exact_cursor = bp_event["payload"]["cursor"]
+    count_only_cursor = {
+        "thread_id": exact_cursor["thread_id"],
+        "function_counts": exact_cursor["function_counts"],
+    }
+
+    exact_responses, exact_result = replay_stdio(trace, [
+        {"id": "1", "command": "hello"},
+        {
+            "id": "2",
+            "command": "run_to_cursor",
+            "params": {"cursor": exact_cursor},
+        },
+    ])
+    assert exact_result.returncode == 0, f"Replay failed:\n{exact_result.stderr}"
+    exact_stop = next(
+        response for response in exact_responses if response.get("kind") == "stop"
+    )
+    assert exact_stop["payload"]["reason"] == "cursor"
+    assert exact_stop["payload"]["cursor"]["function_counts"] == exact_cursor["function_counts"]
+
+    responses, result = replay_stdio(trace, [
+        {"id": "1", "command": "hello"},
+        {
+            "id": "2",
+            "command": "run_to_cursor",
+            "params": {"cursor": count_only_cursor},
+        },
+    ])
+    assert result.returncode == 0, f"Replay failed:\n{result.stderr}"
+
+    stop = next(response for response in responses if response.get("kind") == "stop")
+    assert stop["payload"]["reason"] == "cursor", (
+        f"count-only cursor {count_only_cursor} stopped as {stop}; "
+        f"replay stderr:\n{result.stderr}"
+    )
+    assert stop["payload"]["cursor"]["function_counts"] == count_only_cursor["function_counts"]
+
+    unreachable_cursor = {
+        "thread_id": count_only_cursor["thread_id"],
+        "function_counts": [*count_only_cursor["function_counts"][:-1], 10_000],
+    }
+    missed_responses, missed_result = replay_stdio(trace, [
+        {"id": "1", "command": "hello"},
+        {
+            "id": "2",
+            "command": "run_to_cursor",
+            "params": {"cursor": unreachable_cursor},
+        },
+    ])
+    assert missed_result.returncode == 0, f"Replay failed:\n{missed_result.stderr}"
+    missed_stop = next(
+        response for response in missed_responses if response.get("kind") == "stop"
+    )
+    assert missed_stop["payload"]["reason"] == "overshoot"
+
+
 def test_thread_breakpoint_hits_with_stdio_replay(tmpdir):
     """Source breakpoints should fire in worker threads during stdio replay."""
     script = os.path.realpath(os.path.join(os.path.dirname(__file__), "..", "examples", "target_threads.py"))
