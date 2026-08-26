@@ -267,33 +267,55 @@ Open as Retrace Recording
 
 ## 8. Replay And Debug In VS Code
 
-Open the source file:
+Open the test file:
 
 ```
-pytest_demo/checkout.py
+pytest_demo/tests/test_checkout.py
 ```
 
-Add a breakpoint inside:
+Find `test_total_taxes_discounted_amount_once` and set a breakpoint on:
 
+```python
+receipt = make_receipt()
 ```
-build_receipt
+
+Use the Retrace sidebar to start replaying the recorded process. VS Code should
+stop at that breakpoint, and the top application frame in the Call Stack should
+be `test_total_taxes_discounted_amount_once`.
+
+While replay remains paused, open `pytest_demo/checkout.py` and add a second
+breakpoint on:
+
+```python
+taxable_cents = discounted_subtotal_cents + shipping_cents
 ```
 
-Then use the Retrace sidebar to start replaying the recorded process.
+Press Continue. This selects the `build_receipt` invocation belonging to the
+failing test, rather than one of the earlier successful tests. Inspect these
+historical values in Locals:
 
-During replay, VS Code should stop on your breakpoint. You can inspect the
-checkout breakdown: `subtotal_cents`, `item_discount_cents`,
-`loyalty_discount_cents`, `shipping_cents`, `taxable_cents`, `tax_cents`, and
-`total_cents`. Then step forward, step backward, and continue through the
-recorded failed execution.
+```text
+discounted_subtotal_cents = 7200
+loyalty_discount_cents = 720
+shipping_cents = 0
+```
 
-`build_receipt` is called by several tests, so VS Code may stop at this
-breakpoint more than once. Continue until the call stack includes
-`test_total_taxes_discounted_amount_once`, then inspect the calculation that
-leads to the failing assertion.
+Step Over the taxable-base and tax calculations, then continue through the
+multiline `total_cents` calculation. The recorded execution produces:
 
-You are done when VS Code stops at your breakpoint and the replay reaches the
-same failing pytest assertion without rerunning the test live.
+```text
+taxable_cents = 7200
+tax_cents = 594
+total_cents = 7074
+expected total_cents = 7015
+```
+
+The bug is that `loyalty_discount_cents` is subtracted from the final total but
+is not subtracted from the taxable base. The correct taxable base is `6480`,
+which produces `tax_cents = 535` and the expected total `7015`.
+
+You are done when you can inspect these values and move forward or backward
+through this recorded calculation without rerunning pytest live.
 
 ## 9. Optional: Create A Replay Bundle
 
