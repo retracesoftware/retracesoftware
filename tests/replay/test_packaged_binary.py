@@ -38,6 +38,6 @@ def test_installed_wheel_declares_retrace_dap_dependency():
     package_requires = requires("retracesoftware") or []
 
     assert any(
-        requirement == "retracesoftware-dap==0.2.29"
+        requirement == "retracesoftware-dap==0.2.30"
         for requirement in package_requires
     )
