@@ -12,9 +12,11 @@ from retracesoftware.ai_driver import (
     _executor_session_state,
     _initial_observation,
     _parser,
+    _prelude_reached_application_stack,
     _prime_pytest_failure_breakpoint,
-    _pytest_failure_hint_from_output,
     _pytest_failure_hint,
+    _pytest_failure_hint_from_output,
+    _render_markdown,
     _select_pytest_failure_candidate,
     _source_window,
 )
@@ -251,6 +253,189 @@ def test_start_replay_summary_reports_actual_configuration_outcome(
     assert result["session"]["last_stop"]["reason"] == stop_reason
 
 
+def test_start_replay_at_breakpoint_configures_stop_before_execution(monkeypatch):
+    calls = []
+
+    class FakeDAPSession:
+        def __init__(self, replay_bin, trace):
+            self.replay_bin = replay_bin
+            self.trace = trace
+            self.closed = False
+            self.capabilities = {}
+            self.state = {"state": "starting", "capabilities": {}}
+
+        def initialize(self):
+            calls.append("initialize")
+
+        def launch(self):
+            calls.append("launch")
+
+        def configure_exception_breakpoints(self, filters):
+            calls.append(("setExceptionBreakpoints", filters))
+            self.capabilities["exception_breakpoints"] = "disabled"
+            return {}
+
+        def configure_source_breakpoints(self, path, breakpoints):
+            calls.append(("setBreakpoints", path, breakpoints))
+            return {"breakpoints": [{"verified": True, "line": breakpoints[0]["line"]}]}
+
+        def configuration_done(self):
+            calls.append("configurationDone")
+            self.state = {
+                "state": "stopped",
+                "last_stop": {"reason": "breakpoint", "thread_id": 1},
+            }
+
+        def close(self):
+            self.closed = True
+
+    monkeypatch.setattr("retracesoftware.ai_driver.DAPSession", FakeDAPSession)
+    executor = DAPExecutor("/tmp/case.retrace", replay_bin="/tmp/replay")
+
+    result = executor.start_replay_at_breakpoint("/tmp/test_case.py", 12)
+
+    assert calls == [
+        "initialize",
+        "launch",
+        ("setExceptionBreakpoints", []),
+        ("setBreakpoints", "/tmp/test_case.py", [{"line": 12}]),
+        "configurationDone",
+    ]
+    assert result["ok"] is True
+    assert result["session"]["last_stop"]["reason"] == "breakpoint"
+    assert result["data"]["initial_breakpoint"] == {
+        "path": "/tmp/test_case.py",
+        "line": 12,
+    }
+
+
+def test_real_stop_clears_traceback_only_frames():
+    session = object.__new__(DAPSession)
+    session.capabilities = {}
+    session.synthetic_exception = {"type": "ZeroDivisionError", "message": "division by zero"}
+    session.frames = [{"id": 0, "name": "synthetic"}]
+    session.state = {"state": "stopped"}
+
+    session._apply_stop_event(
+        {
+            "event": "stopped",
+            "body": {"reason": "breakpoint", "threadId": 1},
+        }
+    )
+
+    assert session.synthetic_exception is None
+    assert session.frames == []
+    assert session.state["last_stop"]["reason"] == "breakpoint"
+
+
+def test_markdown_report_renders_causal_fields_for_people():
+    artifact = {
+        "report": {
+            "status": "diagnosed",
+            "confidence": "high",
+            "investigation_target": "target_application",
+            "failure_domain": "target",
+            "failure_category": "target_exception",
+            "title": "ZeroDivisionError in revenue calculation",
+            "summary": "A valid full return produced a zero denominator.",
+            "symptom": {
+                "claim": "Revenue calculation raised ZeroDivisionError.",
+                "evidence_ids": ["E1"],
+            },
+            "immediate_mechanism": {
+                "claim": "Python divided net revenue by retained_units=0.",
+                "evidence_ids": ["E2"],
+            },
+            "root_cause": {
+                "claim": "The metric did not define behavior for full returns.",
+                "defect": "The division has no zero-denominator guard.",
+                "trigger": "All shipped units were returned.",
+                "why": "Replay preserved shipped_units=24 and returned_units=24.",
+                "evidence_ids": ["E2"],
+            },
+            "causal_chain": [
+                {
+                    "step": 1,
+                    "claim": "24 shipped minus 24 returned produced 0 retained.",
+                    "evidence_ids": ["E2"],
+                }
+            ],
+            "violated_invariant": {
+                "claim": "A per-unit metric requires at least one retained unit.",
+                "evidence_ids": ["E2"],
+            },
+            "control_flow": {
+                "claim": "The full-return order reached the unguarded division.",
+                "evidence_ids": ["E2"],
+            },
+            "recorded_execution_contribution": {
+                "classification": "essential",
+                "decisive_runtime_fact": "The historical order was a full return.",
+                "why": "A fresh API call returns another order batch.",
+            },
+            "evidence": [
+                {
+                    "id": "E2",
+                    "claim": "The complete runtime arithmetic was inspected.",
+                    "coordinate": {
+                        "path": "/app/tests/test_order_metrics.py",
+                        "line": 31,
+                        "function": "test_order_metrics",
+                        "thread_id": 1,
+                    },
+                    "observed": "shipped_units=24 returned_units=24 retained_units=0",
+                    "tool": "get_variables",
+                }
+            ],
+            "replay_walkthrough": [
+                {
+                    "step": 1,
+                    "action": "get_variables",
+                    "finding": "Read the historical arithmetic at the failure.",
+                    "evidence_ids": ["E2"],
+                }
+            ],
+            "suggested_fix": {
+                "summary": "Represent the metric as not applicable for full returns.",
+                "files": [
+                    {
+                        "path": "/app/app/order_metrics.py",
+                        "line": 25,
+                        "change": "Handle retained_units == 0 before division.",
+                    }
+                ],
+                "test": "Add a full-return regression case.",
+            },
+            "regression_condition": "shipped_units equals returned_units",
+            "reproducibility": {
+                "determinism": "deterministic",
+                "confidence": "high",
+                "why": "Offline replay restores the same API response.",
+            },
+            "capability_defects": [],
+            "unresolved_links": [],
+            "open_questions": [],
+            "limitations": [],
+        },
+        "transcript": [
+            {"tool": "get_variables", "result": {"summary": "Read caller locals."}}
+        ],
+    }
+
+    markdown = _render_markdown(artifact)
+
+    assert "## Immediate Mechanism" in markdown
+    assert "## Investigation" in markdown
+    assert "## Violated Invariant" in markdown
+    assert "## Control Flow" in markdown
+    assert "## What The Recording Established" in markdown
+    assert "## Runtime Evidence" in markdown
+    assert "## Replay Walkthrough" in markdown
+    assert "`/app/tests/test_order_metrics.py:31`" in markdown
+    assert "## Suggested Fix" in markdown
+    assert "'claim':" not in markdown
+
+
 def test_initial_observation_reports_prepositioned_pytest_session(monkeypatch):
     executor = object.__new__(DAPExecutor)
     executor.session = SimpleNamespace(
@@ -270,6 +455,7 @@ def test_initial_observation_reports_prepositioned_pytest_session(monkeypatch):
                 "ok": True,
                 "summary": "DAP stack trace returned 1 frame.",
                 "data": {
+                    "source": "dap.stackTrace",
                     "stack_frames": [
                         {
                             "name": "test_case",
@@ -298,6 +484,59 @@ def test_initial_observation_reports_prepositioned_pytest_session(monkeypatch):
     assert observation["tool_result"]["prelude"]["session"]["last_stop"]["reason"] == "breakpoint"
     assert transcript == prelude
     assert _executor_session_state(executor)["last_stop"]["reason"] == "breakpoint"
+
+
+def test_prelude_rejects_traceback_derived_frames_as_live_dap_state():
+    transcript = [
+        {
+            "tool": "get_stack_trace",
+            "result": {
+                "ok": True,
+                "data": {
+                    "source": "replay.traceback",
+                    "stack_frames": [
+                        {
+                            "id": 0,
+                            "name": "test_case",
+                            "source": {"path": "/tmp/test_case.py"},
+                            "line": 7,
+                        }
+                    ],
+                },
+                "session": {
+                    "state": "stopped",
+                    "last_stop": {"reason": "exception"},
+                },
+            },
+        }
+    ]
+
+    assert _prelude_reached_application_stack(transcript) is False
+
+
+def test_pytest_prelude_returns_dap_error_when_initial_positioning_fails(
+    monkeypatch,
+):
+    class FailingExecutor:
+        session = None
+
+        def start_replay_at_breakpoint(self, path, line):
+            raise RuntimeError(f"cannot stop at {path}:{line}")
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr("retracesoftware.ai_driver.time.sleep", lambda _: None)
+
+    transcript = _prime_pytest_failure_breakpoint(
+        FailingExecutor(),
+        {"filename": "/tmp/test_case.py", "line": 7},
+    )
+
+    assert len(transcript) == 1
+    assert transcript[0]["tool"] == "start_replay_session"
+    assert transcript[0]["result"]["ok"] is False
+    assert transcript[0]["result"]["error"]["code"] == "dap_request_failed"
 
 
 def test_pytest_failure_hint_prefers_bare_traceback_location_over_failed_node(tmp_path):
@@ -554,12 +793,9 @@ def test_pytest_failure_prelude_positions_dap_after_handled_import_noise(tmp_pat
         prelude = _prime_pytest_failure_breakpoint(executor, hint)
         assert [step["tool"] for step in prelude] == [
             "start_replay_session",
-            "set_exception_breakpoints",
-            "set_breakpoints",
-            "continue_execution",
             "get_stack_trace",
         ]
-        assert prelude[1]["result"]["session"]["capabilities"]["exception_breakpoints"] == "disabled"
+        assert prelude[0]["result"]["session"]["capabilities"]["exception_breakpoints"] == "disabled"
 
         stack = prelude[-1]["result"]["data"]["stack_frames"]
         assert stack[0]["source"]["path"] == str(target)
@@ -576,5 +812,84 @@ def test_pytest_failure_prelude_positions_dap_after_handled_import_noise(tmp_pat
         variables = executor.execute("get_variables", {"variables_reference": ref})
         names = {item["name"]: item["value"] for item in variables["data"]["variables"]}
         assert names["sentinel"] == "{'expected': 'skip caught import', 'actual': 'stop on assertion'}"
+    finally:
+        executor.close()
+
+
+@pytest.mark.skipif(
+    sys.version_info < (3, 12),
+    reason="raw-script failure-candidate search still uses sys.monitoring-backed search",
+)
+def test_pytest_failure_prelude_exposes_caller_locals_before_helper_raises(tmp_path):
+    target = tmp_path / "test_runtime_state.py"
+    source = "\n".join(
+        [
+            "def calculate(net_revenue_cents, retained_units):",
+            "    return net_revenue_cents / retained_units",
+            "",
+            "def test_runtime_state():",
+            "    shipped_units = 24",
+            "    returned_units = 24",
+            "    retained_units = shipped_units - returned_units",
+            "    gross_revenue_cents = 59976",
+            "    refunded_revenue_cents = 55200",
+            "    net_revenue_cents = gross_revenue_cents - refunded_revenue_cents",
+            "    runtime_incident_evidence = (shipped_units, returned_units, retained_units)",
+            "    calculate(net_revenue_cents, retained_units)",
+            "",
+        ]
+    )
+    target.write_text(source, encoding="utf-8")
+    trace = tmp_path / "pytest-helper.retrace"
+
+    record = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "retracesoftware",
+            "--recording",
+            str(trace),
+            "--",
+            "-m",
+            "pytest",
+            "-q",
+            "-s",
+            str(target),
+        ],
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        timeout=90,
+    )
+
+    assert record.returncode != 0
+    assert trace.exists()
+    hint = _pytest_failure_hint(str(trace))
+    assert hint is not None
+    assert hint["filename"] == str(target)
+    assert hint["line"] == 12
+
+    executor = DAPExecutor(str(trace))
+    try:
+        prelude = _prime_pytest_failure_breakpoint(executor, hint)
+        start = prelude[0]["result"]
+        assert start["session"]["last_stop"]["reason"] == "breakpoint"
+
+        stack = prelude[-1]["result"]["data"]
+        assert stack["source"] == "dap.stackTrace"
+        frame = stack["stack_frames"][0]
+        assert frame["source"]["path"] == str(target)
+        assert frame["line"] == 12
+
+        scopes = executor.execute("get_scopes", {"frame_id": frame["id"]})
+        assert scopes["ok"] is True
+        ref = scopes["data"]["scopes"][0]["variables_reference"]
+        variables = executor.execute("get_variables", {"variables_reference": ref})
+        names = {item["name"]: item["value"] for item in variables["data"]["variables"]}
+        assert names["shipped_units"] == "24"
+        assert names["returned_units"] == "24"
+        assert names["retained_units"] == "0"
+        assert names["net_revenue_cents"] == "4776"
+        assert names["runtime_incident_evidence"] == "(24, 24, 0)"
     finally:
         executor.close()
