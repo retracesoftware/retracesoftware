@@ -180,13 +180,45 @@ class DAPSession:
 
     def probe_exception_breakpoints(self) -> None:
         try:
-            seq = self.send_request("setExceptionBreakpoints", {"filters": ["raised"]})
-            resp = self.wait_for_response(seq, timeout=5.0)
-            self._raise_response_error(resp)
-            self.capabilities["exception_breakpoints"] = "raised"
+            self.configure_exception_breakpoints(["raised"], timeout=5.0)
         except Exception:
             self.capabilities["exception_breakpoints"] = "unavailable"
         self.state["capabilities"] = self._capability_state()
+
+    def configure_exception_breakpoints(
+        self,
+        filters: list[str],
+        *,
+        timeout: float = DEFAULT_TIMEOUT,
+    ) -> dict[str, Any]:
+        seq = self.send_request("setExceptionBreakpoints", {"filters": filters})
+        resp = self.wait_for_response(seq, timeout=timeout)
+        self._raise_response_error(resp)
+        self.capabilities["exception_breakpoints"] = (
+            ",".join(filters) if filters else "disabled"
+        )
+        self.state["capabilities"] = self._capability_state()
+        return resp.get("body") if isinstance(resp.get("body"), dict) else {}
+
+    def configure_source_breakpoints(
+        self,
+        path: str,
+        breakpoints: list[dict[str, Any]],
+    ) -> dict[str, Any]:
+        lines = [
+            breakpoint["line"]
+            for breakpoint in breakpoints
+            if isinstance(breakpoint.get("line"), int)
+        ]
+        resp = self.request(
+            "setBreakpoints",
+            {
+                "source": {"name": Path(path).name, "path": path},
+                "breakpoints": breakpoints,
+                "lines": lines,
+            },
+        )
+        return resp.get("body") if isinstance(resp.get("body"), dict) else {}
 
     def configuration_done(self) -> None:
         seq = self.send_request("configurationDone", {})
@@ -334,6 +366,8 @@ class DAPSession:
                 "description": "Replay session terminated.",
             }
         elif event == "stopped":
+            self.synthetic_exception = None
+            self.frames = []
             body = msg.get("body") if isinstance(msg.get("body"), dict) else {}
             thread_id = int(body.get("threadId") or body.get("thread_id") or 1)
             self.state["state"] = "stopped"
@@ -470,13 +504,43 @@ class DAPExecutor:
                 },
                 "session": self.session.state,
             }
+        session = self._start_fresh_session(resolved_trace)
+        return self._started_session_result(session)
+
+    def start_replay_at_breakpoint(self, path: str, line: int) -> dict[str, Any]:
+        session = self._start_fresh_session(
+            self.trace,
+            exception_filters=[],
+            source_breakpoint=(path, line),
+        )
+        result = self._started_session_result(session)
+        result["data"]["initial_breakpoint"] = {"path": path, "line": line}
+        result["data"]["exception_breakpoints"] = "disabled"
+        return result
+
+    def _start_fresh_session(
+        self,
+        resolved_trace: str,
+        *,
+        exception_filters: list[str] | None = None,
+        source_breakpoint: tuple[str, int] | None = None,
+    ) -> DAPSession:
         self.close()
-        session = DAPSession(self.replay_bin, resolved_trace)
+        session = DAPSession(self.replay_bin, str(Path(resolved_trace).resolve()))
         self.session = session
         session.initialize()
         session.launch()
-        session.probe_exception_breakpoints()
+        if exception_filters is None:
+            session.probe_exception_breakpoints()
+        else:
+            session.configure_exception_breakpoints(exception_filters)
+        if source_breakpoint is not None:
+            path, line = source_breakpoint
+            session.configure_source_breakpoints(path, [{"line": line}])
         session.configuration_done()
+        return session
+
+    def _started_session_result(self, session: DAPSession) -> dict[str, Any]:
         stop = session.state.get("last_stop")
         stop_reason = stop.get("reason") if isinstance(stop, dict) else ""
         if stop_reason == "terminated":
@@ -490,7 +554,7 @@ class DAPExecutor:
             "summary": summary,
             "data": {
                 "session_id": DAP_SESSION_ID,
-                "trace": str(Path(trace).resolve()),
+                "trace": session.trace,
                 "dap": {
                     "enabled": True,
                     "capabilities": session.capabilities,
@@ -506,7 +570,6 @@ class DAPExecutor:
         path = source.get("path") if isinstance(source.get("path"), str) else ""
         bps = arguments.get("breakpoints") if isinstance(arguments.get("breakpoints"), list) else []
         breakpoints = []
-        lines = []
         for bp in bps:
             if not isinstance(bp, dict) or not isinstance(bp.get("line"), int):
                 continue
@@ -514,18 +577,9 @@ class DAPExecutor:
             if isinstance(bp.get("condition"), str) and bp["condition"]:
                 item["condition"] = bp["condition"]
             breakpoints.append(item)
-            lines.append(bp["line"])
         if not path or not breakpoints:
             return _tool_error("set_breakpoints", "invalid_tool_arguments", "source.path and breakpoints are required")
-        resp = session.request(
-            "setBreakpoints",
-            {
-                "source": {"name": Path(path).name, "path": path},
-                "breakpoints": breakpoints,
-                "lines": lines,
-            },
-        )
-        data = resp.get("body") if isinstance(resp.get("body"), dict) else {}
+        data = session.configure_source_breakpoints(path, breakpoints)
         return {"ok": True, "summary": "DAP setBreakpoints completed.", "data": data, "session": session.state}
 
     def set_exception_breakpoints(self, arguments: dict[str, Any]) -> dict[str, Any]:
@@ -536,10 +590,7 @@ class DAPExecutor:
             for item in raw_filters
             if isinstance(item, str)
         ] if isinstance(raw_filters, list) else []
-        resp = session.request("setExceptionBreakpoints", {"filters": filters})
-        data = resp.get("body") if isinstance(resp.get("body"), dict) else {}
-        session.capabilities["exception_breakpoints"] = ",".join(filters) if filters else "disabled"
-        session.state["capabilities"] = session._capability_state()
+        data = session.configure_exception_breakpoints(filters)
         summary = (
             "DAP exception breakpoints disabled."
             if not filters
@@ -729,6 +780,12 @@ class DAPExecutor:
 
     def get_scopes(self, arguments: dict[str, Any]) -> dict[str, Any]:
         session = self._require_session("get_scopes")
+        if session.synthetic_exception is not None:
+            return _application_inspection_unavailable(
+                "get_scopes",
+                session.state,
+                "Traceback-derived frames do not have live DAP frame IDs. Restart replay at an application source breakpoint before inspecting scopes.",
+            )
         resp = session.request("scopes", {"frameId": int(arguments.get("frame_id") or 0)})
         body = resp.get("body") if isinstance(resp.get("body"), dict) else {}
         scopes = []
@@ -746,6 +803,12 @@ class DAPExecutor:
 
     def get_variables(self, arguments: dict[str, Any]) -> dict[str, Any]:
         session = self._require_session("get_variables")
+        if session.synthetic_exception is not None:
+            return _application_inspection_unavailable(
+                "get_variables",
+                session.state,
+                "Traceback-derived frames do not have live DAP variable references. Restart replay at an application source breakpoint before inspecting variables.",
+            )
         ref = int(arguments.get("variables_reference") or arguments.get("variablesReference") or 1)
         try:
             resp = session.request("variables", {"variablesReference": ref})
@@ -797,6 +860,12 @@ class DAPExecutor:
 
     def evaluate_expression(self, arguments: dict[str, Any]) -> dict[str, Any]:
         session = self._require_session("evaluate_expression")
+        if session.synthetic_exception is not None:
+            return _application_inspection_unavailable(
+                "evaluate_expression",
+                session.state,
+                "Traceback-derived frames do not have live DAP frame IDs. Restart replay at an application source breakpoint before evaluating expressions.",
+            )
         resp = session.request(
             "evaluate",
             {
@@ -1423,30 +1492,44 @@ def _prime_pytest_failure_breakpoint(executor: DAPExecutor, hint: dict[str, Any]
     if not path or line <= 0:
         return []
 
-    steps: list[tuple[str, dict[str, Any]]] = [
-        ("start_replay_session", {}),
-        ("set_exception_breakpoints", {"filters": []}),
-        (
-            "set_breakpoints",
-            {
-                "source": {"path": path},
-                "breakpoints": [{"line": line}],
-            },
-        ),
-        ("continue_execution", {"thread_id": 1}),
-        ("get_stack_trace", {"thread_id": 1, "levels": 20}),
-    ]
     last_transcript: list[dict[str, Any]] = []
     for attempt in range(3):
         if attempt > 0:
             executor.close()
             time.sleep(0.25)
-        transcript: list[dict[str, Any]] = []
-        for tool, arguments in steps:
-            result = _json_clone(executor.execute(tool, arguments))
-            transcript.append({"tool": tool, "arguments": arguments, "result": result})
-            if not result.get("ok"):
-                break
+        start_arguments = {
+            "restart": True,
+            "initial_breakpoint": {"source": {"path": path}, "line": line},
+            "exception_filters": [],
+        }
+        try:
+            start_result = _json_clone(
+                executor.start_replay_at_breakpoint(path, line)
+            )
+        except Exception as exc:
+            start_result = _dap_error(
+                "start_replay_session",
+                exc,
+                executor.session,
+            )
+        transcript = [
+            {
+                "tool": "start_replay_session",
+                "arguments": start_arguments,
+                "result": start_result,
+            }
+        ]
+        if start_result.get("ok"):
+            stack_arguments = {"thread_id": 1, "levels": 20}
+            transcript.append(
+                {
+                    "tool": "get_stack_trace",
+                    "arguments": stack_arguments,
+                    "result": _json_clone(
+                        executor.execute("get_stack_trace", stack_arguments)
+                    ),
+                }
+            )
         last_transcript = transcript
         if _prelude_reached_application_stack(transcript):
             return transcript
@@ -1461,6 +1544,14 @@ def _prelude_reached_application_stack(transcript: list[dict[str, Any]]) -> bool
         return False
     data = result.get("data")
     if not isinstance(data, dict):
+        return False
+    if data.get("source") != "dap.stackTrace":
+        return False
+    session = result.get("session")
+    if not isinstance(session, dict):
+        return False
+    stop = session.get("last_stop")
+    if not isinstance(stop, dict) or stop.get("reason") != "breakpoint":
         return False
     frames = data.get("stack_frames")
     return isinstance(frames, list) and bool(frames)
@@ -1592,21 +1683,183 @@ def _render_markdown(artifact: dict[str, Any]) -> str:
     report = artifact.get("report") if isinstance(artifact.get("report"), dict) else {}
     title = str(report.get("title") or "Retrace AI Driver Report")
     lines = [f"# {title}", ""]
+
+    metadata = []
+    for label, key in (("Status", "status"), ("Confidence", "confidence")):
+        value = report.get(key)
+        if isinstance(value, str) and value:
+            metadata.append(f"{label}: `{value}`")
+    if metadata:
+        lines.extend([" | ".join(metadata), ""])
+
+    investigation = []
+    for label, key in (
+        ("Target", "investigation_target"),
+        ("Failure domain", "failure_domain"),
+        ("Failure category", "failure_category"),
+    ):
+        value = report.get(key)
+        if isinstance(value, str) and value and value.lower() != "null":
+            investigation.append(f"- **{label}:** `{value}`")
+    if investigation:
+        lines.extend(["## Investigation", "", *investigation, ""])
+
     summary = report.get("summary")
     if isinstance(summary, str) and summary:
-        lines.extend([summary, ""])
+        lines.extend(["## Summary", "", summary, ""])
+
+    _append_report_claim(lines, "Symptom", report.get("symptom"))
+    _append_report_claim(
+        lines,
+        "Immediate Mechanism",
+        report.get("immediate_mechanism"),
+    )
+
     root = report.get("root_cause")
     if isinstance(root, dict) and isinstance(root.get("claim"), str):
         lines.extend(["## Root Cause", "", root["claim"], ""])
+        for label, key in (("Defect", "defect"), ("Trigger", "trigger"), ("Why", "why")):
+            value = root.get(key)
+            if isinstance(value, str) and value:
+                lines.append(f"- **{label}:** {value}")
+        evidence_ids = _report_evidence_ids(root.get("evidence_ids"))
+        if evidence_ids:
+            lines.append(f"- **Evidence:** {evidence_ids}")
+        lines.append("")
+
+    causal_chain = report.get("causal_chain")
+    if isinstance(causal_chain, list) and causal_chain:
+        lines.extend(["## Causal Chain", ""])
+        for index, item in enumerate(causal_chain, 1):
+            if not isinstance(item, dict) or not isinstance(item.get("claim"), str):
+                continue
+            evidence_ids = _report_evidence_ids(item.get("evidence_ids"))
+            suffix = f" ({evidence_ids})" if evidence_ids else ""
+            lines.append(f"{index}. {item['claim']}{suffix}")
+        lines.append("")
+
+    _append_report_claim(
+        lines,
+        "Violated Invariant",
+        report.get("violated_invariant"),
+    )
+    _append_report_claim(lines, "Control Flow", report.get("control_flow"))
+
+    contribution = report.get("recorded_execution_contribution")
+    if isinstance(contribution, dict):
+        lines.extend(["## What The Recording Established", ""])
+        classification = contribution.get("classification")
+        if isinstance(classification, str) and classification:
+            lines.extend([f"Classification: `{classification}`", ""])
+        decisive_fact = contribution.get("decisive_runtime_fact")
+        if isinstance(decisive_fact, str) and decisive_fact:
+            lines.extend([decisive_fact, ""])
+        why = contribution.get("why")
+        if isinstance(why, str) and why:
+            lines.extend([f"Why: {why}", ""])
+
     evidence = report.get("evidence")
     if isinstance(evidence, list) and evidence:
-        lines.extend(["## Evidence", ""])
+        lines.extend(["## Runtime Evidence", ""])
         for item in evidence:
             if isinstance(item, dict):
-                lines.append(f"- {item.get('summary') or item.get('source') or item}")
+                evidence_id = item.get("id")
+                claim = item.get("claim") or item.get("summary") or "Runtime observation"
+                prefix = f"**{evidence_id}**: " if isinstance(evidence_id, str) else ""
+                lines.append(f"- {prefix}{claim}")
+                coordinate = _report_coordinate(item)
+                if coordinate:
+                    lines.append(f"  Location: {coordinate}")
+                observed = item.get("observed")
+                if isinstance(observed, str) and observed:
+                    lines.append(f"  Observed: `{observed}`")
+                tool = item.get("tool")
+                if isinstance(tool, str) and tool:
+                    lines.append(f"  Tool: `{tool}`")
             else:
                 lines.append(f"- {item}")
         lines.append("")
+
+    walkthrough = report.get("replay_walkthrough")
+    if isinstance(walkthrough, list) and walkthrough:
+        lines.extend(["## Replay Walkthrough", ""])
+        for item in walkthrough:
+            if not isinstance(item, dict) or not isinstance(item.get("finding"), str):
+                continue
+            step = item.get("step")
+            prefix = f"{step}." if isinstance(step, int) else "-"
+            action = item.get("action")
+            action_text = f"`{action}`: " if isinstance(action, str) and action else ""
+            evidence_ids = _report_evidence_ids(item.get("evidence_ids"))
+            suffix = f" ({evidence_ids})" if evidence_ids else ""
+            lines.append(f"{prefix} {action_text}{item['finding']}{suffix}")
+        lines.append("")
+
+    suggested_fix = report.get("suggested_fix")
+    if isinstance(suggested_fix, dict):
+        lines.extend(["## Suggested Fix", ""])
+        fix_summary = suggested_fix.get("summary")
+        if isinstance(fix_summary, str) and fix_summary:
+            lines.extend([fix_summary, ""])
+        files = suggested_fix.get("files")
+        if isinstance(files, list):
+            for change in files:
+                if not isinstance(change, dict):
+                    continue
+                path = change.get("path")
+                line = change.get("line")
+                description = change.get("change")
+                if not isinstance(description, str):
+                    continue
+                location = str(path) if isinstance(path, str) else "unspecified location"
+                if isinstance(line, int):
+                    location += f":{line}"
+                lines.append(f"- `{location}`: {description}")
+        regression_test = suggested_fix.get("test")
+        if isinstance(regression_test, str) and regression_test:
+            lines.append(f"- **Regression test:** {regression_test}")
+        lines.append("")
+
+    regression_condition = report.get("regression_condition")
+    if isinstance(regression_condition, str) and regression_condition:
+        lines.extend(["## Regression Condition", "", regression_condition, ""])
+
+    reproducibility = report.get("reproducibility")
+    if isinstance(reproducibility, dict):
+        lines.extend(["## Reproducibility", ""])
+        for label, key in (
+            ("Data dependency", "data_dependency"),
+            ("Intermittency", "intermittency"),
+            ("Determinism", "determinism"),
+            ("Confidence", "confidence"),
+        ):
+            value = reproducibility.get(key)
+            if isinstance(value, str) and value:
+                lines.append(f"- **{label}:** `{value}`")
+        why = reproducibility.get("why")
+        if isinstance(why, str) and why:
+            lines.append(f"- **Why:** {why}")
+        lines.append("")
+
+    capability_defects = report.get("capability_defects")
+    if isinstance(capability_defects, list) and capability_defects:
+        lines.extend(["## Debugger Capability Defects", ""])
+        for defect in capability_defects:
+            if not isinstance(defect, dict):
+                continue
+            capability = defect.get("capability") or "unknown"
+            status = defect.get("status") or "unknown"
+            observation = defect.get("observation") or "No observation provided."
+            lines.append(f"- **{capability}** (`{status}`): {observation}")
+            impact = defect.get("impact")
+            if isinstance(impact, str) and impact:
+                lines.append(f"  Impact: {impact}")
+        lines.append("")
+
+    _append_report_list(lines, "Unresolved Causal Links", report.get("unresolved_links"))
+    _append_report_list(lines, "Open Questions", report.get("open_questions"))
+    _append_report_list(lines, "Limitations", report.get("limitations"))
+
     if artifact.get("transcript"):
         lines.extend(["## Tool Transcript", ""])
         for idx, action in enumerate(artifact["transcript"], 1):
@@ -1614,6 +1867,56 @@ def _render_markdown(artifact: dict[str, Any]) -> str:
             lines.append(f"{idx}. `{action.get('tool')}` - {result.get('summary', 'completed')}")
         lines.append("")
     return "\n".join(lines)
+
+
+def _append_report_claim(lines: list[str], title: str, value: Any) -> None:
+    if not isinstance(value, dict) or not isinstance(value.get("claim"), str):
+        return
+    lines.extend([f"## {title}", "", value["claim"], ""])
+    evidence_ids = _report_evidence_ids(value.get("evidence_ids"))
+    if evidence_ids:
+        lines.extend([f"Evidence: {evidence_ids}", ""])
+
+
+def _append_report_list(lines: list[str], title: str, value: Any) -> None:
+    if not isinstance(value, list):
+        return
+    items = [item for item in value if isinstance(item, str) and item]
+    if not items:
+        return
+    lines.extend([f"## {title}", ""])
+    lines.extend(f"- {item}" for item in items)
+    lines.append("")
+
+
+def _report_evidence_ids(value: Any) -> str:
+    if not isinstance(value, list):
+        return ""
+    return ", ".join(f"`{item}`" for item in value if isinstance(item, str) and item)
+
+
+def _report_coordinate(item: dict[str, Any]) -> str:
+    coordinate = item.get("coordinate")
+    if not isinstance(coordinate, dict):
+        coordinate = item.get("location") if isinstance(item.get("location"), dict) else {}
+    parts = []
+    path = coordinate.get("path")
+    line = coordinate.get("line")
+    function = coordinate.get("function")
+    if isinstance(path, str) and path:
+        location = f"`{path}"
+        if isinstance(line, int):
+            location += f":{line}"
+        parts.append(location + "`")
+    if isinstance(function, str) and function:
+        parts.append(f"function `{function}`")
+    thread_id = coordinate.get("thread_id")
+    if isinstance(thread_id, int):
+        parts.append(f"thread `{thread_id}`")
+    message_index = coordinate.get("message_index")
+    if isinstance(message_index, int):
+        parts.append(f"message `{message_index}`")
+    return ", ".join(parts)
 
 
 def _read_dap_message(stream) -> dict[str, Any] | None:

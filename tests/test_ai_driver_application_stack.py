@@ -186,6 +186,43 @@ def test_get_stack_trace_filters_pytest_frames_from_successful_dap_response(monk
     assert result["data"]["stack_frames"][0]["name"] == "test_period_rates_uses_latest_date_for_closing_rate"
 
 
+@pytest.mark.parametrize(
+    ("tool", "arguments"),
+    [
+        ("get_scopes", {"frame_id": 0}),
+        ("get_variables", {"variables_reference": 1}),
+        ("evaluate_expression", {"frame_id": 0, "expression": "value"}),
+    ],
+)
+def test_traceback_only_frames_cannot_be_used_as_live_dap_references(tool, arguments):
+    executor = object.__new__(DAPExecutor)
+    session = SimpleNamespace(
+        synthetic_exception={"type": "ZeroDivisionError", "message": "division by zero"},
+        frames=[
+            {
+                "id": 0,
+                "name": "test_case",
+                "source": {"path": "/tmp/test_case.py"},
+                "line": 12,
+            }
+        ],
+        closed=False,
+        state={"state": "stopped", "last_stop": {"reason": "exception"}},
+    )
+
+    def unexpected_request(command, arguments=None):
+        pytest.fail(f"synthetic frame must not issue DAP request {command}")
+
+    session.request = unexpected_request
+    executor.session = session
+
+    result = executor.execute(tool, arguments)
+
+    assert result["ok"] is False
+    assert result["error"]["code"] == "inspection_unavailable"
+    assert "Traceback-derived frames" in result["error"]["message"]
+
+
 def test_pytest_failure_hint_from_short_output_matches_issue_75_format(tmp_path):
     output = """
 FAILED unit_tests/test_period_rates.py::test_period_rates_uses_latest_date_for_closing_rate
