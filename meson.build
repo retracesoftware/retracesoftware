@@ -33,8 +33,11 @@ py.install_sources(
   _py_root / 'retrace_venv.py',
   _py_root / 'retrace_venv_bootstrap.py',
   _py_root / 'retracepython.py',
+  _py_root / 'report_service.py',
+  _py_root / 'report_server.py',
   _py_root / 'run.py',
   _py_root / 'search.py',
+  _py_root / 'share_reports.py',
   _py_root / 'tape.py',
   subdir: 'retracesoftware',
 )
