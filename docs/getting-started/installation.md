@@ -49,7 +49,7 @@ source .venv/bin/activate
 
 ```
 python -m pip install --upgrade pip
-python -m pip install retracesoftware
+python -m pip install retracesoftware==0.1.14
 ```
 
 Check that Python can see the package:

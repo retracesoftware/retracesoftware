@@ -2,9 +2,7 @@
 
 ## Supported versions
 
-Retrace is under active development. Security fixes will generally target the latest released version and the main branch.
-
-We do not currently commit to supporting older versions unless explicitly stated in a release note or security advisory.
+This repository is an archived preview and is no longer maintained. It receives no security fixes. Do not use it to record production systems or sensitive data.
 
 ## Reporting a vulnerability
 

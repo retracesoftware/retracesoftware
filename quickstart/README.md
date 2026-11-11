@@ -1,3 +1,6 @@
+> [!NOTE]
+> This quickstart is for the archived May 2026 open-source preview. It is not maintained. Use Python 3.12 and `retracesoftware==0.1.14`.
+
 # Retrace Pytest Quickstart
 
 This is a controlled preview of the pytest workflow for Retrace. It takes
@@ -133,7 +136,7 @@ Install Retrace from PyPI:
 
 ```
 python -m pip install --upgrade pip
-python -m pip install retracesoftware
+python -m pip install retracesoftware==0.1.14
 ```
 
 Check that the installation worked before continuing:

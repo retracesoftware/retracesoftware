@@ -1,10 +1,15 @@
+> [!IMPORTANT]
+> **This is the archived open-source preview of Retrace, released in May 2026.** It is no longer maintained and receives no fixes or security updates.
+>
+> Retrace's current release is closed source and is not developed in this repository. See [retracesoftware.com](https://retracesoftware.com).
+>
+> The code remains available under the Apache License 2.0 and still shows the broad approach to Python record and replay. The quickstart works with Python 3.12 and `retracesoftware==0.1.14`.
+
 # Retrace
 
 Turn failed Python tests and CI runs into replayable debug sessions.
 
 Retrace records a Python execution as a `.retrace` artifact. When pytest or CI fails, open the artifact locally in VS Code, replay the same failed run, and step backwards from the failure to inspect the runtime state that caused it.
-
-The same recording model works for Python apps and production crashes. Start with tests today; move to production when the trust is there.
 
 <p align="center">
   <img src="docs/images/A_test_fails_in_CI.gif" alt="Failed pytest run replayed in VS Code with Retrace, stepping backwards from the assertion failure to the runtime state that caused it." width="800">
@@ -31,7 +36,7 @@ The failed execution becomes something you can inspect, replay, and share.
 
 Install Retrace in your virtual environment:
 
-    python -m pip install retracesoftware pytest
+    python -m pip install retracesoftware==0.1.14 pytest
 
 Run pytest through Retrace's explicit runner:
 
@@ -121,8 +126,6 @@ Retrace gives a developer, debugger, or AI coding agent the runtime ground truth
 
 That matters because AI agents often infer what happened from partial context. A `.retrace` artifact gives them runtime evidence from the actual failed run.
 
-CLI access and AI-agent workflows are arriving alongside the VS Code path.
-
 ## Full Quickstart
 
 The full quickstart includes a small failing pytest demo, a replay bundle helper, terminal replay, and VS Code replay debugging.
@@ -140,7 +143,7 @@ Create and activate a virtual environment:
 Install Retrace and the demo dependencies:
 
     python -m pip install --upgrade pip
-    python -m pip install retracesoftware
+    python -m pip install retracesoftware==0.1.14
     python -m pip install -r requirements.txt
 
 Record the pytest demo:
@@ -165,16 +168,6 @@ The replay should stop at your breakpoint inside the recorded execution. You can
 
 For the full walkthrough, see [quickstart/README.md](quickstart/README.md).
 
-## Production Is The Destination
-
-The `.retrace` artifact from a failed test uses the same architecture as a production crash replay.
-
-Start with tests today. Run the same tool against production when the trust is there.
-
-Retrace records the boundary between your Python code and the outside world — databases, APIs, files, time, randomness, and other nondeterministic calls — then replays those results locally.
-
-Recording overhead is designed to be low enough for production processes to stay recorded.
-
 ## What Retrace Is Not
 
 Retrace is not a logging library. You do not decide in advance which variables, branches, or errors might matter.
@@ -196,7 +189,7 @@ Supported PyPI wheels include Retrace's replay binary, so normal `pip install re
 
 Install the package:
 
-    python -m pip install retracesoftware
+    python -m pip install retracesoftware==0.1.14
 
 Installing Retrace does not automatically record Python processes. Choose the
 launcher mode that matches the workflow.

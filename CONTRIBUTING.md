@@ -1,3 +1,6 @@
+> [!NOTE]
+> This repository is archived and does not accept issues or pull requests. The guidance below is kept for reference.
+
 ```md
 # Contributing to Retrace
 

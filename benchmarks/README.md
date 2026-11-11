@@ -92,7 +92,7 @@ in internal logic with millisecond-scale external calls.
 Install Retrace and enable the startup hook in your active environment:
 
 ```bash
-pip install retracesoftware
+pip install retracesoftware==0.1.14
 python -m retracesoftware install
 ```
 

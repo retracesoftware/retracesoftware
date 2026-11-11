@@ -1,7 +1,8 @@
 # Retrace Documentation
 
-These docs describe the current `retracesoftware` package and `.retrace`
-recording workflow.
+These docs describe the archived May 2026 open-source preview
+(`retracesoftware==0.1.14`) and its `.retrace` recording workflow. They are not
+maintained and do not describe Retrace's current release.
 
 ## Start Here
 

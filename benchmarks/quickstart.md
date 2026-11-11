@@ -13,7 +13,7 @@ measurement.
 ## Running Benchmarks
 
 ```bash
-pip install retracesoftware
+pip install retracesoftware==0.1.14
 python -m retracesoftware install
 
 # Quick run (all benchmarks)

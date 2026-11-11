@@ -92,7 +92,7 @@ in internal logic with millisecond-scale external calls.
 Install Retrace:
 
 ```bash
-pip install retracesoftware
+pip install retracesoftware==0.1.14
 ```
 
 Run all benchmarks:

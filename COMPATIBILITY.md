@@ -1,7 +1,10 @@
+> [!NOTE]
+> This file describes the May 2026 open-source preview (`retracesoftware==0.1.14`) only. It does not describe Retrace's current release.
+
 # Compatibility
 
 This document lists the libraries Retrace has been exercised against in
-development and CI. It is updated as coverage expands.
+development and CI. It is no longer updated.
 
 ## What "tested" means
 
@@ -15,17 +18,17 @@ minimal reproducer, Python version, and OS.
 
 ## Current caveats
 
-- Threading support is currently experimental, with full support being released
-  in the next version. Under certain scenarios threading diverges; see
-  [threading issues](https://github.com/retracesoftware/retracesoftware/issues?q=is%3Aissue%20is%3Aopen%20threading).
+- Threading support in this preview is experimental, and under certain scenarios
+  threading diverges; see [threading issues](https://github.com/retracesoftware/retracesoftware/issues?q=is%3Aissue%20threading).
+  Full threading support is part of Retrace's current release, not this preview.
 
 ## Python versions
 
-[TODO: 3.x, 3.y]
+CPython 3.11 and 3.12. The quickstart is tested on 3.12.
 
 ## Operating systems
 
-[TODO: Linux x86_64, macOS arm64, ...]
+64-bit Linux and macOS.
 
 ---
 

@@ -22,7 +22,7 @@ git clone https://github.com/retracesoftware/retracesoftware.git
 cd retracesoftware/quickstart
 python3.12 -m venv .venv
 source .venv/bin/activate
-python -m pip install retracesoftware
+python -m pip install retracesoftware==0.1.14
 python -m pip show retracesoftware
 python -m pip install -r requirements.txt
 PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 python -m retracesoftware --recording recordings/pytest.retrace -- -m pytest pytest_demo -q --tb=short

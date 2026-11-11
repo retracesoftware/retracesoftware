@@ -1,5 +1,9 @@
 # Retrace
 
+This repository is the archived May 2026 open-source preview of Retrace
+(retracesoftware==0.1.14). It is not maintained. Retrace's current release is
+closed source; see https://retracesoftware.com.
+
 Retrace is an open-source reverse debugger and deterministic record-replay
 system for Python.
 
